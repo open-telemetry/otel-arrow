@@ -174,10 +174,10 @@ fn inspect_item(item: &Item) -> syn::Result<(Ident, Option<Expr>, Vec<Attribute>
 fn struct_field_expr(expr: &Expr, field: &str) -> Option<Expr> {
     if let Expr::Struct(s) = expr {
         for fv in &s.fields {
-            if let syn::Member::Named(ident) = &fv.member {
-                if ident == field {
-                    return Some(fv.expr.clone());
-                }
+            if let syn::Member::Named(ident) = &fv.member
+                && ident == field
+            {
+                return Some(fv.expr.clone());
             }
         }
     }

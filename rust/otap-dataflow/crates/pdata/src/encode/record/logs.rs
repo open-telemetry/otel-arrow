@@ -453,10 +453,10 @@ impl LogsBodyBuilder {
         let nulls = self.nulls.finish();
 
         // if it's all null, don't bother creating the struct array
-        if let Some(nulls) = &nulls {
-            if nulls.null_count() == len {
-                return None;
-            }
+        if let Some(nulls) = &nulls
+            && nulls.null_count() == len
+        {
+            return None;
         }
 
         let mut fields = vec![];

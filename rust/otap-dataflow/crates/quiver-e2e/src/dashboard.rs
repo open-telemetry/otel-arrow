@@ -127,10 +127,10 @@ fn read_process_rss_bytes() -> u64 {
         if let Some(val) = line.strip_prefix("VmRSS:") {
             // VmRSS is in kB, e.g., "VmRSS:    12345 kB"
             let val = val.trim();
-            if let Some(kb_str) = val.strip_suffix(" kB") {
-                if let Ok(kb) = kb_str.trim().parse::<u64>() {
-                    return kb * 1024; // Convert to bytes
-                }
+            if let Some(kb_str) = val.strip_suffix(" kB")
+                && let Ok(kb) = kb_str.trim().parse::<u64>()
+            {
+                return kb * 1024; // Convert to bytes
             }
         }
     }
@@ -254,12 +254,12 @@ impl Dashboard {
 
     /// Checks if user pressed 'q' to quit.
     pub fn check_quit(&self) -> io::Result<bool> {
-        if event::poll(Duration::from_millis(10))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                    return Ok(true);
-                }
-            }
+        if event::poll(Duration::from_millis(10))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('q')
+        {
+            return Ok(true);
         }
         Ok(false)
     }

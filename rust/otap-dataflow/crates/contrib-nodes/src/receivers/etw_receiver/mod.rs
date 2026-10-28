@@ -41,6 +41,22 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
+//! The optional `etw.provider.name` attribute uses the configured name, or
+//! the registered-provider name discovered at startup for a GUID-only
+//! subscription. Event-metadata provider-name discovery is not supported yet.
+//! Unregistered GUID-only providers therefore omit this attribute even when
+//! their events contain provider-name metadata. Name lookup failures also
+//! omit the attribute without preventing GUID-based capture.
+//!
+//! Providers resolved by name from the registered ETW provider database as
+//! manifest providers additionally support `event_ids`, an allow-list of up to
+//! 64 unique event IDs filtered server-side by the ETW runtime. This is
+//! rejected for providers that resolve by name-hash (`kind: tracelogging`, and
+//! automatic fallback when no registered provider is found), classic MOF/WMI
+//! providers, unknown registered-provider sources, and literal GUIDs, since the
+//! receiver cannot guarantee that ETW will apply `EventDescriptor.Id` filtering
+//! for those cases.
+//!
 //! ```yaml
 //! etw:
 //!   type: receiver:etw
@@ -51,6 +67,7 @@
 //!       - name: "Microsoft-Windows-Kernel-Process"
 //!         kind: manifest
 //!         level: information
+//!         event_ids: [1, 2, 15]
 //!       - name: "My-Custom-EventSource"
 //!         kind: tracelogging
 //!     batching:
@@ -87,14 +104,17 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
-use otel_arrow_dfe_telemetry_macros::metric_set;
+mod metrics;
+
+use metrics::{
+    BufferLossAttributes, BufferLossDelivery, DropAttributes, DropReason, EtwReceiverMetrics,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -109,6 +129,7 @@ pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 // 512 is non-zero, so `unwrap()` never panics (evaluated at compile time).
 const DEFAULT_BATCH_MAX_SIZE: NonZeroU16 = NonZeroU16::new(512).unwrap();
 const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(100);
+const MAX_EVENT_FILTER_EVENT_IDS: usize = 64;
 
 /// Upper bound on the time spent draining queued events during `DrainIngress`.
 ///
@@ -185,6 +206,27 @@ struct ProviderConfig {
     /// When omitted, all keywords are matched.
     #[serde(default)]
     pub keywords: Option<u64>,
+
+    /// Optional allow-list of event IDs (from `EventDescriptor.Id`) to
+    /// capture from this provider. When omitted, all event IDs are
+    /// captured. Filtering happens server-side in the ETW runtime, so
+    /// non-matching events are never delivered to the receiver.
+    ///
+    /// Only supported for name-based providers that resolve to a registered
+    /// manifest provider (`kind: manifest`, or automatic resolution that finds
+    /// a registered manifest provider): manifest events carry stable event IDs
+    /// and ETW can apply event-ID filtering for them. Providers resolved by
+    /// name-hash (for example explicit `kind: tracelogging`, or automatic
+    /// fallback when no registered provider is found), classic MOF/WMI
+    /// providers, unknown registered-provider sources, and literal GUIDs are
+    /// rejected because the receiver cannot guarantee that ETW will apply the
+    /// filter.
+    ///
+    /// At most 64 IDs are supported (the underlying ETW scope filter silently
+    /// stops filtering above that count) and the list must not be explicitly
+    /// empty. Duplicate IDs are removed during deserialization.
+    #[serde(default)]
+    pub event_ids: Option<BTreeSet<u16>>,
 }
 
 /// In-memory OTAP log batching policy.
@@ -238,6 +280,8 @@ impl Config {
     /// * At least one provider must be specified.
     /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
     /// * A specified `name` or `guid` must not be empty or whitespace-only.
+    /// * `event_ids` must not be an explicitly empty list and supports at
+    ///   most 64 unique IDs.
     ///
     /// # Errors
     ///
@@ -271,23 +315,19 @@ impl Config {
             // here rather than letting it fail later (a blank GUID errors at
             // parse time; a blank name would hash to a bogus GUID on the
             // automatic path).
-            if let Some(name) = &provider.name {
-                if name.trim().is_empty() {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'name' must not be empty or whitespace-only"
-                        ),
-                    });
-                }
+            if let Some(name) = &provider.name
+                && name.trim().is_empty()
+            {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!("provider[{i}]: 'name' must not be empty or whitespace-only"),
+                });
             }
-            if let Some(guid) = &provider.guid {
-                if guid.trim().is_empty() {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'guid' must not be empty or whitespace-only"
-                        ),
-                    });
-                }
+            if let Some(guid) = &provider.guid
+                && guid.trim().is_empty()
+            {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!("provider[{i}]: 'guid' must not be empty or whitespace-only"),
+                });
             }
 
             // `kind` selects a name-resolution strategy and is meaningless for a
@@ -300,15 +340,62 @@ impl Config {
                     ),
                 });
             }
+
+            if let Some(event_ids) = &provider.event_ids {
+                // A literal GUID does not tell us whether the provider is a
+                // registered manifest, TraceLogging, or classic MOF/WMI
+                // provider. Reject this for now so accepted configurations
+                // always receive real server-side event-ID filtering.
+                if provider.guid.is_some() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' requires a named provider that resolves to a registered ETW manifest provider"
+                        ),
+                    });
+                }
+
+                // event_ids is only meaningful for providers that resolve to a
+                // stable event ID. Tracelogging providers resolve by name-hash, so
+                // their events cannot be filtered by EventDescriptor.Id. Reject this
+                // combination at config time.
+                if provider.kind == Some(ProviderKind::Tracelogging) {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' is not supported for 'kind: tracelogging' - TraceLogging/EventSource events report EventDescriptor.Id = 0, so ID filtering cannot select individual events"
+                        ),
+                    });
+                }
+
+                // one_collect skips the filter entirely when the event list
+                // is empty, which would silently capture everything -
+                // the opposite of what an explicit empty list implies.
+                if event_ids.is_empty() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' must not be empty - omit the field to capture all event IDs"
+                        ),
+                    });
+                }
+
+                // Above 64 IDs the underlying ETW scope filter is silently
+                // dropped and all events flow.
+                if event_ids.len() > MAX_EVENT_FILTER_EVENT_IDS {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' supports at most 64 event IDs, got {} - the ETW event-ID filter is silently dropped above that limit",
+                            event_ids.len()
+                        ),
+                    });
+                }
+            }
         }
 
-        if let Some(ref batching) = self.batching {
-            if batching.max_duration.is_zero() {
-                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                    error: "ETW receiver `batching.max_duration` must be greater than zero"
-                        .to_string(),
-                });
-            }
+        if let Some(ref batching) = self.batching
+            && batching.max_duration.is_zero()
+        {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "ETW receiver `batching.max_duration` must be greater than zero".to_string(),
+            });
         }
 
         Ok(())
@@ -337,7 +424,7 @@ const fn default_batch_max_duration() -> Duration {
 struct EtwReceiver {
     config: Config,
     batching: BatchConfig,
-    metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: Rc<RefCell<EtwReceiverMetrics>>,
     /// Per-core consumer channel from the per-session-name ETW session.
     event_rx: tokio::sync::mpsc::Receiver<EtwEventData>,
     /// Shared atomic counters written by the `!Send` `ProcessTrace` callback
@@ -365,7 +452,7 @@ impl EtwReceiver {
         cfg.validate()?;
 
         let num_cores = pipeline.num_cores();
-        let metrics = pipeline.register_metrics::<EtwReceiverMetrics>();
+        let metrics = EtwReceiverMetrics::register(&pipeline);
         let batching = cfg.batching.clone().unwrap_or_default();
 
         // Acquire this core's consumer channel from the per-session-name
@@ -399,12 +486,12 @@ impl EtwReceiver {
 /// `builder` is always reset to a fresh empty builder (its contents are taken
 /// via [`std::mem::take`]) regardless of outcome. Returns `Ok(None)` when the
 /// builder is empty (nothing to flush). On a `build()` failure the
-/// `received_events_forward_failed` metric is recorded and the error is
+/// `receiver.etw.drops.events{reason="forward_failed"}` metric is recorded and the error is
 /// returned - a build failure indicates an encoding bug rather than a transient
 /// downstream condition, so it is surfaced to the caller.
 fn build_pending_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: &Rc<RefCell<EtwReceiverMetrics>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<Option<(OtapPdata, u64)>, Error> {
     if builder.is_empty() {
@@ -418,7 +505,11 @@ fn build_pending_batch(
         Err(error) => {
             metrics
                 .borrow_mut()
-                .received_events_forward_failed
+                .drops
+                .with(DropAttributes {
+                    reason: DropReason::ForwardFailed,
+                })
+                .events
                 .add(item_count);
             return Err(Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
@@ -440,7 +531,7 @@ fn build_pending_batch(
 /// `builder` is always reset to a fresh empty builder regardless of outcome.
 ///
 /// A forward failure is treated as a **per-batch loss event**, not a fatal
-/// error: the `received_events_forward_failed` metric is incremented, a warning
+/// error: the `receiver.etw.drops.events{reason="forward_failed"}` metric is incremented, a warning
 /// is logged, and `Ok(())` is returned so the receiver stays alive. On the
 /// awaiting path the only reachable send failure is the downstream channel
 /// being closed (backpressure parks rather than failing), which can happen
@@ -449,7 +540,7 @@ fn build_pending_batch(
 /// A `build()` failure still propagates, since it signals an encoding bug.
 async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: &Rc<RefCell<EtwReceiverMetrics>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<(), Error> {
     let Some((pdata, item_count)) = build_pending_batch(effect_handler, metrics, builder)? else {
@@ -459,7 +550,11 @@ async fn flush_batch(
     if let Err(error) = effect_handler.send_message_with_source_node(pdata).await {
         metrics
             .borrow_mut()
-            .received_events_forward_failed
+            .drops
+            .with(DropAttributes {
+                reason: DropReason::ForwardFailed,
+            })
+            .events
             .add(item_count);
         let error_msg = error.to_string();
         otel_warn!(
@@ -471,10 +566,7 @@ async fn flush_batch(
         return Ok(());
     }
 
-    metrics
-        .borrow_mut()
-        .received_events_forwarded
-        .add(item_count);
+    metrics.borrow_mut().events.forwarded.add(item_count);
     Ok(())
 }
 
@@ -486,12 +578,12 @@ async fn flush_batch(
 /// shutting-down downstream cannot park the task past the drain deadline.
 ///
 /// Like [`flush_batch`], a forward failure (downstream channel full or closed)
-/// is treated as a per-batch loss event: the `received_events_forward_failed`
+/// is treated as a per-batch loss event: the `receiver.etw.drops.events{reason="forward_failed"}`
 /// metric is incremented, a warning is logged, and `Ok(())` is returned so the
 /// receiver stays alive. A `build()` failure still propagates.
 fn try_flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: &Rc<RefCell<EtwReceiverMetrics>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<(), Error> {
     let Some((pdata, item_count)) = build_pending_batch(effect_handler, metrics, builder)? else {
@@ -501,7 +593,11 @@ fn try_flush_batch(
     if let Err(error) = effect_handler.try_send_message_with_source_node(pdata) {
         metrics
             .borrow_mut()
-            .received_events_forward_failed
+            .drops
+            .with(DropAttributes {
+                reason: DropReason::ForwardFailed,
+            })
+            .events
             .add(item_count);
         let error_msg = error.to_string();
         otel_warn!(
@@ -513,10 +609,7 @@ fn try_flush_batch(
         return Ok(());
     }
 
-    metrics
-        .borrow_mut()
-        .received_events_forwarded
-        .add(item_count);
+    metrics.borrow_mut().events.forwarded.add(item_count);
     Ok(())
 }
 
@@ -563,34 +656,45 @@ impl EventCountsDelta {
     /// did not advance.
     fn apply(&self, metrics: &mut EtwReceiverMetrics) {
         if self.total > 0 {
-            metrics.received_events_total.add(self.total);
+            metrics.events.received.add(self.total);
         }
         if self.dropped_slow_worker > 0 {
             metrics
-                .received_events_dropped_slow_worker
+                .drops
+                .with(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
                 .add(self.dropped_slow_worker);
         }
         if self.invalid > 0 {
-            metrics.received_events_invalid.add(self.invalid);
+            metrics.decode.errors.add(self.invalid);
         }
         if self.kernel_events_lost > 0 {
-            metrics
-                .received_events_lost_kernel
-                .add(self.kernel_events_lost);
+            metrics.session.events_lost.add(self.kernel_events_lost);
         }
         if self.kernel_real_time_buffers_lost > 0 {
             metrics
-                .kernel_real_time_buffers_lost
+                .session_buffer_losses
+                .with(BufferLossAttributes {
+                    delivery: BufferLossDelivery::RealTime,
+                })
+                .buffers_lost
                 .add(self.kernel_real_time_buffers_lost);
         }
         if self.kernel_log_buffers_lost > 0 {
             metrics
-                .kernel_log_buffers_lost
+                .session_buffer_losses
+                .with(BufferLossAttributes {
+                    delivery: BufferLossDelivery::LogFile,
+                })
+                .buffers_lost
                 .add(self.kernel_log_buffers_lost);
         }
         if self.kernel_buffers_written > 0 {
             metrics
-                .kernel_buffers_written
+                .session
+                .buffers_written
                 .add(self.kernel_buffers_written);
         }
     }
@@ -657,8 +761,8 @@ impl EtwReceiver {
     ///   session-wide total is therefore exact.
     ///
     /// The trade-off is intentional: the producer-side counters
-    /// (`received_events_total`, `received_events_dropped_slow_worker`, and
-    /// `received_events_invalid`) are **session-scoped, not
+    /// (`events.received`, `dropped` with `reason="slow_worker"`, and
+    /// `decode.errors`) are **session-scoped, not
     /// per-core**. They cannot be attributed to an individual core - if they
     /// were given a per-core attribute they would land on an arbitrary core
     /// each interval and produce noisy, meaningless per-core series.
@@ -749,8 +853,8 @@ impl EtwReceiver {
                             effect_handler.notify_receiver_drained().await?;
                             // Fold producer-side atomics before the final snapshot.
                             self.drain_event_counts();
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
+                            return Ok(TerminalState::new(deadline, snapshots));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
@@ -760,15 +864,15 @@ impl EtwReceiver {
                             );
                             // Fold producer-side atomics before the final snapshot.
                             self.drain_event_counts();
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
+                            return Ok(TerminalState::new(deadline, snapshots));
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             // Fold the producer-side atomics into the metric set
                             // first (separate borrow scope), then report.
                             self.drain_event_counts();
                             let mut m = self.metrics.borrow_mut();
-                            let _ = metrics_reporter.report(&mut m);
+                            let _ = m.report(&mut metrics_reporter);
                         }
                         Ok(NodeControlMsg::MemoryPressureChanged { .. }) => {
                             // TODO: Implement shedding if needed.
@@ -844,6 +948,7 @@ pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 receiver_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -875,103 +980,6 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
     }
 }
 
-// -- Telemetry ----------------------------------------------------------------
-
-/// Receiver-level metrics for the ETW receiver.
-///
-/// # Counter algebra
-///
-/// There is a single ingress denominator:
-///
-/// ```text
-/// received_events_total
-///     = received_events_forwarded        (events in successfully-sent batches)
-///     + received_events_forward_failed   (events in batches that failed to build/send)
-///     + received_events_dropped_slow_worker (events dropped by internal backpressure)
-///     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
-/// ```
-///
-/// Derived rates:
-///
-/// * slow-worker drop rate = `received_events_dropped_slow_worker / received_events_total`
-/// * forward-failure rate = `received_events_forward_failed / received_events_total`
-///
-/// Notes:
-///
-/// * `received_events_invalid` (TDH decode failures) is **orthogonal** to the
-///   delivery accounting: a decode failure does *not* drop the event - it is
-///   still enqueued and forwarded with empty `decoded_fields`. Treat it as a
-///   quality signal, not a loss bucket.
-/// * `received_events_total`, `received_events_dropped_slow_worker`, and
-///   `received_events_invalid` are **session-scoped**
-///   (shared across all per-core receivers of a `session_name`) - see
-///   [`EtwReceiver::drain_event_counts`]. `received_events_forwarded`,
-///   `received_events_forward_failed`, and `received_events_rejected_memory_pressure`
-///   are per-core but reported under a single summed series.
-#[metric_set(name = "receiver.etw")]
-#[derive(Debug, Default, Clone)]
-pub struct EtwReceiverMetrics {
-    /// Total number of ETW events the session **produced** - counted on the
-    /// producer (`ProcessTrace`) side before any channel send, including
-    /// events about to be dropped due to a full per-core channel.
-    ///
-    /// This is the ingress denominator and the authoritative total. The
-    /// slow-worker drop rate is `received_events_dropped_slow_worker /
-    /// received_events_total`. See the "Counter algebra" section on
-    /// [`EtwReceiverMetrics`].
-    #[metric(unit = "{event}")]
-    pub received_events_total: Counter<u64>,
-
-    /// Number of ETW events successfully forwarded downstream.
-    #[metric(unit = "{event}")]
-    pub received_events_forwarded: Counter<u64>,
-
-    /// Number of ETW events that failed to parse.
-    #[metric(unit = "{event}")]
-    pub received_events_invalid: Counter<u64>,
-
-    /// Number of ETW events that could not be forwarded downstream and were
-    /// therefore dropped. Counts both batch `build()` failures (an encoding
-    /// bug) and send failures (the downstream channel was full or closed).
-    #[metric(unit = "{event}")]
-    pub received_events_forward_failed: Counter<u64>,
-
-    /// Number of ETW events dropped due to process-wide memory pressure.
-    #[metric(unit = "{event}")]
-    pub received_events_rejected_memory_pressure: Counter<u64>,
-
-    /// Events dropped because the consuming worker (this core's async receiver
-    /// loop) couldn't drain the internal channel fast enough (the ETW consumer
-    /// thread filled it). Contrast `received_events_forward_failed`, which is
-    /// downstream backpressure.
-    #[metric(unit = "{event}")]
-    pub received_events_dropped_slow_worker: Counter<u64>,
-
-    /// Events lost inside the kernel ETW buffers before `one_collect` ever saw
-    /// them (buffer overrun), from `TraceStats::events_lost`. Distinct from
-    /// `received_events_dropped_slow_worker`, which is our own downstream
-    /// backpressure after the event was already received.
-    #[metric(unit = "{event}")]
-    pub received_events_lost_kernel: Counter<u64>,
-
-    /// Real-time delivery buffers lost because the consumer could not drain
-    /// the ETW real-time buffers fast enough, from
-    /// `TraceStats::real_time_buffers_lost`.
-    #[metric(unit = "{buffer}")]
-    pub kernel_real_time_buffers_lost: Counter<u64>,
-
-    /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`.
-    #[metric(unit = "{buffer}")]
-    pub kernel_log_buffers_lost: Counter<u64>,
-
-    /// Total ETW buffers written by the session, from
-    /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal.
-    #[metric(unit = "{buffer}")]
-    pub kernel_buffers_written: Counter<u64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -991,6 +999,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }
     }
 
@@ -1001,6 +1010,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }
     }
 
@@ -1052,6 +1062,7 @@ mod tests {
             kind: Some(ProviderKind::Manifest),
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1073,6 +1084,132 @@ mod tests {
             kind: Some(ProviderKind::Tracelogging),
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
+        }]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Scenario: A provider configures a well-formed `event_ids` allow-list
+    /// under automatic or manifest-based resolution.
+    /// Guarantees: `Config::validate` accepts the list for automatic (kind:
+    /// None) and manifest-based resolution (kind: Manifest), but rejects it
+    /// for explicit tracelogging (kind: Tracelogging) since hash-resolved
+    /// providers cannot be filtered by EventDescriptor.Id.
+    #[test]
+    fn validate_accepts_event_ids_for_name_based_manifest_resolution() {
+        // Automatic (kind: None) and manifest should be accepted
+        for kind in [None, Some(ProviderKind::Manifest)] {
+            let cfg = make_config(vec![ProviderConfig {
+                name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+                guid: None,
+                kind,
+                level: TraceLevel::default(),
+                keywords: None,
+                event_ids: Some([1, 2, 15].into_iter().collect()),
+            }]);
+            assert!(
+                cfg.validate().is_ok(),
+                "validate must accept event_ids for kind={kind:?}"
+            );
+        }
+
+        // Tracelogging should be rejected
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("My-Custom-EventSource".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Tracelogging),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some([1, 2, 15].into_iter().collect()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' is not supported for 'kind: tracelogging'"),
+            "validate must reject event_ids for kind: tracelogging, got: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures a literal `guid` together with
+    /// `event_ids`.
+    /// Guarantees: `Config::validate` rejects the combination because a GUID
+    /// alone does not identify whether the provider is manifest, TraceLogging,
+    /// or classic MOF/WMI, so the receiver cannot guarantee that ETW will apply
+    /// event-ID filtering.
+    #[test]
+    fn validate_rejects_event_ids_with_guid() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some([1, 2, 15].into_iter().collect()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' requires a named provider"),
+            "validate must reject event_ids with guid, got: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures an explicitly empty `event_ids` list.
+    /// Guarantees: `Config::validate` rejects the config, since `one_collect`
+    /// skips the filter entirely when the event list is empty, which would
+    /// silently capture everything instead of nothing.
+    #[test]
+    fn validate_rejects_empty_event_ids() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some(BTreeSet::new()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' must not be empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures more than 64 `event_ids`.
+    /// Guarantees: `Config::validate` rejects the config, since the
+    /// underlying ETW scope filter is silently dropped above 64 IDs
+    /// (capturing everything) rather than truncated.
+    #[test]
+    fn validate_rejects_more_than_64_event_ids() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("supports at most 64 event IDs"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures exactly 64 unique `event_ids`.
+    /// Guarantees: `Config::validate` accepts the config, since 64 is the
+    /// documented cap rather than a rejected boundary.
+    #[test]
+    fn validate_accepts_exactly_64_event_ids() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1120,6 +1257,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1137,6 +1275,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1156,6 +1295,7 @@ mod tests {
                 kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
+                event_ids: None,
             },
         ]);
         let err = cfg.validate().unwrap_err();
@@ -1220,6 +1360,8 @@ mod tests {
             .fetch_add(invalid, Ordering::Relaxed);
     }
 
+    /// Scenario: A normal fold claims producer-side counts and advances metric counters.
+    /// Guarantees: Deltas are applied to the correct enum attributes and atomics are reset to zero.
     #[test]
     fn take_event_counts_claims_full_delta_and_resets() {
         let telemetry = SessionWideMetrics::default();
@@ -1244,15 +1386,24 @@ mod tests {
 
         // Applying the deltas advances the corresponding metric counters and
         // upholds the counter-algebra invariant.
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 10);
-        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 3);
-        assert_eq!(metrics.received_events_invalid.get(), 2);
-        // Consumer-side counter is removed from metric set; only producer-side
-        // `received_events_total` exists now.
+        assert_eq!(metrics.events.received.get(), 10);
+        assert_eq!(
+            metrics
+                .drops
+                .get(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
+                .get(),
+            3
+        );
+        assert_eq!(metrics.decode.errors.get(), 2);
     }
 
+    /// Scenario: Claiming kernel trace stats updates event loss and buffer metrics.
+    /// Guarantees: Kernel event loss and buffer counters are appropriately recorded in metric sets.
     #[test]
     fn take_event_counts_claims_kernel_trace_stats_and_resets() {
         let telemetry = SessionWideMetrics::default();
@@ -1292,15 +1443,35 @@ mod tests {
         assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 0);
         assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 0);
 
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 4);
-        assert_eq!(metrics.received_events_lost_kernel.get(), 2);
-        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 3);
-        assert_eq!(metrics.kernel_log_buffers_lost.get(), 1);
-        assert_eq!(metrics.kernel_buffers_written.get(), 9);
+        assert_eq!(metrics.events.received.get(), 4);
+        assert_eq!(metrics.session.events_lost.get(), 2);
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::RealTime,
+                })
+                .buffers_lost
+                .get(),
+            3
+        );
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::LogFile,
+                })
+                .buffers_lost
+                .get(),
+            1
+        );
+        assert_eq!(metrics.session.buffers_written.get(), 9);
     }
 
+    /// Scenario: A second claim on unchanged atomics yields empty deltas.
+    /// Guarantees: Concurrent per-core drains do not double-count metrics.
     #[test]
     fn second_claim_without_new_increments_is_empty_no_double_count() {
         // Models two cores ticking back-to-back: the first claim takes the
@@ -1322,13 +1493,24 @@ mod tests {
 
         // Folding both into a single metric set sums to the producer total
         // exactly once (the registry sums per-core snapshots the same way).
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         first.apply(&mut metrics);
         second.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 7);
-        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 1);
+        assert_eq!(metrics.events.received.get(), 7);
+        assert_eq!(
+            metrics
+                .drops
+                .get(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Producer increments occurring after the terminal drain are left unclaimed.
+    /// Guarantees: Residual delta is bounded and metric does not reflect post-terminal increments.
     #[test]
     fn late_producer_increment_after_terminal_drain_is_residual_loss() {
         // Terminal path: a core performs its final drain, then the producer
@@ -1341,9 +1523,9 @@ mod tests {
         let terminal = take_event_counts(&telemetry);
         assert_eq!(terminal.total, 5);
 
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         terminal.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 5);
+        assert_eq!(metrics.events.received.get(), 5);
 
         // A late producer increment lands after the terminal snapshot.
         let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
@@ -1353,25 +1535,54 @@ mod tests {
         // the documented "residual loss at teardown" behaviour.
         assert_eq!(telemetry.total.load(Ordering::Relaxed), 1);
         assert_eq!(
-            metrics.received_events_total.get(),
+            metrics.events.received.get(),
             5,
             "metric must not reflect the post-terminal increment"
         );
     }
 
+    /// Scenario: Applying empty deltas to metric sets does not increment counters.
+    /// Guarantees: All metric counters remain zero when empty deltas are applied.
     #[test]
     fn empty_deltas_apply_is_noop() {
         let deltas = EventCountsDelta::default();
         assert!(deltas.is_empty());
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 0);
-        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 0);
-        assert_eq!(metrics.received_events_invalid.get(), 0);
-        assert_eq!(metrics.received_events_lost_kernel.get(), 0);
-        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 0);
-        assert_eq!(metrics.kernel_log_buffers_lost.get(), 0);
-        assert_eq!(metrics.kernel_buffers_written.get(), 0);
+        assert_eq!(metrics.events.received.get(), 0);
+        assert_eq!(
+            metrics
+                .drops
+                .get(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
+                .get(),
+            0
+        );
+        assert_eq!(metrics.decode.errors.get(), 0);
+        assert_eq!(metrics.session.events_lost.get(), 0);
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::RealTime,
+                })
+                .buffers_lost
+                .get(),
+            0
+        );
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::LogFile,
+                })
+                .buffers_lost
+                .get(),
+            0
+        );
+        assert_eq!(metrics.session.buffers_written.get(), 0);
     }
 }
 

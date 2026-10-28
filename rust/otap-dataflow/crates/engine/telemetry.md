@@ -29,17 +29,27 @@ but has not yet recorded a value.
 `policies.telemetry.runtime_metrics` controls channel, node, and shared
 control-plane metrics. Its default value is `basic`.
 
-| Level | Data-path metrics enabled |
+The runtime metric level provides these data-path defaults:
+
+| Level | Data-path metrics enabled by default |
 | --- | --- |
 | `none` | No channel or node input/output metrics. |
 | `basic` | `channel.*` metrics. |
-| `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. A node can also opt into item and size metrics. |
-| `detailed` | `normal`, plus node duration, item, and size metrics for every node. |
+| `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. |
+| `detailed` | `normal`, plus completion duration, local duration, item, and size metrics for every node. |
 
-At `normal`, enable the optional measurements on an individual node with
-`policies.telemetry.item_counts: true` and/or
-`policies.telemetry.size: true`. These node options do not enable node metrics
-when the pipeline level is `none` or `basic`.
+Runtime levels provide defaults. At any level, override those defaults for an
+individual node with
+`policies.telemetry.messages: true`,
+`policies.telemetry.completion_duration: true`,
+`policies.telemetry.duration: true`,
+`policies.telemetry.item_counts: true`, and/or
+`policies.telemetry.size: true`. Completion duration enables only
+`node.completion.duration`. Messages, item counts, and size independently
+enable the corresponding engine-managed node input/output metrics. The
+duration option controls node-implemented metrics such as
+`receiver.processing.duration`, `exporter.attempted.duration`, and
+`processor.compute.duration`.
 
 Node kind determines which side exists:
 
@@ -60,27 +70,62 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 
 ### Metric reference
 
+#### Engine and console metrics
+
+OTLP exports each instrument name below under its instrumentation scope; the
+scope is not a prefix of `Metric.name`. For example, select scope
+`engine.console_output` and instrument `diagnostics.dropped` to find diagnostic
+loss. Console points also carry the datapoint attribute `console.stream` with
+the bounded values `stdout` and `stderr`.
+
+Console counters measure process-wide activity since the controller run
+started. The controller performs a bounded console drain and emits any drain
+warning before the final sample, while the observability pipeline is still
+alive. If diagnostics are dropped after that handoff, the run returns an error
+with the unsampled drop count, even if all accepted output eventually drains.
+Those later drops are not added to the already exported metric points. Multiple
+engines hosted concurrently observe shared process activity, not exclusive
+per-engine output.
+
+| OTLP scope | Instrument name | Description | Produced when |
+| --- | --- | --- | --- |
+| `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS once per engine about every five seconds. |
+| `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `memory.pressure.state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
+| `engine` | `process.memory.usage.bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
+| `engine` | `process.memory.soft.limit.bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
+| `engine` | `process.memory.hard.limit.bytes` | Effective process-wide hard memory limit in bytes. | The engine is running. The value is `0` when no hard limit is configured. |
+| `engine.console_output` | `frames.submitted` | Frames accepted into a console stream's queue since the run started. | Sampled once per engine about every five seconds and after the shutdown drain. |
+| `engine.console_output` | `frames.enqueue.failed` | Frames a console stream rejected because its queue was closed or full, a frame was too large, or its writer had failed. | The engine is running and a console frame was rejected. |
+| `engine.console_output` | `frames.written` | Frames written to a console stream. | The engine is running and console output was written. |
+| `engine.console_output` | `bytes.written` | Bytes written to a console stream. | The engine is running and console output was written. |
+| `engine.console_output` | `write.errors` | Failed console writes or flushes. Each one stops that stream's writer; a transient `WouldBlock` is retried instead. | The engine is running and a console write failed. |
+| `engine.console_output` | `diagnostics.dropped` | Best-effort diagnostics dropped because a console stream's queue was full or the frame exceeded its byte budget. | The engine is running and a diagnostic did not fit in the queue. |
+
+#### Node, channel, and flow metrics
+
 | Metric name | Description | Produced when |
 | --- | --- | --- |
-| `engine.memory_rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
-| `engine.cpu_utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
-| `engine.memory_pressure_state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
-| `engine.process_memory_usage_bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
-| `engine.process_memory_soft_limit_bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
-| `engine.process_memory_hard_limit_bytes` | Effective process-wide hard memory limit in bytes. | The engine is running. The value is `0` when no hard limit is configured. |
 | `channel.sender.messages` | Number of immediate send attempts, grouped by `outcome` and, for PData channels, `signal`. | `runtime_metrics` is `basic` or higher and a data or control channel send is attempted. |
 | `channel.sender.failures` | Number of unsuccessful send attempts, grouped by `error.type` and, for PData channels, `signal`. | `runtime_metrics` is `basic` or higher and a send finds a full or closed channel. Healthy pipelines may not produce this metric. |
 | `channel.receiver.messages` | Number of messages successfully dequeued, grouped by `signal` for PData channels. | `runtime_metrics` is `basic` or higher and a data or control message is dequeued. Empty polls and channel closure are not counted. |
 | `channel.receiver.queue.depth` | Current number of messages buffered in the channel. | `runtime_metrics` is `basic` or higher and the channel exists; sampled on the reporting interval. |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `runtime_metrics` is `basic` or higher and the channel exists; sampled on the reporting interval. |
-| `node.input.duration` | Duration from entry until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed`, a processor or exporter consumes PData, and its terminal ack or nack unwinds. |
-| `node.input.messages` | Messages received by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a processor or exporter consumes PData, and its terminal ack or nack unwinds. |
-| `node.input.items` | Signal items received by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Input message conditions are met and either the level is `detailed` or that processor/exporter sets `policies.telemetry.item_counts: true`. |
-| `node.input.size` | Logical payload bytes received by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Input message conditions are met and either the level is `detailed` or that processor/exporter sets `policies.telemetry.size: true`. |
-| `node.output.duration` | Duration from output until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed`, a receiver emits PData, and its terminal ack or nack unwinds. Processor latency is recorded in `node.input.duration`. |
-| `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a receiver or processor sends PData, and its terminal ack or nack unwinds. A processor that drops a whole message produces no output datapoint for it. |
-| `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Output message conditions are met and either the level is `detailed` or that receiver/processor sets `policies.telemetry.item_counts: true`. |
-| `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Output message conditions are met and either the level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`. |
+| `node.completion.duration` | Duration from the tracked node boundary until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed` or that node sets `policies.telemetry.completion_duration: true`, and the terminal ack or nack unwinds. The boundary is receiver output or processor/exporter input. |
+| `node.input.messages` | Messages received by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, or that processor/exporter sets `policies.telemetry.messages: true`; the node consumes PData and its terminal ack or nack unwinds. |
+| `node.input.items` | Signal items received by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that processor/exporter sets `policies.telemetry.item_counts: true`, and the terminal ack or nack unwinds. |
+| `node.input.size` | Logical payload bytes received by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that processor/exporter sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
+| `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, or that receiver/processor sets `policies.telemetry.messages: true`; the node sends PData and its terminal ack or nack unwinds. A processor that drops a whole message produces no output datapoint for it. |
+| `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.item_counts: true`, and the terminal ack or nack unwinds. |
+| `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
+| `receiver.received.messages` | Classified external messages whose receiver-local handling reached a terminal local outcome, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, message metrics are enabled, and local handling finishes. |
+| `receiver.received.payload.size` | Encoded application payload bytes observed at the receiver boundary, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, size measurement is enabled, encoded size is available, and local handling finishes. |
+| `receiver.processing.duration` | Receiver-local processing duration in seconds, without `signal` or `outcome` dimensions, including failures before signal classification. | The receiver implements the shared contract and local duration is enabled. The documented boundary ends before downstream handoff or wait. |
+| `exporter.attempted.messages` | Node-local delivery attempts, including preparation failures and each backend retry, grouped by `signal` and `outcome`. This is distinct from PData messages counted by `node.input.messages`. | The exporter implements the shared exporter contract, message metrics are enabled, and an attempt reaches a terminal local or backend result. |
+| `exporter.attempted.duration` | Export attempt duration in seconds, grouped by `signal` and `outcome`. | The exporter implements the shared contract and local duration is enabled. Encoding and backend latency are included; Ack/Nack notification delivery is excluded. |
+| `exporter.attempted.payload.size` | Encoded application payload bytes produced or submitted by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract, size measurement is enabled, and encoded size is available. |
+| `exporter.attempted.items` | Signal items handled by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract and item counting is enabled. |
 | `flow.input.messages` | PData messages entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_messages` and a message enters its start processor. |
 | `flow.input.items` | Signal items entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_items` and a message enters its start processor. |
 | `flow.input.size` | Logical payload bytes entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_size` and a message enters its start processor. |

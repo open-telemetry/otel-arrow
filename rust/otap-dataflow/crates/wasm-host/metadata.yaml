@@ -1,0 +1,6 @@
+type: wasm-host
+status:
+  class: library
+  codeowners:
+    active:
+      - AaronRM

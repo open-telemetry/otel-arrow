@@ -159,6 +159,24 @@ Testing is crucial to ensure code reliability. When contributing:
 - Run the test suite before submitting a pull request to verify changes.
 - Ensure test coverage remains high, and add tests for edge cases when applicable.
 
+### Writing Reliable Tests
+
+Tests must pass independently and alongside other tests, without depending on
+execution order, machine speed, or unrelated global state.
+
+- Wait for observable readiness and completion, not a fixed sleep or an assumed
+  scheduler order. Bound waits so a regression fails rather than hangs.
+- Control inputs, clocks, and randomness where possible. Assert the documented
+  contract, not incidental ordering or a lucky random outcome.
+- Give each test its own resources and measure only the operation under test;
+  process-wide counters can include unrelated work.
+- Stop and join background work, propagate its failures, and clean up fixtures.
+- Fix the cause of intermittent failures. Extra retries, longer sleeps, and
+  weaker assertions are not substitutes for a reliable test.
+
+Rust contributors must follow the detailed
+[reliable test guidelines](rust/otap-dataflow/CONTRIBUTING.md#reliable-tests).
+
 ### Community Standards and Style Guides
 
 This project adheres to the OpenTelemetry community's standards. Please ensure
@@ -242,6 +260,18 @@ work on an open issue - is described in
 [ISSUE_TRIAGE.md](./ISSUE_TRIAGE.md).
 
 ## Our Development Process
+
+### Code review is shared work
+
+Reviewing is part of contributing, not work reserved for approvers and
+maintainers. Regular contributors should budget time to review peer changes,
+and reviews from non-approvers are encouraged and treated as meaningful
+technical input.
+
+Component ownership metadata identifies contributors who can provide domain
+review for OTAP Dataflow crates and nodes. An approver or maintainer approval
+is still required to merge. See the [code review policy](./CODE_REVIEW.md) for
+review expectations, role boundaries, and ownership maintenance.
 
 ### How to Receive Comments
 
@@ -412,18 +442,17 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
 
-### Emeritus Approvers
-
-- [Alex Boten](https://github.com/codeboten)
-- [Lei Huang](https://github.com/v0y4g3r)
-- [Moh Osman](https://github.com/moh-osman3)
-
 ### Triagers
-
-- [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the triager role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+
+### Emeritus
+
+- [Alex Boten](https://github.com/codeboten), Approver
+- [Lei Huang](https://github.com/v0y4g3r), Approver
+- [Moh Osman](https://github.com/moh-osman3), Approver
+- [Tom Tan](https://github.com/ThomsonTan), Triager
 
 [RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/

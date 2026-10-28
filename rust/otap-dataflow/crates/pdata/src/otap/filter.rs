@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, Float64Array, Int64Array,
-    PrimitiveArray, RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array,
+    Array, ArrayAccessor, ArrayRef, AsArray, BooleanArray, BooleanBuilder, DictionaryArray,
+    Float64Array, Int64Array, PrimitiveArray, RecordBatch, StringArray, StringArrayType,
+    StructArray, UInt16Array, UInt32Array, downcast_dictionary_array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt8Type, UInt16Type, UInt32Type};
+use regex::Regex;
 use roaring::RoaringBitmap;
 
 use crate::arrays::{MaybeDictArrayAccessor, get_required_array};
@@ -15,8 +17,7 @@ use crate::otap::error::{Error, Result};
 use crate::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
-use arrow::buffer::BooleanBuffer;
-use serde::Deserialize;
+use arrow::buffer::{BooleanBuffer, NullBuffer};
 use std::collections::HashMap;
 use std::sync::Arc;
 pub mod logs;
@@ -189,6 +190,73 @@ impl IdBitmap {
         }
     }
 
+    /// Try to populate this bitmap from an ID/parent ID column from an OTAP batch.
+    ///
+    /// This expects that the type of the ID column is one of the known types used for id column
+    /// or parent_id columns in the OTAP spec, which includes arrays of type `u16`, `u32`, and
+    /// `Dict<u8/u16, u32>`. If the passed `id_column` argument is not one of these types, this
+    /// method will return an error.
+    ///
+    /// This method has the same behaviour as `[Self::populate]` with respect to clearing the
+    /// bitmap / reusing existing allocations.
+    pub fn try_populate_from_id_column(&mut self, id_column: &ArrayRef) -> Result<()> {
+        match id_column.data_type() {
+            DataType::UInt16 => {
+                let id_column = id_column.as_primitive::<UInt16Type>();
+                if id_column.nulls().is_some() {
+                    self.populate(id_column.iter().flatten().map(|i| i as u32));
+                } else {
+                    self.populate(id_column.values().iter().map(|i| *i as u32));
+                }
+            }
+            DataType::UInt32 => {
+                let id_column = id_column.as_primitive::<UInt32Type>();
+                if id_column.nulls().is_some() {
+                    self.populate(id_column.iter().flatten());
+                } else {
+                    self.populate(id_column.values().iter().copied());
+                }
+            }
+            DataType::Dictionary(k, _) => match k.as_ref() {
+                DataType::UInt8 => {
+                    let dict_arr = id_column.as_dictionary::<UInt8Type>();
+                    if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
+                        self.populate(typed_dict.into_iter().flatten());
+                    } else {
+                        return Err(Error::UnsupportedDictionaryValueType {
+                            expect_oneof: vec![DataType::UInt32],
+                            actual: dict_arr.value_type(),
+                        });
+                    }
+                }
+                DataType::UInt16 => {
+                    let dict_arr = id_column.as_dictionary::<UInt16Type>();
+                    if let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() {
+                        self.populate(typed_dict.into_iter().flatten());
+                    } else {
+                        return Err(Error::UnsupportedDictionaryValueType {
+                            expect_oneof: vec![DataType::UInt32],
+                            actual: dict_arr.value_type(),
+                        });
+                    }
+                }
+                other => {
+                    return Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: other.clone(),
+                    });
+                }
+            },
+            other => {
+                return Err(Error::InvalidIdColumnType {
+                    data_type: other.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// In-place union: `self |= other`.
     pub fn union_with(&mut self, other: &Self) {
         if other.pages.len() > self.pages.len() {
@@ -227,12 +295,12 @@ impl IdBitmap {
     /// In-place difference: `self &= !other`.
     pub fn difference_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
-            if let Some(sp) = self_page {
-                if let Some(Some(op)) = other.pages.get(i) {
-                    sp.last_used_generation = self.generation;
-                    for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
-                        *sw &= !ow;
-                    }
+            if let Some(sp) = self_page
+                && let Some(Some(op)) = other.pages.get(i)
+            {
+                sp.last_used_generation = self.generation;
+                for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
+                    *sw &= !ow;
                 }
             }
         }
@@ -342,16 +410,16 @@ impl Iterator for IdBitmapIter<'_> {
             // Find the next non-zero word, advancing through words and pages as needed.
             loop {
                 // Try the next word in the current page
-                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx) {
-                    if self.word_idx < ID_BITMAP_PAGE_WORDS {
-                        let word = page.words[self.word_idx];
-                        self.word_idx += 1;
-                        if word != 0 {
-                            self.current_word = word;
-                            break; // Break inner loop, outer loop will extract bits
-                        }
-                        continue; // Try next word in this page
+                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx)
+                    && self.word_idx < ID_BITMAP_PAGE_WORDS
+                {
+                    let word = page.words[self.word_idx];
+                    self.word_idx += 1;
+                    if word != 0 {
+                        self.current_word = word;
+                        break; // Break inner loop, outer loop will extract bits
                     }
+                    continue; // Try next word in this page
                 }
 
                 // No more words in this page (or page was None) -- advance to the next page
@@ -409,59 +477,131 @@ impl Default for IdBitmapPool {
     }
 }
 
-/// MatchType describes how we should match the String values provided
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MatchType {
-    /// match on the string values exactly how they are defined
-    Strict,
-    /// apply string values as a regexp
-    Regexp,
+/// A compiled string matcher: either an exact literal or a regular expression.
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// Match the value exactly.
+    Exact(String),
+    /// Match the value against a [`Regex`].
+    Regex(Regex),
 }
 
-const fn default_match_type() -> MatchType {
-    MatchType::Strict
-}
-
-/// enum that allows a field to have any type
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(untagged)]
-pub enum AnyValue {
-    /// string type
-    String(String),
-    /// int type
-    Int(i64),
-    /// double type
-    Double(f64),
-    /// boolean type
-    Boolean(bool),
-    /// array of any type
-    Array(Vec<AnyValue>),
-    /// keyvalue type
-    KeyValue(Vec<KeyValue>),
-}
-
-/// struct that represents attributes and other key value pairs
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct KeyValue {
-    /// Attribute key.
-    pub key: String,
-    /// Attribute value.
-    pub value: AnyValue,
-}
-
-impl KeyValue {
-    /// create a new key value pair
+impl Pattern {
+    /// Returns whether a single string value matches this pattern.
     #[must_use]
-    pub const fn new(key: String, value: AnyValue) -> Self {
-        Self { key, value }
+    pub fn is_match(&self, value: &str) -> bool {
+        match self {
+            Pattern::Exact(s) => value == s,
+            Pattern::Regex(regex) => regex.is_match(value),
+        }
+    }
+
+    /// Apply this pattern to a string column, returning a boolean array of the
+    /// same length.
+    ///
+    /// Null inputs produce null outputs: callers that need a null-free selection
+    /// (e.g. the filter processor) must resolve nulls themselves, typically via
+    /// [`nulls_to_false`] after combining all patterns. This matches the behavior
+    /// of arrow's `regexp_is_match_scalar` / `cmp::eq` scalar comparison.
+    ///
+    /// Supports `Utf8`, `LargeUtf8`, `Utf8View`, and dictionaries of those with any
+    /// integer key type (each distinct value is evaluated once, then expanded
+    /// through the keys). Any other column type returns
+    /// [`Error::UnsupportedStringColumnType`].
+    pub fn matches(&self, col: &ArrayRef) -> Result<BooleanArray> {
+        match col.data_type() {
+            DataType::Utf8 => Ok(self.match_string_array(col.as_string::<i32>())),
+            DataType::LargeUtf8 => Ok(self.match_string_array(col.as_string::<i64>())),
+            DataType::Utf8View => Ok(self.match_string_array(col.as_string_view())),
+            DataType::Dictionary(_, _) => {
+                // Evaluate once per distinct value, then expand through the keys.
+                let values = col.as_any_dictionary().values();
+                let evaluated_values = self.matches(values)?;
+                downcast_dictionary_array! {
+                    col => {
+                        let unpacked = evaluated_values
+                            .take_iter(col.keys().iter().map(|k| k.map(|v| v as usize)))
+                            .collect::<BooleanArray>();
+                        Ok(unpacked)
+                    },
+                    _ => Err(Error::UnsupportedStringColumnType {
+                        data_type: col.data_type().clone(),
+                    }),
+                }
+            }
+            _ => Err(Error::UnsupportedStringColumnType {
+                data_type: col.data_type().clone(),
+            }),
+        }
+    }
+
+    /// Evaluate this pattern against every element of a string array, preserving
+    /// the input's null buffer.
+    ///
+    /// This mirrors the loop in arrow's `regexp_is_match_scalar` (and the scalar
+    /// `cmp::eq` path for exact matches) except that the compiled [`Regex`] is
+    /// supplied rather than built per call.
+    fn match_string_array<'a, S>(&self, array: &'a S) -> BooleanArray
+    where
+        &'a S: StringArrayType<'a>,
+    {
+        let values = BooleanBuffer::collect_bool(array.len(), |i| self.is_match(array.value(i)));
+        let nulls = array
+            .nulls()
+            .map(|n| n.inner().sliced())
+            .and_then(|b| NullBuffer::from_unsliced_buffer(b, array.len()));
+        BooleanArray::new(values, nulls)
     }
 }
 
-/// Finds all nulls and converts them to false values
-/// null values affect the filter computation as when
-/// we perform the not operation nothing happens to
-/// the null values
+#[cfg(test)]
+impl Pattern {
+    /// Build a list of exact-match patterns from string literals.
+    pub(crate) fn many_exact(values: &[&str]) -> Vec<Pattern> {
+        values
+            .iter()
+            .map(|v| Pattern::Exact((*v).to_string()))
+            .collect()
+    }
+
+    /// Compile a list of regex patterns from string literals.
+    ///
+    /// Panics if any pattern is not a valid regex.
+    pub(crate) fn many_regex(patterns: &[&str]) -> Vec<Pattern> {
+        patterns
+            .iter()
+            .map(|p| Pattern::Regex(Regex::new(p).unwrap()))
+            .collect()
+    }
+}
+
+/// A compiled matcher for an attribute value of any supported type.
+#[derive(Debug, Clone)]
+pub enum ValueMatcher {
+    /// Match against a string column.
+    String(Pattern),
+    /// Match against an int column.
+    Int(i64),
+    /// Match against a double column.
+    Double(f64),
+    /// Match against a boolean column.
+    Bool(bool),
+}
+
+/// A compiled matcher for a single attribute: a key plus a value matcher.
+#[derive(Debug, Clone)]
+pub struct AttrMatcher {
+    /// Attribute key to match.
+    pub key: String,
+    /// Matcher for the attribute value.
+    pub value: ValueMatcher,
+}
+
+/// Finds all nulls and converts them to false values.
+///
+/// Null values affect the filter computation: when we perform the `not`
+/// operation nothing happens to the null values, so we collapse them to `false`
+/// before combining filters.
 #[must_use]
 fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
     // is_not_null doesn't error see https://docs.rs/arrow/latest/arrow/compute/fn.is_not_null.html
@@ -473,100 +613,6 @@ fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
 enum IdSet {
     U16(RoaringBitmap),
     U32(RoaringBitmap),
-}
-
-/// regex_match_column() takes a string column and a regex expression. The function
-/// determines what type the string column is either string array or a dictionary
-/// array and then applys a regex expression onto it, returns the corresponding boolean
-/// array.
-/// Returns an error if string column is not a utf8, dictionary(uint8, utf8), or dictionary(uint16, utf8)
-fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
-    match src.data_type() {
-        DataType::Utf8 => {
-            let string_array = src
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("array can be downcast to StringArray");
-
-            Ok(
-                arrow::compute::regexp_is_match_scalar(string_array, regex, None)
-                    .expect("can apply match string column with regexp scalar"),
-            )
-        }
-
-        DataType::Dictionary(key, val) => {
-            match (key.as_ref(), val.as_ref()) {
-                (&DataType::UInt8, &DataType::Utf8) => {
-                    let dict_arr = src
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt8Type>>()
-                        .expect("can cast to dictionary array uint8type");
-
-                    // get string from values
-                    // safety: we've checked the type
-                    let string_values = dict_arr
-                        .values()
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .expect("can cast to string type");
-                    // regex check against the values
-                    let val_filt =
-                        arrow::compute::regexp_is_match_scalar(string_values, regex, None)
-                            .expect("can compare string value column to string regex scalar");
-                    // now we need to map to the keys
-                    let mut key_filt = BooleanBuilder::with_capacity(dict_arr.len());
-                    for key in dict_arr.keys() {
-                        if let Some(k) = key {
-                            key_filt.append_value(val_filt.value(k as usize));
-                        } else {
-                            key_filt.append_value(false);
-                        }
-                    }
-                    Ok(key_filt.finish())
-                }
-                (&DataType::UInt16, &DataType::Utf8) => {
-                    let dict_arr = src
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt16Type>>()
-                        .expect("can cast to dictionary array uint16type");
-
-                    // get string from values
-                    // safety: we've checked the type
-                    let string_values = dict_arr
-                        .values()
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .expect("can cast to string type");
-                    // since we use a scalar here we don't have to worry a column length mismatch when we compare string values to regexp
-                    let val_filt =
-                        arrow::compute::regexp_is_match_scalar(string_values, regex, None)
-                            .expect("can compare string value column to string regex scalar");
-                    // now we need to map to the keys
-                    let mut key_filt = BooleanBuilder::with_capacity(dict_arr.len());
-                    for key in dict_arr.keys() {
-                        if let Some(k) = key {
-                            key_filt.append_value(val_filt.value(k as usize));
-                        } else {
-                            key_filt.append_value(false);
-                        }
-                    }
-                    Ok(key_filt.finish())
-                }
-                _ => {
-                    // return error not correct column type
-                    Err(Error::UnsupportedStringDictKeyType {
-                        data_type: *key.clone(),
-                    })
-                }
-            }
-        }
-        _ => {
-            // return error not correct column type
-            Err(Error::UnsupportedStringColumnType {
-                data_type: src.data_type().clone(),
-            })
-        }
-    }
 }
 
 /// build_uint16_id_filter() takes a id_set which contains ids of u16 we want to remove and the id_column that
@@ -1156,13 +1202,61 @@ fn new_parent_record_batch_filter(
     build_id_filter(id_column, parent_ids_filtered)
 }
 
-/// get_resource_attr_filter() takes a payload a vec of keyvalue pairs defining attributes to filter on, and the match type
-/// and creates a booleanarray that will filter a resource_attribute record batch based on the
-/// defined resource attributes we want to match
+/// Result of evaluating a [`ValueMatcher`] against an attribute record batch.
+enum ValueFilterOutcome {
+    /// A boolean selection array for the value match.
+    Filter(BooleanArray),
+    /// The column needed to evaluate the value is absent, so this attribute
+    /// cannot match any row.
+    ColumnAbsent,
+}
+
+/// Evaluate a [`ValueMatcher`] against an attribute record batch, returning the
+/// per-row value selection (or [`ValueFilterOutcome::ColumnAbsent`] when the
+/// required typed column is missing). String matching goes through
+/// [`Pattern::matches`], which preserves input nulls, so the returned array may
+/// contain nulls; the caller is responsible for resolving them (typically by
+/// treating null as a non-match).
+fn value_matcher_filter(attrs: &RecordBatch, value: &ValueMatcher) -> Result<ValueFilterOutcome> {
+    let filter = match value {
+        ValueMatcher::String(pattern) => {
+            let string_column = get_required_array(attrs, consts::ATTRIBUTE_STR)?;
+            pattern.matches(string_column)?
+        }
+        ValueMatcher::Int(value) => match attrs.column_by_name(consts::ATTRIBUTE_INT) {
+            Some(column) => {
+                let value_scalar = Int64Array::new_scalar(*value);
+                arrow::compute::kernels::cmp::eq(column, &value_scalar)
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
+            }
+            None => return Ok(ValueFilterOutcome::ColumnAbsent),
+        },
+        ValueMatcher::Double(value) => match attrs.column_by_name(consts::ATTRIBUTE_DOUBLE) {
+            Some(column) => {
+                let value_scalar = Float64Array::new_scalar(*value);
+                arrow::compute::kernels::cmp::eq(column, &value_scalar)
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
+            }
+            None => return Ok(ValueFilterOutcome::ColumnAbsent),
+        },
+        ValueMatcher::Bool(value) => match attrs.column_by_name(consts::ATTRIBUTE_BOOL) {
+            Some(column) => {
+                let value_scalar = BooleanArray::new_scalar(*value);
+                arrow::compute::kernels::cmp::eq(column, &value_scalar)
+                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
+            }
+            None => return Ok(ValueFilterOutcome::ColumnAbsent),
+        },
+    };
+    Ok(ValueFilterOutcome::Filter(filter))
+}
+
+/// get_resource_attr_filter() takes a payload and a slice of attribute matchers
+/// and creates a booleanarray that will filter a resource_attribute record batch
+/// based on the defined resource attributes we want to match
 fn get_resource_attr_filter(
     payload: &OtapArrowRecords,
-    attributes: &Vec<KeyValue>,
-    match_type: &MatchType,
+    attributes: &[AttrMatcher],
 ) -> Result<BooleanArray> {
     // get resource_attrs record batch
     let resource_attrs = match payload.get(ArrowPayloadType::ResourceAttrs) {
@@ -1202,69 +1296,11 @@ fn get_resource_attr_filter(
         let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
             .expect("can compare string key column to string scalar");
         // and match on value
-        let value_filter = match &attribute.value {
-            AnyValue::String(value) => {
-                // get string column
-                let string_column = get_required_array(resource_attrs, consts::ATTRIBUTE_STR)?;
-                match match_type {
-                    MatchType::Regexp => regex_match_column(string_column, value)?,
-                    MatchType::Strict => {
-                        let value_scalar = StringArray::new_scalar(value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-                        arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
-                            .expect("can compare string value column to string scalar")
-                    }
-                }
-            }
-            AnyValue::Int(value) => {
-                let int_column = resource_attrs.column_by_name(consts::ATTRIBUTE_INT);
-
-                // check if column exists if not then there is no resource that has this attribute so we can return a all false boolean array
-                match int_column {
-                    Some(column) => {
-                        let value_scalar = Int64Array::new_scalar(*value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                            .expect("can compare i64 value column to i64 scalar")
-                    }
-                    None => {
-                        return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
-                    }
-                }
-            }
-            AnyValue::Double(value) => {
-                let double_column = resource_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE);
-                match double_column {
-                    Some(column) => {
-                        let value_scalar = Float64Array::new_scalar(*value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                            .expect("can compare f64 value column to f64 scalar")
-                    }
-                    None => {
-                        return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
-                    }
-                }
-            }
-            AnyValue::Boolean(value) => {
-                let bool_column = resource_attrs.column_by_name(consts::ATTRIBUTE_BOOL);
-                match bool_column {
-                    Some(column) => {
-                        let value_scalar = BooleanArray::new_scalar(*value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                            .expect("can compare bool value column to bool scalar")
-                    }
-                    None => {
-                        return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
-                    }
-                }
-            }
-            _ => {
-                // ToDo add keyvalue, array, and bytes
+        let value_filter = match value_matcher_filter(resource_attrs, &attribute.value)? {
+            ValueFilterOutcome::Filter(filter) => filter,
+            // The required typed column is absent, so no resource has this
+            // attribute and nothing can match.
+            ValueFilterOutcome::ColumnAbsent => {
                 return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
             }
         };
@@ -1309,13 +1345,12 @@ fn get_resource_attr_filter(
     )
 }
 
-/// get_attr_filter() takes a payload a vec of keyvalue pairs defining attributes to filter on, the match type
-/// and the specific attribute payload type to filter on and creates a booleanarray that will filter for that
-/// record batch based on the provided attributes
+/// get_attr_filter() takes a payload and a slice of attribute matchers plus the
+/// specific attribute payload type to filter on and creates a booleanarray that
+/// will filter for that record batch based on the provided attributes
 fn get_attr_filter(
     payload: &OtapArrowRecords,
-    attributes: &Vec<KeyValue>,
-    match_type: &MatchType,
+    attributes: &[AttrMatcher],
     attribute_payload_type: ArrowPayloadType,
 ) -> Result<BooleanArray> {
     // get record batch containing attributes
@@ -1359,67 +1394,11 @@ fn get_attr_filter(
         let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
             .expect("can compare string key column to string scalar");
         // match on value
-        let value_filter = match &attribute.value {
-            AnyValue::String(value) => {
-                // get string column
-                let string_column = get_required_array(log_attrs, consts::ATTRIBUTE_STR)?;
-
-                match match_type {
-                    MatchType::Regexp => regex_match_column(string_column, value)?,
-                    MatchType::Strict => {
-                        let value_scalar = StringArray::new_scalar(value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-                        arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
-                            .expect("can compare string value column to string scalar")
-                    }
-                }
-            }
-            AnyValue::Int(value) => {
-                let int_column = log_attrs.column_by_name(consts::ATTRIBUTE_INT);
-                match int_column {
-                    Some(column) => {
-                        let value_scalar = Int64Array::new_scalar(*value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                            .expect("can compare i64 value column to i64 scalar")
-                    }
-                    None => {
-                        continue;
-                    }
-                }
-            }
-            AnyValue::Double(value) => {
-                let double_column = log_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE);
-                match double_column {
-                    Some(column) => {
-                        let value_scalar = Float64Array::new_scalar(*value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                            .expect("can compare f64 value column to f64 scalar")
-                    }
-                    None => {
-                        continue;
-                    }
-                }
-            }
-            AnyValue::Boolean(value) => {
-                let bool_column = log_attrs.column_by_name(consts::ATTRIBUTE_BOOL);
-                match bool_column {
-                    Some(column) => {
-                        let value_scalar = BooleanArray::new_scalar(*value);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                            .expect("can compare bool value column to bool scalar")
-                    }
-                    None => {
-                        continue;
-                    }
-                }
-            }
-            _ => {
-                // ToDo add keyvalue, array, and bytes
-                continue;
-            }
+        let value_filter = match value_matcher_filter(log_attrs, &attribute.value)? {
+            ValueFilterOutcome::Filter(filter) => filter,
+            // The required typed column is absent for this attribute payload, so
+            // skip it (other attributes may still match).
+            ValueFilterOutcome::ColumnAbsent => continue,
         };
         // build filter that checks for both matching key and value filter
         let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
@@ -1552,7 +1531,7 @@ impl ChildBatchFilterIdHelper for UInt32Type {
 /// Reads the filtered parent from `output` to determine surviving IDs, reads
 /// the original child rows from `input`, and writes the filtered child into
 /// `output`.
-fn filter_child_batch<T: ChildBatchFilterIdHelper>(
+pub fn filter_child_batch<T: ChildBatchFilterIdHelper>(
     input: &OtapArrowRecords,
     output: &mut OtapArrowRecords,
     child_payload_type: ArrowPayloadType,
@@ -1852,9 +1831,110 @@ pub fn filter_otap_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, BooleanArray, UInt16Array};
+    use arrow::array::{Array, BooleanArray, DictionaryArray, StringArray, StringViewArray};
+    use arrow::datatypes::UInt16Type;
     use roaring::RoaringBitmap;
     use std::sync::Arc;
+
+    fn regex(p: &str) -> Pattern {
+        Pattern::Regex(Regex::new(p).unwrap())
+    }
+
+    /// Scenario: a regex Pattern matched against a Utf8 array containing a null.
+    /// Guarantees: non-null values report their match result and null inputs stay
+    /// null (the caller is responsible for resolving nulls).
+    #[test]
+    fn test_pattern_matches_utf8_with_nulls() {
+        let arr: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("an ERROR here"),
+            None,
+            Some("all good"),
+        ]));
+        let out = regex("(?i)error").matches(&arr).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
+    }
+
+    /// Scenario: a regex Pattern matched against a Utf8View array.
+    /// Guarantees: Utf8View haystacks are supported and produce per-element results.
+    #[test]
+    fn test_pattern_matches_utf8_view() {
+        let arr: ArrayRef = Arc::new(StringViewArray::from(vec!["a@b.c", "nope"]));
+        let out = regex("[a-z]+@[a-z.]+").matches(&arr).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![true, false]));
+    }
+
+    /// Scenario: an exact Pattern matched against a Utf8View array.
+    /// Guarantees: exact matching supports Utf8View haystacks.
+    #[test]
+    fn test_pattern_matches_exact_utf8_view() {
+        let arr: ArrayRef = Arc::new(StringViewArray::from(vec!["keep", "drop"]));
+        let out = Pattern::Exact("keep".to_string()).matches(&arr).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![true, false]));
+    }
+
+    /// Scenario: a regex Pattern matched against a dictionary array with a null and
+    /// a repeated key.
+    /// Guarantees: the pattern is evaluated per distinct value and expanded through
+    /// the keys, with nulls preserved.
+    #[test]
+    fn test_pattern_matches_dictionary() {
+        let arr: ArrayRef = Arc::new(
+            vec![Some("x"), Some("panic!"), None, Some("x")]
+                .into_iter()
+                .collect::<DictionaryArray<UInt16Type>>(),
+        );
+        let out = regex("panic").matches(&arr).unwrap();
+        assert_eq!(
+            out,
+            BooleanArray::from(vec![Some(false), Some(true), None, Some(false)])
+        );
+    }
+
+    /// Scenario: a regex Pattern matched against a sliced Utf8 array with nulls.
+    /// Guarantees: the null buffer is read relative to the slice offset, so the
+    /// result aligns with the sliced values.
+    #[test]
+    fn test_pattern_matches_sliced() {
+        let full: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("skip"),
+            Some("match me"),
+            None,
+            Some("no"),
+        ]));
+        let sliced = full.slice(1, 3);
+        let out = regex("match").matches(&sliced).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![Some(true), None, Some(false)]));
+    }
+
+    /// Scenario: a Pattern matched against a non-string column.
+    /// Guarantees: unsupported haystack types are rejected rather than panicking.
+    #[test]
+    fn test_pattern_matches_unsupported_type() {
+        let arr: ArrayRef = Arc::new(UInt16Array::from(vec![1, 2, 3]));
+        let err = regex("x").matches(&arr).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedStringColumnType { .. }));
+    }
+
+    /// Scenario: an Exact pattern and a Regex pattern matched against a Utf8 column
+    /// with a null row.
+    /// Guarantees: both exact and regex matching preserve the input null buffer,
+    /// leaving null rows null for the caller to resolve.
+    #[test]
+    fn test_pattern_matches_preserves_nulls() {
+        let arr: ArrayRef = Arc::new(StringArray::from(vec![Some("error"), None, Some("warn")]));
+
+        let exact = Pattern::Exact("error".to_string()).matches(&arr).unwrap();
+        assert_eq!(
+            exact,
+            BooleanArray::from(vec![Some(true), None, Some(false)])
+        );
+
+        let regex = regex("^w").matches(&arr).unwrap();
+        assert_eq!(
+            regex,
+            BooleanArray::from(vec![Some(false), None, Some(true)])
+        );
+    }
 
     #[test]
     fn test_build_uint16_id_filter_basic() {

@@ -171,13 +171,14 @@ impl AdminEndpoint {
         if self.host.trim().is_empty() {
             return Err(EndpointError::EmptyHost);
         }
-        if let Some(base_path) = &self.base_path {
-            if !base_path.is_empty() && !base_path.starts_with('/') {
-                return Err(EndpointError::InvalidBasePath {
-                    base_path: base_path.clone(),
-                    reason: "base path must start with '/'".to_string(),
-                });
-            }
+        if let Some(base_path) = &self.base_path
+            && !base_path.is_empty()
+            && !base_path.starts_with('/')
+        {
+            return Err(EndpointError::InvalidBasePath {
+                base_path: base_path.clone(),
+                reason: "base path must start with '/'".to_string(),
+            });
         }
         Ok(())
     }

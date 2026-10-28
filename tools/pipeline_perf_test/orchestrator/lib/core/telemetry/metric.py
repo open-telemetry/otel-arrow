@@ -44,6 +44,7 @@ from typing import List, Any, TypedDict, Dict, Union, get_type_hints, Optional, 
 from abc import ABC, abstractmethod
 
 import pandas as pd
+from opentelemetry.sdk.metrics import _Gauge
 from opentelemetry.sdk.metrics.export import (
     MetricsData,
     MetricExporter,
@@ -479,6 +480,10 @@ class FrameworkMetricExporter(MetricExporter):
             dict[type, "opentelemetry.sdk.metrics.view.Aggregation"] | None
         ) = None,
     ):
+        # SDK 1.45 retains cumulative gauge values after monitors stop. Reports
+        # need fresh samples only, preserving the pre-upgrade collection behavior.
+        if preferred_temporality is None:
+            preferred_temporality = {_Gauge: AggregationTemporality.DELTA}
         super().__init__(preferred_temporality, preferred_aggregation)
         self.backend = backend
         self.lock = threading.Lock()

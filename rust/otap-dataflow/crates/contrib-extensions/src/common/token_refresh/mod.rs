@@ -10,19 +10,14 @@
 //! token is acquired* and *which metric set is recorded*.
 //!
 //! This module owns everything that is common. An extension supplies a
-//! [`TokenSource`] plus a [`TokenProviderMetrics`] metric set and gets the
-//! capability implementation, the refresh loop, and the lifecycle wiring for
-//! free by aliasing [`TokenProviderExtension`]:
+//! [`BackgroundProviderSource`] plus a [`BackgroundProviderMetrics`] metric set
+//! and gets the capability implementation, the refresh loop, and the lifecycle
+//! wiring for free by aliasing [`TokenProviderExtension`]:
 //!
 //! ```rust,ignore
 //! pub type MyAuthExtension = TokenProviderExtension<MyAuth, MyAuthMetrics>;
 //! ```
 
-mod metrics;
-mod provider;
+mod extension;
 
-#[cfg(test)]
-mod tests;
-
-pub use metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
-pub use provider::{TokenProviderExtension, TokenSource};
+pub use extension::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};

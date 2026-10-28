@@ -224,7 +224,8 @@ async fn execute_pipeline(req: ExecuteRequest) -> Result<ExecuteResponse, String
     })?;
 
     // 5. Execute the pipeline.
-    let mut pipeline = Pipeline::new(parser_result.pipeline);
+    let mut pipeline = Pipeline::try_new(parser_result.pipeline)
+        .map_err(|e| format!("pipeline creation error: {e}"))?;
     let result = pipeline
         .execute(otap_batch)
         .await
@@ -252,14 +253,14 @@ async fn execute_pipeline(req: ExecuteRequest) -> Result<ExecuteResponse, String
 fn build_arrow_tables(result: &OtapArrowRecords) -> HashMap<String, String> {
     let mut tables = HashMap::new();
     for payload_type in result.allowed_payload_types() {
-        if let Some(batch) = result.get(*payload_type) {
-            if batch.num_rows() > 0 {
-                let text = match pretty_format_batches(std::slice::from_ref(batch)) {
-                    Ok(formatted) => formatted.to_string(),
-                    Err(e) => format!("(formatting error: {e})"),
-                };
-                let _: Option<String> = tables.insert(payload_type.as_str_name().to_string(), text);
-            }
+        if let Some(batch) = result.get(*payload_type)
+            && batch.num_rows() > 0
+        {
+            let text = match pretty_format_batches(std::slice::from_ref(batch)) {
+                Ok(formatted) => formatted.to_string(),
+                Err(e) => format!("(formatting error: {e})"),
+            };
+            let _: Option<String> = tables.insert(payload_type.as_str_name().to_string(), text);
         }
     }
     tables

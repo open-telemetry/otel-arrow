@@ -137,18 +137,14 @@ examples.
 ### OTAP Dataflow Engine example
 
 **We are not at this time providing pre-built OTAP Dataflow Engine
-releases.** Developers can build the OTAP Dataflow Engine in a minimal
-configuration with the following:
+releases.** Developers can build the OTAP Dataflow Engine with the
+following:
 
 ```bash
 git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo build --bin df_engine --no-default-features --features crypto-ring
+cargo build --bin df_engine
 ```
-
-Minimal builds using `--no-default-features` should enable exactly one
-`crypto-*` provider feature. `crypto-ring` is the default-compatible
-provider used by the standard feature set.
 
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
@@ -173,7 +169,7 @@ $t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Te
 ```
 
 See the admin console on port 8080, or visit
-`http://localhost:8080/metrics` to see engine metrics in Prometheus
+`http://127.0.0.1:8080/api/v1/metrics` to see engine metrics in Prometheus
 format.
 
 ![syslog-to-console admin console page](./docs/img/df_engine_screen.png)
@@ -210,7 +206,9 @@ participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
-- [CNCF Slack `#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+- CNCF Slack:
+  [`#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF).
+  New users can [create an account](https://slack.cncf.io/).
 
 ### Maintainers
 
@@ -235,8 +233,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Tom Tan](https://github.com/ThomsonTan), Microsoft
-
 For more information about the triager role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
@@ -245,6 +241,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 - [Alex Boten](https://github.com/codeboten), Approver
 - [Lei Huang](https://github.com/v0y4g3r), Approver
 - [Moh Osman](https://github.com/moh-osman3), Approver
+- [Tom Tan](https://github.com/ThomsonTan), Triager
 
 ### Thanks to all of our contributors
 

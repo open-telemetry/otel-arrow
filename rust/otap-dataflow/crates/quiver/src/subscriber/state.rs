@@ -243,10 +243,10 @@ impl SubscriberState {
     /// was already claimed or resolved.
     pub fn claim(&mut self, bundle_ref: BundleRef) -> bool {
         // Check if already resolved
-        if let Some(progress) = self.segments.get(&bundle_ref.segment_seq) {
-            if progress.is_resolved(bundle_ref.bundle_index) {
-                return false;
-            }
+        if let Some(progress) = self.segments.get(&bundle_ref.segment_seq)
+            && progress.is_resolved(bundle_ref.bundle_index)
+        {
+            return false;
         }
 
         // Try to claim

@@ -970,12 +970,12 @@ mod summary_data_points {
                 required: false,
             },
             Field {
-                name: SUMMARY_COUNT,
+                name: COUNT,
                 data_type: DataType::Simple(UInt64),
                 required: false,
             },
             Field {
-                name: SUMMARY_SUM,
+                name: SUM,
                 data_type: DataType::Simple(Float64),
                 required: false,
             },
@@ -1012,8 +1012,8 @@ mod summary_data_points {
         match name {
             PARENT_ID => Some(0),
             ID => Some(1),
-            SUMMARY_COUNT => Some(2),
-            SUMMARY_SUM => Some(3),
+            COUNT => Some(2),
+            SUM => Some(3),
             START_TIME_UNIX_NANO => Some(4),
             TIME_UNIX_NANO => Some(5),
             FLAGS => Some(6),
@@ -1043,12 +1043,12 @@ mod histogram_data_points {
                 required: false,
             },
             Field {
-                name: HISTOGRAM_COUNT,
+                name: COUNT,
                 data_type: DataType::Simple(UInt64),
                 required: false,
             },
             Field {
-                name: HISTOGRAM_SUM,
+                name: SUM,
                 data_type: DataType::Simple(Float64),
                 required: false,
             },
@@ -1095,8 +1095,8 @@ mod histogram_data_points {
         match name {
             PARENT_ID => Some(0),
             ID => Some(1),
-            HISTOGRAM_COUNT => Some(2),
-            HISTOGRAM_SUM => Some(3),
+            COUNT => Some(2),
+            SUM => Some(3),
             HISTOGRAM_MIN => Some(4),
             HISTOGRAM_MAX => Some(5),
             HISTOGRAM_BUCKET_COUNTS => Some(6),
@@ -1151,12 +1151,12 @@ mod exp_histogram_data_points {
                 required: false,
             },
             Field {
-                name: HISTOGRAM_COUNT,
+                name: COUNT,
                 data_type: DataType::Simple(UInt64),
                 required: false,
             },
             Field {
-                name: HISTOGRAM_SUM,
+                name: SUM,
                 data_type: DataType::Simple(Float64),
                 required: false,
             },
@@ -1218,8 +1218,8 @@ mod exp_histogram_data_points {
         match name {
             PARENT_ID => Some(0),
             ID => Some(1),
-            HISTOGRAM_COUNT => Some(2),
-            HISTOGRAM_SUM => Some(3),
+            COUNT => Some(2),
+            SUM => Some(3),
             HISTOGRAM_MIN => Some(4),
             HISTOGRAM_MAX => Some(5),
             EXP_HISTOGRAM_SCALE => Some(6),
@@ -1362,8 +1362,11 @@ mod tests {
                     )
                 }
                 TimestampNanosecond => (
-                    ArrowDT::Timestamp(TimeUnit::Nanosecond, None),
-                    Arc::new(TimestampNanosecondArray::from(vec![0i64])),
+                    TimestampNanosecond.to_arrow(),
+                    Arc::new(
+                        TimestampNanosecondArray::from(vec![0i64])
+                            .with_timezone(crate::schema::UTC_TIME_ZONE),
+                    ),
                 ),
                 DurationNanosecond => (
                     ArrowDT::Duration(TimeUnit::Nanosecond),
@@ -1511,8 +1514,11 @@ mod tests {
                             )
                         }
                         TimestampNanosecond => (
-                            ArrowDT::Timestamp(TimeUnit::Nanosecond, None),
-                            Arc::new(TimestampNanosecondArray::from(vec![None as Option<i64>])),
+                            TimestampNanosecond.to_arrow(),
+                            Arc::new(
+                                TimestampNanosecondArray::from(vec![None as Option<i64>])
+                                    .with_timezone(crate::schema::UTC_TIME_ZONE),
+                            ),
                         ),
                         DurationNanosecond => (
                             ArrowDT::Duration(TimeUnit::Nanosecond),

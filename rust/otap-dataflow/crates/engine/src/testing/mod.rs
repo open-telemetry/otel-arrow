@@ -14,11 +14,18 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
+use crate::Interests;
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
+use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::engine::{
+    ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+};
 use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::{DistributionTier, Policies};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +44,26 @@ pub mod receiver;
 
 pub use node::{test_node, test_nodes};
 
+/// Creates fresh pipeline runtime services for one logical test pipeline.
+///
+/// Tests that construct multiple effect handlers for the same pipeline should clone the returned
+/// value and inject one clone into each handler.
+///
+/// # Panics
+///
+/// Panics when the test binary links invalid pdata codec registrations. Such registrations are a
+/// test assembly error; tests for registry validation should construct the registry directly.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_pipeline_runtime_services() -> PipelineRuntimeServices {
+    create_test_pipeline_runtime_services()
+}
+
+fn create_test_pipeline_runtime_services() -> PipelineRuntimeServices {
+    PipelineRuntimeServices::new(Default::default())
+        .expect("test binary must link valid pdata codec registrations")
+}
+
 /// Create a minimal [`PipelineContext`] suitable for unit tests that
 /// need to register metrics or construct engine objects.
 ///
@@ -44,9 +71,26 @@ pub use node::{test_node, test_nodes};
 /// callers can inspect registered metrics.
 #[must_use]
 pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
+    test_pipeline_ctx_with_interests(Interests::empty())
+}
+
+/// Create a minimal [`PipelineContext`] with explicit node interests for tests.
+#[must_use]
+pub fn test_pipeline_ctx_with_interests(
+    interests: Interests,
+) -> (PipelineContext, TelemetryRegistryHandle) {
+    test_pipeline_ctx_with_interests_and_duration_distribution(interests, DistributionTier::Normal)
+}
+
+/// Create a minimal [`PipelineContext`] with explicit node interests and local duration tier.
+#[must_use]
+pub fn test_pipeline_ctx_with_interests_and_duration_distribution(
+    interests: Interests,
+    duration_distribution: DistributionTier,
+) -> (PipelineContext, TelemetryRegistryHandle) {
     let registry = TelemetryRegistryHandle::new();
     let controller = ControllerContext::new(registry.clone());
-    let ctx = controller
+    let mut ctx = controller
         .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
         .with_node_context(
             "test_node".into(),
@@ -54,7 +98,38 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
             NodeKind::Processor,
             HashMap::new(),
         );
+    ctx.set_node_interests(interests);
+    ctx.set_node_duration_distribution(duration_distribution);
     (ctx, registry)
+}
+
+/// Compiles and installs bindings for one test pipeline.
+///
+/// Ignores engine and group policies.
+/// Compile the full engine configuration to test inheritance or multiple pipelines.
+///
+/// # Errors
+///
+/// Returns configuration or declaration errors.
+pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
+    pipeline_ctx: &mut PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    pipeline: PipelineConfig,
+) -> Result<(), crate::error::Error> {
+    let resolved = ResolvedOtelDataflowSpec {
+        engine: Default::default(),
+        pipelines: vec![ResolvedPipelineConfig {
+            pipeline_group_id: pipeline_ctx.pipeline_group_id(),
+            pipeline_id: pipeline_ctx.pipeline_id(),
+            policies: Policies::resolve(pipeline.policies()),
+            pipeline,
+            topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
+            role: ResolvedPipelineRole::Regular,
+        }],
+    };
+    pipeline_ctx
+        .set_compiled_context_bindings(factory.compile_initial_context(&resolved)?.bindings);
+    Ok(())
 }
 
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the
@@ -71,12 +146,100 @@ pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
     (ExtensionContext::new(controller, scope), registry)
 }
 
+/// Create a minimal extension effect handler for tests that run an extension directly.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler(
+    name: otel_arrow_dfe_config::ExtensionId,
+) -> crate::extension::EffectHandler {
+    let (tx, _rx) = flume::bounded(1);
+    crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        None,
+    )
+}
+
+/// Creates an effect handler with an observable readiness probe for extension tests.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler_with_readiness(
+    name: otel_arrow_dfe_config::ExtensionId,
+    timeout: std::time::Duration,
+) -> (
+    crate::extension::EffectHandler,
+    crate::extension::readiness::ReadinessProbe,
+) {
+    let (signaller, probe) = crate::extension::readiness::ReadinessSignaller::pair(timeout);
+    let (tx, _rx) = flume::bounded(1);
+    let effects = crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        Some(signaller),
+    );
+    (effects, probe)
+}
+
+/// Takes a factory-built extension's readiness probe for offline wiring tests.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn take_test_extension_readiness_probe(
+    wrapper: &mut crate::extension::ExtensionWrapper,
+) -> Option<crate::extension::readiness::ReadinessProbe> {
+    wrapper.take_readiness_probe()
+}
+
+/// Run an extension through the engine's spawn and readiness gates, then shut it down.
+///
+/// The caller must drive `local_tasks`, for example with [`LocalSet::run_until`].
+///
+/// # Errors
+///
+/// Returns engine startup errors, including readiness timeout and premature task exit.
+///
+/// # Panics
+///
+/// Panics if an extension still running after the gate fails to shut down cleanly.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn test_extension_readiness(
+    wrapper: crate::extension::ExtensionWrapper,
+    local_tasks: &LocalSet,
+    ext_ctx: &ExtensionContext,
+) -> Result<(), crate::error::Error> {
+    let entity_key = ext_ctx.register_extension_entity(wrapper.name(), wrapper.variant());
+    let (tx, _rx) = flume::bounded(8);
+    let mut lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
+        vec![(wrapper, entity_key)],
+        local_tasks,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        Default::default(),
+        ext_ctx,
+        crate::extension_monitor::ExtensionMetricsMonitor::disabled(ext_ctx.clone()),
+    );
+    let outcome = async {
+        lifecycle.wait_all_spawned().await?;
+        lifecycle.wait_all_ready().await
+    }
+    .await;
+    lifecycle.initiate_shutdown(Some("extension readiness test finished"));
+    while !lifecycle.is_empty() {
+        match lifecycle.next_event().await {
+            crate::extension_lifecycle::LifecycleEvent::Completion(result) => result
+                .expect("test extension task joins")
+                .expect("test extension shuts down cleanly"),
+            crate::extension_lifecycle::LifecycleEvent::MonitorTick(_) => {
+                unreachable!("test lifecycle monitoring is disabled")
+            }
+        }
+    }
+    outcome
+}
+
 /// A test message type used in component tests.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TestMsg(pub String);
 
 impl crate::ReceivedAtNode for TestMsg {
-    fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
 
 impl crate::processor::FlowMetricHook for TestMsg {}

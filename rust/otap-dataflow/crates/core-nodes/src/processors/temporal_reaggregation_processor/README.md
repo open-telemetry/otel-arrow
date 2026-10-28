@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:temporal_reaggregation` (`urn:otel:processor:temporal_reaggregation`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview
@@ -86,7 +86,37 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `processor.temporal_reaggregation`
 
-Three separate populations are tracked.
+Four metric populations are tracked.
+
+**`metrics`** - input metric records containing metric data:
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.temporal_reaggregation.metrics` | `{metric}` | `type`, `aggregable`, `temporality` | Number of input metric records containing metric data. |
+
+| `type` value | Description |
+| --- | --- |
+| `gauge` | The metric contains gauge data. |
+| `sum` | The metric contains sum data. |
+| `histogram` | The metric contains histogram data. |
+| `exp_histogram` | The metric contains exponential histogram data. |
+| `summary` | The metric contains summary data. |
+
+| `aggregable` value | Description |
+| --- | --- |
+| `true` | The processor classified the metric as aggregable using its current settings and capabilities. |
+| `false` | The processor classified the metric as non-aggregatable, so it passes through unchanged. |
+
+| `temporality` value | Description |
+| --- | --- |
+| `delta` | The metric has delta aggregation temporality. |
+| `cumulative` | The metric has cumulative aggregation temporality. |
+| `unspecified` | Aggregation temporality is unspecified or does not apply. Gauges and summaries use this value. |
+
+Each record is counted once before internal overflow retries, independently of
+later aggregation, flushing, processing, or delivery outcomes. Metrics without
+data are excluded. Summing series where `aggregable=false` gives the
+pass-through population.
 
 **`operations`** - one terminal result per metrics PData input:
 

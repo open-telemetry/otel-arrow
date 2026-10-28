@@ -65,6 +65,11 @@ pub enum ControlPlaneError {
         /// Human-readable validation failure detail.
         message: String,
     },
+    /// The requested change must be expressed through a supported live-mutation scope.
+    UnsupportedMutation {
+        /// Human-readable guidance for rewriting the request.
+        message: String,
+    },
     /// The requested rollout could not be found.
     RolloutNotFound,
     /// The requested shutdown could not be found.
@@ -87,6 +92,10 @@ impl ControlPlaneError {
             Self::RolloutConflict => OperationError::new(OperationErrorKind::Conflict),
             Self::InvalidRequest { message } => {
                 OperationError::new(OperationErrorKind::InvalidRequest)
+                    .with_message(message.clone())
+            }
+            Self::UnsupportedMutation { message } => {
+                OperationError::new(OperationErrorKind::UnsupportedMutation)
                     .with_message(message.clone())
             }
             Self::RolloutNotFound => OperationError::new(OperationErrorKind::RolloutNotFound),
@@ -115,6 +124,9 @@ pub(crate) fn pipeline_shutdown_initiator(
 pub trait ControlPlane: Send + Sync {
     /// Requests shutdown of all currently running runtime instances.
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError>;
+
+    /// Returns true if there are active runtime instances still running or pending lifecycle operations.
+    fn has_active_instances(&self) -> bool;
 
     /// Requests shutdown of all currently running runtime instances for one logical pipeline.
     fn shutdown_pipeline(

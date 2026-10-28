@@ -3,10 +3,16 @@
 
 //! Utilities for identifying and coercing expression types
 
+use std::ops::BitAnd;
+
 use crate::pipeline::expr::VALUE_COLUMN_NAME;
+use crate::pipeline::planner::DataPointContext;
+use crate::pipeline::{SignalContext, SignalKind};
+
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::{Expr, cast};
-use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 
 /// Identifier of the logical type of some expression/column.
 ///
@@ -82,7 +88,9 @@ impl ExprLogicalType {
             Self::Int32 => DataType::Int32,
             Self::Int64 => DataType::Int64,
             Self::String => DataType::Utf8,
-            Self::TimestampNanosecond => DataType::Timestamp(TimeUnit::Nanosecond, None),
+            Self::TimestampNanosecond => {
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into()))
+            }
             Self::DurationNanoSecond => DataType::Duration(TimeUnit::Nanosecond),
             Self::UInt32 => DataType::UInt32,
             Self::UInt8 => DataType::UInt8,
@@ -93,56 +101,196 @@ impl ExprLogicalType {
     }
 }
 
+/// Bitmask representing one or more signals.
+///
+/// This is used to validate if a given field is valid is valid of a type of signal
+// #[derive(std::ops::bit::Bi)]
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq)]
+enum SignalMask {
+    Logs = 0b001,
+    Metrics = 0b010,
+    Traces = 0b100,
+    LogsTraces = 0b101,
+    MetricsTraces = 0b110,
+    All = 0b111,
+}
+
+impl SignalMask {
+    fn from_sig_kind(kind: &SignalKind) -> Self {
+        match kind {
+            SignalKind::Logs => Self::Logs,
+            SignalKind::Metrics(_) => Self::Metrics,
+            SignalKind::Traces => Self::Traces,
+        }
+    }
+
+    /// returns `true` if the signal represented by context is valid for the mask
+    fn is_valid(self, context: &SignalContext) -> bool {
+        match context {
+            SignalContext::All => self == SignalMask::All,
+            SignalContext::Single(kind) => self & Self::from_sig_kind(kind) > 0,
+        }
+    }
+}
+
+impl BitAnd for SignalMask {
+    type Output = u8;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        self as u8 & rhs as u8
+    }
+}
+
 /// Return the type for the field from the root OTAP record batch.
 ///
 /// Returns None if the field is not known in the OTAP data model.
-pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
-    Some(match field_name {
+pub fn root_field_type(
+    field_name: &str,
+    signal_context: &SignalContext,
+) -> Option<ExprLogicalType> {
+    let (field_type, validity_sig_mask) = match field_name {
         // common fields
-        consts::SCHEMA_URL => ExprLogicalType::String,
-        consts::DROPPED_ATTRIBUTES_COUNT => ExprLogicalType::UInt32,
+        consts::SCHEMA_URL => (ExprLogicalType::String, SignalMask::All),
 
         // logs/traces common fields
-        consts::TIME_UNIX_NANO => ExprLogicalType::TimestampNanosecond,
-        consts::OBSERVED_TIME_UNIX_NANO => ExprLogicalType::TimestampNanosecond,
-        consts::TRACE_ID => ExprLogicalType::FixedSizeBinary(16),
-        consts::SPAN_ID => ExprLogicalType::FixedSizeBinary(8),
-        consts::FLAGS => ExprLogicalType::UInt32,
+        consts::DROPPED_ATTRIBUTES_COUNT => (ExprLogicalType::UInt32, SignalMask::LogsTraces),
+        consts::TRACE_ID => (ExprLogicalType::FixedSizeBinary(16), SignalMask::LogsTraces),
+        consts::SPAN_ID => (ExprLogicalType::FixedSizeBinary(8), SignalMask::LogsTraces),
+        consts::FLAGS => (ExprLogicalType::UInt32, SignalMask::LogsTraces),
 
-        // logs fields
-        consts::SEVERITY_NUMBER => ExprLogicalType::Int32,
-        consts::SEVERITY_TEXT => ExprLogicalType::String,
-        consts::EVENT_NAME => ExprLogicalType::String,
-        consts::BODY => ExprLogicalType::AnyValue,
+        // metrics/trace common fields
+        consts::NAME => (ExprLogicalType::String, SignalMask::MetricsTraces),
+
+        // // logs fields
+        consts::TIME_UNIX_NANO => (ExprLogicalType::TimestampNanosecond, SignalMask::Logs),
+        consts::OBSERVED_TIME_UNIX_NANO => (ExprLogicalType::TimestampNanosecond, SignalMask::Logs),
+        consts::SEVERITY_NUMBER => (ExprLogicalType::Int32, SignalMask::Logs),
+        consts::SEVERITY_TEXT => (ExprLogicalType::String, SignalMask::Logs),
+        consts::EVENT_NAME => (ExprLogicalType::String, SignalMask::Logs),
+        consts::BODY => (ExprLogicalType::AnyValue, SignalMask::Logs),
 
         // traces fields
-        consts::DURATION_TIME_UNIX_NANO => ExprLogicalType::DurationNanoSecond,
-        consts::TRACE_STATE => ExprLogicalType::String,
-        consts::PARENT_SPAN_ID => ExprLogicalType::FixedSizeBinary(8),
-        consts::KIND => ExprLogicalType::Int32,
-        consts::DROPPED_EVENTS_COUNT => ExprLogicalType::UInt32,
-        consts::DROPPED_LINKS_COUNT => ExprLogicalType::UInt32,
+        consts::START_TIME_UNIX_NANO => (ExprLogicalType::TimestampNanosecond, SignalMask::Traces),
+        consts::DURATION_TIME_UNIX_NANO => {
+            (ExprLogicalType::DurationNanoSecond, SignalMask::Traces)
+        }
+        consts::TRACE_STATE => (ExprLogicalType::String, SignalMask::Traces),
+        consts::PARENT_SPAN_ID => (ExprLogicalType::FixedSizeBinary(8), SignalMask::Traces),
+        consts::KIND => (ExprLogicalType::Int32, SignalMask::Traces),
+        consts::DROPPED_EVENTS_COUNT => (ExprLogicalType::UInt32, SignalMask::Traces),
+        consts::DROPPED_LINKS_COUNT => (ExprLogicalType::UInt32, SignalMask::Traces),
+        // TODO span "status" struct field not yet supported by this query-engine
 
-        // metric fields
-        consts::METRIC_TYPE => ExprLogicalType::UInt8,
-        consts::NAME => ExprLogicalType::String,
-        consts::DESCRIPTION => ExprLogicalType::String,
-        consts::UNIT => ExprLogicalType::String,
-        consts::AGGREGATION_TEMPORALITY => ExprLogicalType::Int32,
-
-        // the virtual attributes "value" column
-        VALUE_COLUMN_NAME => ExprLogicalType::AnyValue,
-
-        // attribute's "key" column may also be treated as a "root" field when
-        // applying a transformation pipeline directly to attributes:
-        consts::ATTRIBUTE_KEY => ExprLogicalType::String,
-
+        // // metric fields
+        consts::METRIC_TYPE => (ExprLogicalType::UInt8, SignalMask::Metrics),
+        consts::DESCRIPTION => (ExprLogicalType::String, SignalMask::Metrics),
+        consts::UNIT => (ExprLogicalType::String, SignalMask::Metrics),
+        consts::AGGREGATION_TEMPORALITY => (ExprLogicalType::Int32, SignalMask::Metrics),
+        consts::IS_MONOTONIC => (ExprLogicalType::Boolean, SignalMask::Metrics),
         _ => return None,
-    })
+    };
+
+    // ensure the field is valid for the signal
+    validity_sig_mask
+        .is_valid(signal_context)
+        .then_some(field_type)
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq)]
+enum DpMask {
+    Number = 0b0001,
+    Histogram = 0b0010,
+    ExpHistogram = 0b0100,
+    Summary = 0b1000,
+    HistExpHist = 0b0110,
+    HistExpHistSummary = 0b1110,
+    All = 0b1111,
+}
+
+impl DpMask {
+    fn from_dp_type(dp_type: &MetricDataPointType) -> Self {
+        match dp_type {
+            MetricDataPointType::NumberDataPoint => Self::Number,
+            MetricDataPointType::HistogramDataPoint => Self::Histogram,
+            MetricDataPointType::ExponentialHistogramDataPoint => Self::ExpHistogram,
+            MetricDataPointType::SummaryDataPoint => Self::Summary,
+        }
+    }
+
+    /// returns `true` if the data point type represented by context is valid for the mask
+    fn is_valid(self, context: &DataPointContext) -> bool {
+        match context {
+            DataPointContext::All => self == DpMask::All,
+            DataPointContext::Single(dp_type) => self & Self::from_dp_type(dp_type) > 0,
+        }
+    }
+}
+
+impl BitAnd for DpMask {
+    type Output = u8;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        self as u8 & rhs as u8
+    }
+}
+
+pub fn data_point_field_type(
+    field_name: &str,
+    dp_context: &DataPointContext,
+) -> Option<ExprLogicalType> {
+    let (field_type, validity_sig_mask) = match field_name {
+        // all data point common fields
+        consts::TIME_UNIX_NANO => (ExprLogicalType::TimestampNanosecond, DpMask::All),
+        consts::START_TIME_UNIX_NANO => (ExprLogicalType::TimestampNanosecond, DpMask::All),
+        consts::FLAGS => (ExprLogicalType::UInt32, DpMask::All),
+
+        // number data point fields
+        consts::INT_VALUE => (ExprLogicalType::Int64, DpMask::Number),
+        consts::DOUBLE_VALUE => (ExprLogicalType::Float64, DpMask::Number),
+
+        // histogram/exp hist/summary data point common fields
+        consts::SUM => (ExprLogicalType::Float64, DpMask::HistExpHistSummary),
+        // TODO histogram/sum count uint64 not yet supported by query-engine
+
+        // summary data points
+        // TODO quantile struct field not supported by query-engine
+        // TODO value list field not supported by query-engine
+
+        // histogram / exp hist common fields
+        consts::HISTOGRAM_MIN => (ExprLogicalType::Float64, DpMask::HistExpHist),
+        consts::HISTOGRAM_MAX => (ExprLogicalType::Float64, DpMask::HistExpHist),
+
+        // histogram data point fields
+        // TODO bucket counts list fields not yet supported by query-engine
+        // TODO explicit bounds list field not yet supported by query-engine
+
+        // exponential histogram data point fields
+        consts::EXP_HISTOGRAM_SCALE => (ExprLogicalType::Int32, DpMask::ExpHistogram),
+        consts::EXP_HISTOGRAM_ZERO_THRESHOLD => (ExprLogicalType::Float64, DpMask::ExpHistogram),
+        // TODO exp histogram positive/negative struct fields not yet supported by query-engine
+        // TODO exp histogram zero count uint64 type not yet supported by query-engine
+        _ => return None,
+    };
+
+    validity_sig_mask.is_valid(dp_context).then_some(field_type)
+}
+
+/// Return the type for an attribute pipeline field.
+///
+/// Only `key` and `value` are valid fields when operating inside `apply attributes { ... }`.
+/// Returns `None` if the field is not valid for attribute pipelines.
+pub fn attribute_field_type(field_name: &str) -> Option<ExprLogicalType> {
+    match field_name {
+        consts::ATTRIBUTE_KEY => Some(ExprLogicalType::String),
+        VALUE_COLUMN_NAME => Some(ExprLogicalType::AnyValue),
+        _ => None,
+    }
 }
 
 /// Returns true if the field on the root batch can be a dictionary encoded type
-pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
+pub fn field_supports_dict_encoding(field_name: &str) -> bool {
     // TODO - when we have better support for time arithmetic we should test that this
     // duration type gets coerced into a dictionary during assignment for column with name
     // consts::DURATION_TIME_UNIX_NANO
@@ -407,6 +555,72 @@ pub fn coerce_arithmetic(
 
         // other types cannot be used as argument to arithmetic
         _ => None,
+    }
+}
+
+/// identifier of metric data point type
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+#[repr(u8)]
+pub enum MetricDataPointType {
+    NumberDataPoint = 0,
+    HistogramDataPoint = 1,
+    ExponentialHistogramDataPoint = 2,
+    SummaryDataPoint = 3,
+}
+
+impl MetricDataPointType {
+    /// Get the OTAP payload type containing data points of this metric type
+    pub fn payload_type(&self) -> ArrowPayloadType {
+        match self {
+            Self::SummaryDataPoint => ArrowPayloadType::SummaryDataPoints,
+            Self::ExponentialHistogramDataPoint => ArrowPayloadType::ExpHistogramDataPoints,
+            Self::HistogramDataPoint => ArrowPayloadType::HistogramDataPoints,
+            Self::NumberDataPoint => ArrowPayloadType::NumberDataPoints,
+        }
+    }
+
+    /// return the [`ArrowPayloadType`] associated with data points of this data point type
+    pub fn dp_attrs_payload_type(&self) -> ArrowPayloadType {
+        match self {
+            Self::SummaryDataPoint => ArrowPayloadType::SummaryDpAttrs,
+            Self::ExponentialHistogramDataPoint => ArrowPayloadType::ExpHistogramDpAttrs,
+            Self::HistogramDataPoint => ArrowPayloadType::HistogramDpAttrs,
+            Self::NumberDataPoint => ArrowPayloadType::NumberDpAttrs,
+        }
+    }
+
+    /// return the [`ArrowPayloadType`] associated with exemplars of this data point type
+    pub fn exemplar_payload_type(&self) -> Option<ArrowPayloadType> {
+        match self {
+            Self::ExponentialHistogramDataPoint => Some(ArrowPayloadType::ExpHistogramDpExemplars),
+            Self::HistogramDataPoint => Some(ArrowPayloadType::HistogramDpExemplars),
+            Self::NumberDataPoint => Some(ArrowPayloadType::NumberDpExemplars),
+            Self::SummaryDataPoint => None,
+        }
+    }
+
+    /// return the [`ArrowPayloadType`] of attributes of exemplars of this data point type
+    pub fn exemplar_attr_payload_type(&self) -> Option<ArrowPayloadType> {
+        match self {
+            Self::ExponentialHistogramDataPoint => {
+                Some(ArrowPayloadType::ExpHistogramDpExemplarAttrs)
+            }
+            Self::HistogramDataPoint => Some(ArrowPayloadType::HistogramDpExemplarAttrs),
+            Self::NumberDataPoint => Some(ArrowPayloadType::NumberDpExemplarAttrs),
+            Self::SummaryDataPoint => None,
+        }
+    }
+
+    /// returns an iterator of all the types of metric data points
+    pub fn all() -> impl Iterator<Item = Self> {
+        [
+            MetricDataPointType::NumberDataPoint,
+            MetricDataPointType::HistogramDataPoint,
+            MetricDataPointType::ExponentialHistogramDataPoint,
+            MetricDataPointType::SummaryDataPoint,
+        ]
+        .into_iter()
     }
 }
 

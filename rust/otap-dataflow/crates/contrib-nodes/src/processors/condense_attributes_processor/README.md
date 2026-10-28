@@ -3,7 +3,7 @@
 ## Metadata
 
 - Type: `processor:condense_attributes` (`urn:otel:processor:condense_attributes`)
-- Feature gate: `condense-attributes-processor`
+- Feature gate: `condense-attributes`
 - Stability: WIP
 
 ## Overview
@@ -38,11 +38,11 @@ config:
 
 ## Feature Flag
 
-This processor requires the `condense-attributes-processor` feature flag to be
+This processor requires the `condense-attributes` feature flag to be
 enabled:
 
 ```bash
-cargo build --features condense-attributes-processor
+cargo build --features condense-attributes
 ```
 
 ## Configuration

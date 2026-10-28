@@ -24,7 +24,7 @@ pub(crate) struct TerminalMetricsDeadline {
 impl TerminalMetricsDeadline {
     const FALLBACK: Duration = Duration::from_secs(5);
 
-    /// Records a shutdown deadline, preserving the earliest deadline observed.
+    /// Records a terminal metrics deadline, preserving the earliest deadline observed.
     pub(crate) fn record(&self, deadline: Instant) {
         let mut current = self
             .deadline
@@ -100,6 +100,8 @@ impl Default for TerminalState {
 mod tests {
     use super::*;
 
+    /// Scenario: Multiple terminal metric producers record different absolute deadlines.
+    /// Guarantees: Every producer observes the earliest recorded deadline.
     #[test]
     fn terminal_metrics_deadline_preserves_the_earliest_recorded_deadline() {
         let deadline = TerminalMetricsDeadline::default();
@@ -112,6 +114,8 @@ mod tests {
         assert_eq!(deadline.clone().get(), now + Duration::from_secs(1));
     }
 
+    /// Scenario: Terminal metrics are requested without an explicit pipeline shutdown deadline.
+    /// Guarantees: All terminal reporters share one finite fallback deadline.
     #[test]
     fn terminal_metrics_deadline_installs_only_one_fallback() {
         let deadline = TerminalMetricsDeadline::default();

@@ -55,49 +55,47 @@ pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
         }
 
         // Possible `${...}` placeholder.
-        if rest.starts_with("${") {
-            if let Some(close) = rest[2..].find('}') {
-                let inner = &rest[2..2 + close]; // content between `${` and `}`
+        if rest.starts_with("${")
+            && let Some(close) = rest[2..].find('}')
+        {
+            let inner = &rest[2..2 + close]; // content between `${` and `}`
 
-                if let Some(spec) = inner.strip_prefix("env:") {
-                    // Split on the first `:-` to allow an optional default.
-                    let (var_name, default) = match spec.find(":-") {
-                        Some(p) => (&spec[..p], Some(&spec[p + 2..])),
-                        None => (spec, None),
-                    };
+            if let Some(spec) = inner.strip_prefix("env:") {
+                // Split on the first `:-` to allow an optional default.
+                let (var_name, default) = match spec.find(":-") {
+                    Some(p) => (&spec[..p], Some(&spec[p + 2..])),
+                    None => (spec, None),
+                };
 
-                    let value = match std::env::var(var_name) {
-                        Ok(v) => v,
-                        Err(env_var_error) => match default {
-                            Some(d) => d.to_string(),
-                            None => {
-                                match env_var_error {
-                                    std::env::VarError::NotPresent => {
-                                        // Variable is simply not set.
-                                        return Err(Error::EnvVarNotFound {
-                                            var: var_name.to_string(),
-                                        });
-                                    }
-                                    std::env::VarError::NotUnicode(_) => {
-                                        // Variable is set but contains invalid Unicode.
-                                        return Err(Error::EnvVarCannotBeParsed {
-                                            var: var_name.to_string(),
-                                        });
-                                    }
-                                }
+                let value = match std::env::var(var_name) {
+                    Ok(v) => v,
+                    Err(env_var_error) => match default {
+                        Some(d) => d.to_string(),
+                        None => match env_var_error {
+                            std::env::VarError::NotPresent => {
+                                // Variable is simply not set.
+                                return Err(Error::EnvVarNotFound {
+                                    var: var_name.to_string(),
+                                });
+                            }
+                            std::env::VarError::NotUnicode(_) => {
+                                // Variable is set but contains invalid Unicode.
+                                return Err(Error::EnvVarCannotBeParsed {
+                                    var: var_name.to_string(),
+                                });
                             }
                         },
-                    };
+                    },
+                };
 
-                    output.push_str(&value);
-                    rest = &rest[2 + close + 1..]; // skip past `}`
-                } else {
-                    // Not an `env:` provider -- pass through verbatim.
-                    output.push_str(&rest[..2 + close + 1]);
-                    rest = &rest[2 + close + 1..];
-                }
-                continue;
+                output.push_str(&value);
+                rest = &rest[2 + close + 1..]; // skip past `}`
+            } else {
+                // Not an `env:` provider -- pass through verbatim.
+                output.push_str(&rest[..2 + close + 1]);
+                rest = &rest[2 + close + 1..];
             }
+            continue;
         }
 
         // Bare `$` with no recognised pattern -- emit and advance.

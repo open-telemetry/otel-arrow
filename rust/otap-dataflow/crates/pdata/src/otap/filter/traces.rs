@@ -9,20 +9,18 @@ use crate::arrays::{get_required_array, get_required_array_from_struct_array_fro
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
-    KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter, default_match_type,
-    get_attr_filter, get_resource_attr_filter, new_child_record_batch_filter,
-    new_parent_record_batch_filter, nulls_to_false, regex_match_column,
-    update_child_record_batch_filter, update_parent_record_batch_filter,
+    AttrMatcher, NO_RECORD_BATCH_FILTER_SIZE, Pattern, apply_filter, get_attr_filter,
+    get_resource_attr_filter, new_child_record_batch_filter, new_parent_record_batch_filter,
+    nulls_to_false, update_child_record_batch_filter, update_parent_record_batch_filter,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
-use arrow::array::{BooleanArray, StringArray};
+use arrow::array::BooleanArray;
 use arrow::buffer::BooleanBuffer;
-use serde::Deserialize;
 use std::collections::HashMap;
 
-/// struct that describes the overall requirements to use in order to filter traces
-#[derive(Debug, Clone, Deserialize)]
+/// Compiled filter that describes the overall requirements used to filter traces.
+#[derive(Debug, Clone)]
 pub struct TraceFilter {
     // Include match properties describe traces that should be included in the Collector Service pipeline,
     // all other traces should be dropped from further processing.
@@ -35,39 +33,30 @@ pub struct TraceFilter {
     // ToDo: Add ottl support -> see golang version https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/8558294afa723b9ed917ed5d6bb6c656bb096a49/processor/filterprocessor/config.go#L90
 }
 
-/// TraceMatchProperties specifies the set of properties in a trace to match against and the type of string pattern matching to use.
-#[derive(Debug, Clone, Deserialize)]
+/// Compiled set of trace properties to match against.
+#[derive(Debug, Clone)]
 pub struct TraceMatchProperties {
-    // MatchType specifies the type of matching desired
-    #[serde(default = "default_match_type")]
-    match_type: MatchType,
-
     // ResourceAttributes defines a list of possible resource attributes to match traces against.
     // A match occurs if any resource attribute matches all expressions in this given list.
-    #[serde(default)]
-    resource_attributes: Vec<KeyValue>,
+    resource_attributes: Vec<AttrMatcher>,
 
     // SpanAttributes defines a list of possible record attributes to match traces against.
     // A match occurs if any record attribute matches at least one expression in this given list.
-    #[serde(default)]
-    span_attributes: Vec<KeyValue>,
+    span_attributes: Vec<AttrMatcher>,
 
-    // SpanNames is a list of span names that the span's names field must match against.
-    span_names: Vec<String>,
+    // SpanNames is a list of patterns that the span's names field must match against.
+    span_names: Vec<Pattern>,
 
-    // EventNames is a list of event names that the span's events field must match against.
-    #[serde(default)]
-    event_names: Vec<String>,
+    // EventNames is a list of patterns that the span's events field must match against.
+    event_names: Vec<Pattern>,
 
     // EventsAttributes is a list of possible event attributes to match span events against.
     // A match occurs of any event attribute matches at least one expression in this given list.
-    #[serde(default)]
-    event_attributes: Vec<KeyValue>,
+    event_attributes: Vec<AttrMatcher>,
 
     // LinkAttributes is a list of possible link attributes to match span links against.
     // A match occurs of any link attribute matches at least one expression in this given list.
-    #[serde(default)]
-    link_attributes: Vec<KeyValue>,
+    link_attributes: Vec<AttrMatcher>,
 }
 
 impl TraceFilter {
@@ -160,7 +149,7 @@ impl TraceFilter {
         {
             include_config.create_filters(&traces_payload, false)?
         } else {
-            // both include and exclude is none
+            // Both include and exclude are absent, so every span is kept.
             let num_rows = traces_payload
                 .get(ArrowPayloadType::Spans)
                 // Safety: We check at the top of this function whether the
@@ -168,7 +157,7 @@ impl TraceFilter {
                 // root record batch is present.
                 .expect("Traces payload has a root record")
                 .num_rows() as u64;
-            return Ok((traces_payload, num_rows, num_rows));
+            return Ok((traces_payload, num_rows, 0));
         };
 
         let (span_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -469,27 +458,26 @@ impl TraceFilter {
             );
         }
 
-        if let Some(span_link_attrs_record_batch) = span_link_attrs {
-            if let Some(link_filter) = &span_link_filter {
-                let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
-                    get_required_array(span_links_record_batch, consts::ID)?
-                } else {
-                    return Err(Error::UnexpectedRecordBatchState {
-                        reason:
-                            "Span Link Attribute Record Batch found without Span Link Record Batch"
-                                .to_string(),
-                    });
-                };
-                _ = child_record_batch_filters.insert(
-                    ArrowPayloadType::SpanLinkAttrs,
-                    update_child_record_batch_filter(
-                        span_link_attrs_record_batch,
-                        span_link_ids_column,
-                        &span_link_attr_filter,
-                        link_filter,
-                    )?,
-                );
-            }
+        if let Some(span_link_attrs_record_batch) = span_link_attrs
+            && let Some(link_filter) = &span_link_filter
+        {
+            let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
+                get_required_array(span_links_record_batch, consts::ID)?
+            } else {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason: "Span Link Attribute Record Batch found without Span Link Record Batch"
+                        .to_string(),
+                });
+            };
+            _ = child_record_batch_filters.insert(
+                ArrowPayloadType::SpanLinkAttrs,
+                update_child_record_batch_filter(
+                    span_link_attrs_record_batch,
+                    span_link_ids_column,
+                    &span_link_attr_filter,
+                    link_filter,
+                )?,
+            );
         }
 
         Ok((span_filter, child_record_batch_filters))
@@ -500,16 +488,14 @@ impl TraceMatchProperties {
     /// create a new TraceMatchProperties
     #[must_use]
     pub const fn new(
-        match_type: MatchType,
-        resource_attributes: Vec<KeyValue>,
-        span_attributes: Vec<KeyValue>,
-        span_names: Vec<String>,
-        event_names: Vec<String>,
-        event_attributes: Vec<KeyValue>,
-        link_attributes: Vec<KeyValue>,
+        resource_attributes: Vec<AttrMatcher>,
+        span_attributes: Vec<AttrMatcher>,
+        span_names: Vec<Pattern>,
+        event_names: Vec<Pattern>,
+        event_attributes: Vec<AttrMatcher>,
+        link_attributes: Vec<AttrMatcher>,
     ) -> Self {
         Self {
-            match_type,
             resource_attributes,
             span_attributes,
             span_names,
@@ -540,25 +526,22 @@ impl TraceMatchProperties {
             mut span_event_attr_filter,
             mut span_link_attr_filter,
         ) = (
-            get_resource_attr_filter(traces_payload, &self.resource_attributes, &self.match_type)?,
+            get_resource_attr_filter(traces_payload, &self.resource_attributes)?,
             self.get_span_filter(traces_payload)?,
             get_attr_filter(
                 traces_payload,
                 &self.span_attributes,
-                &self.match_type,
                 ArrowPayloadType::SpanAttrs,
             )?,
             self.get_span_event_filter(traces_payload)?,
             get_attr_filter(
                 traces_payload,
                 &self.event_attributes,
-                &self.match_type,
                 ArrowPayloadType::SpanEventAttrs,
             )?,
             get_attr_filter(
                 traces_payload,
                 &self.link_attributes,
-                &self.match_type,
                 ArrowPayloadType::SpanLinkAttrs,
             )?,
             // self.get_span_event_attr_filter(traces_payload)?,
@@ -634,17 +617,7 @@ impl TraceMatchProperties {
             // create filter for span names
             let names_column = get_required_array(spans, consts::NAME)?;
             for name in &self.span_names {
-                // match on body value
-                let name_filter = match self.match_type {
-                    MatchType::Regexp => regex_match_column(names_column, name)?,
-                    MatchType::Strict => {
-                        let value_scalar = StringArray::new_scalar(name);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                        arrow::compute::kernels::cmp::eq(&names_column, &value_scalar)
-                            .expect("can compare string value column to string scalar")
-                    }
-                };
+                let name_filter = name.matches(names_column)?;
                 filter = arrow::compute::or_kleene(&name_filter, &filter)
                     .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
                 // combine the filters
@@ -692,17 +665,7 @@ impl TraceMatchProperties {
             // create filter for span names
             let names_column = get_required_array(span_events, consts::NAME)?;
             for name in &self.event_names {
-                // match on body value
-                let name_filter = match self.match_type {
-                    MatchType::Regexp => regex_match_column(names_column, name)?,
-                    MatchType::Strict => {
-                        let value_scalar = StringArray::new_scalar(name);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                        arrow::compute::kernels::cmp::eq(&names_column, &value_scalar)
-                            .expect("can compare string value column to string scalar")
-                    }
-                };
+                let name_filter = name.matches(names_column)?;
                 filter = arrow::compute::or_kleene(&name_filter, &filter)
                     .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
                 // combine the filters
@@ -724,10 +687,9 @@ mod test {
     #[test]
     fn test_filter_include_no_attributes() {
         let include = TraceMatchProperties::new(
-            MatchType::Strict,
             Vec::new(),
             Vec::new(),
-            vec!["span_name_1".into()],
+            Pattern::many_exact(&["span_name_1"]),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -774,10 +736,9 @@ mod test {
     #[test]
     fn test_filter_exclude_no_attributes() {
         let exclude = TraceMatchProperties::new(
-            MatchType::Strict,
             Vec::new(),
             Vec::new(),
-            vec!["span_name_1".into()],
+            Pattern::many_exact(&["span_name_1"]),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -818,6 +779,41 @@ mod test {
             }],
         }));
 
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    /// Scenario: A trace filter has neither an include nor an exclude rule.
+    /// Guarantees: All spans pass through and the reported filtered count is zero.
+    #[test]
+    fn test_filter_pass_through_reports_no_filtered_spans() {
+        let filter = TraceFilter::new(None, None);
+        let spans = vec![
+            Span::build().name("span_name_1").finish(),
+            Span::build().name("span_name_2").finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: spans.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        let (result, spans_consumed, spans_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(spans_consumed, 2);
+        assert_eq!(spans_filtered, 0);
+        let expected = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
     }
 }

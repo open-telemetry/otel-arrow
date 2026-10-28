@@ -154,16 +154,12 @@ fn collect_log_attrs<'a>(
     let include_signal = domains.contains(&AttributeDomain::Signal);
 
     for resource_logs in &logs.resource_logs {
-        if include_resource {
-            if let Some(resource) = resource_logs.resource.as_ref() {
-                out.push(resource.attributes.as_slice());
-            }
+        if include_resource && let Some(resource) = resource_logs.resource.as_ref() {
+            out.push(resource.attributes.as_slice());
         }
         for scope_logs in &resource_logs.scope_logs {
-            if include_scope {
-                if let Some(scope) = scope_logs.scope.as_ref() {
-                    out.push(scope.attributes.as_slice());
-                }
+            if include_scope && let Some(scope) = scope_logs.scope.as_ref() {
+                out.push(scope.attributes.as_slice());
             }
             if include_signal {
                 for record in &scope_logs.log_records {
@@ -186,16 +182,12 @@ fn collect_span_attrs<'a>(
     let include_signal = domains.contains(&AttributeDomain::Signal);
 
     for resource_spans in &traces.resource_spans {
-        if include_resource {
-            if let Some(resource) = resource_spans.resource.as_ref() {
-                out.push(resource.attributes.as_slice());
-            }
+        if include_resource && let Some(resource) = resource_spans.resource.as_ref() {
+            out.push(resource.attributes.as_slice());
         }
         for scope_spans in &resource_spans.scope_spans {
-            if include_scope {
-                if let Some(scope) = scope_spans.scope.as_ref() {
-                    out.push(scope.attributes.as_slice());
-                }
+            if include_scope && let Some(scope) = scope_spans.scope.as_ref() {
+                out.push(scope.attributes.as_slice());
             }
             if include_signal {
                 for span in &scope_spans.spans {
@@ -220,16 +212,12 @@ fn collect_metric_attrs<'a>(
     let include_signal = domains.contains(&AttributeDomain::Signal);
 
     for resource_metrics in &metrics.resource_metrics {
-        if include_resource {
-            if let Some(resource) = resource_metrics.resource.as_ref() {
-                out.push(resource.attributes.as_slice());
-            }
+        if include_resource && let Some(resource) = resource_metrics.resource.as_ref() {
+            out.push(resource.attributes.as_slice());
         }
         for scope_metrics in &resource_metrics.scope_metrics {
-            if include_scope {
-                if let Some(scope) = scope_metrics.scope.as_ref() {
-                    out.push(scope.attributes.as_slice());
-                }
+            if include_scope && let Some(scope) = scope_metrics.scope.as_ref() {
+                out.push(scope.attributes.as_slice());
             }
             if include_signal {
                 for metric in &scope_metrics.metrics {

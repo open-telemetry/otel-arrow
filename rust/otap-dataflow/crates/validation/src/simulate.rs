@@ -9,14 +9,14 @@ use otel_arrow_dfe_admin_api::{
 };
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_controller::Controller;
+// Link the core-node factories used by rendered scenarios.
+use otel_arrow_dfe_core_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
-const LOADGEN_METRIC_SET: &str = "receiver.traffic_generator";
-const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
-const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
-const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
+const LOADGEN_METRIC_SET: &str = "node.output";
+const LOADGEN_METRIC_NAME_ITEMS: &str = "items";
 const VALIDATION_METRIC_SET: &str = "exporter.validation";
 const VALIDATION_METRIC_NAME: &str = "valid";
 const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
@@ -201,25 +201,27 @@ fn loadgen_reached_limit(
         return true;
     }
 
-    let mut iter = snapshot
+    let mut totals_by_node: HashMap<String, u64> = HashMap::new();
+    let mut found = false;
+
+    for (set, label) in snapshot
         .metric_sets
         .iter()
         .filter(|set| set.name == LOADGEN_METRIC_SET)
         .filter_map(|set| attribute_node_id(&set.attributes).map(|label| (set, label)))
-        .peekable();
+    {
+        found = true;
+        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_ITEMS).unwrap_or(0);
+        *totals_by_node.entry(label).or_default() += loadgen_signals_produced;
+    }
 
-    // No loadgen metric sets found yet -- generators have not reported their
-    // first telemetry tick. Keep polling.
-    if iter.peek().is_none() {
+    if !found {
         return false;
     }
 
-    iter.all(|(set, label)| {
-        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
-            + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
-            + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
-        loadgen_signals_produced >= *expected_per_gen.get(&label).unwrap_or(&0u64)
-    })
+    expected_per_gen
+        .iter()
+        .all(|(label, expected)| totals_by_node.get(label).copied().unwrap_or(0) >= *expected)
 }
 
 /// Result of checking whether all validation exporters have finished.
@@ -255,10 +257,10 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
             return ValidationPollResult::NotFinished;
         }
         // Exporter is finished -- check its validation result in the same pass.
-        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
-            if let Some(label) = attribute_node_id(&set.attributes) {
-                failed_validation_exporters.push(label);
-            }
+        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1)
+            && let Some(label) = attribute_node_id(&set.attributes)
+        {
+            failed_validation_exporters.push(label);
         }
     }
 
@@ -278,6 +280,20 @@ mod tests {
     use std::collections::HashMap;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Scenario: factories are referenced only by literal URNs.
+    /// Guarantees: core factories are linked for traffic and internal telemetry.
+    #[test]
+    fn simulator_links_core_node_factories() {
+        let receivers = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
+        assert!(receivers.contains_key("urn:otel:receiver:otlp"));
+        assert!(receivers.contains_key("urn:otel:receiver:internal_telemetry"));
+        assert!(
+            OTAP_PIPELINE_FACTORY
+                .get_exporter_factory_map()
+                .contains_key("urn:otel:exporter:noop")
+        );
+    }
 
     fn set_with_node(set_name: &str, metric: &str, value: u64, node_id: &str) -> MetricSetSnapshot {
         MetricSetSnapshot {
@@ -304,8 +320,8 @@ mod tests {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 10, "genA"),
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 4, "genB"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_ITEMS, 10, "genA"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_ITEMS, 4, "genB"),
             ],
         };
         let mut expected = HashMap::new();
@@ -314,6 +330,23 @@ mod tests {
         assert!(loadgen_reached_limit(&snap, &expected));
 
         _ = expected.insert("genB".into(), 5);
+        assert!(!loadgen_reached_limit(&snap, &expected));
+    }
+
+    #[test]
+    fn loadgen_reached_limit_aggregates_multiple_item_snapshots() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_ITEMS, 6, "genA"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_ITEMS, 4, "genA"),
+            ],
+        };
+        let mut expected = HashMap::new();
+        _ = expected.insert("genA".into(), 10);
+        assert!(loadgen_reached_limit(&snap, &expected));
+
+        _ = expected.insert("genA".into(), 11);
         assert!(!loadgen_reached_limit(&snap, &expected));
     }
 
@@ -431,7 +464,7 @@ mod tests {
             timestamp: "t".into(),
             metric_sets: vec![set_with_node(
                 LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
+                LOADGEN_METRIC_NAME_ITEMS,
                 100,
                 "genA",
             )],
@@ -449,7 +482,7 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
             metric_sets: vec![set_with_node(
                 LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
+                LOADGEN_METRIC_NAME_ITEMS,
                 7,
                 "genA",
             )],

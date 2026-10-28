@@ -71,6 +71,60 @@ pub struct FlushAttributes {
     pub reason: FlushReason,
 }
 
+/// Input metric data type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub(super) enum MetricType {
+    /// Gauge metric data.
+    Gauge,
+    /// Sum metric data.
+    Sum,
+    /// Histogram metric data.
+    Histogram,
+    /// Exponential histogram metric data.
+    ExpHistogram,
+    /// Summary metric data.
+    Summary,
+}
+
+/// Whether the processor classified a metric as aggregable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub(super) enum Aggregable {
+    /// The metric is aggregable.
+    True,
+    /// The metric is not aggregable.
+    False,
+}
+
+impl From<bool> for Aggregable {
+    fn from(value: bool) -> Self {
+        if value { Self::True } else { Self::False }
+    }
+}
+
+/// Aggregation temporality of the input metric data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub(super) enum MetricTemporality {
+    /// Delta aggregation temporality.
+    Delta,
+    /// Cumulative aggregation temporality.
+    Cumulative,
+    /// Unspecified or inapplicable aggregation temporality.
+    Unspecified,
+}
+
+/// Attributes describing one classifiable input metric record.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MetricAttributes {
+    /// Input metric data type.
+    #[attribute_key = "type"]
+    pub(super) metric_type: MetricType,
+    /// Whether the processor classified the metric as aggregable.
+    pub(super) aggregable: Aggregable,
+    /// Aggregation temporality, or unspecified when it does not apply.
+    pub(super) temporality: MetricTemporality,
+}
+
 /// Counts one terminal outcome per metrics PData input.
 ///
 /// Incremented exactly once per input, regardless of how many overflow flushes
@@ -112,11 +166,24 @@ pub struct FlushMetrics {
     pub flushes: Counter<u64>,
 }
 
+/// Counts classifiable input metric records by type and aggregation support.
+#[metric_set(
+    name = "processor.temporal_reaggregation",
+    measurement_attributes = MetricAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub(super) struct MetricPopulationMetrics {
+    /// Number of input metric records containing metric data.
+    #[metric(unit = "{metric}")]
+    pub metrics: Counter<u64>,
+}
+
 /// All metrics for the temporal reaggregation processor.
 pub struct TemporalReaggregationMetrics {
     operations: MeasurementMetricSet<OperationMetrics>,
     failures: MeasurementMetricSet<FailureMetrics>,
     flushes: MeasurementMetricSet<FlushMetrics>,
+    metric_population: MeasurementMetricSet<MetricPopulationMetrics>,
 }
 
 impl TemporalReaggregationMetrics {
@@ -125,7 +192,13 @@ impl TemporalReaggregationMetrics {
             operations: OperationMetrics::register(pipeline_ctx),
             failures: FailureMetrics::register(pipeline_ctx),
             flushes: FlushMetrics::register(pipeline_ctx),
+            metric_population: MetricPopulationMetrics::register(pipeline_ctx),
         }
+    }
+
+    /// Record classifiable input metric records before internal retries.
+    pub fn record_metric_population(&mut self, attributes: MetricAttributes, count: u64) {
+        self.metric_population.with(attributes).metrics.add(count);
     }
 
     /// Record one successful input operation.
@@ -169,6 +242,7 @@ impl TemporalReaggregationMetrics {
     ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         reporter.report_measurement(&mut self.operations)?;
         reporter.report_measurement(&mut self.failures)?;
-        reporter.report_measurement(&mut self.flushes)
+        reporter.report_measurement(&mut self.flushes)?;
+        reporter.report_measurement(&mut self.metric_population)
     }
 }

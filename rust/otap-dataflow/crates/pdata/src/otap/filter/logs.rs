@@ -3,7 +3,6 @@
 
 //! This module focuses on taking a filter definition for Logs and building a filter
 //! as a BooleanArray for the Logs, ResourceAttr, and LogsAttr OTAP Record Batches
-//!
 
 use crate::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array_from_struct_array,
@@ -12,71 +11,53 @@ use crate::arrays::{
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
-    AnyValue, KeyValue, MatchType, apply_filter, default_match_type, get_attr_filter,
-    get_resource_attr_filter, new_child_record_batch_filter, nulls_to_false, regex_match_column,
-    update_child_record_batch_filter, update_parent_record_batch_filter,
+    AttrMatcher, Pattern, ValueMatcher, apply_filter, get_attr_filter, get_resource_attr_filter,
+    new_child_record_batch_filter, nulls_to_false, update_child_record_batch_filter,
+    update_parent_record_batch_filter,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
-use arrow::array::{BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+use arrow::array::{BooleanArray, Float64Array, Int32Array, Int64Array};
 use arrow::buffer::BooleanBuffer;
-use serde::Deserialize;
 use std::collections::HashMap;
 
-/// struct that describes the overall requirements to use in order to filter logs
-#[derive(Debug, Clone, Deserialize)]
+/// Describes which logs should be kept or excluded from a batch. Includes are
+/// processed first, then the excludes are applied to the remaining records.
+#[derive(Debug, Clone)]
 pub struct LogFilter {
-    // Include match properties describe logs that should be included in the Collector Service pipeline,
-    // all other logs should be dropped from further processing.
-    // If both Include and Exclude are specified, Include filtering occurs first.
+    // Include match properties describe logs that should be retained and are
+    // applied first
     include: Option<LogMatchProperties>,
-    // Exclude match properties describe logs that should be excluded from the Collector Service pipeline,
-    // all other logs should be included.
-    // If both Include and Exclude are specified, Include filtering occurs first.
+    // Exclude match properties describe logs that should be excluded and are
+    // applied second.
     exclude: Option<LogMatchProperties>,
-
-    // LogConditions is a list of OTTL conditions for an ottllog context.
-    // If any condition resolves to true, the log event will be dropped.
-    // Supports `and`, `or`, and `()`
-    #[allow(dead_code)]
-    #[serde(default)]
-    // ToDo: Add OTTL Support and accept OTTL expressions
-    log_record: Vec<String>,
 }
 
-/// LogMatchProperties specifies the set of properties in a log to match against and the type of string pattern matching to use.
-#[derive(Debug, Clone, Deserialize)]
+/// Compiled set of log properties to match against.
+#[derive(Debug, Clone)]
 pub struct LogMatchProperties {
-    // MatchType specifies the type of matching desired
-    #[serde(default = "default_match_type")]
-    match_type: MatchType,
-
     // ResourceAttributes defines a list of possible resource attributes to match logs against.
     // A match occurs if any resource attribute matches all expressions in this given list.
-    #[serde(default)]
-    resource_attributes: Vec<KeyValue>,
+    resource_attributes: Vec<AttrMatcher>,
 
     // RecordAttributes defines a list of possible record attributes to match logs against.
     // A match occurs if any record attribute matches at least one expression in this given list.
-    #[serde(default)]
-    record_attributes: Vec<KeyValue>,
+    record_attributes: Vec<AttrMatcher>,
 
-    // SeverityTexts is a list of strings that the LogRecord's severity text field must match
+    // SeverityTexts is a list of patterns that the LogRecord's severity text field must match
     // against.
-    #[serde(default)]
-    severity_texts: Vec<String>,
+    severity_texts: Vec<Pattern>,
 
     // SeverityNumberProperties defines how to match against a log record's SeverityNumber, if defined.
     severity_number: Option<LogSeverityNumberMatchProperties>,
 
     // LogBodies is a list of values that the LogRecord's body field must match
     // against.
-    #[serde(default)]
-    bodies: Vec<AnyValue>,
+    bodies: Vec<ValueMatcher>,
 }
 
 /// LogSeverityNumberMatchProperties specifies the requirements needed to match on the log severity field
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LogSeverityNumberMatchProperties {
     // Min is the minimum severity needed for the log record to match.
     // This corresponds to the short names specified here:
@@ -94,13 +75,8 @@ impl LogFilter {
     pub const fn new(
         include: Option<LogMatchProperties>,
         exclude: Option<LogMatchProperties>,
-        log_record: Vec<String>,
     ) -> Self {
-        Self {
-            include,
-            exclude,
-            log_record,
-        }
+        Self { include, exclude }
     }
 
     /// take a logs payload and return the filtered result
@@ -145,7 +121,7 @@ impl LogFilter {
         {
             include_config.create_filters(&logs_payload, false)?
         } else {
-            // both include and exclude is none
+            // Both include and exclude are absent, so every log record is kept.
             let num_rows = logs_payload
                 .get(ArrowPayloadType::Logs)
                 // Safety: We check at the top of this function whether the
@@ -153,7 +129,7 @@ impl LogFilter {
                 // root record batch is present.
                 .expect("Logs payload has a root record")
                 .num_rows() as u64;
-            return Ok((logs_payload, num_rows, num_rows));
+            return Ok((logs_payload, num_rows, 0));
         };
 
         let (log_record_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -308,15 +284,13 @@ impl LogMatchProperties {
     /// create a new LogMatchProperties
     #[must_use]
     pub const fn new(
-        match_type: MatchType,
-        resource_attributes: Vec<KeyValue>,
-        record_attributes: Vec<KeyValue>,
-        severity_texts: Vec<String>,
+        resource_attributes: Vec<AttrMatcher>,
+        record_attributes: Vec<AttrMatcher>,
+        severity_texts: Vec<Pattern>,
         severity_number: Option<LogSeverityNumberMatchProperties>,
-        bodies: Vec<AnyValue>,
+        bodies: Vec<ValueMatcher>,
     ) -> Self {
         Self {
-            match_type,
             resource_attributes,
             record_attributes,
             severity_texts,
@@ -332,12 +306,11 @@ impl LogMatchProperties {
         invert: bool,
     ) -> Result<(BooleanArray, BooleanArray, BooleanArray)> {
         let (mut resource_attr_filter, mut log_record_filter, mut log_attr_filter) = (
-            get_resource_attr_filter(logs_payload, &self.resource_attributes, &self.match_type)?,
+            get_resource_attr_filter(logs_payload, &self.resource_attributes)?,
             self.get_log_record_filter(logs_payload)?,
             get_attr_filter(
                 logs_payload,
                 &self.record_attributes,
-                &self.match_type,
                 ArrowPayloadType::LogAttrs,
             )?,
         );
@@ -394,19 +367,7 @@ impl LogMatchProperties {
             };
             let mut severity_texts_filter = BooleanArray::new_null(num_rows);
             for severity_text in &self.severity_texts {
-                let severity_text_filter = match self.match_type {
-                    MatchType::Regexp => regex_match_column(severity_texts_column, severity_text)?,
-                    MatchType::Strict => {
-                        let severity_text_scalar = StringArray::new_scalar(severity_text);
-                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                        arrow::compute::kernels::cmp::eq(
-                            &severity_texts_column,
-                            &severity_text_scalar,
-                        )
-                        .expect("can compare string severity text column to string scalar")
-                    }
-                };
+                let severity_text_filter = severity_text.matches(severity_texts_column)?;
                 severity_texts_filter =
                     arrow::compute::or_kleene(&severity_texts_filter, &severity_text_filter)
                         .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
@@ -420,73 +381,45 @@ impl LogMatchProperties {
             let mut bodies_filter = BooleanArray::new_null(num_rows);
             let bodies_column = get_required_struct_array(log_records, consts::BODY)?;
             for body in &self.bodies {
-                // match on body value
+                // match on body value. The body is a struct column rather than a
+                // record batch, so the typed-column lookups are done inline here.
                 let body_filter = match body {
-                    AnyValue::String(value) => {
-                        // get string column
+                    ValueMatcher::String(pattern) => {
                         let string_column = get_required_array_from_struct_array(
                             bodies_column,
                             consts::ATTRIBUTE_STR,
                         )?;
-                        match self.match_type {
-                            MatchType::Regexp => regex_match_column(string_column, value)?,
-                            MatchType::Strict => {
-                                let value_scalar = StringArray::new_scalar(value);
-                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                                arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
-                                    .expect("can compare string value column to string scalar")
-                            }
-                        }
+                        pattern.matches(string_column)?
                     }
-                    AnyValue::Int(value) => {
-                        let int_column = bodies_column.column_by_name(consts::ATTRIBUTE_INT);
-                        match int_column {
+                    ValueMatcher::Int(value) => {
+                        match bodies_column.column_by_name(consts::ATTRIBUTE_INT) {
                             Some(column) => {
                                 let value_scalar = Int64Array::new_scalar(*value);
-                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                                arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                                    .expect("can compare i64 value column to i64 scalar")
+                                arrow::compute::kernels::cmp::eq(column, &value_scalar)
+                                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
                             }
-                            None => {
-                                continue;
-                            }
+                            None => continue,
                         }
                     }
-                    AnyValue::Double(value) => {
-                        let double_column = bodies_column.column_by_name(consts::ATTRIBUTE_DOUBLE);
-                        match double_column {
+                    ValueMatcher::Double(value) => {
+                        match bodies_column.column_by_name(consts::ATTRIBUTE_DOUBLE) {
                             Some(column) => {
                                 let value_scalar = Float64Array::new_scalar(*value);
-                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                                arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                                    .expect("can compare f64 value column to f64 scalar")
+                                arrow::compute::kernels::cmp::eq(column, &value_scalar)
+                                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
                             }
-                            None => {
-                                continue;
-                            }
+                            None => continue,
                         }
                     }
-                    AnyValue::Boolean(value) => {
-                        let bool_column = bodies_column.column_by_name(consts::ATTRIBUTE_BOOL);
-                        match bool_column {
+                    ValueMatcher::Bool(value) => {
+                        match bodies_column.column_by_name(consts::ATTRIBUTE_BOOL) {
                             Some(column) => {
                                 let value_scalar = BooleanArray::new_scalar(*value);
-                                // since we use a scalar here we don't have to worry a column length mismatch when we compare
-
-                                arrow::compute::kernels::cmp::eq(&column, &value_scalar)
-                                    .expect("can compare bool value column to bool scalar")
+                                arrow::compute::kernels::cmp::eq(column, &value_scalar)
+                                    .map_err(|e| Error::ColumnLengthMismatch { source: e })?
                             }
-                            None => {
-                                continue;
-                            }
+                            None => continue,
                         }
-                    }
-                    _ => {
-                        // ToDo add keyvalue, array, and bytes
-                        continue;
                     }
                 };
                 bodies_filter = arrow::compute::or_kleene(&body_filter, &bodies_filter)
@@ -551,7 +484,6 @@ impl LogSeverityNumberMatchProperties {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::otap::filter::MatchType;
     use crate::proto::OtlpProtoMessage;
     use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
 
@@ -562,15 +494,14 @@ mod test {
     fn test_filter_include_no_attributes() {
         // Filter only for WARN logs
         let include = LogMatchProperties::new(
-            MatchType::Strict,
             Vec::new(),
             Vec::new(),
-            vec!["WARN".into()],
+            Pattern::many_exact(&["WARN"]),
             None,
             Vec::new(),
         );
 
-        let filter = LogFilter::new(Some(include), None, Vec::new());
+        let filter = LogFilter::new(Some(include), None);
 
         let log_records = vec![
             LogRecord::build().severity_text("WARN").finish(),
@@ -612,15 +543,14 @@ mod test {
     fn test_filter_exclude_no_attributes() {
         // Filter only for WARN logs
         let exclude = LogMatchProperties::new(
-            MatchType::Strict,
             Vec::new(),
             Vec::new(),
-            vec!["WARN".into()],
+            Pattern::many_exact(&["WARN"]),
             None,
             Vec::new(),
         );
 
-        let filter = LogFilter::new(None, Some(exclude), Vec::new());
+        let filter = LogFilter::new(None, Some(exclude));
 
         let log_records = vec![
             LogRecord::build().severity_text("WARN").finish(),
@@ -655,6 +585,41 @@ mod test {
             }],
         }));
 
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    /// Scenario: A log filter has neither an include nor an exclude rule.
+    /// Guarantees: All records pass through and the reported filtered count is zero.
+    #[test]
+    fn test_filter_pass_through_reports_no_filtered_records() {
+        let filter = LogFilter::new(None, None);
+        let log_records = vec![
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(logs_consumed, 2);
+        assert_eq!(logs_filtered, 0);
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
     }
 }

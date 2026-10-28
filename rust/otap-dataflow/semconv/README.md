@@ -47,6 +47,11 @@ argument to `otel_info!` / `otel_warn!` / `otel_debug!` /
    runtime stimulus, drop a script in `triggers/`; everything in
    that directory is run before validation. The live-check job
    fails if any declared event receives zero samples.
+5. If neither the engine config nor a trigger can drive the event
+   (for example, it fires only when an internal channel is closed),
+   cover it with unit tests and add an `annotations.live_check.exempt`
+   entry to its group that says why. The live-check job then allows
+   zero samples for it, but still validates any samples it receives.
 
 [weaver]: https://github.com/open-telemetry/weaver
 [events]: ../crates/telemetry/src/internal_events.rs

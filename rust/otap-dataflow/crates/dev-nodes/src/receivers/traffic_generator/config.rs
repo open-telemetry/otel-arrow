@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
+use otel_arrow_dfe_config::ContextEntryName;
 use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 
@@ -144,8 +145,8 @@ pub struct Config {
 
     /// Optional transport headers to attach to each generated pdata message.
     ///
-    /// Keys are header names. Values are optional fixed strings; when left
-    /// empty, a random value is generated once at startup.
+    /// Names preserve their configured spelling. Values are fixed strings or `null`.
+    /// A `null` value generates one random value at startup.
     ///
     /// ```yaml
     /// transport_headers:
@@ -153,7 +154,7 @@ pub struct Config {
     ///   x-request-id:
     /// ```
     #[serde(default)]
-    transport_headers: HashMap<String, Option<String>>,
+    transport_headers: HashMap<ContextEntryName, Option<String>>,
 }
 
 /// Configuration to describe the traffic being sent
@@ -259,7 +260,7 @@ impl Config {
     #[must_use]
     pub fn with_transport_headers(
         mut self,
-        transport_headers: HashMap<String, Option<String>>,
+        transport_headers: HashMap<ContextEntryName, Option<String>>,
     ) -> Self {
         self.transport_headers = transport_headers;
         self
@@ -336,7 +337,7 @@ impl Config {
     /// Keys are header names. Entries with a value produce fixed headers;
     /// entries left empty produce a random value generated once at startup.
     #[must_use]
-    pub fn transport_headers(&self) -> &HashMap<String, Option<String>> {
+    pub fn transport_headers(&self) -> &HashMap<ContextEntryName, Option<String>> {
         &self.transport_headers
     }
 }
@@ -427,6 +428,11 @@ impl TrafficConfig {
                     .to_string(),
             });
         }
+        if self.max_batch_size == 0 {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "max_batch_size must be > 0".to_string(),
+            });
+        }
         Ok(())
     }
 }
@@ -447,11 +453,16 @@ const fn default_weight() -> u32 {
     0
 }
 
-fn default_registry_path() -> VirtualDirectoryPath {
+/// Semantic conventions registry git tag used when `registry_path` is not set.
+pub const SEMCONV_REGISTRY_REFSPEC: &str = "v1.44.0";
+
+/// Default semantic conventions registry path.
+#[must_use]
+pub fn default_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::GitRepo {
         url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
         sub_folder: Some("model".to_owned()),
-        refspec: None,
+        refspec: Some(SEMCONV_REGISTRY_REFSPEC.to_owned()),
     }
 }
 
@@ -547,7 +558,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Config, DataSource, GenerationStrategy, build_rotation_table};
+    use otel_arrow_dfe_config::ContextEntryName;
     use serde_json::json;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
 
     #[test]
     fn parse_config_defaults_enable_ack_nack_to_false() {
@@ -743,6 +759,8 @@ mod tests {
 
     // -- transport_headers config tests ----------------------------------------
 
+    /// Scenario: `transport_headers` is omitted.
+    /// Guarantees: no headers are configured.
     #[test]
     fn parse_config_transport_headers_default_empty() {
         let cfg: Config = serde_json::from_value(json!({
@@ -758,6 +776,8 @@ mod tests {
         );
     }
 
+    /// Scenario: mixed-case headers have fixed or null values.
+    /// Guarantees: names preserve their configured spelling and values retain their content.
     #[test]
     fn parse_config_transport_headers_with_values() {
         let cfg: Config = serde_json::from_value(json!({
@@ -765,23 +785,50 @@ mod tests {
             "data_source": "synthetic",
             "generation_strategy": "fresh",
             "transport_headers": {
-                "x-tenant-id": "acme",
-                "x-request-id": null
+                "X-Tenant-Id": "acme",
+                "X-Request-Id": null
             }
         }))
         .expect("config should parse");
 
         let headers = cfg.transport_headers();
         assert_eq!(headers.len(), 2);
+        assert!(headers.keys().any(|name| name.as_str() == "X-Tenant-Id"));
+        assert!(headers.keys().any(|name| name.as_str() == "X-Request-Id"));
         assert_eq!(
-            headers.get("x-tenant-id"),
+            headers.get(&context_name("X-Tenant-Id")),
             Some(&Some("acme".to_string())),
             "fixed value should be preserved"
         );
         assert_eq!(
-            headers.get("x-request-id"),
+            headers.get(&context_name("X-Request-Id")),
             Some(&None),
             "null value should parse as None"
+        );
+        assert!(!headers.contains_key(&context_name("x-tenant-id")));
+    }
+
+    /// Scenario: header names differ only by case.
+    /// Guarantees: both case-sensitive stored names and their values are preserved.
+    #[test]
+    fn parse_config_transport_headers_preserves_case_distinct_names() {
+        let config: Config = serde_json::from_value(json!({
+            "traffic_config": base_traffic(),
+            "transport_headers": {
+                "X-Tenant-Id": "acme",
+                "x-tenant-id": "contoso"
+            },
+        }))
+        .expect("case-distinct names should parse");
+
+        assert_eq!(config.transport_headers().len(), 2);
+        assert_eq!(
+            config.transport_headers().get(&context_name("X-Tenant-Id")),
+            Some(&Some("acme".to_string()))
+        );
+        assert_eq!(
+            config.transport_headers().get(&context_name("x-tenant-id")),
+            Some(&Some("contoso".to_string()))
         );
     }
 
@@ -808,5 +855,12 @@ mod tests {
 
         let cfg = super::TrafficConfig::new(Some(10), None, 100, 1, 1, 1);
         cfg.validate().expect("all non-zero weights should pass");
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_batch_size() {
+        let cfg = super::TrafficConfig::new(Some(10), None, 0, 0, 1, 0);
+        let result = cfg.validate();
+        assert!(result.is_err(), "zero max_batch_size should be rejected");
     }
 }

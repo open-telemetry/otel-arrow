@@ -22,3 +22,5 @@ pub mod rebalance;
 /// Implementation of the main kafka receiver
 pub mod receiver;
 mod retry;
+/// Shared retry-scheduling primitives (ordered deadline index + backoff).
+mod scheduling;

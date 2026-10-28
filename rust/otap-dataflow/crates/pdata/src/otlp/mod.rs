@@ -10,8 +10,7 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
 pub use common::{
-    BoundedBuf, Checkpoint, ProtoBuffer, StackProtoBuffer, TRUNCATION_SUFFIX,
-    encode_len_placeholder, patch_len_placeholder,
+    BoundedBuf, EncodeFailure, EncodeResult, MAX_OTLP_SIZE_LIMIT, ProtoBuffer, StackProtoBuffer,
 };
 pub use otel_arrow_dfe_pdata_otlp_macros::Message; // Required for derived code
 pub use otel_arrow_dfe_pdata_otlp_macros::qualified; // Required for derived code
@@ -53,9 +52,9 @@ impl OtlpProtoBytes {
     #[must_use]
     pub fn new_from_bytes<B>(signal: SignalType, b: B) -> Self
     where
-        B: Into<Vec<u8>>,
+        B: Into<Bytes>,
     {
-        let bytes: Bytes = b.into().into();
+        let bytes: Bytes = b.into();
         match signal {
             SignalType::Logs => Self::ExportLogsRequest(bytes),
             SignalType::Metrics => Self::ExportMetricsRequest(bytes),
@@ -100,6 +99,26 @@ impl OtlpProtoBytes {
             OtlpProtoBytes::ExportLogsRequest(bytes)
             | OtlpProtoBytes::ExportMetricsRequest(bytes)
             | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.clone(),
+        }
+    }
+
+    /// Borrows the shared encoded buffer.
+    #[must_use]
+    pub const fn bytes(&self) -> &Bytes {
+        match self {
+            Self::ExportLogsRequest(bytes)
+            | Self::ExportMetricsRequest(bytes)
+            | Self::ExportTracesRequest(bytes) => bytes,
+        }
+    }
+
+    /// Takes ownership of the shared encoded buffer.
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        match self {
+            Self::ExportLogsRequest(bytes)
+            | Self::ExportMetricsRequest(bytes)
+            | Self::ExportTracesRequest(bytes) => bytes,
         }
     }
 

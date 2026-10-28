@@ -5,15 +5,16 @@
 ## Metadata
 
 - Type: `receiver:syslog_cef` (`urn:otel:receiver:syslog_cef`)
-- Feature gate: Default
+- Feature gate: `syslog-cef`
 - Stability: Experimental
 
 ## Overview
 
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
-and Common Event Format (CEF) security logs. The receiver automatically detects
-the message format and converts them into `OtapPdata` using the efficient
-Apache Arrow columnar format for downstream processing.
+and Common Event Format (CEF) security logs. The receiver retains original
+messages in encoded `syslog-batch` pdata. When a consumer requires content
+access, the codec detects the message format and converts the batch to native
+Apache Arrow records.
 
 ## Getting Started
 
@@ -46,6 +47,7 @@ config:
   protocol:
     tcp:
       listening_addr: "0.0.0.0:514"
+      framing: octet_counting
 
       # Optional: TLS configuration
       tls:
@@ -82,8 +84,12 @@ config:
 
 Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `protocol.*.listening_addr` is required for the selected transport.
+`protocol.tcp.framing` accepts `newline` or `octet_counting` and defaults to
+`newline`.
+
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
-defaults to `100`, and `batch.max_size` defaults to `100`.
+defaults to `100`, and `batch.max_size` defaults to `100` (values above `8192`
+are capped). Receiver batches may flush earlier to respect the hard 2 MiB byte limit.
 
 The receiver supports pressure-aware `messages` rate limiting when the
 engine-level memory limiter is configured. UDP counts one datagram as one
@@ -92,7 +98,12 @@ exceeds `MAX_MESSAGE_SIZE` and is emitted as multiple bounded-read fragments,
 each emitted fragment is counted separately. Over-limit UDP datagrams are
 dropped; over-limit TCP messages are dropped while the connection remains open.
 If an oversized TCP fragment is over limit, remaining fragments from that same
-oversized line are discarded through the newline.
+oversized line are discarded through the newline. For an oversized
+octet-counted frame, the receiver processes the first `MAX_MESSAGE_SIZE` payload
+bytes once as a truncated record, then closes the connection without draining
+the remaining declared payload. Malformed or incomplete octet-counted frames
+are rejected and close the connection so subsequent bytes cannot be interpreted
+with a desynchronized frame boundary.
 TCP rate-limit drops are silent because plain syslog TCP has no per-message
 acknowledgement or retry hint.
 
@@ -108,7 +119,7 @@ acknowledgement or retry hint.
 ### TCP
 
 - Connection-oriented, reliable delivery
-- Messages are delimited by newline characters (`\n`)
+- Supports newline-delimited and RFC 6587 octet-counted framing
 - Supports multiple concurrent connections
 - Each connection is handled independently
 
@@ -122,6 +133,19 @@ Syslog over TLS:
 - Configurable handshake timeout
 
 ## Message Parsing
+
+The receiver validates transport framing and rejects zero-length messages, then
+forwards non-empty messages in the `syslog-batch` encoded pdata format.
+Format detection and parsing remain lazy until a downstream component requests
+native OTAP records. This keeps transparent forwarding and codec-native
+batching on the original message bytes. Each message retains the local year at
+receipt for RFC 3164 timestamp inference, including CEF wrapped in RFC 3164.
+TCP captures the year once per nonempty buffer refill; messages completed from
+that refill share its context. A fragmented message uses the refill supplying its
+last bytes. UDP captures the year independently for each datagram.
+Delayed decoding and batching across New Year do not change that year; local
+timezone and DST resolution still use the event date. Observed timestamps remain
+those recorded when the receiver seals each batch.
 
 ### Automatic Format Detection
 
@@ -376,15 +400,16 @@ connection handling within the same thread.
 
 ### Batching Strategy
 
-To optimize throughput and reduce per-message overhead, the receiver batches
-messages into Apache Arrow record batches before sending downstream:
+To optimize throughput and reduce per-message overhead, the receiver frames
+original messages into independently decodable pdata batches before sending
+downstream:
 
 ```text
 +-------------------------------------------------------------------+
 |                         Batching Logic                            |
 +-------------------------------------------------------------------+
 |                                                                   |
-|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch sent      |
+|   Messages arrive  -->  SyslogBatchBuilder  -->  Batch sent       |
 |                              |                                    |
 |   Flush conditions:          |                                    |
 |   +- Size: max_size messages +------------------------------->    |
@@ -395,7 +420,10 @@ messages into Apache Arrow record batches before sending downstream:
 
 A batch is flushed when either:
 
-- **`batch.max_size`** messages have accumulated (default: 100), or
+- **`batch.max_size`** messages have accumulated (default: 100, capped at
+  8,192), or
+- The encoded buffer cannot reserve space for another 16 KiB message within
+  its 2 MiB limit, or
 - **`batch.max_batch_duration_ms`** milliseconds have elapsed since the last flush
   (default: 100 ms), or
 - The connection closes (TCP) or the receiver shuts down
@@ -405,11 +433,83 @@ Both thresholds are optionally configurable via the `batch` section (see
 of in-memory data that could be lost on a crash, at the expense of more
 frequent (and smaller) downstream sends.
 
+The syslog codec also caps each encoded output and OTAP conversion at
+**8,192 messages and 2 MiB of encoded framing**, with **16 KiB per message**.
+Codec-native batching splits on either limit even when a batch processor requests
+larger outputs. Split-budget fallback may retain a whole input only if it fits
+these hard limits; otherwise batching fails recoverably rather than emitting an
+oversized decode. Message bytes, order, receipt years, and ownership are preserved.
+
+When a consumer requests native records through the effect handler, inputs with
+at most 256 messages and 256 KiB decode synchronously without a job allocation.
+Larger inputs decode cooperatively into one Arrow batch, offering scheduling
+opportunities between parsing steps. Finalization remains synchronous; hard
+input limits and step budgets do not guarantee a wall-clock latency.
+
+Larger batches also increase the memory retained by count-bounded channels.
+Review channel capacities when increasing batch targets; cooperative execution
+does not itself bound queued bytes.
+
+The opt-in scheduling-latency test arms a timer on the same runtime thread as
+maximum-sized RFC 3164, raw, and attribute-heavy CEF decodes. It exercises the
+cooperative conversion boundary and includes Arrow finalization. Run it in
+release mode on an otherwise idle pinned CPU (replace `<cpu>`):
+
+```sh
+cd rust/otap-dataflow
+cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency --no-run
+taskset -c <cpu> cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
+```
+
+The 50 ms assertion is a regression threshold for that controlled test, not a
+latency guarantee for arbitrary inputs, hardware, or a busy pipeline.
+
 This batching strategy balances:
 
 - **Latency**: Configurable max delay for low-volume streams
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
+
+### Migrating downstream batch settings
+
+Previously, the receiver emitted native OTAP, so a downstream batch processor
+using the default `format: preserve` applied its `otap` settings to syslog.
+The receiver now emits encoded `syslog-batch` inputs, which use codec defaults
+unless that processor configures `codecs.syslog-batch`.
+
+Before, a syslog-only pipeline could use:
+
+```yaml
+type: processor:batch
+config:
+  format: preserve
+  otap:
+    min_size: 50
+    max_size: 200
+    sizer: items
+```
+
+To apply those limits while retaining encoded syslog, use:
+
+```yaml
+type: processor:batch
+config:
+  format: preserve
+  codecs:
+    syslog-batch:
+      min_size: 50
+      max_size: 200
+      sizer: items
+```
+
+These are settings on the downstream batch processor, not the receiver's
+`batch` section. Keep an `otap` block as well if the processor also handles
+native OTAP traffic. The syslog codec supports item sizing only. Its hard
+8,192-message and 2-MiB caps apply even when larger targets are configured.
+
+Alternatively, set `format: otap` and keep the original `otap` block to retain
+native OTAP batching. That materializes receiver batches before merging them;
+the encoded syslog caps do not limit subsequent native OTAP batch sizes.
 
 ### Pressure-aware rate admission
 
@@ -434,10 +534,11 @@ keeps the connection open and emits at most one warning per connection. V1
 creates one bucket per receiver instance and does not provide scheduling
 fairness.
 
-### Arrow Columnar Format
+### Native OTAP Conversion
 
-The receiver converts syslog messages directly into Apache Arrow columnar
-format, which provides:
+When a processor or exporter requests native OTAP, the syslog codec parses the
+framed messages and converts them into Apache Arrow columnar format. This
+provides:
 
 - **Efficient compression**: Columnar layout enables better compression ratios
 - **Zero-copy processing**: Downstream processors can operate on Arrow buffers
@@ -453,14 +554,35 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.syslog_cef`
+#### Shared Receiver Metrics
+
+This receiver opts into the shared `receiver.received` and
+`receiver.processing` metric sets. See the
+[shared receiver contract](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for their definitions and telemetry policy. Entity context includes the fixed
+`protocol` (`tcp` or `udp`); classified messages use `signal=logs`.
+
+Each UDP datagram or emitted TCP frame records one shared receiver observation
+when receiver-local handling terminates. TCP payload size excludes the newline
+delimiter. Processing duration covers active admission and encoded-frame
+append work. It excludes batch buffering, deferred parsing and Arrow
+construction, and pipeline handoff.
+
+`outcome=success` means receiver-local admission and encoded-frame append
+completed. It does not certify that content parsing or Arrow construction
+will succeed when requested downstream. `outcome=refused` means memory-pressure
+or rate-limit admission
+rejected the message, or the framed input was rejected as invalid. The current
+implementation does not emit `outcome=failure`; that outcome is reserved for
+other receiver-local processing errors. Batch buffering, batch construction,
+downstream handoff, and Ack/Nack do not change this outcome.
+
+#### Node Diagnostics
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.syslog_cef.received.items` | `{item}` | Number of log records observed at the socket before parsing. |
-| `receiver.syslog_cef.forwards.items` | `{item}` | Number of log records delivered to the pipeline send path, grouped by `outcome`. |
 | `receiver.syslog_cef.rejections.items` | `{item}` | Number of log records rejected before pipeline admission, grouped by bounded `error.type` and `protocol`. |
-| `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
+| `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected when a newline-delimited message reaches the size limit or an octet-counted frame declares a larger payload. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
 | `receiver.syslog_cef.transport.errors` | `{error}` | Number of transport-level errors, grouped by `protocol` (e.g. TLS handshake failures). |
 | `receiver.syslog_cef.connections.active` | `{connection}` | Number of active TCP connections. |
 | `receiver.syslog_cef.connections.rejected` | `{connection}` | Number of TCP connections rejected or closed. |
@@ -480,7 +602,7 @@ never measurement attributes.
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timed out while connection tasks were still active. |
 | `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed for an incoming connection. |
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed and the connection was closed. |
-| `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Arrow records could not be built from a parsed batch; the batch was dropped. |
+| `syslog_cef_receiver.batch.seal_failed` | `warn` | An encoded syslog batch could not be sealed or admitted; the batch was dropped. |
 | `syslog_cef_receiver.memory_pressure.disconnect` | `warn` | A TCP connection was closed because process-wide memory pressure was active. |
 | `syslog_cef_receiver.rate_limit.drop` | `warn` | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 

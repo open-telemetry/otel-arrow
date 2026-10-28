@@ -175,6 +175,14 @@ impl<T: Sized> From<TypedError<T>> for Error {
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// A pdata codec operation failed.
+    #[error("PData codec operation failed: {0}")]
+    PdataCodec(#[from] otel_arrow_dfe_pdata_codec::CodecError),
+
+    /// The linked pdata codec registry is invalid.
+    #[error("PData codec initialization failed: {0}")]
+    PdataCodecRegistry(#[from] otel_arrow_dfe_pdata_codec::RegistryError),
+
     /// A wrapper for the config errors.
     #[error("A config error occurred: {0}")]
     ConfigError(#[from] Box<otel_arrow_dfe_config::error::Error>),
@@ -254,6 +262,16 @@ pub enum Error {
 
         /// Pre-formatted representation of the source chain used when rendering the error.
         source_detail: String,
+    },
+
+    /// A receiver opted into startup readiness but dropped its signal without firing it.
+    #[error(
+        "Receiver `{receiver}` dropped its readiness signaller without signaling ready; \
+         pipeline startup aborted"
+    )]
+    ReceiverReadinessSignallerDropped {
+        /// Receiver that failed to signal readiness.
+        receiver: NodeId,
     },
 
     /// Unknown receiver plugin.
@@ -601,6 +619,8 @@ impl Error {
     #[must_use]
     pub fn variant_name(&self) -> String {
         match self {
+            Error::PdataCodec(_) => "PdataCodec",
+            Error::PdataCodecRegistry(_) => "PdataCodecRegistry",
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",
             Error::ConfigError(_) => "ConfigError",
@@ -628,6 +648,7 @@ impl Error {
             Error::ProcessorError { .. } => "ProcessorError",
             Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
             Error::ReceiverError { .. } => "ReceiverError",
+            Error::ReceiverReadinessSignallerDropped { .. } => "ReceiverReadinessSignallerDropped",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",

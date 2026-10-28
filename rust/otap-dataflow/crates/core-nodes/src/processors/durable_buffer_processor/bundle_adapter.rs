@@ -54,7 +54,8 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otap::schema::SchemaIdBuilder;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
@@ -352,10 +353,10 @@ impl RecordBundle for OtapRecordBundleAdapter {
         let payload_type = slot_to_payload_type(slot)?;
 
         // For signal-specific slots, verify the signal type matches
-        if let Some((signal_type, _)) = from_slot_id(slot) {
-            if signal_type != self.signal_type {
-                return None;
-            }
+        if let Some((signal_type, _)) = from_slot_id(slot)
+            && signal_type != self.signal_type
+        {
+            return None;
         }
         // Shared slots (RESOURCE_ATTRS, SCOPE_ATTRS) are allowed for any signal type
 
@@ -702,12 +703,12 @@ where
                 .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
         }
         // Also include shared slots (RESOURCE_ATTRS, SCOPE_ATTRS)
-        else if let Some(payload_type) = slot_to_payload_type(*slot_id) {
-            if is_shared_slot(*slot_id) {
-                store
-                    .set(payload_type, batch.clone())
-                    .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
-            }
+        else if let Some(payload_type) = slot_to_payload_type(*slot_id)
+            && is_shared_slot(*slot_id)
+        {
+            store
+                .set(payload_type, batch.clone())
+                .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
         }
     }
 

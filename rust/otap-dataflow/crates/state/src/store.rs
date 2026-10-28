@@ -601,7 +601,7 @@ mod tests {
     use otel_arrow_dfe_telemetry::otel_info;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::self_tracing::{
-        LOG_ARGUMENTS_ENCODE_INLINE, LogContext, LogRecord,
+        LOG_ARGUMENTS_ENCODE_LIMIT, LogContext, LogRecord,
     };
     use std::time::Duration;
     use std::time::SystemTime;
@@ -682,7 +682,7 @@ mod tests {
         };
         let error = format!(
             "Pipeline runtime error: {}",
-            "x".repeat(LOG_ARGUMENTS_ENCODE_INLINE * 2)
+            "x".repeat(LOG_ARGUMENTS_ENCODE_LIMIT * 2)
         );
 
         tracing::dispatcher::with_default(&dispatch, || {
@@ -832,10 +832,11 @@ mod tests {
         // Wait until all cores appear in the state map.
         let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
         for _ in 0..200 {
-            if let Some(status) = handle.pipeline_status(&pipeline_key) {
-                if status.total_cores() == num_cores && status.running_cores() == num_cores {
-                    break;
-                }
+            if let Some(status) = handle.pipeline_status(&pipeline_key)
+                && status.total_cores() == num_cores
+                && status.running_cores() == num_cores
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -929,10 +930,11 @@ mod tests {
         // Wait until all cores reach Running.
         let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
         for _ in 0..200 {
-            if let Some(status) = handle.pipeline_status(&pipeline_key) {
-                if status.total_cores() == num_cores && status.running_cores() == num_cores {
-                    break;
-                }
+            if let Some(status) = handle.pipeline_status(&pipeline_key)
+                && status.total_cores() == num_cores
+                && status.running_cores() == num_cores
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

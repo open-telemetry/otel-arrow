@@ -1,0 +1,6 @@
+type: clickhouse
+status:
+  class: exporter
+  codeowners:
+    active:
+      - lquerel

@@ -477,7 +477,7 @@ impl ExemplarsRecordBatchBuilder {
                 default_values_optional: false,
             }),
             time_unix_nano: TimestampNanosecondArrayBuilder::new(ArrayOptions {
-                optional: true,
+                optional: false,
                 dictionary_options: None,
                 ..Default::default()
             }),
@@ -588,14 +588,18 @@ impl ExemplarsRecordBatchBuilder {
         );
         columns.push(array);
 
-        if let Some(array) = self.time_unix_nano.finish() {
-            fields.push(Field::new(
-                consts::TIME_UNIX_NANO,
-                array.data_type().clone(),
-                false,
-            ));
-            columns.push(array);
-        }
+        // SAFETY: `expect` is safe here because `AdaptiveArrayBuilder` guarantees that for
+        // non-optional arrays, `finish()` will always return an array, even if it is empty.
+        let array = self
+            .time_unix_nano
+            .finish()
+            .expect("finish returns `Some(array)`");
+        fields.push(Field::new(
+            consts::TIME_UNIX_NANO,
+            array.data_type().clone(),
+            false,
+        ));
+        columns.push(array);
 
         if let Some(array) = self.int_value.finish() {
             fields.push(Field::new(
@@ -842,20 +846,12 @@ impl SummaryDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.count.finish() {
-            fields.push(Field::new(
-                consts::SUMMARY_COUNT,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::COUNT, array.data_type().clone(), false));
             columns.push(array);
         }
 
         if let Some(array) = self.sum.finish() {
-            fields.push(Field::new(
-                consts::SUMMARY_SUM,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::SUM, array.data_type().clone(), false));
             columns.push(array);
         }
 
@@ -1053,11 +1049,7 @@ impl HistogramDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.count.finish() {
-            fields.push(Field::new(
-                consts::HISTOGRAM_COUNT,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::COUNT, array.data_type().clone(), false));
             columns.push(array);
         }
 
@@ -1082,11 +1074,7 @@ impl HistogramDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.sum.finish() {
-            fields.push(Field::new(
-                consts::HISTOGRAM_SUM,
-                array.data_type().clone(),
-                true,
-            ));
+            fields.push(Field::new(consts::SUM, array.data_type().clone(), true));
             columns.push(array);
         }
 
@@ -1318,20 +1306,12 @@ impl ExponentialHistogramDataPointsRecordBatchBuilder {
         }
 
         if let Some(array) = self.count.finish() {
-            fields.push(Field::new(
-                consts::HISTOGRAM_COUNT,
-                array.data_type().clone(),
-                false,
-            ));
+            fields.push(Field::new(consts::COUNT, array.data_type().clone(), false));
             columns.push(array);
         }
 
         if let Some(array) = self.sum.finish() {
-            fields.push(Field::new(
-                consts::HISTOGRAM_SUM,
-                array.data_type().clone(),
-                true,
-            ));
+            fields.push(Field::new(consts::SUM, array.data_type().clone(), true));
             columns.push(array);
         }
 

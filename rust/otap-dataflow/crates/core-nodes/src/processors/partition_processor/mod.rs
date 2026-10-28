@@ -16,28 +16,36 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::{context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
-use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
+    NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
+    context::PipelineContext,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
 use otel_arrow_dfe_otap::accessory::slots::Key;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
+use otel_arrow_dfe_query_engine::pipeline::{MetricTypeContext, SignalContext, SignalKind};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
@@ -75,6 +83,7 @@ fn create_partition_processor(
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: |value| {
         let config: Config = serde_json::from_value(value.clone()).map_err(|e| {
@@ -87,31 +96,51 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
         // about invalid expressions in user's config
         match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let (expr, function_defs) =
-                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not parse OPL Expression: {e:?}"),
-                    })?;
-
-                let _ = Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
-                    }
-                })?;
+                let _ = try_create_partitioner(&opl_expression, config.signal_type.as_ref())?;
             }
         };
-
         Ok(())
     },
 };
+
+fn try_create_partitioner(
+    opl_expression: &str,
+    signal_type: Option<&SignalType>,
+) -> Result<Partitioner, ConfigError> {
+    let (expr, function_defs) =
+        OplParser::parse_expr_with_options(opl_expression, default_parser_options()).map_err(
+            |e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!("Could not parse OPL Expression: {e:?}"),
+            },
+        )?;
+
+    let signal_context = match signal_type {
+        None => SignalContext::All,
+        Some(SignalType::Logs) => SignalContext::Single(SignalKind::Logs),
+        Some(SignalType::Metrics) => {
+            SignalContext::Single(SignalKind::Metrics(MetricTypeContext::All))
+        }
+        Some(SignalType::Traces) => SignalContext::Single(SignalKind::Traces),
+    };
+
+    Partitioner::try_new(expr, function_defs, signal_context).map_err(|e| {
+        ConfigError::InvalidUserConfig {
+            error: format!("Could not plan partitioner from OPL expression: {e:?}"),
+        }
+    })
+}
 
 /// partition processor.
 pub struct PartitionProcessor {
     contexts: Contexts,
     partitioner: Partitioner,
-    header_name: String,
+    header_name: ContextEntryName,
     serialization_strategy: PartitionValueSerializeStrategy,
     metrics: MeasurementMetricSet<Metrics>,
+
+    /// batches containing this type of signal will be partitioned by this instance, other batches
+    /// will be passed through unmodified. Set to None to partition all signal batches.
+    signal_type: Option<SignalType>,
 }
 
 impl PartitionProcessor {
@@ -124,20 +153,11 @@ impl PartitionProcessor {
                 error: format!("Failed to parse PartitionProcessor config: {e}"),
             }
         })?;
+        config.validate_context_declarations(pipeline_ctx)?;
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let (expr, function_defs) =
-                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not parse OPL Expression: {e:?}"),
-                    })?;
-
-                Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
-                    }
-                })?
+                try_create_partitioner(&opl_expression, config.signal_type.as_ref())?
             }
         };
 
@@ -147,6 +167,7 @@ impl PartitionProcessor {
             header_name: config.partition_header_name,
             serialization_strategy: config.header_serialization_strategy,
             metrics: Metrics::register(pipeline_ctx),
+            signal_type: config.signal_type,
         })
     }
 
@@ -155,18 +176,20 @@ impl PartitionProcessor {
     async fn handle_ack_nack(
         &mut self,
         outbound_key: Key,
-        signal_type: SignalType,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         // clear the outbound context
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let pdata = OtapPdata::new(inbound.context, OtapPayload::empty(signal_type));
+            let pdata = inbound.delivery.into_pdata();
             if let Some(error) = inbound.error {
-                effect_handler
-                    .notify_nack(NackMsg::new_with_cause(error.reason, pdata, error.cause))
-                    .await
+                let nack_msg = if inbound.outbound_all_transient_errors {
+                    NackMsg::new_with_cause(error.reason, pdata, error.cause)
+                } else {
+                    NackMsg::new_permanent_with_cause(error.reason, pdata, error.cause)
+                };
+                effect_handler.notify_nack(nack_msg).await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
             }
@@ -196,12 +219,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
 
                 NodeControlMsg::Ack(ack_msg) => {
-                    self.handle_ack_nack(
-                        ack_msg.unwind.route.calldata.try_into()?,
-                        ack_msg.accepted.signal_type(),
-                        effect_handler,
-                    )
-                    .await?
+                    let outbound_key: Key = ack_msg.unwind.route.calldata.try_into()?;
+                    self.contexts
+                        .set_outbound_all_transient_errors(outbound_key, false);
+                    self.handle_ack_nack(outbound_key, effect_handler).await?
                 }
 
                 NodeControlMsg::Nack(nack_msg) => {
@@ -213,12 +234,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             cause: nack_msg.cause,
                         },
                     );
-                    self.handle_ack_nack(
-                        outbound_key,
-                        nack_msg.refused.signal_type(),
-                        effect_handler,
-                    )
-                    .await?;
+                    if nack_msg.permanent {
+                        self.contexts
+                            .set_outbound_all_transient_errors(outbound_key, false);
+                    }
+                    self.handle_ack_nack(outbound_key, effect_handler).await?;
                 }
 
                 NodeControlMsg::Config { .. }
@@ -232,6 +252,14 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
             },
             Message::PData(mut pdata) => {
+                // check if this batch should be pass-through based on configured signal type
+                if let Some(expected_signal_type) = &self.signal_type
+                    && pdata.signal_type() != *expected_signal_type
+                {
+                    effect_handler.send_message_with_source_node(pdata).await?;
+                    return Ok(());
+                }
+
                 // get/preserve the original flow_metric ns counter
                 let flow_metrics_counter = pdata.take_flow_compute();
                 if let Some(flow) = flow_metrics_counter {
@@ -239,9 +267,18 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (mut inbound_context, payload) = pdata.into_parts();
-                let signal_type = payload.signal_type();
-                let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
+                let (mut delivery, mut otap_batch) =
+                    match effect_handler.prepare_otap_work(pdata).await {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            let (error, pdata) = error.into_parts();
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                .await?;
+                            return Ok(());
+                        }
+                    };
+                let signal_type = delivery.signal_type();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
 
@@ -274,8 +311,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 match partitions.len() {
                     0 => {
                         // no partitions, just Ack the inbound
-                        let mut pdata =
-                            OtapPdata::new(inbound_context, OtapPayload::empty(signal_type));
+                        let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
 
                         pdata.complete_processor_without_output(effect_handler);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -289,26 +325,28 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let partition = partitions.next().expect("at least one partition");
 
                         // update the header values
-                        let mut headers =
-                            inbound_context.take_transport_headers().unwrap_or_default();
+                        let mut headers = delivery
+                            .context_mut()
+                            .take_transport_headers()
+                            .unwrap_or_default();
                         headers.push(partition_value_to_transport_header(
-                            self.header_name.clone(),
+                            &self.header_name,
                             &self.serialization_strategy,
                             partition.value,
                         ));
-                        inbound_context.set_transport_headers(headers);
+                        delivery.context_mut().set_transport_headers(headers);
 
-                        let pdata =
-                            OtapPdata::new(inbound_context, OtapPayload::from(partition.batch));
+                        let pdata = delivery.with_payload(partition.batch.into());
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
+                        let outbound_context = delivery.context().clone_detached();
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(inbound_context.clone(), None, None)
+                            .insert_inbound(delivery, None)
                             .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
@@ -353,11 +391,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })?;
 
                             // set the transport header
-                            let mut pdata_context = inbound_context.clone_detached();
+                            let mut pdata_context = outbound_context.clone_detached();
                             let mut headers =
                                 pdata_context.take_transport_headers().unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
-                                self.header_name.clone(),
+                                &self.header_name,
                                 &self.serialization_strategy,
                                 partition.value,
                             ));
@@ -415,11 +453,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
 }
 
 fn partition_value_to_transport_header(
-    name: String,
+    name: &ContextEntryName,
     strategy: &PartitionValueSerializeStrategy,
     partition_value: PartitionValue,
 ) -> TransportHeader {
-    match strategy {
+    let (value_kind, value_bytes) = match strategy {
         PartitionValueSerializeStrategy::ToBytesLossy {
             text_as_binary_header,
         } => {
@@ -441,12 +479,7 @@ fn partition_value_to_transport_header(
                 PartitionValue::Null => Vec::new(),
             };
 
-            TransportHeader {
-                wire_name: name.clone(),
-                name,
-                value_kind,
-                value: header_bytes,
-            }
+            (value_kind, header_bytes)
         }
         PartitionValueSerializeStrategy::Json => {
             let header_bytes = match partition_value {
@@ -479,22 +512,29 @@ fn partition_value_to_transport_header(
                 }
             };
 
-            TransportHeader {
-                wire_name: name.clone(),
-                name,
-                value_kind: ValueKind::Text,
-                value: header_bytes,
-            }
+            (ValueKind::Text, header_bytes)
         }
+    };
+    TransportHeader::new(name.clone(), value_kind, value_bytes)
+}
+
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        std::iter::once(ContextDeclaration::Produces {
+            domain: ContextDomain::TransportHeader,
+            entry: self.partition_header_name.clone(),
+        })
+        .collect()
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     use super::*;
 
+    use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
@@ -502,40 +542,62 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
+            install_test_context_bindings,
             processor::{TestContext, TestRuntime},
             test_node,
         },
     };
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn transport_header(
+        name: impl AsRef<str>,
+        value_kind: ValueKind,
+        value: impl Into<Box<[u8]>>,
+    ) -> TransportHeader {
+        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
+    }
+    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_otap::{
+        OTAP_PIPELINE_FACTORY,
         pdata::Context,
         testing::{TestCallData, next_ack, next_nack},
     };
     use otel_arrow_dfe_pdata::{
-        OtlpProtoBytes, TryFromWithOptions,
+        OtlpProtoBytes,
         otap::Logs,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
             },
         },
         testing::round_trip::otlp_to_otap,
     };
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
+
+    fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
+        otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
+            .expect("OTLP conversion")
+    }
 
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
-    ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
+    ) -> Result<ProcessorWrapper<OtapPdata>, EngineError> {
         let mut node_config = NodeUserConfig::new_processor_config(PARTITION_PROCESSOR_URN);
         node_config.config = config;
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_context = controller_context.pipeline_context_with(
+        let mut pipeline_context = controller_context.pipeline_context_with(
             "group_id".into(),
             "pipeline_id".into(),
             0,
@@ -543,13 +605,31 @@ mod test {
             0,
         );
         let node_id = test_node("partition_processor");
-        create_partition_processor(
+        let pipeline_config = serde_json::from_value(serde_json::json!({
+            "nodes": { "partition_processor": &node_config }
+        }))
+        .expect("test pipeline configuration");
+        install_test_context_bindings(
+            &mut pipeline_context,
+            &OTAP_PIPELINE_FACTORY,
+            pipeline_config,
+        )?;
+        let pipeline_context = pipeline_context.with_node_context(
+            "partition_processor".into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            HashMap::new(),
+        );
+        let processor = create_partition_processor(
             pipeline_context,
             node_id,
             Arc::new(node_config),
             runtime.config(),
             &Capabilities::empty(),
         )
+        .map_err(|config_err| EngineError::ConfigError(Box::new(config_err)))?;
+
+        Ok(processor)
     }
 
     fn partition_operation_counts(
@@ -591,8 +671,26 @@ mod test {
             .await
     }
 
-    /// Helper to send a Nack for a given context
+    /// Helper to send a non-permanent Nack for a given context
     async fn send_nack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+        reason: &str,
+        cause: NackCause,
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
+        let nack = next_nack(NackMsg::new_with_cause(
+            reason,
+            OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
+        ));
+        let (_, nack) = nack.unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+            .await
+    }
+
+    /// Helper to send a permanent Nack for a given context
+    async fn send_permanent_nack(
         ctx: &mut TestContext<OtapPdata>,
         context: Context,
         signal_type: SignalType,
@@ -699,16 +797,11 @@ mod test {
                     let header = headers.find_by_name(header_name).next().unwrap();
                     assert_eq!(
                         header,
-                        &TransportHeader {
-                            name: header_name.to_string(),
-                            wire_name: header_name.to_string(),
-                            value_kind: ValueKind::Text,
-                            value: partition_value.as_bytes().to_vec()
-                        }
+                        &transport_header(header_name, ValueKind::Text, partition_value.as_bytes())
                     );
                     outbound_contexts.push(context);
 
-                    let proto_bytes = OtlpProtoBytes::try_from_with_default(payload).unwrap();
+                    let proto_bytes = into_otlp(payload);
                     assert_eq!(
                         LogsData::decode(proto_bytes.as_bytes()).unwrap(),
                         LogsData {
@@ -828,15 +921,10 @@ mod test {
                 let header = headers.find_by_name(header_name).next().unwrap();
                 assert_eq!(
                     header,
-                    &TransportHeader {
-                        name: header_name.to_string(),
-                        wire_name: header_name.to_string(),
-                        value_kind: ValueKind::Text,
-                        value: "0".as_bytes().to_vec()
-                    }
+                    &transport_header(header_name, ValueKind::Text, "0".as_bytes())
                 );
 
-                let proto_bytes = OtlpProtoBytes::try_from_with_default(payload).unwrap();
+                let proto_bytes = into_otlp(payload);
                 assert_eq!(
                     LogsData::decode(proto_bytes.as_bytes()).unwrap(),
                     LogsData {
@@ -869,6 +957,81 @@ mod test {
             });
     }
 
+    /// Scenario: batches where only some will be partitioned because of configured signal type
+    /// Guarantees: only the selected batches are partitioned
+    #[test]
+    fn test_treats_non_configured_batch_types_as_passthrough() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": "instrumentation_scope.name" },
+                "signal_type": "Logs",
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .expect("create partition processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let logs_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![
+                            ScopeLogs::new(
+                                InstrumentationScope::build().name("scope1").finish(),
+                                vec![LogRecord::build().event_name("hello1").finish()],
+                            ),
+                            ScopeLogs::new(
+                                InstrumentationScope::build().name("scope2").finish(),
+                                vec![LogRecord::build().event_name("hello2").finish()],
+                            ),
+                        ],
+                    )],
+                }));
+
+                let metrics_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![
+                            ScopeMetrics::new(
+                                InstrumentationScope::build().name("scope1").finish(),
+                                vec![Metric::build().name("hello1").finish()],
+                            ),
+                            ScopeMetrics::new(
+                                InstrumentationScope::build().name("scope2").finish(),
+                                vec![Metric::build().name("hello2").finish()],
+                            ),
+                        ],
+                    )],
+                }));
+
+                ctx.process(Message::PData(OtapPdata::new_default(logs_batch.into())))
+                    .await
+                    .unwrap();
+                ctx.process(Message::PData(OtapPdata::new_default(metrics_batch.into())))
+                    .await
+                    .unwrap();
+
+                let output_batches = ctx.drain_pdata().await;
+
+                let mut logs_count = 0;
+                let mut metrics_count = 0;
+                for batch in output_batches {
+                    match batch.signal_type() {
+                        SignalType::Logs => logs_count += 1,
+                        SignalType::Metrics => metrics_count += 1,
+                        SignalType::Traces => panic!("unexpected signal type"),
+                    }
+                }
+
+                assert_eq!(logs_count, 2);
+                assert_eq!(metrics_count, 1);
+            })
+            .validate(move |_ctx| async move {})
+    }
+
     /// Scenario: A partition expression divides by zero while processing a PData message.
     /// Guarantees: The processor returns an error and reports one failed partition operation.
     #[test]
@@ -879,6 +1042,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": "severity_number / 0" },
+                "signal_type": "Logs",
                 "partition_header_name": "partition-header",
             }),
             &runtime,
@@ -1035,7 +1199,13 @@ mod test {
 
                 let mut context = Context::default();
                 let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text("h1", "header1", "hello world"));
+                headers.push(TransportHeader::captured(
+                    context_name("h1"),
+                    "header1",
+                    true,
+                    ValueKind::Text,
+                    "hello world".as_bytes(),
+                ));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
                 let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
@@ -1055,13 +1225,13 @@ mod test {
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
                     let partition_header = headers.find_by_name(header_name).next().unwrap();
-                    if partition_header.value == "0".as_bytes().to_vec() {
+                    if partition_header.value.bytes == b"0" {
                         assert_eq!(flow_counter, Some(4));
                     }
-                    if partition_header.value == "1".as_bytes().to_vec() {
+                    if partition_header.value.bytes == b"1" {
                         assert_eq!(flow_counter, Some(2));
                     }
-                    if partition_header.value == "2".as_bytes().to_vec() {
+                    if partition_header.value.bytes == b"2" {
                         assert_eq!(flow_counter, Some(2));
                     }
                 }
@@ -1088,7 +1258,13 @@ mod test {
                 }));
                 let mut context = Context::default();
                 let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text("h1", "header1", "hello world"));
+                headers.push(TransportHeader::captured(
+                    context_name("h1"),
+                    "header1",
+                    true,
+                    ValueKind::Text,
+                    "hello world".as_bytes(),
+                ));
                 context.set_transport_headers(headers);
                 let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 ctx.process(Message::PData(pdata))
@@ -1104,6 +1280,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: One partition is ACK'd and another is NACK'd transiently.
+    /// Guarantees: The inbound batch is NACK'd permanently because some data was consumed.
     #[test]
     fn test_partitioned_outbound_nack_causes_inbound_to_be_nackd() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -1165,21 +1343,17 @@ mod test {
                     })
                     .collect::<Vec<_>>();
 
-                // send the Acks and ensure we eventually get an Ack for the inbound context
                 let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
                 let (pipeline_completion_tx, mut pipeline_completion_rx) =
                     pipeline_completion_msg_channel(10);
                 ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
                 ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
-                // first outbound partition Ack'd
                 send_ack(&mut ctx, outbound_contexts.pop().unwrap(), SignalType::Logs)
                     .await
                     .unwrap();
-                // no ack b/c not all outbound are ack'd
                 assert!(pipeline_completion_rx.is_empty());
 
-                // second outbound partition Nack'd
                 send_nack(
                     &mut ctx,
                     outbound_contexts.pop().unwrap(),
@@ -1190,12 +1364,15 @@ mod test {
                 .await
                 .unwrap();
 
-                // assert we finally receive an Ack for the inbound pdata
-                let ack_msg = pipeline_completion_rx.recv().await.unwrap();
-                match ack_msg {
+                let completion = pipeline_completion_rx.recv().await.unwrap();
+                match completion {
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = next_nack(nack).expect("expected ack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            nack.permanent,
+                            "nack should be permanent when any downstream partition was ACK'd"
+                        );
                         assert_eq!(nack.reason, "error happened");
                         assert_eq!(nack.cause, NackCause::Refused);
                     }
@@ -1207,31 +1384,225 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: Every partition is NACK'd transiently and the upstream subscriber requests data.
+    /// Guarantees: The inbound Nack remains transient and includes the original inbound payload.
+    #[test]
+    fn test_partitioned_all_transient_nacks_preserve_payload() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event0")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                        .finish(),
+                ];
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(InstrumentationScope::default(), log_records)],
+                    )],
+                }));
+                let expected_num_items = OtapPayload::from(otap_batch.clone()).num_items();
+                let pdata = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    1,
+                    upstream_node_id,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
+                assert_eq!(out.len(), 2);
+                let mut outbound_contexts = out
+                    .into_iter()
+                    .map(|pdata| pdata.into_parts().0)
+                    .collect::<Vec<_>>();
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                send_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "first transient error",
+                    NackCause::Refused,
+                )
+                .await
+                .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+
+                send_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "second transient error",
+                    NackCause::NodeShutdown,
+                )
+                .await
+                .unwrap();
+
+                let completion = pipeline_completion_rx.recv().await.unwrap();
+                match completion {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, mut nack) =
+                            next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            !nack.permanent,
+                            "nack should remain transient when all downstream nacks are transient"
+                        );
+                        assert_eq!(nack.reason, "first transient error");
+                        assert_eq!(nack.cause, NackCause::Refused);
+                        assert_eq!(
+                            nack.refused.num_items(),
+                            expected_num_items,
+                            "nack should preserve the original payload when RETURN_DATA is set"
+                        );
+                    }
+                    other => panic!("expected DeliverNack, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: A partition is NACK'd transiently and another partition is NACK'd permanently.
+    /// Guarantees: The inbound Nack is permanent because not every downstream Nack was transient.
+    #[test]
+    fn test_partitioned_permanent_nack_makes_inbound_permanent() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event0")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                        .finish(),
+                ];
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(InstrumentationScope::default(), log_records)],
+                    )],
+                }));
+                let pdata =
+                    create_pdata_with_subscriber(otap_batch, Interests::NACKS, 1, upstream_node_id);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
+                assert_eq!(out.len(), 2);
+                let mut outbound_contexts = out
+                    .into_iter()
+                    .map(|pdata| pdata.into_parts().0)
+                    .collect::<Vec<_>>();
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                send_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "transient error",
+                    NackCause::Refused,
+                )
+                .await
+                .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+
+                send_permanent_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "permanent error",
+                    NackCause::NodeShutdown,
+                )
+                .await
+                .unwrap();
+
+                let completion = pipeline_completion_rx.recv().await.unwrap();
+                match completion {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            nack.permanent,
+                            "nack should be permanent when any downstream nack is permanent"
+                        );
+                        assert_eq!(nack.reason, "transient error");
+                        assert_eq!(nack.cause, NackCause::Refused);
+                    }
+                    other => panic!("expected DeliverNack, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async move {})
+    }
+
     #[test]
     fn test_partition_value_to_transport_header_to_bytes_lossy() {
-        let header_name = "partition";
+        let header_name = context_name("partition");
         let strategy = PartitionValueSerializeStrategy::ToBytesLossy {
             text_as_binary_header: false,
         };
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::String("test".to_string()),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "test".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "test".as_bytes())
         );
 
         // ensure we also encode as Binary if configured ...
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &PartitionValueSerializeStrategy::ToBytesLossy {
                 text_as_binary_header: true,
             },
@@ -1239,215 +1610,133 @@ mod test {
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: "test".as_bytes().to_vec()
-            }
+            TransportHeader::binary(header_name.clone(), "test".as_bytes().to_vec())
         );
 
         // check other header types ...
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Int(514),
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Int(514));
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: 514i64.to_le_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Binary, 514i64.to_le_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Float(14.7),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: 14.7f64.to_le_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Binary, 14.7f64.to_le_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(true),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![1]
-            }
+            transport_header(&header_name, ValueKind::Binary, [1])
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(false),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![0]
-            }
+            transport_header(&header_name, ValueKind::Binary, [0])
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Binary(vec![4, 1, 8]),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![4, 1, 8],
-            }
+            transport_header(&header_name, ValueKind::Binary, [4, 1, 8])
         );
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Null,
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Null);
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![]
-            }
+            transport_header(&header_name, ValueKind::Binary, [])
         );
     }
 
     #[test]
     fn test_partition_value_to_transport_header_json() {
-        let header_name = "partition";
+        let header_name = context_name("partition");
         let strategy = PartitionValueSerializeStrategy::Json;
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::String("test".to_string()),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "\"test\"".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "\"test\"".as_bytes())
         );
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Int(514),
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Int(514));
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "514".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "514".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Float(14.7),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "14.7".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "14.7".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(true),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "true".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "true".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(false),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "false".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "false".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Binary(vec![4, 1, 8]),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "[4,1,8]".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "[4,1,8]".as_bytes())
         );
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Null,
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Null);
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "null".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "null".as_bytes())
         );
     }
 
@@ -1782,5 +2071,48 @@ mod test {
                 );
             })
             .validate(|_ctx| async move {});
+    }
+
+    /// Scenario: a partition processor has an output header.
+    /// Guarantees: its factory declares the output name in the transport-header domain.
+    #[test]
+    fn partition_declaration_names_output() {
+        let config = serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "x-partition"
+        });
+        let config: Config = serde_json::from_value(config).unwrap();
+        let decls = config.context_declarations();
+        assert_eq!(decls.len(), 1);
+        assert_eq!(
+            decls.iter().next().expect("one declaration"),
+            &ContextDeclaration::Produces {
+                domain: ContextDomain::TransportHeader,
+                entry: context_name("x-partition"),
+            }
+        );
+    }
+
+    /// Scenario: the config partition expression references a field that is not valid for the
+    /// configured signal type
+    /// Guarantees: an error is returned when validating the config which explains the problem.
+    #[test]
+    fn test_invalid_field_name_is_config_error() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let config = serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "x-partition",
+            "signal_type": "Logs"
+        });
+
+        let Err(error) = create_processor_with_config(config, &runtime) else {
+            panic!("expected error, got Ok")
+        };
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("unknown field name for signal type Single"),
+            "unexpected error {}",
+            error_message
+        )
     }
 }

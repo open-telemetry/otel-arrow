@@ -8,12 +8,13 @@ use std::rc::Rc;
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::common_attributes::{
     HttpResponse, Outcome, OutcomeAttributes, SignalRegistrationAttributes,
 };
 pub use otel_arrow_dfe_telemetry::common_attributes::{
-    HttpResponseAttributes, OutcomeAttributes as ExportOutcomeAttributes,
-    SignalRegistrationAttributes as ExportSignalAttributes,
+    HttpResponseAttributes, OutcomeAttributes as BatchOutcomeAttributes,
+    SignalRegistrationAttributes as BatchSignalAttributes,
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, Mmsc};
@@ -31,46 +32,38 @@ pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsT
 #[metric_set(name = "exporter.azure_monitor")]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterOperationalMetrics {
-    /// Compressed batch size in bytes (min/max/sum/count).
-    /// Recorded once per batch; HTTP retries do not produce additional observations.
-    #[metric(unit = "By")]
-    pub batch_size: Mmsc,
-    /// Uncompressed batch size in bytes (min/max/sum/count).
-    /// Recorded once per batch, before compression.
-    #[metric(unit = "By")]
-    pub batch_uncompressed_size: Mmsc,
     /// Current number of in-flight export requests.
-    #[metric(unit = "{export}")]
+    #[metric(unit = "{export}", name = "in_flight_exports")]
     pub in_flight_exports: Gauge<u64>,
     /// Current number of log records in-flight at the exporter (enqueued export
     /// requests awaiting completion, including records being retried).
-    #[metric(unit = "{log}")]
+    #[metric(unit = "{log}", name = "in_flight_log_records")]
     pub in_flight_log_records: Gauge<u64>,
     /// Number of log entries rejected for exceeding the batch size limit.
-    #[metric(unit = "{entry}")]
+    #[metric(unit = "{entry}", name = "log_entries_too_large")]
     pub log_entries_too_large: Counter<u64>,
 }
 
-/// Export completion metrics partitioned by outcome.
+/// Logical-batch metrics partitioned by signal and outcome.
+///
+/// Counted once per batch at terminal Ack/Nack, distinct from the per-attempt
+/// `exporter.attempted.messages` observations recorded in `client.rs`.
 #[metric_set(
-    name = "exporter.azure_monitor.exports",
+    name = "exporter.azure_monitor",
     registration_attributes = SignalRegistrationAttributes,
     measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct AzureMonitorExporterExportMetrics {
-    /// Number of items in completed export attempts.
-    #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
-    /// Number of completed export batches.
+pub struct AzureMonitorExporterBatchMetrics {
+    /// Number of completed batches.
     #[metric(unit = "{batch}")]
     pub batches: Counter<u64>,
-    /// Number of messages in completed export attempts.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-    /// Compressed request-body bytes in completed export attempts.
-    #[metric(unit = "By")]
-    pub bytes: Counter<u64>,
+    /// Compressed batch size in bytes.
+    #[metric(unit = "By", name = "batch_size")]
+    pub batch_size: Mmsc,
+    /// Uncompressed batch size in bytes.
+    #[metric(unit = "By", name = "batch_uncompressed_size")]
+    pub batch_uncompressed_size: Mmsc,
 }
 
 /// HTTP export attempts partitioned by response category.
@@ -102,6 +95,8 @@ struct StateMappingAttributes {
 }
 
 /// Exporter state-map entry counts partitioned by mapping type.
+///
+/// Tracks the PData-to-batch ownership used to route Ack/Nack.
 #[metric_set(
     name = "exporter.azure_monitor.state",
     measurement_attributes = StateMappingAttributes
@@ -127,8 +122,9 @@ pub struct AzureMonitorExporterHeartbeatMetrics {
 
 /// Full metrics tracker for the Azure Monitor exporter.
 pub struct AzureMonitorExporterMetricsTracker {
+    pub(super) boundary: ExporterMetrics,
     operational_metrics: MetricSet<AzureMonitorExporterOperationalMetrics>,
-    export_metrics: MeasurementMetricSet<AzureMonitorExporterExportMetrics>,
+    batch_metrics: MeasurementMetricSet<AzureMonitorExporterBatchMetrics>,
     http_metrics: MeasurementMetricSet<AzureMonitorExporterHttpMetrics>,
     state_metrics: MeasurementMetricSet<AzureMonitorExporterStateMetrics>,
     heartbeat_metrics: MeasurementMetricSet<AzureMonitorExporterHeartbeatMetrics>,
@@ -146,8 +142,9 @@ impl AzureMonitorExporterMetricsTracker {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            boundary: ExporterMetrics::register(pipeline_ctx),
             operational_metrics: AzureMonitorExporterOperationalMetrics::register(pipeline_ctx),
-            export_metrics: AzureMonitorExporterExportMetrics::register(
+            batch_metrics: AzureMonitorExporterBatchMetrics::register(
                 pipeline_ctx,
                 &SignalRegistrationAttributes {
                     signal: SignalType::Logs,
@@ -161,12 +158,14 @@ impl AzureMonitorExporterMetricsTracker {
 
     /// Report metrics to the telemetry system.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter
-            .report(&mut self.operational_metrics)
-            .and_then(|()| reporter.report_measurement(&mut self.export_metrics))
-            .and_then(|()| reporter.report_measurement(&mut self.http_metrics))
-            .and_then(|()| reporter.report_measurement(&mut self.state_metrics))
-            .and_then(|()| reporter.report_measurement(&mut self.heartbeat_metrics))
+        self.boundary.report(reporter).and_then(|()| {
+            reporter
+                .report(&mut self.operational_metrics)
+                .and_then(|()| reporter.report_measurement(&mut self.batch_metrics))
+                .and_then(|()| reporter.report_measurement(&mut self.http_metrics))
+                .and_then(|()| reporter.report_measurement(&mut self.state_metrics))
+                .and_then(|()| reporter.report_measurement(&mut self.heartbeat_metrics))
+        })
     }
 
     /// Take snapshots of every metric set for terminal state reporting.
@@ -174,8 +173,9 @@ impl AzureMonitorExporterMetricsTracker {
     pub(super) fn terminal_snapshots(
         &mut self,
     ) -> Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
-        let mut snapshots = self.operational_metrics.terminal_snapshots();
-        snapshots.extend(self.export_metrics.terminal_snapshots());
+        let mut snapshots = self.boundary.terminal_snapshots();
+        snapshots.extend(self.operational_metrics.terminal_snapshots());
+        snapshots.extend(self.batch_metrics.terminal_snapshots());
         snapshots.extend(self.http_metrics.terminal_snapshots());
         snapshots.extend(self.state_metrics.terminal_snapshots());
         snapshots.extend(self.heartbeat_metrics.terminal_snapshots());
@@ -184,8 +184,8 @@ impl AzureMonitorExporterMetricsTracker {
 
     #[inline]
     #[must_use]
-    pub(super) fn export_for(&self, outcome: Outcome) -> &AzureMonitorExporterExportMetrics {
-        self.export_metrics.get(OutcomeAttributes { outcome })
+    pub(super) fn batch_for(&self, outcome: Outcome) -> &AzureMonitorExporterBatchMetrics {
+        self.batch_metrics.get(OutcomeAttributes { outcome })
     }
 
     #[inline]
@@ -195,24 +195,18 @@ impl AzureMonitorExporterMetricsTracker {
     }
 
     #[inline]
-    #[must_use]
-    pub(super) fn batch_size(&self) -> Mmsc {
-        self.operational_metrics.batch_size.get()
-    }
-
-    #[inline]
-    pub(super) fn record_export(
+    pub(super) fn record_completed_batch(
         &mut self,
         outcome: Outcome,
-        items: u64,
-        messages: u64,
-        bytes: u64,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) {
-        let metrics = self.export_metrics.with(OutcomeAttributes { outcome });
-        metrics.items.add(items);
-        metrics.batches.inc();
-        metrics.messages.add(messages);
-        metrics.bytes.add(bytes);
+        let bucket = self.batch_metrics.with(OutcomeAttributes { outcome });
+        bucket.batches.inc();
+        bucket.batch_size.record(compressed_size as f64);
+        bucket
+            .batch_uncompressed_size
+            .record(uncompressed_size as f64);
     }
 
     #[inline]
@@ -220,18 +214,6 @@ impl AzureMonitorExporterMetricsTracker {
         let metrics = self.http_metrics.with(HttpResponseAttributes { response });
         metrics.responses.inc();
         metrics.latency.record(latency_ms);
-    }
-
-    #[inline]
-    pub(super) fn add_batch_size(&mut self, size_bytes: f64) {
-        self.operational_metrics.batch_size.record(size_bytes);
-    }
-
-    #[inline]
-    pub(super) fn add_batch_uncompressed_size(&mut self, size_bytes: f64) {
-        self.operational_metrics
-            .batch_uncompressed_size
-            .record(size_bytes);
     }
 
     #[inline]
@@ -269,36 +251,43 @@ impl AzureMonitorExporterMetricsTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
 
     fn new_test_tracker() -> AzureMonitorExporterMetricsTracker {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        // Enable every shared exporter attempt bucket (messages, duration,
+        // payload.size, items) so tests can observe them without depending on
+        // pipeline-wide MetricLevel defaults.
+        let interests = Interests::NODE_INPUT_METRICS
+            | Interests::NODE_LOCAL_DURATION
+            | Interests::NODE_ITEM_COUNTS
+            | Interests::NODE_SIZE;
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(interests);
         AzureMonitorExporterMetricsTracker::register(&pipeline_ctx)
     }
 
-    /// Scenario: Export attempts complete with successful and failed outcomes.
-    /// Guarantees: Each outcome records items, batches, and messages in its own metric bucket.
+    /// Scenario: Compressed batches reach successful and failed terminal outcomes.
+    /// Guarantees: Each outcome has separate count and size metrics.
     #[test]
-    fn export_metrics_are_partitioned_by_outcome() {
+    fn batch_metrics_are_partitioned_by_outcome() {
         let mut metrics = new_test_tracker();
-        metrics.record_export(Outcome::Success, 100, 50, 1_024);
-        metrics.record_export(Outcome::Failure, 10, 5, 512);
+        metrics.record_completed_batch(Outcome::Success, 100, 250);
+        metrics.record_completed_batch(Outcome::Success, 200, 500);
+        metrics.record_completed_batch(Outcome::Failure, 50, 120);
 
-        let success = metrics.export_for(Outcome::Success);
-        assert_eq!(success.items.get(), 100);
-        assert_eq!(success.batches.get(), 1);
-        assert_eq!(success.messages.get(), 50);
-        assert_eq!(success.bytes.get(), 1_024);
+        let success = metrics.batch_for(Outcome::Success);
+        assert_eq!(success.batches.get(), 2);
+        assert_eq!(success.batch_size.get().count, 2);
+        assert_eq!(success.batch_size.get().sum, 300.0);
+        assert_eq!(success.batch_uncompressed_size.get().count, 2);
+        assert_eq!(success.batch_uncompressed_size.get().sum, 750.0);
 
-        let failure = metrics.export_for(Outcome::Failure);
-        assert_eq!(failure.items.get(), 10);
+        let failure = metrics.batch_for(Outcome::Failure);
         assert_eq!(failure.batches.get(), 1);
-        assert_eq!(failure.messages.get(), 5);
-        assert_eq!(failure.bytes.get(), 512);
+        assert_eq!(failure.batch_size.get().count, 1);
+        assert_eq!(failure.batch_size.get().sum, 50.0);
+        assert_eq!(failure.batch_uncompressed_size.get().count, 1);
+        assert_eq!(failure.batch_uncompressed_size.get().sum, 120.0);
     }
 
     /// Scenario: HTTP attempts receive successful, throttled, and network-error responses.
@@ -399,20 +388,21 @@ mod tests {
         );
     }
 
-    /// Scenario: A measurement metric bucket is recorded and terminal snapshots are requested twice.
-    /// Guarantees: The touched bucket is emitted once and cleared after terminal handoff.
+    /// Scenario: Terminal snapshots are requested twice after recording a batch.
+    /// Guarantees: The batch metrics are emitted once.
     #[test]
     fn terminal_snapshots_include_touched_measurement_metrics() {
         let mut metrics = new_test_tracker();
-        metrics.record_export(Outcome::Success, 10, 1, 100);
+        metrics.record_completed_batch(Outcome::Success, 100, 250);
 
         let snapshots = metrics.terminal_snapshots();
-        let export_snapshot = snapshots
+        let batch_snapshot = snapshots
             .iter()
-            .find(|snapshot| snapshot.descriptor().name == "exporter.azure_monitor.exports")
-            .expect("export metrics should be included in terminal snapshots");
+            .find(|snapshot| snapshot.measurement_attribute_value("outcome").is_some())
+            .expect("batch metrics should be included in terminal snapshots");
+        assert_eq!(batch_snapshot.descriptor().name, "exporter.azure_monitor");
         assert_eq!(
-            export_snapshot.measurement_attribute_value("outcome"),
+            batch_snapshot.measurement_attribute_value("outcome"),
             Some("success")
         );
 
@@ -420,18 +410,18 @@ mod tests {
         assert!(
             next_snapshots
                 .iter()
-                .all(|snapshot| snapshot.descriptor().name != "exporter.azure_monitor.exports")
+                .all(|snapshot| snapshot.measurement_attribute_value("outcome").is_none())
         );
     }
 
-    /// Scenario: Operational and measurement metrics are recorded before reporting.
-    /// Guarantees: Reporting emits both the operational and touched measurement metric sets.
+    /// Scenario: Operational and batch metrics are reported.
+    /// Guarantees: Both metric sets are emitted.
     #[test]
     fn operational_metrics_are_reported() {
         let mut metrics = new_test_tracker();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
-        metrics.add_batch_size(42.0);
-        metrics.record_export(Outcome::Success, 42, 1, 420);
+        metrics.set_in_flight_exports(1);
+        metrics.record_completed_batch(Outcome::Success, 42, 100);
 
         metrics.report(&mut reporter).unwrap();
 

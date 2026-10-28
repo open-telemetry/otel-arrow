@@ -453,19 +453,20 @@ impl PendingQueues {
                     return false;
                 };
 
-                if let Some(max_pending_events) = subscription.limits.max_pending_events {
-                    if subscription.events.len() >= max_pending_events {
-                        subscription.dropped_subscription_cap =
-                            subscription.dropped_subscription_cap.saturating_add(1);
-                        return false;
-                    }
+                if let Some(max_pending_events) = subscription.limits.max_pending_events
+                    && subscription.events.len() >= max_pending_events
+                {
+                    subscription.dropped_subscription_cap =
+                        subscription.dropped_subscription_cap.saturating_add(1);
+                    return false;
                 }
-                if let Some(max_pending_bytes) = subscription.limits.max_pending_bytes {
-                    if subscription.pending_bytes.saturating_add(payload_len) > max_pending_bytes {
-                        subscription.dropped_subscription_cap =
-                            subscription.dropped_subscription_cap.saturating_add(1);
-                        return false;
-                    }
+
+                if let Some(max_pending_bytes) = subscription.limits.max_pending_bytes
+                    && subscription.pending_bytes.saturating_add(payload_len) > max_pending_bytes
+                {
+                    subscription.dropped_subscription_cap =
+                        subscription.dropped_subscription_cap.saturating_add(1);
+                    return false;
                 }
 
                 if !pending_accepts_event(
@@ -591,14 +592,16 @@ fn drain_shared_pending(
     // Forward-progress guarantee: ensure at least one event drains per turn
     // when the queue is non-empty, even if the parse phase consumed the
     // deadline before the pop loop could run.
-    if events.is_empty() && !pending_events.is_empty() && max_records > 0 {
-        if let Some(front) = pending_events.front() {
-            let front_len = front.event_data.len();
-            if front_len <= max_bytes {
-                if let Some(event) = pop_pending_event(&mut pending_events, &pending.bytes) {
-                    events.push(event);
-                }
-            }
+    if events.is_empty()
+        && !pending_events.is_empty()
+        && max_records > 0
+        && let Some(front) = pending_events.front()
+    {
+        let front_len = front.event_data.len();
+        if front_len <= max_bytes
+            && let Some(event) = pop_pending_event(&mut pending_events, &pending.bytes)
+        {
+            events.push(event);
         }
     }
 }

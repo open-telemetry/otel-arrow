@@ -379,14 +379,13 @@ where
         // and we only want to append segment to the column builder once per value column per type
         if type_range_attr_type != AttributeValueType::Map
             && type_range_attr_type != AttributeValueType::Slice
+            && let Some(sorted_val_col_builder) = sorted_ser_column.as_mut()
         {
-            if let Some(sorted_val_col_builder) = sorted_ser_column.as_mut() {
-                let len = type_range.len();
-                // append the nulls to the null buffer
-                sorted_val_col_builder.append_n_nulls(len);
-                // fill in the data buffers with default values
-                sorted_val_col_builder.append_n_default_values(len);
-            }
+            let len = type_range.len();
+            // append the nulls to the null buffer
+            sorted_val_col_builder.append_n_nulls(len);
+            // fill in the data buffers with default values
+            sorted_val_col_builder.append_n_default_values(len);
         }
     }
 
@@ -1003,11 +1002,14 @@ impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
                         }
                     })?;
 
+                    // Only physical keys in valid (non-null) slots are guaranteed to be
+                    // in-range dictionary indices. Fall back to rank 0 for any
+                    // out of range values.
                     let key_ranks = dict_arr
                         .keys()
                         .values()
                         .iter()
-                        .map(|k| value_ranks[*k as usize] as u16)
+                        .map(|k| *value_ranks.get(*k as usize).unwrap_or(&0) as u16)
                         .collect::<Vec<_>>();
 
                     let rank_nulls = if dict_arr.keys().null_count() > 0 {
@@ -2719,6 +2721,114 @@ mod test {
         )
         .unwrap();
 
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    /// Scenario: a dictionary-encoded attribute value column has a null row whose
+    /// raw physical key buffer holds a stale index equal to the dictionary length
+    /// (as produced by Arrow `take` reordering keys in the export/serialization path,
+    /// which leaves arbitrary physical values in null key slots).
+    /// Guarantees: transport-optimized encoding does not panic on out-of-range stale
+    /// physical keys in null slots, and those rows are preserved as null in the output.
+    #[test]
+    fn test_transport_optimize_encode_attrs_dict_null_slot_with_stale_key() {
+        // Dictionary values column with exactly 2 entries. Build the keys with an
+        // explicit raw physical buffer plus a separate null bitmap so that a NULL
+        // slot carries a stale physical key equal to the dictionary length (2).
+        //
+        // This mirrors production data: `DictionaryArray::try_new` skips bounds
+        // validation for null key slots (arrow), so this array is valid to
+        // construct, but the pre-fix ranking code indexed `value_ranks[2]` for the
+        // null row and panicked with "index out of bounds".
+        let str_values = Arc::new(StringArray::from_iter_values(["va", "vb"]));
+        // physical keys: row 3 is NULL but carries stale physical value 2 (== len)
+        let raw_keys = ScalarBuffer::<u16>::from(vec![0u16, 1u16, 0u16, 2u16]);
+        let mut null_builder = NullBufferBuilder::new(4);
+        null_builder.append_non_null();
+        null_builder.append_non_null();
+        null_builder.append_non_null();
+        null_builder.append_null(); // stale physical key 2 lives here
+        let keys = UInt16Array::new(raw_keys, null_builder.finish());
+        let str_col = Arc::new(DictionaryArray::new(keys, str_values));
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_KEY,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                str_col,
+            ],
+        )
+        .unwrap();
+
+        // Expected output after sorting by (type, key, value):
+        // - all rows are type=Str, key="ka"
+        // - values sort ascending with nulls last:
+        //     "va" (parent_id 0), "va" (parent_id 2), "vb" (parent_id 1), null (parent_id 3)
+        // - PARENT_ID is quasi-delta encoded: the two adjacent equal "va" values are
+        //   delta encoded (0, then 2-0=2); "vb" is a new value (1); the null row is
+        //   never delta encoded (3). This asserts the null landed on the correct row
+        //   (parent_id 3) and that non-null keys/values kept their association.
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_KEY,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 2, 1, 3])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([Some(0), Some(0), Some(1), None]),
+                    Arc::new(StringArray::from_iter_values(["va", "vb"])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        // Before the fix this panics at attributes.rs with "index out of bounds".
         let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }

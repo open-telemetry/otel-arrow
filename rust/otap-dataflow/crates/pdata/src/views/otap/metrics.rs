@@ -1148,15 +1148,15 @@ impl<'a> NumberDataPointView for OtapNumberDataPointView<'a> {
     fn value(&self) -> Option<Value> {
         let arrays = self.view.number_dp_arrays.as_ref()?;
         // Prefer double over int (same logic as proto encoder)
-        if let Some(col) = arrays.double_value {
-            if let Some(val) = col.value_at(self.row_idx) {
-                return Some(Value::Double(val));
-            }
+        if let Some(col) = arrays.double_value
+            && let Some(val) = col.value_at(self.row_idx)
+        {
+            return Some(Value::Double(val));
         }
-        if let Some(col) = arrays.int_value {
-            if let Some(val) = col.value_at(self.row_idx) {
-                return Some(Value::Integer(val));
-            }
+        if let Some(col) = arrays.int_value
+            && let Some(val) = col.value_at(self.row_idx)
+        {
+            return Some(Value::Integer(val));
         }
         None
     }
@@ -1922,15 +1922,15 @@ impl<'a> ExemplarView for OtapExemplarView<'a> {
 
     #[inline]
     fn value(&self) -> Option<Value> {
-        if let Some(col) = self.exemplar_arrays.double_value {
-            if let Some(val) = col.value_at(self.row_idx) {
-                return Some(Value::Double(val));
-            }
+        if let Some(col) = self.exemplar_arrays.double_value
+            && let Some(val) = col.value_at(self.row_idx)
+        {
+            return Some(Value::Double(val));
         }
-        if let Some(col) = self.exemplar_arrays.int_value {
-            if let Some(val) = col.value_at(self.row_idx) {
-                return Some(Value::Integer(val));
-            }
+        if let Some(col) = self.exemplar_arrays.int_value
+            && let Some(val) = col.value_at(self.row_idx)
+        {
+            return Some(Value::Integer(val));
         }
         None
     }

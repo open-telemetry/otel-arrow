@@ -155,7 +155,7 @@ pub(crate) struct ControlChannelReceiverMetrics {
     pub(crate) capacity: Gauge<u64>,
 }
 
-/// Ack/nack metrics for consumed messages, owned exclusively by the runtime control manager.
+/// Ack/nack metrics for input messages, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(
@@ -164,14 +164,22 @@ pub(crate) struct ControlChannelReceiverMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct NodeInputMetrics {
-    /// Duration from node input until the corresponding terminal ack or nack
-    /// is routed, in seconds. Reported for processors and exporters at the
-    /// detailed level; receivers have no input and use `node.output.duration`.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
-    /// Consumed messages, grouped by `signal` and `outcome` datapoint attributes.
+    /// Input messages, grouped by `signal` and `outcome` datapoint attributes.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
+}
+
+/// Ack/nack completion duration associated with one node boundary.
+#[metric_set(
+    name = "node.completion",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct NodeCompletionMetrics {
+    /// Duration from the tracked node boundary until the corresponding
+    /// terminal ack or nack is routed, in seconds.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
 }
 
 /// Optional per-signal item metrics for a node input channel.
@@ -181,7 +189,7 @@ pub struct NodeInputMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct NodeInputItemMetrics {
-    /// Consumed signal items, grouped by the `signal` datapoint attribute.
+    /// Input signal items, grouped by the `signal` datapoint attribute.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
 }
@@ -193,12 +201,12 @@ pub struct NodeInputItemMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct NodeInputSizeMetrics {
-    /// Consumed logical payload size, grouped by `signal` and `outcome`.
+    /// Input logical payload size, grouped by `signal` and `outcome`.
     #[metric(unit = "By")]
     pub size: Counter<u64>,
 }
 
-/// Ack/nack metrics for produced messages, owned exclusively by the runtime control manager.
+/// Ack/nack metrics for output messages, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(
@@ -207,13 +215,7 @@ pub struct NodeInputSizeMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct NodeOutputMetrics {
-    /// Duration from receiver output until the corresponding terminal ack or
-    /// nack is routed, in seconds. Reported only for receivers at the detailed
-    /// level. Processors and exporters use `node.input.duration` so each node
-    /// frame emits one terminal-latency observation rather than duplicating it.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
-    /// Produced messages, grouped by `signal` and `outcome` datapoint attributes.
+    /// Output messages, grouped by `signal` and `outcome` datapoint attributes.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
 }
@@ -225,7 +227,7 @@ pub struct NodeOutputMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct NodeOutputItemMetrics {
-    /// Produced signal items, grouped by the `signal` datapoint attribute.
+    /// Output signal items, grouped by the `signal` datapoint attribute.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
 }
@@ -237,7 +239,7 @@ pub struct NodeOutputItemMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct NodeOutputSizeMetrics {
-    /// Produced logical payload size, grouped by `signal` and `outcome`.
+    /// Output logical payload size, grouped by `signal` and `outcome`.
     #[metric(unit = "By")]
     pub size: Counter<u64>,
 }

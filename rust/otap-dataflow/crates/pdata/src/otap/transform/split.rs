@@ -58,6 +58,16 @@ pub fn split<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
     max_items: NonZeroU32,
 ) -> SplitResult<N> {
+    split_with_sources(batches, max_items, |_, _| {})
+}
+
+/// Reports the input index and number of fragments as each split is executed.
+/// The callback observes provenance before later concatenation can redact rows.
+pub(crate) fn split_with_sources<const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+    max_items: NonZeroU32,
+    mut fragments: impl FnMut(usize, usize),
+) -> SplitResult<N> {
     if batches.is_empty() {
         return Ok(vec![]);
     }
@@ -99,7 +109,9 @@ pub fn split<const N: usize>(
         total_items += num_items(&batch);
 
         // Execute
+        let start = output.len();
         execute_split(batch, root_type, &ranges, &mut output)?;
+        fragments(i, output.len() - start);
     }
 
     Ok(output)
@@ -743,8 +755,7 @@ mod tests {
     use arrow::array::RecordBatch;
 
     use super::*;
-    use crate::otap::transform::concatenate::concatenate;
-    use crate::otap::transform::reindex::reindex;
+    use crate::otap::transform::concatenate::{ConcatOptions, concatenate};
     use crate::otap::transform::testing::collect_row_ids;
     use crate::otap::transform::util::access_column;
     use crate::otap::transform::util::payload_to_idx;
@@ -1293,8 +1304,8 @@ mod tests {
         // Reindex + concatenate input into a single OTLP message for equivalence.
         let input_otlp = {
             let mut input_clone = batches.to_vec();
-            reindex::<N>(&mut input_clone).unwrap();
-            let input_combined = concatenate::<N>(&mut input_clone).unwrap();
+            let input_combined =
+                concatenate::<N>(&mut input_clone, ConcatOptions::reindex()).unwrap();
             otap_to_otlp(&to_otap(&input_combined))
         };
 
@@ -1374,8 +1385,8 @@ mod tests {
 
             // Reindex + concatenate output and assert OTLP equivalence.
             {
-                reindex::<N>(&mut result).unwrap();
-                let output_combined = concatenate::<N>(&mut result).unwrap();
+                let output_combined =
+                    concatenate::<N>(&mut result, ConcatOptions::reindex()).unwrap();
                 let output_otlp = otap_to_otlp(&to_otap(&output_combined));
                 assert_equivalent(std::slice::from_ref(&input_otlp), &[output_otlp]);
             }

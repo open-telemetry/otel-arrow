@@ -40,11 +40,11 @@ use otel_arrow_dfe_engine::processor::{
     FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::OtapPayload;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
@@ -66,6 +66,7 @@ static LOG_SAMPLING_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<O
                 create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
@@ -108,15 +109,22 @@ impl LogSamplingProcessor {
     /// Processes a log payload: sample, filter, and forward or ack.
     async fn process_logs(
         &mut self,
-        mut pdata: OtapPdata,
+        pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        let total = pdata.num_items();
-
-        // Convert to Arrow records (no-op if already Arrow)
-        let (context, payload) = pdata.into_parts();
-        let mut records: OtapArrowRecords = payload.try_into_with_default()?;
+        let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
+            Ok(arrow_pdata) => arrow_pdata,
+            Err(error) => {
+                let (error, pdata) = error.into_parts();
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                    .await?;
+                return Ok(());
+            }
+        };
+        let (context, mut records) = arrow_pdata.into_parts();
         records.decode_transport_optimized_ids()?;
+        let total = records.num_items();
 
         // Prepare the filter buffer.
         //
@@ -263,7 +271,6 @@ mod tests {
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_otap::testing::TestCallData;
-    use otel_arrow_dfe_pdata::PayloadData;
     use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otel_arrow_dfe_pdata::otap::OtapBatchStore;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
@@ -279,6 +286,8 @@ mod tests {
 
     // ==================== Integration Tests ====================
 
+    /// Scenario: Sampling removes one log from a transport-optimized native batch.
+    /// Guarantees: Output remains native OTAP with normalized IDs and matching attributes.
     #[test]
     fn test_transport_optimized_encoding_removed() {
         let config = serde_json::json!({
@@ -320,11 +329,10 @@ mod tests {
                 assert_eq!(msgs.len(), 1);
                 assert_eq!(msgs[0].num_items(), 2);
 
-                let output_payload = msgs[0].clone().into_parts().1.take_payload();
-                let output_otap = match output_payload.into_data() {
-                    PayloadData::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
-                    PayloadData::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
-                };
+                let output_otap = msgs[0]
+                    .payload_ref()
+                    .otap_ref()
+                    .expect("expected native OTAP output");
 
                 let output_attrs = output_otap.get(ArrowPayloadType::LogAttrs).unwrap();
                 // Make sure we only have two attributes in the output

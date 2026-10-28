@@ -3,28 +3,72 @@
 This directory contains the repository's main CI workflows:
 
 - [`rust-ci.yml`](rust-ci.yml): Rust validation.
+- [`contrib-integration.yml`](contrib-integration.yml): Path-aware contrib
+  integration tests called by Rust CI.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
-- [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
+- [`repo-lint.yaml`](repo-lint.yaml): Repository lint, cargo-deny, and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
+- [`owner-coverage.yml`](owner-coverage.yml): Advisory contrib-owner coverage
+  through owner-authorship or approval; red when missing, but not required.
+  Snapshots refresh on PR updates or write-access manual dispatch, not reviews.
+  Keeping branches current with `main` is good practice; pushing the resulting
+  commits also refreshes coverage. See [owner coverage](../../CODE_REVIEW.md#advisory-owner-coverage).
 - [`post-merge-actions.yml`](post-merge-actions.yml): Shared Rust cache warming.
 
 ## Event model
 
 | Event | Rust | Go | Repository |
 | --- | --- | --- | --- |
-| Pull request | Required and non-required jobs | Required jobs | Lint and changelog |
-| Merge queue | Required jobs only | Required jobs | Lint and changelog |
+| Pull request | Required and non-required jobs | Required jobs | Lint, cargo-deny, and changelog |
+| Merge queue | Required jobs and coverage | Required jobs | Lint, cargo-deny, and changelog |
 | Merge to `main` | Shared-cache maintenance | CodeQL | - |
 
-Pull requests provide broad feedback. Merge-queue runs validate only what is
-required for merging. Post-merge workflows avoid repeating validation that
+Pull requests provide broad feedback. Merge-queue runs validate what is
+required for merging and upload complete Rust and Go coverage for the commit
+that will reach `main`. Post-merge workflows avoid repeating validation that
 already passed in the merge queue.
 
 ## Required checks
 
 The aggregate Rust and Go status jobs define required validation through their
 `needs` lists. Treat those lists as the source of truth when adding or removing
-required jobs.
+required jobs. New external integration jobs can remain non-required while
+their reliability is established.
+
+Repo Lint's required `sanity` check enforces cargo-deny for both Rust workspaces.
+Maintainers may apply `skipdeny` for pre-existing failures not introduced by the
+PR; record a reason and tracking issue. Relabeling reruns Repo Lint, not Rust CI.
+Other required checks remain enforced.
+
+## Contrib integration tests
+
+Contrib components declare platform-specific integration tests in a
+`ci/integration-test.json` file next to the component. The shared
+`contrib-integration.yml` workflow discovers manifests affected by a pull
+request, executes each selected component entry point on its declared runner,
+uploads failure diagnostics, and reports one stable status to Rust CI.
+
+Each manifest contains:
+
+- a repository-unique `id` and display `name`;
+- the GitHub-hosted `runner`, expected `platform`, and `timeout_minutes`;
+- whether failures are `required` or advisory;
+- component-owned `paths` that select the test; and
+- a `command` array executed without a shell wrapper.
+
+The command receives `OTEL_ARROW_INTEGRATION_ARTIFACT_DIR` and should write
+diagnostic logs there when useful. Its exit status preserves the component's
+existing CI success semantics. An optional `cleanup` command array runs after
+the primary command, including on failure.
+
+Supported runner labels are `ubuntu-latest`, `ubuntu-24.04`,
+`windows-latest`, and `macos-latest`. Discovery rejects other labels and
+runner/platform mismatches.
+
+Changes to the shared workflow, discovery and execution scripts, the
+otap-dataflow workspace manifests, lockfile, or contrib-nodes crate manifest
+select every registered integration test. Advisory tests run on pull requests
+but are omitted from merge-queue runs.
 
 ## Caching and artifacts
 

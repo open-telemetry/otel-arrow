@@ -605,10 +605,10 @@ pub async fn write_progress_file(
 
     // Sync parent directory to ensure rename is durable
     #[cfg(unix)]
-    if let Some(parent) = final_path.parent() {
-        if let Ok(dir_file) = tokio::fs::File::open(parent).await {
-            let _ = dir_file.sync_all().await;
-        }
+    if let Some(parent) = final_path.parent()
+        && let Ok(dir_file) = tokio::fs::File::open(parent).await
+    {
+        let _ = dir_file.sync_all().await;
     }
 
     Ok(())

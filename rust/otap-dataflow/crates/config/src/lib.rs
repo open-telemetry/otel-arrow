@@ -19,6 +19,9 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+/// Context configuration: entry names, composite definitions, header
+/// capture and propagation policies, and authorized identity capture.
+pub mod context;
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
@@ -40,10 +43,6 @@ pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;
-/// Transport header core types and capture/propagation engines.
-pub mod transport_headers;
-/// Transport header capture and propagation policy declarations.
-pub mod transport_headers_policy;
 /// Shared URN parsing primitives used by [`node_urn`] and [`extension_urn`].
 mod urn;
 pub use topic::{
@@ -53,6 +52,7 @@ pub use topic::{
 /// Validation helpers for node configuration.
 pub mod validation;
 
+pub use context::{ContextEntryName, ContextEntryRef};
 pub use conversion::ConversionOptions;
 
 /// Signal types
@@ -64,17 +64,6 @@ pub enum SignalType {
     Metrics,
     /// Signal representing a stream of logs.
     Logs,
-}
-
-/// Signal formats
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SignalFormat {
-    /// OTel-Arrow records
-    OtapRecords,
-    /// OTLP protobuf bytes
-    OtlpBytes,
-    // TODO: maybe add types not included in OtapPdata including
-    // OtlpProtoMessage, OtapArrowBytes, and possible opaque.
 }
 
 /// The id of a pipeline group.

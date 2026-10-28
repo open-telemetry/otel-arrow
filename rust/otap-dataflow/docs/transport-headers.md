@@ -126,14 +126,19 @@ when its wire name matches any entry in `match_names`
 (case-insensitive).
 
 - `match_names` (required): wire header names to match
-  (case-insensitive)
-- `store_as` (optional): normalized name used for policy matching
-  and storage. Default: first matched name lowercased.
+  (case-insensitive). Their configured spelling is preserved.
+- `store_as` (optional): stored context name used for policy matching.
+  Its configured spelling is preserved. When omitted, the matched
+  configured wire name is lowercased during policy compilation.
 - `sensitive` (optional): marks the header as containing sensitive
   data (e.g., auth tokens). Default: `false`.
 - `value_kind` (optional): override auto-detected value kind
   (`text` or `binary`). When omitted, headers ending in `-bin`
   are treated as binary; all others as text.
+
+Configured spelling remains part of the stored context-entry identity. Policy
+matching is case-insensitive where documented, but exact stored-name operations
+such as Kafka partition-key hashing observe that spelling.
 
 ### Defaults
 
@@ -198,10 +203,14 @@ header_propagation:
 | --- | --- |
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
-| `named` | Propagate only headers whose stored names appear in the `named` list. |
+| `named` | Select stored headers or qualified composite members. |
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
+
+Unqualified `named` entries select captured headers by stored name. Qualified
+`composite:member` entries select a receiver-materialized transport-header,
+constant, or randomness member when the enclosing composite is present.
 
 Example of the `named` selector:
 
@@ -215,25 +224,96 @@ header_propagation:
         - x-request-id
 ```
 
+#### Composite Members
+
+A named selector can refer to a transport-header, constant, or randomness
+member of a composite context entry using `composite:member` syntax:
+
+```yaml
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: [x-workspace]
+          store_as: workspace
+        - match_names: [x-environment]
+          store_as: environment
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: [product_user:workspace_id]
+        name: stored_name
+
+  context:
+    entries:
+      product_user:
+        - type: authorized_identity
+          name: customer_id
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+
+        # Require environment, referring to "x-environment" to be
+        # equal to "production".
+        - type: transport_header_match
+          name: environment
+          value: production
+```
+
+The `transport_header_match` entry type supports exact-value matching
+over transport headers.
+
+Composite entry bindings (e.g., `product_user:workspace`) are valid only
+when every value-bearing member is present and all conditional entries match
+(i.e., when `environment=production`). The composite is materialized at the
+receiver boundary, and exporters read that snapshot rather than re-evaluating
+conditions after in-pipeline source changes.
+
+Matching has these semantics:
+
+- Stored header names use ASCII case-insensitive comparison.
+- Configured values are compared exactly as UTF-8 bytes.
+- When a condition header has duplicate values, any exact match satisfies that
+  condition.
+- Every condition must be satisfied.
+- Constant and randomness members can be selected for propagation.
+- Authorized-identity members cannot be propagated as transport headers.
+- A qualified composite selector must not resolve to a primitive source also
+  selected by another qualified or unqualified entry.
+- Repeated unqualified selectors, including ASCII case variants, are accepted
+  as equivalent.
+
+Primitive-header overrides retain precedence over the default selector. An
+override that selects the primitive `workspace` header can propagate it
+independently even when `product_user` conditions do not match. Legacy
+overrides do not match qualified constant or randomness members.
+
 ### Name Strategy
 
 | Value | Behavior |
 | --- | --- |
-| `preserve` | Use original wire name (default). |
-| `stored_name` | Use the normalized stored name. |
+| `preserve` | Use the original wire name when available (default). |
+| `stored_name` | Use the stored or selected member name. |
 
 For example, if a header was captured from `X-Tenant-Id` and stored
 as `tenant_id`, then `preserve` emits `X-Tenant-Id` on egress while
-`stored_name` emits `tenant_id`.
+`stored_name` emits `tenant_id`. In the conditional composite example above,
+the primitive `workspace` header is emitted as the selected member name
+`workspace_id`. When no original wire name exists, `preserve` also uses the
+configured member name. Otherwise, it retains the original wire name.
 
 ### Overrides
 
-Each override targets specific headers by their stored (normalized)
-name and can force a different action or name strategy than the
-default.
+Each override targets captured primitive transport headers by their stored name
+and can force a different action or name strategy than the default. Overrides
+do not match qualified composite references or the configured output names of
+constant and randomness members. Control generated members through the default
+qualified selector and action.
 
 - `match.stored_names` (required): match headers whose stored name
-  appears in this list (case-insensitive).
+  appears in this list (case-insensitive). Their configured spelling
+  is preserved.
 - `action` (optional): action for matched headers. Default:
   `propagate`.
 - `name` (optional): override name strategy for matched headers.
@@ -241,9 +321,9 @@ default.
 - `on_error` (optional): override error action for matched headers.
   Inherits from `default.on_error` when omitted.
 
-Overrides are evaluated before the default selector. If a header
-matches an override, the override's action is used and the default
-selector is not consulted.
+Overrides are evaluated before the default selector for captured primitive
+headers. If a primitive header matches an override, the override's action is
+used and the default selector is not consulted.
 
 ## Examples
 

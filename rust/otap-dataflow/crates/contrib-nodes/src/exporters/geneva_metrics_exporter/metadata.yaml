@@ -1,0 +1,14 @@
+type: geneva_metrics
+status:
+  class: exporter
+  codeowners:
+    active:
+      - ngowran
+      - maksmara
+      - sajithmuh
+      - IslamKHALIL
+      - Aleksandr-Melnikov
+      - GreyCat
+      - spoax
+      - rocknrollzz
+

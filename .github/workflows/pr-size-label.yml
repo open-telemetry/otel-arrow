@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  # zizmor: ignore[dangerous-triggers] The pinned labeler reads PR metadata and never checks out or executes PR code.
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 

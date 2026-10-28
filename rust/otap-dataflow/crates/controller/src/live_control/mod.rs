@@ -45,14 +45,32 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
-    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
-    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
-    is_expired, timestamp_now,
+    PipelineOperationKind, PipelineOperationReservationState, RolloutAction, RolloutCoreProgress,
+    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
+    RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState,
+    ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT,
+    TopicRuntimeProfile, is_expired, timestamp_now,
 };
-pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
+pub(crate) use self::state::{
+    LogicalPipelineDeployment, PanicReport, RuntimeInstanceError, RuntimeInstanceExit,
+};
+
+/// Bounded time for a runtime thread to finish after its graceful drain deadline.
+///
+/// The engine uses the drain deadline to force-stop unresolved node work, so the
+/// runtime thread can only report that forced exit after the deadline. Pipeline
+/// extensions may then consume their own bounded five-second shutdown window.
+#[cfg(not(test))]
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(10);
+
+/// Short completion grace for unit tests that exercise both sides of the deadline.
+#[cfg(test)]
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
+
+/// Returns the controller deadline for observing an instance's terminal exit.
+fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
+    drain_deadline + PIPELINE_SHUTDOWN_COMPLETION_GRACE
+}
 
 /// Shared live-control runtime used by the admin control plane and workers.
 ///
@@ -77,6 +95,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Immutable engine-wide requirements for transport-header representation.
+    context_runtime_requirements: ContextRuntimeRequirements,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
     /// Controller-owned topology snapshot used for live rollout placement metadata.
@@ -95,6 +115,31 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state_changed: Condvar,
 }
 
+/// Keeps observability alive until controller-owned telemetry has been handed off.
+///
+/// The existing runtime mutex and condition variable synchronize the controller
+/// with the global shutdown coordinator; dropping the guard also releases error paths.
+pub(super) struct ControllerTelemetryGuard<
+    'a,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug,
+> {
+    runtime: &'a ControllerRuntime<PData>,
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
+    for ControllerTelemetryGuard<'_, PData>
+{
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.controller_telemetry_pending = false;
+        self.runtime.state_changed.notify_all();
+    }
+}
+
 /// Thin adapter that exposes `ControllerRuntime` through the admin trait.
 struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     runtime: Arc<ControllerRuntime<PData>>,
@@ -110,6 +155,16 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) pipeline_key: DeployedPipelineKey,
     /// Admin sender used by live control to send shutdown to the instance.
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
+    /// Compiled context bindings used by this runtime instance.
+    pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Write-once cross-thread startup linearization marker.
+    ///
+    /// The asynchronous lifecycle event channel remains the observable source of
+    /// pipeline state, but an immediate runtime exit can be observed before its
+    /// preceding ready event is reduced. The runtime stores this marker with
+    /// `Release` before publishing `EngineEvent::ready`; rollout waits load it
+    /// with `Acquire` so crossing readiness wins over any later exit.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,
 }
@@ -128,6 +183,8 @@ impl<
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
+        context_runtime_requirements: ContextRuntimeRequirements,
+        context_bindings: Arc<CompiledContextBindings>,
         available_core_ids: Vec<CoreId>,
         topology: NumaTopology,
         engine_tracing_setup: TracingSetup,
@@ -145,6 +202,7 @@ impl<
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            context_runtime_requirements,
             available_core_ids,
             topology,
             engine_tracing_setup,
@@ -154,6 +212,7 @@ impl<
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 config_revision: 0,
+                latest_context_bindings: context_bindings,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
@@ -179,29 +238,30 @@ impl<
                 first_error: None,
                 instance_wait_released: false,
                 global_shutdown_requested: false,
+                global_shutdown_deadline: None,
                 global_shutdown_coordinators: 0,
+                controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
         }
     }
 
     /// Seeds the runtime registry with a pipeline already committed at startup.
-    pub(super) fn register_committed_pipeline(
-        &self,
-        resolved: ResolvedPipelineConfig,
-        placement: PipelinePlacement,
-        generation: u64,
-    ) {
+    pub(super) fn register_committed_pipeline(&self, deployment: &LogicalPipelineDeployment) {
         let pipeline_key = PipelineKey::new(
-            resolved.pipeline_group_id.clone(),
-            resolved.pipeline_id.clone(),
+            deployment.resolved.pipeline_group_id.clone(),
+            deployment.resolved.pipeline_id.clone(),
         );
         self.observed_state_store.set_pipeline_active_cores(
             pipeline_key.clone(),
-            placement.cores.iter().map(|core| core.core_id.id),
+            deployment
+                .placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id),
         );
         self.observed_state_store
-            .set_pipeline_active_generation(pipeline_key.clone(), generation);
+            .set_pipeline_active_generation(pipeline_key.clone(), deployment.baseline_generation);
 
         let mut state = self
             .state
@@ -209,16 +269,10 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         _ = state
             .generation_counters
-            .insert(pipeline_key.clone(), generation + 1);
-        _ = state.logical_pipelines.insert(
-            pipeline_key,
-            LogicalPipelineRecord {
-                resolved,
-                active_generation: generation,
-                placement,
-                placement_generation: 0,
-            },
-        );
+            .insert(pipeline_key.clone(), deployment.baseline_generation + 1);
+        _ = state
+            .logical_pipelines
+            .insert(pipeline_key, deployment.clone());
     }
 
     /// Allocates the next controller-local logical thread identifier.
@@ -286,11 +340,12 @@ impl<
         now: Instant,
     ) {
         let mut enqueue = false;
-        if let Some(rollout) = state.rollouts.get_mut(rollout_id) {
-            if rollout.state.is_terminal() && rollout.completed_at.is_none() {
-                rollout.completed_at = Some(now);
-                enqueue = true;
-            }
+        if let Some(rollout) = state.rollouts.get_mut(rollout_id)
+            && rollout.state.is_terminal()
+            && rollout.completed_at.is_none()
+        {
+            rollout.completed_at = Some(now);
+            enqueue = true;
         }
         if enqueue {
             state
@@ -351,11 +406,12 @@ impl<
         now: Instant,
     ) {
         let mut enqueue = false;
-        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) {
-            if shutdown.state.is_terminal() && shutdown.completed_at.is_none() {
-                shutdown.completed_at = Some(now);
-                enqueue = true;
-            }
+        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id)
+            && shutdown.state.is_terminal()
+            && shutdown.completed_at.is_none()
+        {
+            shutdown.completed_at = Some(now);
+            enqueue = true;
         }
         if enqueue {
             state
@@ -479,6 +535,15 @@ impl<
 {
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
         self.runtime.request_shutdown_all(timeout_secs)
+    }
+
+    fn has_active_instances(&self) -> bool {
+        let state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.has_pending_lifecycle_work()
     }
 
     fn shutdown_pipeline(
@@ -610,3 +675,11 @@ impl<
 #[cfg(test)]
 #[path = "../live_control_tests.rs"]
 mod tests;
+
+/// Constructs the real control plane for OpAMP state-directory invariant tests.
+#[cfg(test)]
+pub(crate) fn state_directory_test_control_plane(
+    config: &OtelDataflowSpec,
+) -> Arc<dyn ControlPlane> {
+    tests::test_runtime(config).control_plane()
+}

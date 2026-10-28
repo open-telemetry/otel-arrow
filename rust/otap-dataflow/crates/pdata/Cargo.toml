@@ -33,6 +33,7 @@ paste = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 roaring = { workspace = true }
 simdutf8 = { workspace = true }
 serde = { workspace = true }
@@ -51,6 +52,7 @@ tokio-stream = { workspace = true }
 prost = { workspace = true }
 criterion = { workspace = true }
 otel-arrow-dfe-test-net = { workspace = true }
+dhat = { workspace = true }
 
 [lints]
 workspace = true
@@ -66,5 +68,20 @@ required-features = ["testing"]
 
 [[bench]]
 name = "sort_by_parent_then_id"
+harness = false
+required-features = ["testing"]
+
+[[bench]]
+name = "sanitize"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "schema_unify"
+harness = false
+required-features = ["testing", "bench"]
+
+[[bench]]
+name = "filter_regex"
 harness = false
 required-features = ["testing"]

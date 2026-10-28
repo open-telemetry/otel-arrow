@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Error;
 use toml::{Table, Value};
 
-use crate::publish_policy::PUBLISH_PACKAGES;
+use crate::publish_policy::{INDEPENDENT_VERSION_PACKAGES, PUBLISH_PACKAGES};
 
 /// Validates the entire structure of the project.
 ///
@@ -169,7 +169,7 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Re
         ));
     }
 
-    check_path_is_true(cargo_toml_path.as_ref(), &["version", "workspace"], package)?;
+    check_package_version(cargo_toml_path.as_ref(), package_name, package)?;
     check_path_is_true(cargo_toml_path.as_ref(), &["authors", "workspace"], package)?;
     check_path_is_true(
         cargo_toml_path.as_ref(),
@@ -186,6 +186,34 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Re
     )?;
 
     Ok(())
+}
+
+fn check_package_version(
+    cargo_toml_path: &Path,
+    package_name: &str,
+    package: &Value,
+) -> anyhow::Result<()> {
+    if INDEPENDENT_VERSION_PACKAGES.contains(&package_name) {
+        let version = package
+            .get("version")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "\u{274C} Independently versioned package {package_name} must have an explicit \
+                     `package.version` in {}",
+                    cargo_toml_path.display()
+                )
+            })?;
+        semver::Version::parse(version).map_err(|error| {
+            anyhow::anyhow!(
+                "\u{274C} Invalid `package.version` {version:?} in {}: {error}",
+                cargo_toml_path.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    check_path_is_true(cargo_toml_path, &["version", "workspace"], package)
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -282,13 +310,79 @@ mod tests {
         let manifest = package(
             r#"
             [package]
-            name = "otel-arrow-dfe-otap"
+            name = "otel-arrow-dfe-validation"
             publish = true
             "#,
         );
 
         assert!(
-            check_publish_policy(Path::new("Cargo.toml"), "otel-arrow-dfe-otap", &manifest)
+            check_publish_policy(
+                Path::new("Cargo.toml"),
+                "otel-arrow-dfe-validation",
+                &manifest
+            )
+            .is_err()
+        );
+    }
+
+    /// Scenario: pdata-views declares its independently managed package version.
+    /// Guarantees: structure validation accepts a valid explicit semantic version.
+    #[test]
+    fn package_version_accepts_independent_version() {
+        let manifest = package(
+            r#"
+            [package]
+            name = "otel-arrow-dfe-pdata-views"
+            version = "0.54.1"
+            "#,
+        );
+
+        assert!(
+            check_package_version(
+                Path::new("Cargo.toml"),
+                "otel-arrow-dfe-pdata-views",
+                &manifest
+            )
+            .is_ok()
+        );
+    }
+
+    /// Scenario: pdata-views inherits the workspace release version.
+    /// Guarantees: independently versioned crates must declare an explicit version.
+    #[test]
+    fn package_version_rejects_workspace_version_for_independent_crate() {
+        let manifest = package(
+            r#"
+            [package]
+            name = "otel-arrow-dfe-pdata-views"
+            version.workspace = true
+            "#,
+        );
+
+        assert!(
+            check_package_version(
+                Path::new("Cargo.toml"),
+                "otel-arrow-dfe-pdata-views",
+                &manifest
+            )
+            .is_err()
+        );
+    }
+
+    /// Scenario: a regular workspace crate declares an independent package version.
+    /// Guarantees: only approved independent crates may opt out of workspace versioning.
+    #[test]
+    fn package_version_rejects_independent_version_for_regular_crate() {
+        let manifest = package(
+            r#"
+            [package]
+            name = "otel-arrow-dfe-config"
+            version = "0.54.1"
+            "#,
+        );
+
+        assert!(
+            check_package_version(Path::new("Cargo.toml"), "otel-arrow-dfe-config", &manifest)
                 .is_err()
         );
     }

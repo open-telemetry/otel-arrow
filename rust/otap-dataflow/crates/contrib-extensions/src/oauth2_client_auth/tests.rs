@@ -6,6 +6,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
@@ -19,13 +21,15 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use wiremock::matchers::{body_string_contains, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 use super::auth::Auth;
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::metrics::OAuth2ClientAuthMetrics;
 use super::*;
-use crate::common::token_refresh::{TokenProviderMetricsTracker, TokenSource};
+use crate::common::background_refresh::{
+    BackgroundProviderMetricsTracker, BackgroundProviderSource,
+};
 
 // -- Helpers ---------------------------------------------------
 
@@ -42,17 +46,28 @@ fn valid_config_json(token_url: &str) -> serde_json::Value {
     })
 }
 
-fn make_tracker() -> TokenProviderMetricsTracker<OAuth2ClientAuthMetrics> {
+fn make_tracker() -> BackgroundProviderMetricsTracker<OAuth2ClientAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<OAuth2ClientAuthMetrics>(EmptyAttributes());
-    TokenProviderMetricsTracker::new(metric_set)
+    BackgroundProviderMetricsTracker::new(metric_set)
 }
 
 fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
     let cfg = config_from_json(valid_config_json(token_url)).expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker())
+    OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    )
 }
 
 /// Starts a mock token endpoint at `/token` returning the given access token
@@ -91,6 +106,50 @@ pub(super) fn generate_test_rsa_keypair() -> (String, String) {
     (key_pair.serialize_pem(), key_pair.public_key_pem())
 }
 
+struct RingVerifiedJwt {
+    public_key_der: Vec<u8>,
+}
+
+impl RingVerifiedJwt {
+    fn new(public_key_pem: &str) -> Self {
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
+            .expect("public key parses");
+        let jsonwebtoken::DecodingKeyKind::SecretOrDer(public_key_der) = key.kind() else {
+            panic!("test key must contain DER");
+        };
+        Self {
+            public_key_der: public_key_der.clone(),
+        }
+    }
+}
+
+impl Match for RingVerifiedJwt {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(body) = std::str::from_utf8(&request.body) else {
+            return false;
+        };
+        let Some(assertion) = body
+            .split('&')
+            .find_map(|field| field.strip_prefix("assertion="))
+        else {
+            return false;
+        };
+        let Some((signing_input, encoded_signature)) = assertion.rsplit_once('.') else {
+            return false;
+        };
+        let Ok(signature) = BASE64_URL_SAFE_NO_PAD.decode(encoded_signature) else {
+            return false;
+        };
+
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            &self.public_key_der,
+        )
+        .verify(signing_input.as_bytes(), &signature)
+        .is_ok()
+    }
+}
+
 /// Builds a token config from the shared valid base plus `extra` top-level keys.
 fn config_json_with(token_url: &str, extra: serde_json::Value) -> serde_json::Value {
     let mut base = valid_config_json(token_url);
@@ -106,7 +165,18 @@ fn config_json_with(token_url: &str, extra: serde_json::Value) -> serde_json::Va
 fn extension_from_config(cfg: &Config) -> OAuth2ClientAuthExtension {
     let auth = Auth::new(cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker())
+    OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    )
 }
 
 /// A TLS-terminating token endpoint whose certificate is signed by a throwaway
@@ -703,8 +773,18 @@ async fn request_includes_scope_and_endpoint_params() {
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
 
     let token = ext
         .get_token()
@@ -732,8 +812,18 @@ async fn oversized_client_secret_file_is_rejected() {
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
 
     let _ = ext
         .get_token()
@@ -768,8 +858,18 @@ async fn client_secret_file_rotation_takes_effect() {
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
 
     let _ = ext.get_token().await.expect("first acquisition");
     std::fs::write(&secret_path, "secret-2").expect("rotate secret");
@@ -801,8 +901,6 @@ async fn client_secret_file_rotation_takes_effect() {
 #[test]
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
-
-    assert!(format!("{tracker:?}").contains("TokenProviderMetricsTracker"));
 
     let before = tracker.snapshot();
     assert!(
@@ -904,6 +1002,7 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
         .and(path("/token"))
         .and(body_string_contains("grant_type=urn"))
         .and(body_string_contains("assertion="))
+        .and(RingVerifiedJwt::new(&public_key_pem))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "jwt-tok",
             "token_type": "Bearer",
@@ -923,8 +1022,18 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
     .expect("valid jwt-bearer config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
 
     let token = ext.get_token().await.expect("jwt-bearer token acquired");
     assert_eq!(token.expose_token(), "jwt-tok");
@@ -990,8 +1099,18 @@ async fn absurd_expires_in_yields_token_without_expiry_jwt_bearer() {
     .expect("valid jwt-bearer config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
 
     let token = ext.get_token().await.expect("jwt-bearer token acquired");
     assert_eq!(token.expose_token(), "no-expiry-jwt-tok");
@@ -1020,8 +1139,18 @@ async fn jwt_bearer_reads_signing_key_from_file() {
     .expect("valid jwt-bearer config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
 
     let token = ext.get_token().await.expect("token acquired via key file");
     assert_eq!(token.expose_token(), "jwt-tok");
@@ -1495,7 +1624,7 @@ async fn missing_client_secret_file_fails_acquisition() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("a missing credential file must fail acquisition");
     assert!(
@@ -1521,7 +1650,7 @@ async fn non_utf8_client_secret_file_is_rejected() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("non-UTF-8 credentials must be rejected");
     assert!(
@@ -1546,7 +1675,7 @@ async fn missing_signing_key_file_fails_acquisition() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("a missing signing key file must fail acquisition");
     assert!(
@@ -1569,7 +1698,7 @@ async fn unusable_signing_key_fails_before_any_request() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("an unusable signing key must fail acquisition");
     assert!(
@@ -1613,10 +1742,7 @@ async fn jwt_bearer_surfaces_error_status_and_body() {
         .await;
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
-    let err = auth
-        .fetch_token()
-        .await
-        .expect_err("a 401 must fail acquisition");
+    let err = auth.fetch().await.expect_err("a 401 must fail acquisition");
     let message = err.to_string();
     assert!(
         message.contains("401"),
@@ -1641,7 +1767,7 @@ async fn jwt_bearer_rejects_an_unparsable_success_body() {
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("an unparsable body must fail acquisition");
     assert!(
@@ -1666,7 +1792,7 @@ async fn jwt_bearer_response_without_expires_in_uses_the_fallback_lifetime() {
         .await;
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
-    let token = auth.fetch_token().await.expect("acquisition succeeds");
+    let token = auth.fetch().await.expect("acquisition succeeds");
     assert_eq!(token.expose_token(), "tok");
     let expires_on = token
         .expires_on()
@@ -1709,7 +1835,7 @@ async fn client_credentials_response_without_expires_in_uses_the_fallback_lifeti
     .await;
 
     let auth = client_credentials_auth(&format!("{}/token", server.uri()));
-    let token = auth.fetch_token().await.expect("acquisition succeeds");
+    let token = auth.fetch().await.expect("acquisition succeeds");
     let remaining = token
         .expires_on()
         .expect("a response without expires_in must still get a finite expiry")
@@ -1740,7 +1866,7 @@ async fn expires_in_is_accepted_as_a_string_on_both_grants() {
             client_credentials_auth(&token_url)
         };
 
-        let token = auth.fetch_token().await.expect("acquisition succeeds");
+        let token = auth.fetch().await.expect("acquisition succeeds");
         let remaining = token
             .expires_on()
             .expect("a string expires_in must still produce an expiry")
@@ -1772,7 +1898,7 @@ async fn a_non_bearer_token_type_is_rejected_on_both_grants() {
         };
 
         let err = auth
-            .fetch_token()
+            .fetch()
             .await
             .expect_err("a non-bearer token_type must fail acquisition");
         assert!(
@@ -1793,7 +1919,7 @@ async fn a_missing_or_differently_cased_token_type_is_treated_as_bearer() {
     ] {
         let server = start_json_token_server(body).await;
         let auth = client_credentials_auth(&format!("{}/token", server.uri()));
-        let token = auth.fetch_token().await.expect("acquisition succeeds");
+        let token = auth.fetch().await.expect("acquisition succeeds");
         assert_eq!(token.expose_token(), "tok");
     }
 }
@@ -1812,7 +1938,7 @@ async fn a_large_error_body_is_truncated_before_it_reaches_the_error() {
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("a 400 must fail acquisition")
         .to_string();

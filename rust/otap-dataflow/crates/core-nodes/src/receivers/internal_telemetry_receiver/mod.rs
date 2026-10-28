@@ -153,6 +153,7 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
                 receiver_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: InternalTelemetryReceiver::validate_config,
 };
@@ -315,13 +316,16 @@ mod tests {
     use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
     use otel_arrow_dfe_engine::local::receiver::Receiver as _;
     use otel_arrow_dfe_engine::message::{Receiver as EngineReceiver, Sender as EngineSender};
-    use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+    use otel_arrow_dfe_engine::testing::{
+        create_not_send_channel, setup_test_runtime, test_node, test_pipeline_runtime_services,
+    };
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
-    use otel_arrow_dfe_pdata::{OtlpProtoBytes, PayloadData, Sizer};
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, Sizer};
+    use otel_arrow_dfe_pdata_codec::PdataEncoding;
     use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent};
     use otel_arrow_dfe_telemetry::instrument::Counter;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
@@ -390,6 +394,7 @@ mod tests {
             None,
             runtime_ctrl_tx,
             metrics_reporter,
+            test_pipeline_runtime_services(),
         );
         let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(2);
         let ctrl_channel =
@@ -401,20 +406,25 @@ mod tests {
     }
 
     fn decode_logs(pdata: OtapPdata) -> ExportLogsServiceRequest {
-        let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
-            pdata.payload().into_data()
-        else {
-            panic!("internal telemetry receiver emitted a non-logs payload")
-        };
+        assert_eq!(pdata.payload_ref().encoding(), Some(&PdataEncoding::OTLP));
+        assert_eq!(pdata.signal_type(), otel_arrow_dfe_config::SignalType::Logs);
+        let bytes = pdata
+            .payload()
+            .into_encoded_bytes()
+            .expect("internal telemetry receiver emitted a non-logs payload");
         ExportLogsServiceRequest::decode(bytes).expect("valid OTLP logs request")
     }
 
     fn decode_metric_value(pdata: OtapPdata) -> i64 {
-        let PayloadData::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
-            pdata.payload().into_data()
-        else {
-            panic!("internal telemetry receiver emitted a non-metrics payload")
-        };
+        assert_eq!(pdata.payload_ref().encoding(), Some(&PdataEncoding::OTLP));
+        assert_eq!(
+            pdata.signal_type(),
+            otel_arrow_dfe_config::SignalType::Metrics
+        );
+        let bytes = pdata
+            .payload()
+            .into_encoded_bytes()
+            .expect("internal telemetry receiver emitted a non-metrics payload");
         let request =
             ExportMetricsServiceRequest::decode(bytes).expect("valid OTLP metrics request");
         let [resource_metrics] = request.resource_metrics.as_slice() else {
@@ -922,6 +932,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                test_pipeline_runtime_services(),
             );
 
             let _error = MetricExporter::process_batch(&effect_handler, &registry, Some(&encoder))
@@ -964,6 +975,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                test_pipeline_runtime_services(),
             );
 
             MetricExporter::process_batch(&effect_handler, &registry, None)
@@ -1037,6 +1049,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(1);
@@ -1118,6 +1131,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                test_pipeline_runtime_services(),
             );
 
             let deadline = StdInstant::now() + Duration::from_millis(50);
@@ -1165,6 +1179,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                test_pipeline_runtime_services(),
             );
 
             let result = logs
@@ -1238,6 +1253,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(4);

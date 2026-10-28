@@ -403,76 +403,76 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Str as u8 => {
-                    if let Some(str_accessor) = &str_accessor {
-                        if let Some(v) = str_accessor.str_at(row) {
-                            map_builder.values().append_value(v);
-                            continue;
-                        }
+                    if let Some(str_accessor) = &str_accessor
+                        && let Some(v) = str_accessor.str_at(row)
+                    {
+                        map_builder.values().append_value(v);
+                        continue;
                     }
                     map_builder.values().append_value("");
                 }
 
                 t if t == AttributeValueType::Int as u8 => {
-                    if let Some(int_accessor) = &int_accessor {
-                        if let Some(v) = int_accessor.value_at(row) {
-                            let mut itoa_buf = itoa::Buffer::new();
-                            map_builder.values().append_value(itoa_buf.format(v));
-                            continue;
-                        }
+                    if let Some(int_accessor) = &int_accessor
+                        && let Some(v) = int_accessor.value_at(row)
+                    {
+                        let mut itoa_buf = itoa::Buffer::new();
+                        map_builder.values().append_value(itoa_buf.format(v));
+                        continue;
                     }
                     map_builder.values().append_value("");
                 }
 
                 t if t == AttributeValueType::Double as u8 => {
-                    if let Some(col) = double_col {
-                        if !col.is_null(row) {
-                            let mut r_buf = ryu::Buffer::new();
-                            map_builder
-                                .values()
-                                .append_value(r_buf.format(col.value(row)));
-                            continue;
-                        }
+                    if let Some(col) = double_col
+                        && !col.is_null(row)
+                    {
+                        let mut r_buf = ryu::Buffer::new();
+                        map_builder
+                            .values()
+                            .append_value(r_buf.format(col.value(row)));
+                        continue;
                     }
                     map_builder.values().append_value("");
                 }
 
                 t if t == AttributeValueType::Bool as u8 => {
-                    if let Some(col) = bool_col {
-                        if !col.is_null(row) {
-                            if col.value(row) {
-                                map_builder.values().append_value("true");
-                                continue;
-                            } else {
-                                map_builder.values().append_value("false");
-                                continue;
-                            }
+                    if let Some(col) = bool_col
+                        && !col.is_null(row)
+                    {
+                        if col.value(row) {
+                            map_builder.values().append_value("true");
+                            continue;
+                        } else {
+                            map_builder.values().append_value("false");
+                            continue;
                         }
                     }
                     map_builder.values().append_value("");
                 }
 
                 t if t == AttributeValueType::Bytes as u8 => {
-                    if let Some(col) = bytes_col {
-                        if !col.is_null(row) {
-                            let bytes = col.value(row);
-                            let v = base64::engine::general_purpose::STANDARD.encode(bytes);
-                            map_builder.values().append_value(v);
-                            continue;
-                        }
+                    if let Some(col) = bytes_col
+                        && !col.is_null(row)
+                    {
+                        let bytes = col.value(row);
+                        let v = base64::engine::general_purpose::STANDARD.encode(bytes);
+                        map_builder.values().append_value(v);
+                        continue;
                     }
                     map_builder.values().append_value("");
                 }
 
                 t if t == AttributeValueType::Map as u8 || t == AttributeValueType::Slice as u8 => {
-                    if let Some(byte_accessor) = &ser_accessor {
-                        if let Some(v) = byte_accessor.slice_at(row) {
-                            let mut buf = Vec::with_capacity(v.len() * 2);
-                            if append_cbor_as_json(&mut buf, v).is_ok() {
-                                if let Ok(json) = String::from_utf8(buf) {
-                                    map_builder.values().append_value(json);
-                                    continue;
-                                }
-                            }
+                    if let Some(byte_accessor) = &ser_accessor
+                        && let Some(v) = byte_accessor.slice_at(row)
+                    {
+                        let mut buf = Vec::with_capacity(v.len() * 2);
+                        if append_cbor_as_json(&mut buf, v).is_ok()
+                            && let Ok(json) = String::from_utf8(buf)
+                        {
+                            map_builder.values().append_value(json);
+                            continue;
                         }
                     }
                     map_builder.values().append_value("");

@@ -92,19 +92,19 @@ impl SenderWaiters {
     }
 
     fn register_or_refresh(&mut self, waiter_key: &mut Option<SenderWaiterKey>, waker: &Waker) {
-        if let Some(existing_key) = *waiter_key {
-            if let Some(slot) = self.slots.get_mut(existing_key.index) {
-                if slot.in_use && slot.generation == existing_key.generation {
-                    if slot.waker.as_ref().is_none_or(|w| !w.will_wake(waker)) {
-                        slot.waker = Some(waker.clone());
-                    }
-                    if !slot.queued {
-                        slot.queued = true;
-                        self.queue.push_back(existing_key);
-                    }
-                    return;
-                }
+        if let Some(existing_key) = *waiter_key
+            && let Some(slot) = self.slots.get_mut(existing_key.index)
+            && slot.in_use
+            && slot.generation == existing_key.generation
+        {
+            if slot.waker.as_ref().is_none_or(|w| !w.will_wake(waker)) {
+                slot.waker = Some(waker.clone());
             }
+            if !slot.queued {
+                slot.queued = true;
+                self.queue.push_back(existing_key);
+            }
+            return;
         }
 
         let index = if let Some(index) = self.free_slots.pop() {

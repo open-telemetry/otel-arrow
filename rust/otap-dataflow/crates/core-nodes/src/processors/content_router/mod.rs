@@ -54,8 +54,8 @@
 //!
 //! - `reject_immediately` (default): emit an immediate retryable route-local
 //!   NACK when the selected route is full
-//! - `backpressure`: park one message per blocked output port and keep
-//!   admitting pdata until every selectable route currently has a parked full
+//! - `backpressure`: park one message per blocked output port and pause
+//!   pdata admission as soon as any selectable route has a parked full
 //!   message
 //!
 //! A selected route that is closed is always rejected immediately with a
@@ -90,14 +90,14 @@ use otel_arrow_dfe_engine::{
     ProcessorRuntimeRequirements, RouteAdmission, WakeupError,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::PayloadData;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
@@ -110,7 +110,7 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -287,12 +287,12 @@ impl ContentRouterConfig {
                 });
             }
         }
-        if let Some(ref default) = self.default_output {
-            if default.trim().is_empty() {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: "default_output must not be empty when specified".to_string(),
-                });
-            }
+        if let Some(ref default) = self.default_output
+            && default.trim().is_empty()
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "default_output must not be empty when specified".to_string(),
+            });
         }
         // Detect case-insensitive key collisions
         if !self.case_sensitive {
@@ -318,18 +318,17 @@ impl ContentRouterConfig {
                     });
                 }
             }
-            if let Some(ref default) = self.default_output {
-                if !declared_outputs
+            if let Some(ref default) = self.default_output
+                && !declared_outputs
                     .iter()
                     .any(|o| o.as_ref() == default.as_str())
-                {
-                    return Err(ConfigError::InvalidUserConfig {
-                        error: format!(
-                            "default_output '{}' references undeclared output port",
-                            default
-                        ),
-                    });
-                }
+            {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "default_output '{}' references undeclared output port",
+                        default
+                    ),
+                });
             }
         }
         Ok(())
@@ -387,6 +386,10 @@ pub struct ContentRouter {
     admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteKind>,
     /// Telemetry metrics.
     metrics: Option<ContentRouterMetrics>,
+    /// Resolved on first use because processors currently receive codec services
+    /// only while processing messages. A future PR will expose the pipeline registry
+    /// at construction so this set can be required instead of optional.
+    accepted_encodings: Option<AcceptedEncodings>,
 }
 
 impl ContentRouter {
@@ -401,6 +404,7 @@ impl ContentRouter {
             case_sensitive: config.case_sensitive,
             admission: ExclusiveRouteScheduler::new(config.admission_policy),
             metrics: None,
+            accepted_encodings: None,
         }
     }
 
@@ -564,34 +568,43 @@ impl ContentRouter {
     }
 
     /// Resolves the output port for a given message payload.
-    fn resolve_route(&self, pdata: &OtapPdata) -> RouteResolution {
+    async fn resolve_route(
+        &self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        pdata: &OtapPdata,
+        accepted_encodings: &AcceptedEncodings,
+    ) -> RouteResolution {
         let signal_type = pdata.signal_type();
 
-        match pdata.payload_ref().data() {
-            PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
-                (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
-                    let data = RawLogsData::new(bytes.as_ref());
+        let view = match effect_handler
+            .view(pdata.payload_ref(), accepted_encodings)
+            .await
+        {
+            Ok(view) => view,
+            Err(_) => return RouteResolution::ConversionError,
+        };
+        match view {
+            PdataView::Encoded(view) => match view.signal_type() {
+                SignalType::Logs => {
+                    let data = RawLogsData::new(view.bytes());
                     self.resolve_logs_route(&data)
                 }
-                (SignalType::Metrics, OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
-                    let data = RawMetricsData::new(bytes.as_ref());
+                SignalType::Metrics => {
+                    let data = RawMetricsData::new(view.bytes());
                     self.resolve_metrics_route(&data)
                 }
-                (SignalType::Traces, OtlpProtoBytes::ExportTracesRequest(bytes)) => {
-                    let data = RawTraceData::new(bytes.as_ref());
+                SignalType::Traces => {
+                    let data = RawTraceData::new(view.bytes());
                     self.resolve_traces_route(&data)
                 }
-                // Defensive: signal_type/payload mismatch cannot occur for OtlpBytes
-                // since signal_type() is derived from the OtlpProtoBytes variant itself.
-                _ => RouteResolution::ConversionError,
             },
-            PayloadData::OtapArrowRecords(arrow_records) => {
+            PdataView::Native(arrow_records) => {
                 match signal_type {
                     // Use native OTAP Arrow view for logs (avoids clone + OTLP round-trip)
-                    SignalType::Logs => self.resolve_arrow_logs_route(arrow_records),
+                    SignalType::Logs => self.resolve_arrow_logs_route(arrow_records.as_ref()),
                     // Metrics/Traces Arrow views not yet available -- convert to OTLP.
                     // TODO: Use OtapMetricsView/OtapTracesView when available.
-                    _ => match OtlpProtoBytes::try_from_with_default(arrow_records.clone()) {
+                    _ => match OtlpProtoBytes::try_from_with_default(arrow_records.into_owned()) {
                         Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                             let data = RawMetricsData::new(bytes.as_ref());
                             self.resolve_metrics_route(&data)
@@ -626,34 +639,6 @@ impl ContentRouter {
                 ),
             }
         }
-    }
-
-    /// Refresh the set of outputs that can currently participate in
-    /// router-level backpressure.
-    ///
-    /// This work only happens on the blocked-route path. Healthy steady-state
-    /// routing does not rebuild these sets.
-    fn observe_backpressure_candidates(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) {
-        let connected: HashSet<_> = effect_handler.connected_ports().into_iter().collect();
-        let mut candidates = HashSet::new();
-
-        for port in self.routes.values() {
-            if connected.contains(port) {
-                let _ = candidates.insert(port.clone());
-            }
-        }
-
-        if let Some(default_port) = self.default_output.as_ref() {
-            let default_port = PortName::from(default_port.clone());
-            if connected.contains(&default_port) {
-                let _ = candidates.insert(default_port);
-            }
-        }
-
-        self.admission.observe_pause_candidate_ports(candidates);
     }
 
     /// Convert scheduler-specific wakeup failures into processor errors.
@@ -750,7 +735,6 @@ impl ContentRouter {
     ) -> Result<(), EngineError> {
         // `Full` is policy-driven. The scheduler decides whether this message
         // is rejected now or parked for wakeup-driven re-probing.
-        self.observe_backpressure_candidates(effect_handler);
         match self
             .admission
             .handle_selected_route_full(port.clone(), data, route_kind, effect_handler)
@@ -869,9 +853,22 @@ impl local::Processor<OtapPdata> for ContentRouter {
                 _ => Ok(()),
             },
             Message::PData(data) => {
+                if self.accepted_encodings.is_none() {
+                    self.accepted_encodings =
+                        Some(effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?);
+                }
+                // SAFETY: If absent, the set is stored in Some above; resolution errors
+                // return via `?`. There is no intervening mutation or await.
+                // A future PR will resolve this set at construction and remove this expect.
+                let accepted_encodings = self
+                    .accepted_encodings
+                    .as_ref()
+                    .expect("accepted encodings initialized");
                 // Resolve routing once up front, then handle route-selection
                 // failures separately from downstream admission failures.
-                let resolution = self.resolve_route(&data);
+                let resolution = self
+                    .resolve_route(effect_handler, &data, accepted_encodings)
+                    .await;
 
                 match resolution {
                     RouteResolution::Matched(port) => {
@@ -1024,6 +1021,7 @@ pub fn create_content_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: CONTENT_ROUTER_URN,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<ContentRouterConfig>,
     create:
@@ -1790,13 +1788,16 @@ mod tests {
             }
         }
 
-        /// Scenario: one selected route is full, the router is configured with
-        /// `backpressure`, and another selected route remains healthy.
-        /// Guarantees: the blocked route is parked locally, unrelated routes
-        /// continue to flow, and the parked message is forwarded once the route
-        /// becomes writable again.
+        /// Scenario: one selected route (`tenant_c`) is full under
+        /// `backpressure`, while another selected route (`tenant_a`) remains
+        /// healthy.
+        /// Guarantees: pdata admission pauses immediately after parking the
+        /// blocked `tenant_c` message, no NACK is emitted for the parked
+        /// message, control messages still flow while paused, and the parked
+        /// message is forwarded once the `tenant_c` route becomes writable
+        /// again.
         #[test]
-        fn test_backpressure_keeps_other_routes_live_until_all_selectable_routes_block() {
+        fn test_backpressure_pauses_on_any_blocked_route_and_resumes_after_recovery() {
             let test_runtime = TestRuntime::new();
             let node_id = test_node(test_runtime.config().name.clone());
             let config = make_policy_config(OnFullPolicy::Backpressure);
@@ -1820,7 +1821,7 @@ mod tests {
                 )
                 .expect("blocked route sender should attach");
 
-            let (tx_healthy, rx_healthy) = mpsc::Channel::new(1);
+            let (tx_healthy, _rx_healthy) = mpsc::Channel::new(1);
             wrapper
                 .set_pdata_sender(
                     node_id,
@@ -1837,134 +1838,46 @@ mod tests {
                         ctx.set_pipeline_completion_sender(completion_tx);
 
                         assert!(ctx.accept_pdata());
+
+                        // Park a message on the full tenant_c route.
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 91)))
                             .await
                             .expect("backpressure should park the blocked route");
+
+                        // Pdata admission pauses immediately -- even though
+                        // the tenant_a route is healthy.
                         assert!(
-                            ctx.accept_pdata(),
-                            "backpressure should stay open while another selectable route is healthy"
+                            !ctx.accept_pdata(),
+                            "pdata admission should pause as soon as any route is parked"
                         );
+
+                        // No NACK should have been emitted for the parked message.
                         assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
 
-                        ctx.process(Message::PData(logs_pdata("/sub/a")))
-                            .await
-                            .expect("healthy route should still be admitted");
-                        let _ = rx_healthy
-                            .recv()
-                            .await
-                            .expect("healthy route should receive immediately");
+                        // Control traffic still flows while pdata is paused.
+                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
+                            "control traffic should continue while pdata admission is paused",
+                        );
 
+                        // Drain the prefill so the blocked route has capacity again.
                         let _ = rx_blocked
                             .recv()
                             .await
                             .expect("prefill should drain before the retry wakeup");
+
+                        // Fire the wakeup -- the parked message should forward.
                         assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
                         let _ = rx_blocked
                             .recv()
                             .await
                             .expect("recovered blocked route should receive parked message");
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-                    })
-                });
 
-            validation.validate(|_| async {});
-        }
-
-        /// Scenario: every selectable route becomes full under router-level
-        /// `backpressure`.
-        /// Guarantees: the router parks one message per blocked output port,
-        /// closes pdata admission only after every selectable route is parked,
-        /// and reopens admission once a parked route forwards.
-        #[test]
-        fn test_backpressure_pauses_only_after_every_selectable_route_is_parked() {
-            let test_runtime = TestRuntime::new();
-            let node_id = test_node(test_runtime.config().name.clone());
-            let config = make_policy_config(OnFullPolicy::Backpressure);
-            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
-            let mut wrapper = ProcessorWrapper::local(
-                ContentRouter::new(config),
-                node_id.clone(),
-                user_cfg,
-                test_runtime.config(),
-            );
-
-            let (tx_a, rx_a) = mpsc::Channel::new(1);
-            tx_a.send(logs_pdata("/sub/a"))
-                .expect("prefill should occupy tenant_a");
-            wrapper
-                .set_pdata_sender(
-                    node_id.clone(),
-                    "tenant_a".into(),
-                    Sender::Local(LocalSender::mpsc(tx_a)),
-                )
-                .expect("tenant_a sender should attach");
-
-            let (tx_c, rx_c) = mpsc::Channel::new(1);
-            tx_c.send(logs_pdata("/sub/c"))
-                .expect("prefill should occupy the blocked route");
-            wrapper
-                .set_pdata_sender(
-                    node_id,
-                    "tenant_c".into(),
-                    Sender::Local(LocalSender::mpsc(tx_c)),
-                )
-                .expect("blocked route sender should attach");
-
-            let validation = test_runtime
-                .set_processor(wrapper)
-                .run_test(move |mut ctx| {
-                    Box::pin(async move {
-                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
-                        ctx.set_pipeline_completion_sender(completion_tx);
-
-                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 92)))
-                            .await
-                            .expect("backpressure should park tenant_a");
+                        // Admission reopens and no NACK was produced.
                         assert!(
                             ctx.accept_pdata(),
-                            "backpressure should remain open until every selectable route is blocked"
+                            "pdata admission should reopen after recovery"
                         );
                         assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-
-                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 93)))
-                            .await
-                            .expect("backpressure should park tenant_c");
-                        assert!(
-                            !ctx.accept_pdata(),
-                            "backpressure should close pdata admission once every selectable route is parked"
-                        );
-                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
-                            "control traffic should continue while pdata admission is paused",
-                        );
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-
-                        let _ = rx_a
-                            .recv()
-                            .await
-                            .expect("prefill should drain before retry wakeup");
-                        let _ = rx_c
-                            .recv()
-                            .await
-                            .expect("prefill should drain before retry wakeup");
-                        let (mut got_a, mut got_c) = (false, false);
-                        for _ in 0..2 {
-                            assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
-                            if !got_a {
-                                got_a = rx_a.try_recv().is_ok();
-                            }
-                            if !got_c {
-                                got_c = rx_c.try_recv().is_ok();
-                            }
-                            if got_a && got_c {
-                                break;
-                            }
-                        }
-                        assert!(got_a, "tenant_a should receive parked message");
-                        assert!(got_c, "tenant_c should receive parked message");
-                        assert!(
-                            ctx.accept_pdata(),
-                            "backpressure should reopen once the parked routes forward"
-                        );
                     })
                 });
 
@@ -1975,9 +1888,8 @@ mod tests {
         /// while a different selectable route resolves to an output that is
         /// already closed.
         /// Guarantees: the closed route still emits an immediate route-local
-        /// NACK, and it does not count toward the "all selectable routes are
-        /// parked full" condition that pauses pdata admission under
-        /// `backpressure`.
+        /// NACK, pdata admission is already paused because the full route is
+        /// parked, and recovery proceeds normally after the full route drains.
         #[test]
         fn test_backpressure_excludes_closed_routes_from_all_routes_blocked_accounting() {
             let test_runtime = TestRuntime::new();
@@ -2024,18 +1936,22 @@ mod tests {
                             .await
                             .expect("backpressure should park the blocked route");
                         assert!(
-                            ctx.accept_pdata(),
-                            "backpressure should remain open while another selectable route is not parked full"
+                            !ctx.accept_pdata(),
+                            "pdata admission should pause after parking the full route"
                         );
 
+                        // The engine does not deliver pdata while
+                        // accept_pdata() is false. This test calls
+                        // process() directly to verify the closed-route
+                        // NACK fires independently.
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
                             .await
                             .expect("closed route should still complete locally");
                         let nack = expect_nack(&mut completion_rx, 94).await;
                         assert_eq!(nack.cause, NackCause::RouteClosed);
                         assert!(
-                            ctx.accept_pdata(),
-                            "closed routes should not force global backpressure while another route is parked"
+                            !ctx.accept_pdata(),
+                            "closed route NACK should not reopen pdata admission while a full route is parked"
                         );
 
                         let _ = rx_blocked
@@ -2072,17 +1988,6 @@ mod tests {
                 test_runtime.config(),
             );
 
-            let (tx_a, _rx_a) = mpsc::Channel::new(1);
-            tx_a.send(logs_pdata("/sub/a"))
-                .expect("prefill should occupy tenant_a");
-            wrapper
-                .set_pdata_sender(
-                    node_id.clone(),
-                    "tenant_a".into(),
-                    Sender::Local(LocalSender::mpsc(tx_a)),
-                )
-                .expect("tenant_a sender should attach");
-
             let (tx_c, _rx_c) = mpsc::Channel::new(1);
             tx_c.send(logs_pdata("/sub/c"))
                 .expect("prefill should occupy the blocked route");
@@ -2101,12 +2006,10 @@ mod tests {
                         let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                         ctx.set_pipeline_completion_sender(completion_tx);
 
-                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
-                            .await
-                            .expect("backpressure should park tenant_a");
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 94)))
                             .await
                             .expect("backpressure should park tenant_c");
+
                         ctx.process(Message::Control(NodeControlMsg::Shutdown {
                             deadline: Instant::now(),
                             reason: "test shutdown".to_string(),
@@ -2114,23 +2017,14 @@ mod tests {
                         .await
                         .expect("shutdown should drain parked router state");
 
-                        let nack_a = expect_nack(&mut completion_rx, 94).await;
-                        assert_eq!(nack_a.cause, NackCause::NodeShutdown);
+                        let nack = expect_nack(&mut completion_rx, 94).await;
+                        assert_eq!(nack.cause, NackCause::NodeShutdown);
                         assert!(
-                            nack_a.reason.contains("test shutdown"),
+                            nack.reason.contains("test shutdown"),
                             "shutdown reason should be preserved: {}",
-                            nack_a.reason
+                            nack.reason
                         );
-                        assert!(!nack_a.permanent);
-
-                        let nack_c = expect_nack(&mut completion_rx, 94).await;
-                        assert_eq!(nack_c.cause, NackCause::NodeShutdown);
-                        assert!(
-                            nack_c.reason.contains("test shutdown"),
-                            "shutdown reason should be preserved: {}",
-                            nack_c.reason
-                        );
-                        assert!(!nack_c.permanent);
+                        assert!(!nack.permanent);
                     })
                 });
 
@@ -2282,8 +2176,13 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("tenant_a".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
 
                 let bytes = create_logs_with_resource_attr("service.namespace", "/sub/a");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
@@ -2348,8 +2247,13 @@ mod tests {
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
                 let senders = HashMap::new();
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
 
                 let bytes = create_logs_with_resource_attr("service.namespace", "/sub/unknown");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
@@ -2413,8 +2317,13 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
 
                 // Send with non-matching route - should go to default
                 let bytes = create_logs_with_resource_attr("service.namespace", "/sub/unknown");
@@ -2487,8 +2396,13 @@ mod tests {
                     .expect("prefill should occupy the downstream route");
                 let mut senders = HashMap::new();
                 let _ = senders.insert("tenant_c".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2570,8 +2484,13 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("tenant_c".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2654,8 +2573,13 @@ mod tests {
                     .expect("prefill should occupy the default route");
                 let mut senders = HashMap::new();
                 let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2736,8 +2660,13 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2833,8 +2762,13 @@ mod tests {
                     "tenant_a".into(),
                     Sender::Local(LocalSender::mpsc(tx_healthy)),
                 );
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 

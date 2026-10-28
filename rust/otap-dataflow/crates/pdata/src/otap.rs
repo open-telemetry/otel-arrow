@@ -58,9 +58,11 @@ impl OtapArrowRecords {
         }
     }
 
-    /// Remove the record batch for the given payload type. If the payload type is not valid
-    /// for this type of telemetry signal, this method does nothing.
-    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+    /// Remove the record batch for the given payload type and returns the removed record batch if
+    /// it was populated on this OTAP batch.
+    ///
+    /// If the payload type is not valid for this type of telemetry signal, this returns None
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
         match self {
             Self::Logs(logs) => logs.remove(payload_type),
             Self::Metrics(metrics) => metrics.remove(payload_type),
@@ -78,6 +80,20 @@ impl OtapArrowRecords {
             Self::Metrics(metrics) => metrics.get(payload_type),
             Self::Traces(spans) => spans.get(payload_type),
         }
+    }
+
+    /// Move populated batches from `source` into `self`, overwriting existing batches.
+    ///
+    /// For each payload type, if `source` contains a batch it is moved into `self`, replacing
+    /// any existing batch for that slot. Payload types that are absent in `source` are left
+    /// unchanged in `self`.
+    pub fn replace_batches_from(&mut self, mut source: Self) -> Result<()> {
+        for &payload_type in self.allowed_payload_types() {
+            if let Some(batch) = source.remove(payload_type) {
+                self.set(payload_type, batch)?;
+            }
+        }
+        Ok(())
     }
 
     /// Get the list of possible payload types associated with the batch of this type.
@@ -354,7 +370,7 @@ pub trait OtapBatchStore:
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) -> Result<()>;
 
     /// Remove the record batch for the given payload type
-    fn remove(&mut self, payload_type: ArrowPayloadType);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch>;
 
     /// Get the record batch for the given payload type
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch>;
@@ -491,8 +507,8 @@ impl OtapBatchStore for Logs {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -552,9 +568,11 @@ fn validated_set<const TYPE_MASK: u64, const COUNT: usize>(
 fn validated_remove<const TYPE_MASK: u64, const COUNT: usize>(
     inner: &mut raw_batch_store::RawBatchStore<TYPE_MASK, COUNT>,
     payload_type: ArrowPayloadType,
-) {
+) -> Option<RecordBatch> {
     if raw_batch_store::RawBatchStore::<TYPE_MASK, COUNT>::is_valid_type(payload_type) {
-        inner.remove(payload_type);
+        inner.remove(payload_type)
+    } else {
+        None
     }
 }
 
@@ -839,8 +857,8 @@ impl OtapBatchStore for Metrics {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -1011,8 +1029,8 @@ impl OtapBatchStore for Traces {
         )
     }
 
-    fn remove(&mut self, payload_type: ArrowPayloadType) {
-        validated_remove(&mut self.inner, payload_type);
+    fn remove(&mut self, payload_type: ArrowPayloadType) -> Option<RecordBatch> {
+        validated_remove(&mut self.inner, payload_type)
     }
 
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
@@ -1135,6 +1153,7 @@ pub const fn parent_payload_type(payload_type: ArrowPayloadType) -> Option<Paren
 
 #[cfg(test)]
 mod test {
+    use crate::schema::UTC_TIME_ZONE;
     use arrow::array::{
         ArrowPrimitiveType, DurationNanosecondArray, FixedSizeBinaryArray, Float64Array,
         Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array,
@@ -1845,7 +1864,7 @@ mod test {
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
             ])),
@@ -1857,7 +1876,10 @@ mod test {
                     Some(1),
                 ])),
                 Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
             ],
         )
         .unwrap();
@@ -1887,7 +1909,7 @@ mod test {
                 Field::new(consts::INT_VALUE, DataType::Int64, true),
                 Field::new(
                     consts::TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
             ])),
@@ -1900,7 +1922,10 @@ mod test {
                 ])),
                 Arc::new(UInt32Array::from_iter_values(vec![1, 1, 1, 1])),
                 Arc::new(Int64Array::from_iter_values(vec![1, 1, 2, 2])),
-                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([0i64, 0, 0, 0])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
             ],
         )
         .unwrap();
@@ -2127,7 +2152,7 @@ mod test {
                 Field::new(consts::SCOPE, DataType::Struct(struct_fields.clone()), true),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
@@ -2159,7 +2184,10 @@ mod test {
                     ]))],
                     None,
                 )),
-                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([0i64, 0, 0])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(DurationNanosecondArray::from_iter_values([0i64, 0, 0])),
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(
@@ -2314,7 +2342,7 @@ mod test {
                 ),
                 Field::new(
                     consts::START_TIME_UNIX_NANO,
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                     false,
                 ),
                 Field::new(
@@ -2346,7 +2374,10 @@ mod test {
                     ]))],
                     None,
                 )),
-                Arc::new(TimestampNanosecondArray::from_iter_values([0i64, 0, 0])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values([0i64, 0, 0])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(DurationNanosecondArray::from_iter_values([0i64, 0, 0])),
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(
@@ -2440,7 +2471,7 @@ mod test {
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
             Field::new(
                 consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -2524,7 +2555,10 @@ mod test {
                 )),
                 Arc::new(span_names),
                 Arc::new(trace_ids),
-                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values(vec![0i64; 10])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(DurationNanosecondArray::from_iter_values(vec![0i64; 10])),
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8]; 10].into_iter()).unwrap(),
@@ -2707,7 +2741,7 @@ mod test {
             Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
             Field::new(
                 consts::START_TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
             Field::new(
@@ -2756,7 +2790,10 @@ mod test {
                 )),
                 Arc::new(span_names),
                 Arc::new(trace_ids),
-                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values(vec![0i64; 10])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
                 Arc::new(DurationNanosecondArray::from_iter_values(vec![0i64; 10])),
                 Arc::new(
                     FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8]; 10].into_iter()).unwrap(),
@@ -3085,7 +3122,7 @@ mod test {
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -3097,7 +3134,10 @@ mod test {
             vec![
                 Arc::new(ids),
                 Arc::new(parent_ids),
-                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 5])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values(vec![0i64; 5])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
             ],
         )
         .unwrap();
@@ -3145,7 +3185,7 @@ mod test {
             Field::new(consts::PARENT_ID, DataType::UInt32, false).with_plain_encoding(),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -3157,7 +3197,10 @@ mod test {
                 Arc::new(exemplar_ints),
                 Arc::new(exemplar_doubles),
                 Arc::new(exemplar_parent_ids),
-                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values(vec![0i64; 10])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
             ],
         )
         .unwrap();
@@ -3400,7 +3443,7 @@ mod test {
                 .with_encoding(consts::metadata::encodings::DELTA),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -3409,7 +3452,10 @@ mod test {
             vec![
                 Arc::new(ids),
                 Arc::new(parent_ids),
-                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 5])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values(vec![0i64; 5])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
             ],
         )
         .unwrap();
@@ -3507,7 +3553,7 @@ mod test {
                 .with_encoding(consts::metadata::encodings::QUASI_DELTA),
             Field::new(
                 consts::TIME_UNIX_NANO,
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
                 false,
             ),
         ]));
@@ -3519,7 +3565,10 @@ mod test {
                 Arc::new(exemplar_int_vals),
                 Arc::new(exemplar_double_vals),
                 Arc::new(exemplar_parent_ids),
-                Arc::new(TimestampNanosecondArray::from_iter_values(vec![0i64; 10])),
+                Arc::new(
+                    TimestampNanosecondArray::from_iter_values(vec![0i64; 10])
+                        .with_timezone(UTC_TIME_ZONE),
+                ),
             ],
         )
         .unwrap();

@@ -416,15 +416,13 @@ where
                     .as_ref()
                     .expect("pdata_rx must exist")
                     .is_empty()
-            {
-                if let Err(RecvError::Closed) = self
+                && let Err(RecvError::Closed) = self
                     .pdata_rx
                     .as_mut()
                     .expect("pdata_rx must exist")
                     .try_recv()
-                {
-                    return Ok(self.closed_pdata_shutdown());
-                }
+            {
+                return Ok(self.closed_pdata_shutdown());
             }
 
             // Draining mode: Shutdown pending

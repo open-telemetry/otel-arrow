@@ -13,51 +13,57 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 
 use async_trait::async_trait;
-use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
+use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
+use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
 use otel_arrow_dfe_engine::control::{
-    AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
+    AckMsg, CallData, Frame, NackMsg, NodeControlMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
-use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
+use otel_arrow_dfe_engine::pdata_context::{
+    AuthorizedIdentityEntries, ContextMaterializationPlan, ContextProjection, MaterializedContext,
+    MaterializedContextProjection, Metadata, PeerAddrMerger,
+};
+use otel_arrow_dfe_engine::processor::{
+    FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
+};
+use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
+use otel_arrow_dfe_pdata_codec::{
+    AcceptedEncodings, BatchPlan, BatchingOutput, CodecError, EncodePolicy, EncodingPlan,
+    OtapPayload, PdataEncoding, PdataPayloadDecodeError, PdataView,
+};
 
-use crate::transport_headers::TransportHeaders;
+mod delivery;
+pub use delivery::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataDelivery};
 
 /// Context for OTAP requests.
 ///
-/// Carries three independent concerns:
+/// Carries independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
-/// - **Transport headers**: Protocol-neutral request-scoped metadata captured
-///   from inbound transport headers. Preserved across transport boundaries.
-/// - **Peer address**: Optional socket address observed by the receiving
-///   socket at request acceptance time. Populated by receivers that have a
-///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
-///   sourceless receivers (file-based, journald). Preserved across transport
-///   boundaries.
+/// - **Metadata**: Request-scoped message metadata (transport headers,
+///   authorized identity, materialized entries, and peer address). Preserved
+///   across transport boundaries. See [`Metadata`].
+/// - **Flow metric and signal**: Delivery bookkeeping, described below.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
-    /// Transport headers captured from inbound protocol metadata.
-    ///
-    /// `None` when no headers have been captured (the common case, zero
-    /// additional allocation).
-    transport_headers: Option<TransportHeaders>,
-    /// Peer address observed by the receiving socket at request acceptance
-    /// time. `None` for receivers without a real socket.
-    peer_addr: Option<SocketAddr>,
+    /// Request-scoped message metadata.
+    metadata: Metadata,
     /// Active flow_metric accumulator (nanoseconds).
     ///
     /// `Some(ns)` when a message is inside a flow_metric range (between
@@ -68,7 +74,7 @@ pub struct Context {
     /// active at a time (non-overlapping ranges).
     flow_compute_ns: Option<NonZeroU64>,
     /// Signal type of the payload, captured on the forward path to attribute
-    /// per-signal produced/consumed metrics during ack/nack unwinding.
+    /// per-signal input/output metrics during ack/nack unwinding.
     ///
     /// A pdata batch is homogeneous, so signal is a pdata-level property stored
     /// once here rather than duplicated on every routing frame. It is captured
@@ -84,8 +90,7 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
-            transport_headers: None,
-            peer_addr: None,
+            metadata: Metadata::default(),
             flow_compute_ns: None,
             signal: None,
         }
@@ -109,7 +114,7 @@ impl Context {
             // Different node -> inherit RETURN_DATA from predecessor.
             interests |= top.interests & Interests::RETURN_DATA;
         }
-        let entry_time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+        let entry_time_ns = if interests.contains(Interests::NODE_COMPLETION_DURATION) {
             nanos_since_birth()
         } else {
             0
@@ -122,10 +127,10 @@ impl Context {
                 entry_time_ns,
                 ..Default::default()
             },
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
@@ -171,9 +176,13 @@ impl Context {
     #[must_use]
     pub fn needs_completion_tracking(&self) -> bool {
         self.stack.iter().any(|frame| {
-            frame
-                .interests
-                .intersects(Interests::ACKS_OR_NACKS | Interests::PIPELINE_METRICS)
+            frame.interests.intersects(
+                Interests::ACKS_OR_NACKS
+                    | Interests::NODE_METRICS
+                    | Interests::NODE_COMPLETION_DURATION
+                    | Interests::NODE_ITEM_COUNTS
+                    | Interests::NODE_SIZE,
+            )
         })
     }
 
@@ -200,7 +209,10 @@ impl Context {
     #[must_use]
     fn has_timing(&self, subscriber_interest: Interests) -> bool {
         for frame in self.stack.iter().rev() {
-            if frame.interests.intersects(Interests::ENTRY_TIMESTAMP) {
+            if frame
+                .interests
+                .intersects(Interests::NODE_COMPLETION_DURATION)
+            {
                 return true;
             }
             if frame.interests.intersects(subscriber_interest) {
@@ -233,10 +245,10 @@ impl Context {
             interests,
             node_id,
             route: RouteData::default(),
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
@@ -254,30 +266,30 @@ impl Context {
     /// are merged without touching user calldata.  Otherwise a new frame
     /// is pushed, inheriting `RETURN_DATA` from the predecessor.
     ///
-    /// When `ENTRY_TIMESTAMP` is present in `interests`, the frame's
-    /// entry timestamp is captured automatically.
+    /// When `NODE_COMPLETION_DURATION` is present in `interests`, the frame's
+    /// entry timestamp is captured for terminal Ack/Nack duration measurement.
     fn update_send_context(&mut self, node_id: usize, interests: Interests) {
-        if let Some(top) = self.stack.last_mut() {
-            if top.node_id == node_id {
-                top.interests |= interests;
-                if interests.contains(Interests::ENTRY_TIMESTAMP | Interests::PRODUCER_METRICS)
-                    && top.route.entry_time_ns == 0
-                {
-                    // Note: This update is only for receivers which need
-                    // to capture timestamp here in case they did not use
-                    // subscribe_to. If they called called subscribe_to,
-                    // this will be skipped by a non-zero timestamp.
-                    top.route.entry_time_ns = nanos_since_birth();
-                }
-                return;
+        if let Some(top) = self.stack.last_mut()
+            && top.node_id == node_id
+        {
+            top.interests |= interests;
+            if interests.contains(Interests::NODE_COMPLETION_DURATION)
+                && top.route.entry_time_ns == 0
+            {
+                // Note: This update is only for receivers which need
+                // to capture timestamp here in case they did not use
+                // subscribe_to. If they called called subscribe_to,
+                // this will be skipped by a non-zero timestamp.
+                top.route.entry_time_ns = nanos_since_birth();
             }
+            return;
         }
         // Different node (or empty stack) -> push new frame.
         let mut frame_interests = interests;
         if let Some(last) = self.stack.last() {
             frame_interests |= last.interests & Interests::RETURN_DATA;
         }
-        let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+        let time_ns = if interests.contains(Interests::NODE_COMPLETION_DURATION) {
             nanos_since_birth()
         } else {
             0
@@ -290,55 +302,57 @@ impl Context {
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
-    /// Stamp the top frame's output port index.
+    /// Stamp the sending node's top frame with its output port index.
     /// Called at send time so each clone sent through a different port
-    /// carries the correct producer output port index on the return path.
-    pub(crate) fn stamp_output_port_index(&mut self, index: u16) {
-        if let Some(top) = self.stack.last_mut() {
+    /// carries the correct output port index on the return path.
+    pub(crate) fn stamp_output_port_index(&mut self, node_id: usize, index: u16) {
+        if let Some(top) = self.stack.last_mut()
+            && top.node_id == node_id
+        {
             top.route.output_port_index = index;
         }
     }
 
-    /// Record the per-signal item count produced by the current node at send
+    /// Record the per-signal item count emitted by the current node at send
     /// time onto the top frame, and remember the pdata's signal on the context.
-    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
-    pub(crate) fn stamp_produced_items(&mut self, items: u32, signal: SignalType) {
+    /// Called only when the node has `NODE_ITEM_COUNTS` interest.
+    pub(crate) fn stamp_output_items(&mut self, items: u32, signal: SignalType) {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
-            top.produced_items = items;
+            top.output_items = items;
         }
     }
 
-    /// Record the per-signal item count consumed by the current node at receive
+    /// Record the per-signal item count received by the current node
     /// time onto the top frame, and remember the pdata's signal on the context.
-    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
-    pub(crate) fn stamp_consumed_items(&mut self, items: u32, signal: SignalType) {
+    /// Called only when the node has `NODE_ITEM_COUNTS` interest.
+    pub(crate) fn stamp_input_items(&mut self, items: u32, signal: SignalType) {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
-            top.consumed_items = items;
+            top.input_items = items;
         }
     }
 
-    /// Record the logical payload size produced by the current node at send
+    /// Record the logical payload size emitted by the current node at send
     /// time onto the top frame.
-    pub(crate) fn stamp_produced_size(&mut self, size: u64) {
+    pub(crate) fn stamp_output_size(&mut self, size: u64) {
         if let Some(top) = self.stack.last_mut() {
-            top.produced_size = size;
+            top.output_size = size;
         }
     }
 
-    /// Record the logical payload size consumed by the current node at receive
+    /// Record the logical payload size received by the current node
     /// time onto the top frame.
-    pub(crate) fn stamp_consumed_size(&mut self, size: u64) {
+    pub(crate) fn stamp_input_size(&mut self, size: u64) {
         if let Some(top) = self.stack.last_mut() {
-            top.consumed_size = size;
+            top.input_size = size;
         }
     }
 
@@ -355,21 +369,29 @@ impl Context {
         self.signal
     }
 
-    /// Push an entry frame for a queue-consumer node (processor/exporter).
+    /// Push an entry frame for a node with a queue input (processor/exporter).
     /// The frame inherits RETURN_DATA from the predecessor.
     pub(crate) fn push_entry_frame(&mut self, node_id: usize, node_interests: Interests) {
-        // No frame needed when the engine has no consumer metrics interest.
-        if !node_interests.intersects(Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP) {
+        // No frame needed when the engine has no input-side telemetry interest.
+        if !node_interests.intersects(
+            Interests::NODE_INPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE,
+        ) {
             return;
         }
         let mut interests = Interests::empty();
         if let Some(last) = self.stack.last() {
             interests = last.interests & Interests::RETURN_DATA;
         }
-        // Propagate consumer-metrics and entry-timestamp bits from the node.
-        interests |= node_interests & (Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
-        // Timestamp: only when ENTRY_TIMESTAMP is requested.
-        let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
+        interests |= node_interests
+            & (Interests::NODE_INPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE);
+        // Capture a timestamp only when completion duration is requested.
+        let time_ns = if node_interests.contains(Interests::NODE_COMPLETION_DURATION) {
             nanos_since_birth()
         } else {
             0
@@ -382,39 +404,87 @@ impl Context {
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
+    }
+
+    /// Returns the request-scoped message metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Returns this context with the given message metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
-        self.transport_headers.as_ref()
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
+        self.metadata.transport_headers()
     }
 
     /// Takes and returns the captured transport headers, if any.
     #[must_use]
     pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
-        self.transport_headers.take()
+        self.metadata.take_transport_headers()
     }
 
     /// Set the transport headers for this context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.transport_headers = Some(headers);
+        self.metadata.set_transport_headers(headers);
+    }
+
+    /// Returns the authorization-derived context entries, if any.
+    #[must_use]
+    pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
+        self.metadata.authorized_identity_entries()
+    }
+
+    fn capture_authorized_identity(
+        &mut self,
+        policy: &AuthorizedIdentityPolicy,
+        identity: &AuthorizedIdentity,
+    ) {
+        self.metadata.capture_authorized_identity(policy, identity);
+    }
+
+    /// Materializes selected composite snapshots exactly once.
+    pub fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        self.metadata.materialize_context(plan);
+    }
+
+    /// Returns the materialized composite snapshots, if any.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        self.metadata.materialized_context()
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.metadata.resolve_materialized_context(plan, projection)
     }
 
     /// Returns the peer address observed by the receiving socket, if any.
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
-        self.peer_addr
+        self.metadata.peer_addr()
     }
 
     /// Set the peer address for this context.
     pub fn set_peer_addr(&mut self, addr: SocketAddr) {
-        self.peer_addr = Some(addr);
+        self.metadata.set_peer_addr(addr);
     }
 
     /// Merge peer addresses from a set of contributing inputs.
@@ -442,7 +512,7 @@ impl Context {
     }
 
     /// Returns a reference to the top frame on the context stack.
-    /// Used by consumer metrics to read the current node's entry frame.
+    /// Used by input metrics to read the current node's entry frame.
     #[must_use]
     pub fn peek_top(&self) -> Option<&Frame> {
         self.stack.last()
@@ -455,8 +525,9 @@ impl Context {
         &self.stack
     }
 
-    /// Clone the request-scoped metadata (transport headers, peer address) and
-    /// leave the Ack/Nack routing state behind.
+    /// Clone the request-scoped metadata (transport headers, authorized
+    /// identity entries, materialized entries, and peer address) and leave the
+    /// Ack/Nack routing state behind.
     ///
     /// Frames are not copied: a processor that splits a batch parks the inbound
     /// context and subscribes each outbound batch separately, so copied frames
@@ -468,8 +539,7 @@ impl Context {
     pub fn clone_detached(&self) -> Self {
         Self {
             stack: Vec::new(),
-            transport_headers: self.transport_headers.clone(),
-            peer_addr: self.peer_addr,
+            metadata: self.metadata.clone(),
             flow_compute_ns: None,
             signal: None,
         }
@@ -477,59 +547,6 @@ impl Context {
 }
 
 // Frame is defined in otel_arrow_dfe_engine::control (imported above).
-
-/// Incremental builder applying the same merge rule as
-/// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
-/// peer addresses.
-///
-/// Use when contributing inputs are observed one-at-a-time as part of an
-/// existing pass over the input list (e.g. a processor's flush loop). Push
-/// each input's `peer_addr` exactly once with [`PeerAddrMerger::push`], then
-/// call [`PeerAddrMerger::finish`] to obtain the merged result.
-///
-/// Modeled as an enum so illegal states (e.g. a peer address present
-/// alongside a poisoned flag) cannot be constructed.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum PeerAddrMerger {
-    /// No inputs pushed yet.
-    #[default]
-    Empty,
-    /// Every input pushed so far agreed on this address.
-    Single(SocketAddr),
-    /// At least one input was peerless or distinct from a prior agreed
-    /// address. The merge stays in this state regardless of later pushes.
-    Poisoned,
-}
-
-impl PeerAddrMerger {
-    /// Create an empty merger. `finish` on an unused merger returns `None`.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self::Empty
-    }
-
-    /// Fold one contributing input's `peer_addr` into the running merge.
-    pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
-        *self = match (*self, peer_addr) {
-            (Self::Empty, None) => Self::Poisoned,
-            (Self::Empty, Some(addr)) => Self::Single(addr),
-            (Self::Single(_), None) => Self::Poisoned,
-            (Self::Single(existing), Some(addr)) if existing == addr => Self::Single(existing),
-            (Self::Single(_), Some(_)) => Self::Poisoned,
-            (Self::Poisoned, _) => Self::Poisoned,
-        };
-    }
-
-    /// Return the merged peer address, or `None` if no inputs were pushed or
-    /// the merge was poisoned by a peerless or distinct contributor.
-    #[must_use]
-    pub const fn finish(self) -> Option<SocketAddr> {
-        match self {
-            Self::Single(addr) => Some(addr),
-            Self::Empty | Self::Poisoned => None,
-        }
-    }
-}
 
 impl otel_arrow_dfe_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
@@ -550,8 +567,8 @@ impl otel_arrow_dfe_engine::Unwindable for OtapPdata {
 }
 
 impl otel_arrow_dfe_engine::StampOutputPort for OtapPdata {
-    fn stamp_output_port_index(&mut self, index: u16) {
-        self.context.stamp_output_port_index(index);
+    fn stamp_output_port_index(&mut self, node_id: usize, index: u16) {
+        self.context.stamp_output_port_index(node_id, index);
     }
 }
 
@@ -591,6 +608,11 @@ impl FlowMetricAccumulation for OtapPdata {
 }
 
 impl OtapPdata {
+    /// Materializes selected composites.
+    pub(crate) fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        self.context.materialize_context(plan);
+    }
+
     /// Returns `true` if a flow_metric accumulator is currently active.
     #[must_use]
     fn has_active_flow_metric(&self) -> bool {
@@ -598,11 +620,120 @@ impl OtapPdata {
     }
 }
 
+pub(crate) fn materialize_context(pdata: &mut OtapPdata, plan: &ContextMaterializationPlan) {
+    pdata.materialize_context(plan);
+}
+
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
+}
+
+/// Owned capability proving that pdata is available as native Arrow records.
+#[derive(Clone, Debug)]
+pub struct OtapArrowPdata {
+    context: Context,
+    records: OtapArrowRecords,
+}
+
+impl OtapArrowPdata {
+    /// Constructs native pdata from its delivery context and records.
+    #[must_use]
+    pub const fn new(context: Context, records: OtapArrowRecords) -> Self {
+        Self { context, records }
+    }
+
+    /// Borrows the delivery context.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Returns a mutable delivery context.
+    pub const fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
+    /// Borrows native records.
+    #[must_use]
+    pub const fn records(&self) -> &OtapArrowRecords {
+        &self.records
+    }
+
+    /// Returns mutable native records.
+    pub const fn records_mut(&mut self) -> &mut OtapArrowRecords {
+        &mut self.records
+    }
+
+    /// Returns the signal represented by the native records.
+    #[must_use]
+    pub fn signal_type(&self) -> SignalType {
+        self.records.signal_type()
+    }
+
+    /// Splits delivery context and native records without cloning.
+    #[must_use]
+    pub fn into_parts(self) -> (Context, OtapArrowRecords) {
+        (self.context, self.records)
+    }
+
+    /// Converts back to dynamically represented pipeline pdata.
+    #[must_use]
+    pub fn into_pdata(self) -> OtapPdata {
+        OtapPdata::new(self.context, self.records.into())
+    }
+}
+
+impl From<OtapArrowPdata> for OtapPdata {
+    fn from(value: OtapArrowPdata) -> Self {
+        value.into_pdata()
+    }
+}
+
+/// A failed codec conversion carrying the exact original pdata for Nack or retry.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct OtapPdataDecodeError(Box<OtapPdataDecodeErrorInner>);
+
+#[derive(thiserror::Error)]
+#[error("{source}")]
+struct OtapPdataDecodeErrorInner {
+    #[source]
+    source: CodecError,
+    pdata: OtapPdata,
+}
+
+// Neither retained telemetry nor delivery context belongs in diagnostics.
+impl fmt::Debug for OtapPdataDecodeErrorInner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OtapPdataDecodeErrorInner")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OtapPdataDecodeError {
+    /// Returns the codec or conversion error.
+    #[must_use]
+    pub const fn error(&self) -> &CodecError {
+        &self.0.source
+    }
+
+    /// Borrows the exact original pdata retained for recovery.
+    #[must_use]
+    pub const fn pdata(&self) -> &OtapPdata {
+        &self.0.pdata
+    }
+
+    /// Splits the error and recoverable original pdata.
+    #[must_use]
+    pub fn into_parts(self) -> (CodecError, OtapPdata) {
+        let inner = *self.0;
+        (inner.source, inner.pdata)
+    }
 }
 
 /* -------- Signal type -------- */
@@ -639,12 +770,6 @@ impl OtapPdata {
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
         self.payload.signal_type()
-    }
-
-    /// Returns the format of signal represented by this `OtapPdata` instance.
-    #[must_use]
-    pub const fn signal_format(&self) -> SignalFormat {
-        self.payload.signal_format()
     }
 
     /// True if the payload is empty. By definition, we can skip sending an
@@ -686,9 +811,11 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers and peer address are **preserved** because they
-    /// represent request-scoped metadata (tenant ID, auth, trace context,
-    /// originating peer) that should survive cross-pipeline hops.
+    /// Transport headers, authorized identity entries, materialized context,
+    /// and peer address are **preserved** because they represent request-scoped
+    /// metadata that should survive cross-pipeline hops. Materialized entries
+    /// retain declaration provenance, so a destination plan accepts them only
+    /// when its declaration is identical.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
@@ -777,38 +904,36 @@ impl OtapPdata {
 
     /// Prepare the context for a message-source send.
     ///
-    /// When `node_interests` includes `SOURCE_TAGGING`, `PRODUCER_METRICS`,
-    /// or `ENTRY_TIMESTAMP`, a source frame is ensured for `node_id` and
-    /// the relevant interests are merged into it.
-    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize) {
-        let trigger = node_interests
-            & (Interests::SOURCE_TAGGING
-                | Interests::PRODUCER_METRICS
-                | Interests::ENTRY_TIMESTAMP);
+    /// When `node_interests` includes source tagging or output-side telemetry,
+    /// a source frame is ensured for `node_id` and the relevant interests are
+    /// merged into it.
+    fn prepare_source_send(
+        &mut self,
+        node_interests: Interests,
+        node_id: usize,
+        completion_from_output: bool,
+    ) {
+        let mut output_interests = node_interests
+            & (Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS | Interests::NODE_SIZE);
+        if completion_from_output {
+            output_interests |= node_interests & Interests::NODE_COMPLETION_DURATION;
+        }
+        let trigger = (node_interests & Interests::SOURCE_TAGGING) | output_interests;
         if !trigger.is_empty() {
-            self.context.update_send_context(
-                node_id,
-                node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
-            );
-            if node_interests.contains(Interests::PRODUCER_METRICS) {
+            self.context.update_send_context(node_id, output_interests);
+            if !output_interests.is_empty() {
                 self.context.capture_signal(self.signal_type());
             }
-            // Produced counts are only recorded under PRODUCER_METRICS, so only
-            // pay the num_items() parse when that interest is also present
-            // (e.g. avoid it for a source-tagging-only frame).
-            if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
-                && node_interests.contains(Interests::PRODUCER_METRICS)
-            {
+            if output_interests.contains(Interests::NODE_ITEM_COUNTS) {
                 let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
                 let signal = self.signal_type();
-                self.context.stamp_produced_items(items, signal);
+                self.context.stamp_output_items(items, signal);
             }
-            if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
-                && node_interests.contains(Interests::PRODUCER_METRICS)
+            if output_interests.contains(Interests::NODE_SIZE)
                 && let Some(size) = self.num_bytes()
             {
                 self.context
-                    .stamp_produced_size(u64::try_from(size).unwrap_or(u64::MAX));
+                    .stamp_output_size(u64::try_from(size).unwrap_or(u64::MAX));
             }
         }
     }
@@ -825,10 +950,53 @@ impl OtapPdata {
         self.context.has_ack_or_nack_subscribers()
     }
 
+    /// Returns the request-scoped message metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
+        self.context.metadata()
+    }
+
+    /// Returns this pdata with the given message metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.context = self.context.with_metadata(metadata);
+        self
+    }
+
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
         self.context.transport_headers()
+    }
+
+    /// Returns the authorization-derived context entries, if any.
+    #[must_use]
+    pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
+        self.context.authorized_identity_entries()
+    }
+
+    /// Returns selected composite snapshots materialized for this pdata.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        self.context.materialized_context()
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.context.resolve_materialized_context(plan, projection)
+    }
+
+    pub(crate) fn capture_authorized_identity(
+        &mut self,
+        policy: &AuthorizedIdentityPolicy,
+        identity: &AuthorizedIdentity,
+    ) {
+        self.context.capture_authorized_identity(policy, identity);
     }
 
     /// Set transport headers on this pdata's context.
@@ -872,12 +1040,17 @@ impl OtapPdata {
 /// Implements `ProducerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
 /// `$id_method` is `processor_id` or `receiver_id`.
 macro_rules! impl_producer_ext {
-    ($handler:ty, $id_method:ident) => {
+    ($handler:ty, $id_method:ident, $completion_from_output:expr) => {
         #[async_trait(?Send)]
         impl ProducerEffectHandlerExtension<OtapPdata> for $handler {
             fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
-                let engine_int = self.node_interests()
-                    & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP);
+                let mut engine_int = self.node_interests()
+                    & (Interests::NODE_OUTPUT_METRICS
+                        | Interests::NODE_ITEM_COUNTS
+                        | Interests::NODE_SIZE);
+                if $completion_from_output {
+                    engine_int |= self.node_interests() & Interests::NODE_COMPLETION_DURATION;
+                }
                 data.context
                     .subscribe_to(int | engine_int, ctx, self.$id_method().index);
             }
@@ -887,24 +1060,28 @@ macro_rules! impl_producer_ext {
 
 impl_producer_ext!(
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    false
 );
 impl_producer_ext!(
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    true
 );
 impl_producer_ext!(
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    false
 );
 impl_producer_ext!(
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    true
 );
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
-// All metric recording (consumer and producer) is handled by the pipeline
+// All input/output metric recording is handled by the pipeline
 // controller during context unwinding. route_ack/route_nack skip sending
 // when the context stack is empty (nothing to unwind).
 
@@ -938,6 +1115,331 @@ impl_consumer_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPda
 impl_consumer_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
 impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
 
+/* -------- Pdata codec effect handler extensions -------- */
+
+/// Representation-independent pdata operations supplied by an effect handler.
+///
+/// Codec state belongs to the pipeline runtime. These methods are async at the
+/// node boundary so codecs that need an offloaded or asynchronous executor can
+/// be added later without storing codec state in nodes. The current operations
+/// scope their synchronous state borrow entirely before returning.
+#[allow(async_fn_in_trait)]
+pub trait PdataEffectHandlerExtension: CodecEffectHandler {
+    /// Resolves an output plan once while starting the consuming node.
+    fn resolve_encoding_plan(
+        &self,
+        encoding: &PdataEncoding,
+        policy: EncodePolicy,
+    ) -> Result<EncodingPlan, CodecError> {
+        EncodingPlan::resolve(self.codec_service().registry(), encoding, policy)
+    }
+
+    /// Resolves the encodings a read-only node accepts for direct borrowed access.
+    ///
+    /// Other encodings fall back to native OTAP when obtaining a view. Resolve
+    /// this set once during startup, or on first use when startup access is unavailable.
+    fn resolve_accepted_encodings(
+        &self,
+        encodings: &[PdataEncoding],
+    ) -> Result<AcceptedEncodings, CodecError> {
+        let codecs = encodings
+            .iter()
+            .map(|encoding| self.codec_service().registry().resolve(encoding))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(AcceptedEncodings::accept_encoded(codecs))
+    }
+
+    /// Obtains owned native pdata, keeping delivery context and records together.
+    ///
+    /// Native input moves directly without cloning or creating a codec. Encoded
+    /// input is decoded only when needed. Failure returns the exact original
+    /// pdata; success retains no original payload for later processing failures.
+    /// Use [`Self::prepare_otap_work`] when that later recovery is required.
+    async fn materialize_otap(
+        &self,
+        pdata: OtapPdata,
+    ) -> Result<OtapArrowPdata, OtapPdataDecodeError>;
+
+    /// Obtains owned native records when the caller manages context separately.
+    ///
+    /// Native records move directly; encoded input is decoded only when needed.
+    /// Failure returns the exact original payload. Success retains no snapshot.
+    async fn materialize_otap_payload(
+        &self,
+        payload: OtapPayload,
+    ) -> Result<OtapArrowRecords, PdataPayloadDecodeError>;
+
+    /// Obtains native working records and separately owned delivery context.
+    ///
+    /// Unlike [`Self::materialize_otap`], this retains an original payload snapshot
+    /// for later processing failures when RETURN_DATA is requested. Without it,
+    /// native records still move directly without cloning or creating a codec.
+    /// A decode failure always returns the exact input, regardless of RETURN_DATA.
+    /// The caller explicitly forwards an output or reports Ack/Nack; no codec
+    /// state remains borrowed while the working records are used.
+    async fn prepare_otap_work(
+        &self,
+        pdata: OtapPdata,
+    ) -> Result<(PdataDelivery, OtapArrowRecords), OtapPdataDecodeError> {
+        let (delivery, payload) = pdata.into_work();
+        match self.materialize_otap_payload(payload).await {
+            Ok(records) => Ok((delivery, records)),
+            Err(error) => {
+                let (source, payload) = error.into_parts();
+                Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                    source,
+                    pdata: delivery.with_payload(payload),
+                })))
+            }
+        }
+    }
+
+    /// Applies a synchronous, fallible update without exposing snapshot bookkeeping.
+    ///
+    /// Processing failures recover the original payload only when RETURN_DATA is
+    /// requested; decoding failures always recover it. The caller chooses how to
+    /// report failures. No codec state is borrowed while the callback runs, and
+    /// no Ack/Nack is sent automatically. For asynchronous work, use
+    /// [`Self::prepare_otap_work`] and keep its delivery owner until work completes.
+    async fn update_otap<R, E>(
+        &self,
+        pdata: OtapPdata,
+        update: impl FnOnce(&mut OtapArrowRecords) -> Result<R, E>,
+    ) -> Result<(OtapArrowPdata, R), OtapPdataUpdateError<E>> {
+        let (delivery, mut records) = self
+            .prepare_otap_work(pdata)
+            .await
+            .map_err(OtapPdataUpdateError::decode)?;
+        match update(&mut records) {
+            Ok(value) => {
+                let (context, _) = delivery.into_pdata().into_parts();
+                Ok((OtapArrowPdata::new(context, records), value))
+            }
+            Err(error) => Err(OtapPdataUpdateError::update(error, delivery.into_pdata())),
+        }
+    }
+
+    /// Obtains a read-only view using the consumer's accepted encodings.
+    ///
+    /// Accepted encoded bytes and existing native records are borrowed. Other
+    /// encodings are decoded through runtime-owned codec state into temporary
+    /// native OTAP records, leaving the original payload unchanged.
+    async fn view<'a>(
+        &self,
+        payload: &'a OtapPayload,
+        accepted_encodings: &AcceptedEncodings,
+    ) -> Result<PdataView<'a>, CodecError>;
+
+    /// Encodes inside a scope that cannot cross an await point.
+    async fn with_encoded<R>(
+        &self,
+        payload: &mut OtapPayload,
+        plan: &EncodingPlan,
+        consume: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, CodecError>;
+
+    /// Encodes to owned bytes suitable for asynchronous delivery.
+    async fn encode_owned(
+        &self,
+        payload: &mut OtapPayload,
+        plan: &EncodingPlan,
+    ) -> Result<bytes::Bytes, CodecError>;
+
+    /// Prepares one payload for a startup-resolved batching plan.
+    async fn prepare_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
+
+    /// Merges or splits prepared payloads through a batching plan.
+    async fn batch(
+        &self,
+        plan: &BatchPlan,
+        signal: SignalType,
+        inputs: Vec<OtapPayload>,
+    ) -> Result<BatchingOutput, CodecError>;
+
+    /// Converts a flushed working batch to the plan's output representation.
+    async fn finish_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
+}
+
+/// Processor capability for algorithms that always require mutable native OTAP.
+///
+/// Implementors only receive typed Arrow pdata. The adapter owns conversion
+/// and the permanent Nack policy for malformed encoded input.
+#[async_trait(?Send)]
+pub trait NativePdataProcessor {
+    /// Processes one successfully materialized native batch.
+    async fn process_native(
+        &mut self,
+        pdata: OtapArrowPdata,
+        effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error>;
+
+    /// Processes a control message without forcing pdata conversion.
+    async fn process_control(
+        &mut self,
+        _control: NodeControlMsg<OtapPdata>,
+        _effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Declares runtime services required by the native processor.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
+    }
+}
+
+/// Runs a [`NativePdataProcessor`] behind the dynamic pdata boundary.
+pub struct NativeProcessorAdapter;
+
+impl NativeProcessorAdapter {
+    /// Converts pdata, permanently Nacks codec failures, and invokes the
+    /// processor only after native access has been established.
+    pub async fn process<P: NativePdataProcessor>(
+        processor: &mut P,
+        msg: otel_arrow_dfe_engine::message::Message<OtapPdata>,
+        effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        match msg {
+            otel_arrow_dfe_engine::message::Message::Control(control) => {
+                processor.process_control(control, effect_handler).await
+            }
+            otel_arrow_dfe_engine::message::Message::PData(pdata) => {
+                match effect_handler.materialize_otap(pdata).await {
+                    Ok(pdata) => processor.process_native(pdata, effect_handler).await,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await
+                    }
+                }
+            }
+        }
+    }
+}
+
+macro_rules! impl_pdata_effect_handler_ext {
+    ($handler:ty) => {
+        impl PdataEffectHandlerExtension for $handler {
+            async fn materialize_otap(
+                &self,
+                pdata: OtapPdata,
+            ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
+                let (context, payload) = pdata.into_parts();
+                match payload
+                    .try_into_otap_cooperative(self.codec_service(), tokio::task::yield_now)
+                    .await
+                {
+                    Ok(records) => Ok(OtapArrowPdata::new(context, records)),
+                    Err(error) => {
+                        let (source, payload) = error.into_parts();
+                        Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                            source,
+                            pdata: OtapPdata::new(context, payload),
+                        })))
+                    }
+                }
+            }
+
+            async fn materialize_otap_payload(
+                &self,
+                payload: OtapPayload,
+            ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
+                payload
+                    .try_into_otap_cooperative(self.codec_service(), tokio::task::yield_now)
+                    .await
+            }
+
+            async fn view<'a>(
+                &self,
+                payload: &'a OtapPayload,
+                accepted_encodings: &AcceptedEncodings,
+            ) -> Result<PdataView<'a>, CodecError> {
+                payload
+                    .view_cooperative(
+                        self.codec_service(),
+                        accepted_encodings,
+                        tokio::task::yield_now,
+                    )
+                    .await
+            }
+
+            async fn with_encoded<R>(
+                &self,
+                payload: &mut OtapPayload,
+                plan: &EncodingPlan,
+                consume: impl FnOnce(&[u8]) -> R,
+            ) -> Result<R, CodecError> {
+                payload
+                    .with_encoded_output_cooperative(
+                        self.codec_service(),
+                        plan,
+                        |output| consume(output.as_ref()),
+                        tokio::task::yield_now,
+                    )
+                    .await
+            }
+
+            async fn encode_owned(
+                &self,
+                payload: &mut OtapPayload,
+                plan: &EncodingPlan,
+            ) -> Result<bytes::Bytes, CodecError> {
+                payload
+                    .with_encoded_output_cooperative(
+                        self.codec_service(),
+                        plan,
+                        |output| output.into_bytes(),
+                        tokio::task::yield_now,
+                    )
+                    .await
+            }
+
+            async fn prepare_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.prepare_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
+            }
+
+            async fn batch(
+                &self,
+                plan: &BatchPlan,
+                signal: SignalType,
+                inputs: Vec<OtapPayload>,
+            ) -> Result<BatchingOutput, CodecError> {
+                plan.batch(signal, inputs, self.codec_service())
+            }
+
+            async fn finish_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.finish_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
+            }
+        }
+    };
+}
+
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>);
+
 /* --------  effect handler extensions (shared, local) -------- */
 
 /// Forward-path flow_metric accumulation for non-overlapping ranges.
@@ -961,10 +1463,10 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(
     }
     data.add_flow_compute(delta_ns);
     if is_end {
-        if let Some(total) = data.take_flow_compute() {
-            if interests.contains(FlowMetricInterests::COMPUTE_DURATION) {
-                handler.record_flow_duration(data.signal_type(), total);
-            }
+        if let Some(total) = data.take_flow_compute()
+            && interests.contains(FlowMetricInterests::COMPUTE_DURATION)
+        {
+            handler.record_flow_duration(data.signal_type(), total);
         }
         if emitted_output && interests.contains(FlowMetricInterests::OUTPUT_MESSAGES) {
             handler.record_flow_output_message(data.signal_type());
@@ -1027,25 +1529,38 @@ impl FlowMetricHook for OtapPdata {
 ///   $trait_name   - `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      - fully-qualified EffectHandler type
 ///   $id_method    - `processor_id` or `receiver_id`
-///   $hook         - `with_hook` (processors: invokes `before_processor_send`)
-///                   or `no_hook` (receivers: no per-send bookkeeping)
-macro_rules! maybe_processor_send_hook {
-    (with_hook, $handler:expr, $data:expr) => {
+///   $before_send  - `processor_flow_metrics` invokes `before_processor_send`
+///                   or `receiver_materialization` materializes configured context
+macro_rules! before_message_source_send {
+    (processor_flow_metrics, $handler:expr, $data:expr) => {
         $data.before_processor_send($handler);
     };
-    (no_hook, $handler:expr, $data:expr) => {};
+    (receiver_materialization, $handler:expr, $data:expr) => {
+        $handler.materialize_context($data);
+    };
 }
 
 macro_rules! impl_message_source_ext {
-    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $hook:ident) => {
+    (
+        $async_attr:meta,
+        $trait_name:ident,
+        $handler:ty,
+        $id_method:ident,
+        $before_send:ident,
+        $completion_from_output:expr
+    ) => {
         #[$async_attr]
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
                 &self,
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_processor_send_hook!($hook, self, &mut data);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -1053,8 +1568,12 @@ macro_rules! impl_message_source_ext {
                 &self,
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_processor_send_hook!($hook, self, &mut data);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -1066,8 +1585,12 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_processor_send_hook!($hook, self, &mut data);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -1079,8 +1602,12 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
-                maybe_processor_send_hook!($hook, self, &mut data);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -1092,28 +1619,32 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook
+    processor_flow_metrics,
+    false
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook
+    receiver_materialization,
+    true
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook
+    processor_flow_metrics,
+    false
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook
+    receiver_materialization,
+    true
 );
 
 /* -------- ReceivedAtNode implementation -------- */
@@ -1121,25 +1652,24 @@ impl_message_source_ext!(
 impl otel_arrow_dfe_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
-        if node_interests.contains(Interests::CONSUMER_METRICS) {
+        if node_interests.intersects(
+            Interests::NODE_INPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE,
+        ) {
             self.context.capture_signal(self.signal_type());
         }
-        // Consumed counts are only recorded under CONSUMER_METRICS, so only pay
-        // the num_items() parse when that interest is also present (e.g. avoid
-        // it for a per-node opt-in below the `normal` metric level).
-        if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
-            && node_interests.contains(Interests::CONSUMER_METRICS)
-        {
+        if node_interests.contains(Interests::NODE_ITEM_COUNTS) {
             let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
             let signal = self.signal_type();
-            self.context.stamp_consumed_items(items, signal);
+            self.context.stamp_input_items(items, signal);
         }
-        if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
-            && node_interests.contains(Interests::CONSUMER_METRICS)
+        if node_interests.contains(Interests::NODE_SIZE)
             && let Some(size) = self.num_bytes()
         {
             self.context
-                .stamp_consumed_size(u64::try_from(size).unwrap_or(u64::MAX));
+                .stamp_input_size(u64::try_from(size).unwrap_or(u64::MAX));
         }
     }
 }
@@ -1151,8 +1681,13 @@ mod test {
     use crate::testing::{
         TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
     };
-    use crate::transport_headers::TransportHeader;
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context::policy::{
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
+        ContextScope,
+    };
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -1164,6 +1699,7 @@ mod test {
     use otel_arrow_dfe_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
     use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::node::NodeId;
+    use otel_arrow_dfe_engine::pdata_context::{ContextValueCardinality, ContextValueKind};
     use otel_arrow_dfe_engine::shared::exporter::EffectHandler as SharedExporterEffectHandler;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
@@ -1172,17 +1708,349 @@ mod test {
     use pretty_assertions::assert_eq;
     use std::cell::Cell;
     use std::collections::HashMap;
+    use std::mem::size_of;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
+
+    fn materialization_plan(
+        parts: Vec<ContextEntryPart>,
+    ) -> (ContextMaterializationPlan, ContextProjection) {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: ContextEntryName::try_from("request").expect("valid composite name"),
+            definition: ContextEntryDefinition(parts),
+        };
+        let plan = ContextMaterializationPlan::compile(&[declaration]).expect("plan compiles");
+        let projection = plan
+            .layout()
+            .resolve_composite(
+                &ContextEntryName::try_from("request").expect("valid composite name"),
+            )
+            .expect("projection resolves");
+        (plan, projection)
+    }
+
+    /// Scenario: Queued and native-capability pdata are built for a 64-bit target.
+    /// Guarantees: Unified transport and materialized context storage keeps pdata compact.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn legacy_otap_pdata_layout_is_stable() {
+        assert_eq!(size_of::<OtapPdata>(), 152);
+        assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
+        assert_eq!(size_of::<PdataDelivery>(), size_of::<OtapPdata>());
+    }
+
+    /// Scenario: An effect handler materializes malformed encoded pdata with delivery context.
+    /// Guarantees: Diagnostics omit telemetry and context; recovery preserves peer address,
+    /// codec identity, bytes, signal, and item count.
+    #[tokio::test]
+    async fn encoded_conversion_failure_preserves_delivery_ownership() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataFormat};
+
+        let peer = "127.0.0.1:4317".parse().expect("peer address");
+        let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+        let pointer = bytes.as_ptr();
+        let handler = delivery_handler();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .expect("OTLP codec");
+        let payload = OtapPayload::from_encoded(
+            codec
+                .admit(SignalType::Logs, bytes)
+                .expect("lazy admission"),
+        );
+        let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9);
+        let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+
+        let error = handler
+            .materialize_otap(pdata)
+            .await
+            .expect_err("malformed OTLP must fail");
+        assert_eq!(error.to_string(), error.error().to_string());
+        for diagnostic in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!diagnostic.contains("SECRET_TELEMETRY_VALUE"));
+            assert!(!diagnostic.contains("127.0.0.1"));
+        }
+        let (_, recovered) = error.into_parts();
+        assert_eq!(recovered.peer_addr(), Some(peer));
+        assert_eq!(
+            recovered.payload_ref().format(),
+            PdataFormat::encoded(codec)
+        );
+        assert_eq!(recovered.payload_ref().known_item_count(), Some(9));
+        assert_eq!(
+            recovered.payload_ref().encoded_bytes().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(recovered.signal_type(), SignalType::Logs);
+    }
+
+    fn delivery_handler() -> LocalExporterEffectHandler<OtapPdata> {
+        let (_rx, metrics) = MetricsReporter::create_new_and_receiver(1);
+        LocalExporterEffectHandler::new(
+            otel_arrow_dfe_engine::testing::test_node("delivery-test"),
+            metrics,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+    }
+
+    fn delivery_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
+        let adapted = create_test_pdata().payload();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let encoded = codec
+            .admit(
+                adapted.signal_type(),
+                adapted.encoded_bytes().unwrap().clone(),
+            )
+            .unwrap();
+        [adapted, encoded.into(), create_test_otap_pdata().payload()]
+    }
+
+    /// Scenario: OTLP adapters, admitted encoded, and native inputs prepare work or delivery ownership.
+    /// Guarantees: only RETURN_DATA retains input, context and measurement caches survive,
+    /// and encoded snapshots share the original byte buffer without codec creation.
+    #[test]
+    fn delivery_retention_preserves_input_and_caches() {
+        let handler = delivery_handler();
+        for return_data in [false, true] {
+            for mut payload in delivery_inputs(&handler) {
+                let count = payload.num_items();
+                let size = payload.num_bytes();
+                let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
+                let format = payload.format();
+                let pdata = OtapPdata::new_default(payload)
+                    .test_subscribe_to(
+                        Interests::NACKS
+                            | if return_data {
+                                Interests::RETURN_DATA
+                            } else {
+                                Interests::empty()
+                            },
+                        TestCallData::default().into(),
+                        777,
+                    )
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let expected_context = pdata.context.clone();
+                let (delivery, mut work) = pdata.into_work();
+                assert_eq!(delivery.context(), &expected_context);
+                assert_eq!(work.num_items(), count);
+                assert_eq!(work.num_bytes(), size);
+                assert_eq!(work.encoded_bytes().map(|bytes| bytes.as_ptr()), pointer);
+                // Use the same delivery entry point as already-prepared exporters.
+                let mut returned = delivery.into_pdata().into_delivery().into_pdata();
+                assert_eq!(returned.context, expected_context);
+                if return_data {
+                    assert_eq!(returned.payload_ref().format(), format);
+                    assert_eq!(returned.num_items(), count);
+                    assert_eq!(returned.num_bytes(), size);
+                    assert_eq!(
+                        returned
+                            .payload_ref()
+                            .encoded_bytes()
+                            .map(|bytes| bytes.as_ptr()),
+                        pointer
+                    );
+                } else {
+                    assert!(returned.is_empty());
+                    assert_eq!(returned.signal_type(), work.signal_type());
+                }
+            }
+        }
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: a native batch without RETURN_DATA enters recoverable processing.
+    /// Guarantees: its Arrow container moves directly, no codec is created, and success
+    /// forwards the original context with the updated records and callback result.
+    #[tokio::test]
+    async fn native_update_moves_records_without_snapshot() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let handler = delivery_handler();
+        let pdata = create_test_otap_pdata();
+        let pointer = pdata
+            .payload_ref()
+            .otap_ref()
+            .unwrap()
+            .get(ArrowPayloadType::Logs)
+            .unwrap() as *const arrow::record_batch::RecordBatch;
+        let schema_owners = Arc::strong_count(
+            &pdata
+                .payload_ref()
+                .otap_ref()
+                .unwrap()
+                .get(ArrowPayloadType::Logs)
+                .unwrap()
+                .schema(),
+        );
+        let (updated, value) = handler
+            .update_otap(pdata, |records| {
+                // A retained native snapshot would add a schema owner even if
+                // the working records themselves were moved without cloning.
+                assert_eq!(
+                    Arc::strong_count(&records.get(ArrowPayloadType::Logs).unwrap().schema()),
+                    schema_owners
+                );
+                assert_eq!(
+                    records.get(ArrowPayloadType::Logs).unwrap() as *const _,
+                    pointer
+                );
+                Ok::<_, std::io::Error>(17)
+            })
+            .await
+            .unwrap();
+        assert_eq!(value, 17);
+        assert_eq!(
+            updated.records().get(ArrowPayloadType::Logs).unwrap() as *const _,
+            pointer
+        );
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: an update removes records and then fails for each storage representation.
+    /// Guarantees: RETURN_DATA recovers unmodified input and caches; without it only context
+    /// and signal survive, and neither Debug nor Display prints telemetry or peer addresses.
+    #[tokio::test]
+    async fn failed_update_recovers_input_after_partial_mutation() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let handler = delivery_handler();
+        for return_data in [false, true] {
+            for mut payload in delivery_inputs(&handler) {
+                let count = payload.num_items();
+                let size = payload.num_bytes();
+                let format = payload.format();
+                let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
+                let pdata = OtapPdata::new_default(payload)
+                    .test_subscribe_to(
+                        Interests::NACKS
+                            | if return_data {
+                                Interests::RETURN_DATA
+                            } else {
+                                Interests::empty()
+                            },
+                        TestCallData::default().into(),
+                        777,
+                    )
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let context = pdata.context.clone();
+                let error = handler
+                    .update_otap(pdata, |records| {
+                        drop(records.remove(ArrowPayloadType::Logs));
+                        Err::<(), _>(std::io::Error::other("update failed"))
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(!format!("{error:?}").contains("127.0.0.1"));
+                assert_eq!(error.to_string(), "update failed");
+                let (cause, mut returned) = error.into_parts();
+                assert!(matches!(cause, OtapPdataUpdateCause::Update(_)));
+                assert_eq!(returned.context, context);
+                if return_data {
+                    assert_eq!(returned.num_items(), count);
+                    assert_eq!(returned.num_bytes(), size);
+                    assert_eq!(returned.payload_ref().format(), format);
+                    assert_eq!(
+                        returned
+                            .payload_ref()
+                            .encoded_bytes()
+                            .map(|bytes| bytes.as_ptr()),
+                        pointer
+                    );
+                    if let Some(records) = returned.payload_ref().otap_ref() {
+                        assert!(records.get(ArrowPayloadType::Logs).is_some());
+                    }
+                } else {
+                    assert!(returned.is_empty());
+                    assert_eq!(returned.signal_type(), SignalType::Logs);
+                }
+            }
+        }
+    }
+
+    /// Scenario: malformed OTLP from an adapter or admission enters an update without RETURN_DATA.
+    /// Guarantees: decoding never calls the updater and recovers exact bytes, cached count,
+    /// signal and context; the shared decoder remains usable for the next valid batch.
+    #[tokio::test]
+    async fn update_decode_failure_recovers_exact_input() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        let handler = delivery_handler();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+            let adapted = match signal {
+                SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes.clone()),
+                SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes.clone()),
+                SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
+            };
+            for payload in [
+                OtapPayload::from(adapted),
+                codec.admit(signal, bytes.clone()).unwrap().into(),
+            ] {
+                let pdata = OtapPdata::new_default(
+                    otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9),
+                )
+                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
+                .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let context = pdata.context.clone();
+                let format = pdata.payload_ref().format();
+                let error = handler
+                    .update_otap(pdata, |_| -> Result<(), std::io::Error> {
+                        panic!("decode failure must not run the update")
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(matches!(error.error(), OtapPdataUpdateCause::Decode(_)));
+                assert!(!format!("{error:?}").contains("SECRET_TELEMETRY_VALUE"));
+                let (_, returned) = error.into_parts();
+                assert_eq!(returned.context, context);
+                assert_eq!(returned.payload_ref().format(), format);
+                assert_eq!(returned.payload_ref().encoded_bytes(), Some(&bytes));
+                assert_eq!(
+                    returned.payload_ref().encoded_bytes().unwrap().as_ptr(),
+                    bytes.as_ptr()
+                );
+                assert_eq!(returned.payload_ref().known_item_count(), Some(9));
+                assert_eq!(returned.signal_type(), signal);
+                assert_eq!(
+                    returned.peer_addr(),
+                    Some("127.0.0.1:1234".parse().unwrap())
+                );
+            }
+            let valid = OtapPdata::new_default(codec.admit(signal, Bytes::new()).unwrap().into());
+            let _ = handler
+                .update_otap(valid, |_| Ok::<_, std::io::Error>(()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 1);
+    }
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
     }
 
     fn create_test_otap_pdata() -> OtapPdata {
-        use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+        use otel_arrow_dfe_pdata_codec::CodecService;
 
         let payload = create_test_pdata().into_parts().1;
-        let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
+        let records = payload
+            .try_into_otap(&CodecService::new().expect("valid codec registry"))
+            .expect("OTAP conversion");
         OtapPdata::new_default(records.into())
     }
 
@@ -1299,7 +2167,7 @@ mod test {
     }
 
     /// Scenario: PData traverses the start and end boundaries of an active flow.
-    /// Guarantees: the hooks record consumed and produced item totals at their boundaries.
+    /// Guarantees: the hooks record input and output item totals at their boundaries.
     #[test]
     fn flow_hooks_record_start_and_end_signal_counts() {
         let mut pdata = create_test_pdata();
@@ -1329,7 +2197,7 @@ mod test {
     }
 
     /// Scenario: a flow start or end boundary receives a zero-item batch.
-    /// Guarantees: the hooks invoke the consumed and produced item recorders
+    /// Guarantees: the hooks invoke the input and output item recorders
     /// with zero while compute-duration accumulation continues for the
     /// traversal. Zero-delta counters are intentionally omitted from exports.
     #[test]
@@ -1348,7 +2216,7 @@ mod test {
         assert_eq!(start_handler.stop_signals_calls.get(), 0);
 
         // Stop node: before_processor_send must record both
-        // compute.duration and produced = 0.
+        // compute.duration and output = 0.
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
@@ -1420,6 +2288,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1448,6 +2317,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1478,6 +2348,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1511,6 +2382,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1540,6 +2412,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1569,6 +2442,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1601,6 +2475,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1629,6 +2504,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1659,6 +2535,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1688,6 +2565,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1717,6 +2595,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1749,6 +2628,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1779,6 +2659,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1790,6 +2671,324 @@ mod test {
 
         let sent = rx.recv().await.expect("message received");
         assert_eq!(sent.get_source_node(), Some(2));
+    }
+
+    fn assert_materialized_uuid(
+        sent: &OtapPdata,
+        plan: &ContextMaterializationPlan,
+        projection: &ContextProjection,
+        expected_source: Option<usize>,
+    ) {
+        assert_eq!(sent.get_source_node(), expected_source);
+        let resolved = sent
+            .resolve_materialized_context(plan, projection)
+            .expect("context was materialized");
+        resolved.visit_members(|member| {
+            let value = member.values().values()[0].as_str().expect("UUID is text");
+            assert_eq!(value.len(), 36);
+            assert_eq!(value.as_bytes()[14], b'7');
+        });
+    }
+
+    /// Scenario: a local receiver uses every base and source-tagged send variant.
+    /// Guarantees: default, named-port, blocking, and try-send paths materialize UUID-v7.
+    #[tokio::test]
+    async fn local_receiver_send_paths_materialize_context() {
+        let (default_tx, default_rx) = LocalChannel::<OtapPdata>::new(4);
+        let (named_tx, named_rx) = LocalChannel::<OtapPdata>::new(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert(
+            "default".into(),
+            Sender::Local(LocalSender::mpsc(default_tx)),
+        );
+        let _ = senders.insert("named".into(), Sender::Local(LocalSender::mpsc(named_tx)));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = LocalReceiverEffectHandler::new(
+            NodeId {
+                index: 2,
+                name: "recv_local".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a shared receiver uses every base and source-tagged send variant.
+    /// Guarantees: production-style shared paths materialize UUID-v7 before delivery.
+    #[tokio::test]
+    async fn shared_receiver_send_paths_materialize_context() {
+        let (default_tx, mut default_rx) = mpsc::channel::<OtapPdata>(4);
+        let (named_tx, mut named_rx) = mpsc::channel::<OtapPdata>(4);
+        let senders = HashMap::from([
+            ("default".into(), SharedSender::mpsc(default_tx)),
+            ("named".into(), SharedSender::mpsc(named_tx)),
+        ]);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = SharedReceiverEffectHandler::new(
+            NodeId {
+                index: 3,
+                name: "recv_shared".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a composite combines trusted identity, a header condition, and a constant.
+    /// Guarantees: pdata-backed source resolution materializes the composite only when all gates pass.
+    #[test]
+    fn materializes_mixed_pdata_sources() {
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("sub").expect("valid claim name"),
+                store_as: Some(ContextEntryName::try_from("customer").expect("valid member name")),
+            },
+            ContextEntryPart::TransportHeaderMatch {
+                name: ContextEntryName::try_from("environment").expect("valid header name"),
+                value: "production".to_owned(),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "sub",
+                "store_as": "sub"
+            }]))
+            .expect("valid identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("customer-42");
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
+            ContextEntryName::try_from("environment").expect("valid header name"),
+            b"production",
+        ));
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut values = Vec::new();
+        resolved.visit_members(|member| {
+            values.push((
+                member.name().as_str().to_owned(),
+                member.values().values()[0]
+                    .as_str()
+                    .expect("member is text")
+                    .to_owned(),
+            ));
+        });
+        assert_eq!(
+            values,
+            [
+                ("customer".to_owned(), "customer-42".to_owned()),
+                ("route".to_owned(), "dedicated".to_owned()),
+            ]
+        );
+    }
+
+    /// Scenario: a selected authorized identity claim is a present empty multi-valued list.
+    /// Guarantees: materialization retains the zero-value member instead of omitting its composite.
+    #[test]
+    fn materializes_empty_multi_valued_identity_claim() {
+        let member_name = ContextEntryName::try_from("access_groups").expect("valid member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("groups").expect("valid claim name"),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "groups",
+                "store_as": "groups"
+            }]))
+            .expect("valid identity policy");
+        let identity =
+            AuthorizedIdentity::new().with_claim_values("groups", std::iter::empty::<&str>());
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_empty_groups = false;
+        resolved.visit_members(|member| {
+            if member.name() == &member_name {
+                found_empty_groups = true;
+                assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+                assert!(member.values().values().is_empty());
+            }
+        });
+        assert!(found_empty_groups);
+    }
+
+    /// Scenario: repeated captured binary headers retain their complete source representation.
+    /// Guarantees: materialization preserves kind, original name, order, bytes, and cardinality.
+    #[test]
+    fn materializes_repeated_binary_header_fidelity() {
+        let header_name =
+            ContextEntryName::try_from("custom-bin").expect("valid stored header name");
+        let member_name =
+            ContextEntryName::try_from("payload").expect("valid materialized member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::TransportHeader {
+                name: header_name.clone(),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("source").expect("valid constant member name"),
+                value: "test".to_owned(),
+            },
+        ]);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::captured(
+            header_name.clone(),
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x00, 0xff],
+        ));
+        headers.push(TransportHeader::captured(
+            header_name,
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x01, 0xfe],
+        ));
+        let mut pdata = create_test_pdata();
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_header = false;
+        resolved.visit_members(|member| {
+            if member.name() != &member_name {
+                return;
+            }
+            found_header = true;
+            assert_eq!(member.name(), &member_name);
+            assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+            let values = member.values().values();
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0].kind(), ContextValueKind::Binary);
+            assert_eq!(values[0].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[0].bytes(), [0x00, 0xff]);
+            assert_eq!(values[1].kind(), ContextValueKind::Binary);
+            assert_eq!(values[1].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[1].bytes(), [0x01, 0xfe]);
+        });
+        assert!(found_header, "materialized header member is present");
     }
 
     #[tokio::test]
@@ -1811,6 +3010,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1842,6 +3042,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1860,6 +3061,7 @@ mod test {
         let (tx_on, mut rx_on) = mpsc::channel::<OtapPdata>(4);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let runtime_services = otel_arrow_dfe_engine::testing::test_pipeline_runtime_services();
         let handler_off = SharedProcessorEffectHandler::new(
             NodeId {
                 index: 7,
@@ -1868,6 +3070,7 @@ mod test {
             HashMap::from([("out".into(), SharedSender::mpsc(tx_off))]),
             Some("out".into()),
             metrics_reporter,
+            runtime_services.clone(),
         );
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -1879,6 +3082,7 @@ mod test {
             HashMap::from([("out".into(), SharedSender::mpsc(tx_on))]),
             Some("out".into()),
             metrics_reporter,
+            runtime_services,
         );
 
         // Default is false
@@ -1913,43 +3117,43 @@ mod test {
         assert_eq!(frames[0].interests, Interests::empty());
     }
 
-    /// Scenario: a node records normal-level consumed messages without item-count opt-in.
-    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
+    /// Scenario: a node records input messages and independently opts into input item counts.
+    /// Guarantees: input item counts work with or without the input message metric interest.
     #[test]
-    fn test_received_at_node_stamps_consumed_items() {
+    fn test_received_at_node_stamps_input_items() {
         use otel_arrow_dfe_engine::{ReceivedAtNode, Unwindable};
 
-        // CONSUMER_METRICS + item counts: entry frame carries consumed count.
+        // Input metrics plus item counts: the entry frame carries the input count.
         let mut pdata = create_test_pdata();
         let n = pdata.num_items() as u32;
         assert!(n > 0);
         pdata.received_at_node(
             42,
-            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            Interests::NODE_INPUT_METRICS | Interests::NODE_ITEM_COUNTS,
         );
         let frames = pdata.context.frames();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].node_id, 42);
-        assert_eq!(frames[0].consumed_items, n);
+        assert_eq!(frames[0].input_items, n);
         assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
 
-        // CONSUMER_METRICS without item-count interest: no consumed count stamped,
+        // Input metrics without item-count interest: no input count is stamped,
         // but the signal remains available for normal-level message metrics.
         let mut pdata_cm = create_test_pdata();
-        pdata_cm.received_at_node(43, Interests::CONSUMER_METRICS);
+        pdata_cm.received_at_node(43, Interests::NODE_INPUT_METRICS);
         let f_cm = pdata_cm.context.frames();
         assert_eq!(f_cm.len(), 1);
-        assert_eq!(f_cm[0].consumed_items, 0);
+        assert_eq!(f_cm[0].input_items, 0);
         assert_eq!(pdata_cm.context.signal(), Some(SignalType::Logs));
         assert_eq!(pdata_cm.signal(), Some(SignalType::Logs));
 
-        // ENTRY_TIMESTAMP only (no CONSUMER_METRICS): no consumed count stamped.
+        // Completion duration only: capture the signal without stamping an input count.
         let mut pdata2 = create_test_pdata();
-        pdata2.received_at_node(7, Interests::ENTRY_TIMESTAMP);
+        pdata2.received_at_node(7, Interests::NODE_COMPLETION_DURATION);
         let f2 = pdata2.context.frames();
         assert_eq!(f2.len(), 1);
-        assert_eq!(f2[0].consumed_items, 0);
-        assert_eq!(pdata2.context.signal(), None);
+        assert_eq!(f2[0].input_items, 0);
+        assert_eq!(pdata2.context.signal(), Some(SignalType::Logs));
 
         // Neither interest: no frame pushed at all.
         let mut pdata3 = create_test_pdata();
@@ -1957,128 +3161,198 @@ mod test {
         assert_eq!(pdata3.context.frames().len(), 0);
 
         // Opt-in bit alone (e.g. per-node opt-in below the `normal` level):
-        // no frame, no stamp, and no num_items() parse.
+        // capture the signal and item count without enabling message metrics.
         let mut pdata4 = create_test_pdata();
-        pdata4.received_at_node(11, Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
-        assert_eq!(pdata4.context.frames().len(), 0);
-        assert_eq!(pdata4.context.signal(), None);
+        pdata4.received_at_node(11, Interests::NODE_ITEM_COUNTS);
+        let f4 = pdata4.context.frames();
+        assert_eq!(f4.len(), 1);
+        assert_eq!(f4[0].input_items, n);
+        assert_eq!(pdata4.context.signal(), Some(SignalType::Logs));
     }
 
-    /// Scenario: a node opts into consumed payload size at the normal runtime metric level.
-    /// Guarantees: the receive frame captures size only when both consumer metrics and size measurement are enabled.
+    /// Scenario: a node independently opts into input payload size.
+    /// Guarantees: input size works with or without the input message metric interest.
     #[test]
-    fn test_received_at_node_stamps_consumed_size() {
+    fn test_received_at_node_stamps_input_size() {
         use otel_arrow_dfe_engine::ReceivedAtNode;
 
         let mut pdata = create_test_pdata();
         let size =
             u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
         assert!(size > 0);
-        pdata.received_at_node(
-            42,
-            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
-        );
+        pdata.received_at_node(42, Interests::NODE_INPUT_METRICS | Interests::NODE_SIZE);
         let frame = pdata.context.frames().last().expect("consumer frame");
-        assert_eq!(frame.consumed_size, size);
+        assert_eq!(frame.input_size, size);
 
         let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.received_at_node(43, Interests::CONSUMER_METRICS);
+        pdata_no_optin.received_at_node(43, Interests::NODE_INPUT_METRICS);
         let frame_no_optin = pdata_no_optin
             .context
             .frames()
             .last()
             .expect("consumer frame");
-        assert_eq!(frame_no_optin.consumed_size, 0);
+        assert_eq!(frame_no_optin.input_size, 0);
 
         let mut pdata_without_metrics = create_test_pdata();
-        pdata_without_metrics.received_at_node(44, Interests::PRODUCED_CONSUMED_SIZE);
-        assert!(pdata_without_metrics.context.frames().is_empty());
+        pdata_without_metrics.received_at_node(44, Interests::NODE_SIZE);
+        let frame_without_metrics = pdata_without_metrics
+            .context
+            .frames()
+            .last()
+            .expect("size-only input frame");
+        assert_eq!(frame_without_metrics.input_size, size);
+        assert_eq!(
+            pdata_without_metrics.context.signal(),
+            Some(SignalType::Logs)
+        );
     }
 
-    /// Scenario: a source records normal-level produced messages without item-count opt-in.
-    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
+    /// Scenario: a source records output messages and independently opts into output item counts.
+    /// Guarantees: output item counts work with or without the output message metric interest.
     #[test]
-    fn test_prepare_source_send_stamps_produced_items() {
-        // PRODUCER_METRICS | PRODUCED_CONSUMED_ITEM_COUNTS: source frame carries
-        // the produced count.
+    fn test_prepare_source_send_stamps_output_items() {
+        // NODE_OUTPUT_METRICS | NODE_ITEM_COUNTS: source frame carries the output count.
         let mut pdata = create_test_pdata();
         let n = pdata.num_items() as u32;
         assert!(n > 0);
         pdata.prepare_source_send(
-            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS,
             5,
+            true,
         );
         let frame = pdata.context.frames().last().expect("source frame");
         assert_eq!(frame.node_id, 5);
-        assert_eq!(frame.produced_items, n);
+        assert_eq!(frame.output_items, n);
         assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
 
-        // PRODUCER_METRICS without the opt-in bit: no produced count stamped.
+        // Output metrics without the opt-in bit: no output count is stamped.
         let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 7);
+        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 7, true);
         let frame_no_optin = pdata_no_optin
             .context
             .frames()
             .last()
             .expect("source frame");
-        assert_eq!(frame_no_optin.produced_items, 0);
+        assert_eq!(frame_no_optin.output_items, 0);
         assert_eq!(pdata_no_optin.context.signal(), Some(SignalType::Logs));
 
-        // SOURCE_TAGGING only (no PRODUCER_METRICS): no produced count stamped.
+        // SOURCE_TAGGING only (no output metrics): no output count is stamped.
         let mut pdata2 = create_test_pdata();
-        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6);
+        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6, true);
         let frame2 = pdata2.context.frames().last().expect("source frame");
-        assert_eq!(frame2.produced_items, 0);
+        assert_eq!(frame2.output_items, 0);
         assert_eq!(pdata2.context.signal(), None);
 
-        // SOURCE_TAGGING | opt-in bit but no PRODUCER_METRICS (e.g. a tagging
-        // receiver opting in below the `normal` level): a frame is pushed for
-        // tagging, but no produced count is stamped and no num_items() parse.
+        // The opt-in bit alone (e.g. below the `normal` level) records output
+        // items without enabling output message metrics.
         let mut pdata3 = create_test_pdata();
-        pdata3.prepare_source_send(
-            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
-            8,
-        );
+        pdata3.prepare_source_send(Interests::NODE_ITEM_COUNTS, 8, true);
         let frame3 = pdata3.context.frames().last().expect("source frame");
-        assert_eq!(frame3.produced_items, 0);
-        assert_eq!(pdata3.context.signal(), None);
+        assert_eq!(frame3.output_items, n);
+        assert_eq!(pdata3.context.signal(), Some(SignalType::Logs));
     }
 
-    /// Scenario: a source opts into produced payload size at the normal runtime metric level.
-    /// Guarantees: the source frame captures size only when both producer metrics and size measurement are enabled.
+    /// Scenario: a source independently opts into output payload size.
+    /// Guarantees: output size works with or without the output message metric interest.
     #[test]
-    fn test_prepare_source_send_stamps_produced_size() {
+    fn test_prepare_source_send_stamps_output_size() {
         let mut pdata = create_test_pdata();
         let size =
             u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
         assert!(size > 0);
         pdata.prepare_source_send(
-            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE,
             5,
+            true,
         );
         let frame = pdata.context.frames().last().expect("source frame");
-        assert_eq!(frame.produced_size, size);
+        assert_eq!(frame.output_size, size);
 
         let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 6);
+        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 6, true);
         let frame_no_optin = pdata_no_optin
             .context
             .frames()
             .last()
             .expect("source frame");
-        assert_eq!(frame_no_optin.produced_size, 0);
+        assert_eq!(frame_no_optin.output_size, 0);
 
         let mut pdata_without_metrics = create_test_pdata();
-        pdata_without_metrics.prepare_source_send(
-            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_SIZE,
-            7,
-        );
+        pdata_without_metrics.prepare_source_send(Interests::NODE_SIZE, 7, true);
         let frame_without_metrics = pdata_without_metrics
             .context
             .frames()
             .last()
-            .expect("source tagging frame");
-        assert_eq!(frame_without_metrics.produced_size, 0);
+            .expect("size-only output frame");
+        assert_eq!(frame_without_metrics.output_size, size);
+        assert_eq!(
+            pdata_without_metrics.context.signal(),
+            Some(SignalType::Logs)
+        );
+    }
+
+    /// Scenario: a source send follows a context frame owned by a different node.
+    /// Guarantees: the source gets a new frame and inherits the predecessor's return-data interest.
+    #[test]
+    fn test_prepare_source_send_pushes_frame_for_different_node() {
+        let mut pdata = create_test_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::RETURN_DATA,
+            CallData::default(),
+            1,
+        );
+        let items = pdata.num_items() as u32;
+
+        pdata.prepare_source_send(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS,
+            2,
+            true,
+        );
+
+        let frames = pdata.context.frames();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].node_id, 1);
+        assert_eq!(frames[0].output_items, 0);
+        assert_eq!(frames[1].node_id, 2);
+        assert!(frames[1].interests.contains(Interests::RETURN_DATA));
+        assert!(frames[1].interests.contains(Interests::NODE_OUTPUT_METRICS));
+        assert!(frames[1].interests.contains(Interests::NODE_ITEM_COUNTS));
+        assert_eq!(frames[1].output_items, items);
+    }
+
+    /// Scenario: a processor and receiver create fresh output from completion-enabled nodes.
+    /// Guarantees: only the receiver creates an output-boundary completion frame.
+    #[test]
+    fn test_prepare_source_send_applies_completion_only_at_receiver_output() {
+        let mut processor_output = create_test_pdata();
+        processor_output.prepare_source_send(Interests::NODE_COMPLETION_DURATION, 1, false);
+        assert!(processor_output.context.frames().is_empty());
+
+        let mut receiver_output = create_test_pdata();
+        receiver_output.prepare_source_send(Interests::NODE_COMPLETION_DURATION, 2, true);
+        let frames = receiver_output.context.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].node_id, 2);
+        assert!(
+            frames[0]
+                .interests
+                .contains(Interests::NODE_COMPLETION_DURATION)
+        );
+        assert!(frames[0].route.entry_time_ns > 0);
+    }
+
+    /// Scenario: an uninstrumented processor forwards data carrying an upstream node frame.
+    /// Guarantees: its output-port stamp cannot overwrite the upstream frame's port index.
+    #[test]
+    fn test_output_port_stamp_requires_frame_owner() {
+        let mut pdata = create_test_pdata();
+        pdata.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 1, true);
+        pdata.context.stamp_output_port_index(1, 1);
+
+        pdata.context.stamp_output_port_index(2, 0);
+
+        let frame = pdata.context.frames().last().expect("upstream frame");
+        assert_eq!(frame.node_id, 1);
+        assert_eq!(frame.route.output_port_index, 1);
     }
 
     #[test]
@@ -2394,23 +3668,45 @@ mod test {
         );
     }
 
-    /// Scenario: a context carrying transport headers, a peer address, Ack/Nack
-    /// subscribers, an active flow_metric accumulator and a captured signal is
-    /// detached to seed an outbound batch produced by splitting the inbound one.
-    /// Guarantees: the request-scoped metadata is copied while the frame stack,
-    /// flow accumulator and signal are left behind, so each outbound batch keeps
-    /// the originating request's metadata without re-Acking the upstream node.
+    /// Scenario: a context carrying transport headers, authorized identity
+    /// entries, a peer address, Ack/Nack subscribers, an active flow_metric
+    /// accumulator and a captured signal is detached for a split output.
+    /// Guarantees: request-scoped metadata and materialized values are copied
+    /// while routing and metric state is left behind, so outputs retain stable
+    /// context without re-Acking the upstream node.
     #[test]
     fn clone_detached_keeps_request_metadata_and_drops_routing_state() {
         let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("tenant", "x-tenant", "acme"));
+        let name = ContextEntryName::try_from("tenant").expect("valid test context entry name");
+        headers.push(TransportHeader::captured(
+            name,
+            "x-tenant",
+            true,
+            ValueKind::Text,
+            "acme".as_bytes(),
+        ));
 
         let (test_data, pdata) = create_test();
         let mut pdata = pdata
             .test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 101)
             .with_peer_addr(addr)
             .with_transport_headers(headers.clone());
+        let identity_policy: AuthorizedIdentityPolicy = serde_json::from_value(
+            serde_json::json!([{"claim": "sub", "store_as": "customer_id"}]),
+        )
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("customer-42");
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+        let (materialization_plan, _) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        pdata.context.materialize_context(&materialization_plan);
+        let materialized = pdata
+            .materialized_context()
+            .expect("randomness materialized")
+            .clone();
         pdata.start_flow_metric();
         pdata.add_flow_compute(42);
 
@@ -2423,7 +3719,22 @@ mod test {
 
         let detached = context.clone_detached();
 
-        assert_eq!(detached.transport_headers(), Some(&headers));
+        assert_eq!(
+            detached
+                .transport_headers()
+                .expect("transport headers retained"),
+            &headers
+        );
+        let authorized = detached
+            .authorized_identity_entries()
+            .expect("authorized identity retained");
+        assert_eq!(
+            authorized
+                .get("customer_id")
+                .and_then(|entry| entry.value().as_str()),
+            Some("customer-42")
+        );
+        assert_eq!(detached.materialized_context(), Some(&materialized));
         assert_eq!(detached.peer_addr(), Some(addr));
         assert!(
             !detached.has_ack_or_nack_subscribers(),
@@ -2442,6 +3753,34 @@ mod test {
         assert_eq!(context.signal(), Some(SignalType::Logs));
     }
 
+    /// Scenario: pdata carries authorized identity entries captured from
+    /// single- and multi-valued claims.
+    /// Guarantees: debug output exposes destination names and value counts but
+    /// never includes authorization claim values.
+    #[test]
+    fn authorized_identity_debug_redacts_claim_values() {
+        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "customer_id"},
+            {"claim": "groups", "store_as": "access_groups"}
+        ]))
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new()
+            .with_subject("sensitive-subject")
+            .with_claim_values("groups", ["sensitive-reader", "sensitive-writer"]);
+        let mut pdata = create_test_pdata();
+
+        pdata.capture_authorized_identity(&policy, &identity);
+
+        let debug = format!("{pdata:?}");
+        assert!(debug.contains("customer_id"));
+        assert!(debug.contains("access_groups"));
+        assert!(debug.contains("value_count: 1"));
+        assert!(debug.contains("value_count: 2"));
+        assert!(!debug.contains("sensitive-subject"));
+        assert!(!debug.contains("sensitive-reader"));
+        assert!(!debug.contains("sensitive-writer"));
+    }
+
     // -----------------------------------------------------------------------
     // W13 -- Interests gating tests for push_entry_frame / subscribe_to
     // -----------------------------------------------------------------------
@@ -2456,32 +3795,32 @@ mod test {
 
     #[test]
     fn push_entry_frame_pipeline_metrics_auto_subscribes() {
-        // CONSUMER_METRICS sets CONSUMER_METRICS in the entry frame (not ACKS_OR_NACKS).
+        // NODE_INPUT_METRICS is retained in the entry frame, not ACKS_OR_NACKS.
         // The controller handles metrics-only frames during context unwinding.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
         assert!(
-            frames[0].interests.contains(Interests::CONSUMER_METRICS),
-            "CONSUMER_METRICS should be set in entry frame"
+            frames[0].interests.contains(Interests::NODE_INPUT_METRICS),
+            "NODE_INPUT_METRICS should be set in entry frame"
         );
         assert!(
             !frames[0].interests.contains(Interests::ACKS),
-            "CONSUMER_METRICS should NOT auto-subscribe ACKS"
+            "NODE_INPUT_METRICS should NOT auto-subscribe ACKS"
         );
         assert!(
             !frames[0].interests.contains(Interests::NACKS),
-            "CONSUMER_METRICS should NOT auto-subscribe NACKS"
+            "NODE_INPUT_METRICS should NOT auto-subscribe NACKS"
         );
         assert_eq!(
             frames[0].route.entry_time_ns, 0,
-            "CONSUMER_METRICS alone should not stamp time"
+            "NODE_INPUT_METRICS alone should not stamp time"
         );
     }
 
-    /// Scenario: Contexts contain no frames, source-tagging only, pipeline metrics, or Ack interests.
-    /// Guarantees: Completion tracking is required only for pipeline metrics and Ack/Nack routing.
+    /// Scenario: Contexts contain no frames, source tagging, node measurements, or Ack interests.
+    /// Guarantees: Every frame-dependent node measurement and Ack/Nack routing retains the context.
     #[test]
     fn needs_completion_tracking_matches_completion_interests() {
         let mut empty = Context::default();
@@ -2491,40 +3830,60 @@ mod test {
         assert!(!empty.needs_completion_tracking());
 
         let mut metrics = Context::default();
-        metrics.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        metrics.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         assert!(metrics.needs_completion_tracking());
+
+        for interest in [
+            Interests::NODE_COMPLETION_DURATION,
+            Interests::NODE_ITEM_COUNTS,
+            Interests::NODE_SIZE,
+        ] {
+            let mut optional_only = Context::default();
+            optional_only.push_entry_frame(1, interest);
+            assert!(
+                optional_only.needs_completion_tracking(),
+                "{interest:?} must retain its context for metrics unwinding"
+            );
+        }
 
         let mut subscriber = Context::default();
         subscriber.subscribe_to(Interests::ACKS, CallData::new(), 1);
         assert!(subscriber.needs_completion_tracking());
     }
 
+    /// Scenario: an input metric frame is created without completion timing.
+    /// Guarantees: input message accounting does not capture a completion timestamp.
     #[test]
     fn push_entry_frame_pipeline_metrics_no_timestamp() {
-        // CONSUMER_METRICS without ENTRY_TIMESTAMP should not capture a timestamp.
+        // Input metrics without completion duration should not capture a timestamp.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(frames[0].interests.contains(Interests::NODE_INPUT_METRICS));
         assert!(!frames[0].interests.contains(Interests::ACKS_OR_NACKS));
         assert_eq!(
             frames[0].route.entry_time_ns, 0,
-            "Entry frame without ENTRY_TIMESTAMP should not stamp time"
+            "Entry frame without completion duration should not stamp time"
         );
     }
 
+    /// Scenario: an input frame enables node completion duration.
+    /// Guarantees: the frame captures a non-zero entry timestamp for terminal timing.
     #[test]
-    fn push_entry_frame_entry_timestamp_stamps_time() {
-        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps a non-zero timestamp.
+    fn push_entry_frame_completion_duration_stamps_time() {
+        // Completion duration stamps a non-zero timestamp.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        ctx.push_entry_frame(
+            1,
+            Interests::NODE_INPUT_METRICS | Interests::NODE_COMPLETION_DURATION,
+        );
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(frames[0].interests.contains(Interests::NODE_INPUT_METRICS));
         assert!(
             frames[0].route.entry_time_ns > 0,
-            "Entry frame with ENTRY_TIMESTAMP should stamp non-zero time"
+            "Entry frame with completion duration should stamp non-zero time"
         );
     }
 
@@ -2533,8 +3892,8 @@ mod test {
         let mut ctx = Context::default();
         // Source subscribes with RETURN_DATA.
         ctx.subscribe_to(Interests::ACKS | Interests::RETURN_DATA, CallData::new(), 0);
-        // Entry frame with CONSUMER_METRICS inherits RETURN_DATA from predecessor.
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        // An input-metrics frame inherits RETURN_DATA from its predecessor.
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 2);
         assert!(
@@ -2542,8 +3901,8 @@ mod test {
             "entry frame should inherit RETURN_DATA"
         );
         assert!(
-            frames[1].interests.contains(Interests::CONSUMER_METRICS),
-            "entry frame should have CONSUMER_METRICS"
+            frames[1].interests.contains(Interests::NODE_INPUT_METRICS),
+            "entry frame should have NODE_INPUT_METRICS"
         );
         assert!(
             !frames[1].interests.contains(Interests::ACKS),
@@ -2553,9 +3912,12 @@ mod test {
 
     #[test]
     fn subscribe_to_merges_into_entry_frame() {
-        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
+        // Completion duration stamps time, then subscribe merges.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        ctx.push_entry_frame(
+            1,
+            Interests::NODE_INPUT_METRICS | Interests::NODE_COMPLETION_DURATION,
+        );
         let original_time = ctx.frames()[0].route.entry_time_ns;
         assert!(original_time > 0);
 
@@ -2579,9 +3941,9 @@ mod test {
 
     #[test]
     fn processor_subscribe_stamps_time() {
-        // For processors without ENTRY_TIMESTAMP, time can still be stamped manually.
+        // For processors without completion duration, time can still be stamped manually.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         assert_eq!(ctx.frames()[0].route.entry_time_ns, 0, "initially no time");
 
         // Simulate processor subscribe_to stamping time.
@@ -2609,19 +3971,19 @@ mod test {
 
     #[test]
     fn pipeline_metrics_ack_routable() {
-        // CONSUMER_METRICS does NOT auto-subscribe ACKS, so next_ack skips
+        // NODE_INPUT_METRICS does not auto-subscribe ACKS, so next_ack skips
         // the metrics-only entry frame and routes to the real subscriber.
         let (test_data, mut pdata) = create_test();
         pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
         pdata
             .context
-            .push_entry_frame(1, Interests::CONSUMER_METRICS);
+            .push_entry_frame(1, Interests::NODE_INPUT_METRICS);
 
         let ack = AckMsg::new(pdata);
         let (node_id, _) = next_ack(ack).expect("should find node 0");
         assert_eq!(
             node_id, 0,
-            "CONSUMER_METRICS entry frame is skipped; ack routes to subscriber at node 0"
+            "NODE_INPUT_METRICS entry frame is skipped; ack routes to subscriber at node 0"
         );
     }
 
@@ -2629,19 +3991,19 @@ mod test {
     // notify_ack/nack stamps return_time_ns; raw route_ack/nack does not
     // -----------------------------------------------------------------------
 
-    /// Helper: build an OtapPdata with ENTRY_TIMESTAMP | ACKS so has_timing(ACKS) is true.
+    /// Helper: build an OtapPdata with completion duration and ACKS so has_timing(ACKS) is true.
     fn pdata_with_timed_ack_frame() -> OtapPdata {
         create_test_pdata().test_subscribe_to(
-            Interests::ENTRY_TIMESTAMP | Interests::ACKS,
+            Interests::NODE_COMPLETION_DURATION | Interests::ACKS,
             CallData::default(),
             42,
         )
     }
 
-    /// Helper: build an OtapPdata with ENTRY_TIMESTAMP | NACKS so has_timing(NACKS) is true.
+    /// Helper: build an OtapPdata with completion duration and NACKS so has_timing(NACKS) is true.
     fn pdata_with_timed_nack_frame() -> OtapPdata {
         create_test_pdata().test_subscribe_to(
-            Interests::ENTRY_TIMESTAMP | Interests::NACKS,
+            Interests::NODE_COMPLETION_DURATION | Interests::NACKS,
             CallData::default(),
             42,
         )
@@ -2661,6 +4023,7 @@ mod test {
             HashMap::new(),
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2679,6 +4042,7 @@ mod test {
                 name: "test_local_exp".into(),
             },
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2699,6 +4063,7 @@ mod test {
             HashMap::new(),
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2717,6 +4082,7 @@ mod test {
                 name: "test_shared_exp".into(),
             },
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2976,48 +4342,6 @@ mod test {
 
         // Distinct Somes -> None (refuse to misattribute).
         assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
-    }
-
-    #[test]
-    fn peer_addr_merger_matches_merge_peer_addr() {
-        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
-        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
-
-        // Empty.
-        let m = PeerAddrMerger::new();
-        assert_eq!(m.finish(), None);
-
-        // Single Some.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        assert_eq!(m.finish(), Some(a));
-
-        // All identical.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(a));
-        m.push(Some(a));
-        assert_eq!(m.finish(), Some(a));
-
-        // Any None poisons subsequent pushes.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(None);
-        m.push(Some(a));
-        assert_eq!(m.finish(), None);
-
-        // Distinct Somes.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(b));
-        assert_eq!(m.finish(), None);
-
-        // After conflict, further identical pushes do not "heal" the result.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(b));
-        m.push(Some(a));
-        assert_eq!(m.finish(), None);
     }
 
     /// Scenario: OTLP PData is cloned before and after its item count is measured.

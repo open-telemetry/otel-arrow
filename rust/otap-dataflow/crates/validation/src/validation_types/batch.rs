@@ -17,21 +17,21 @@ pub(crate) fn validate_batch_items(
     timeout: &Option<Duration>,
 ) -> bool {
     messages.iter().all(|(message, elapsed)| {
-        if let Some(t) = timeout {
-            if elapsed >= t {
-                return true;
-            }
+        if let Some(t) = timeout
+            && elapsed >= t
+        {
+            return true;
         }
         let batch_size = message.num_items();
-        if let Some(min) = min_items {
-            if &batch_size < min {
-                return false;
-            }
+        if let Some(min) = min_items
+            && &batch_size < min
+        {
+            return false;
         }
-        if let Some(max) = max_items {
-            if &batch_size > max {
-                return false;
-            }
+        if let Some(max) = max_items
+            && &batch_size > max
+        {
+            return false;
         }
         true
     })
@@ -46,23 +46,23 @@ pub(crate) fn validate_batch_bytes(
     timeout: &Option<Duration>,
 ) -> bool {
     messages.iter().all(|(message, elapsed)| {
-        if let Some(t) = timeout {
-            if elapsed >= t {
-                return true;
-            }
+        if let Some(t) = timeout
+            && elapsed >= t
+        {
+            return true;
         }
         let mut buf = Vec::new();
         let _ = message.encode(&mut buf);
         let byte_size = buf.len();
-        if let Some(min) = min_bytes {
-            if &byte_size < min {
-                return false;
-            }
+        if let Some(min) = min_bytes
+            && &byte_size < min
+        {
+            return false;
         }
-        if let Some(max) = max_bytes {
-            if &byte_size > max {
-                return false;
-            }
+        if let Some(max) = max_bytes
+            && &byte_size > max
+        {
+            return false;
         }
         true
     })

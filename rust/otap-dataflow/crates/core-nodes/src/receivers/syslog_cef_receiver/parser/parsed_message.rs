@@ -1,41 +1,85 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::receivers::syslog_cef_receiver::arrow_records_encoder::{
+    KnownAttributeKey, SyslogAttributesBuilder,
+};
 use crate::receivers::syslog_cef_receiver::parser::{
     cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message,
 };
-use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
-use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
+use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
 
-// Common attribute key constants for both RFC5424 and RFC3164 messages
-const SYSLOG_FACILITY: &str = "syslog.facility";
-const SYSLOG_SEVERITY: &str = "syslog.severity";
-const SYSLOG_HOST_NAME: &str = "syslog.host_name";
+/// Decodes a fixed-width ASCII field without allocating or accepting signs.
+#[inline]
+fn parse_two_digits(input: &[u8]) -> Option<u32> {
+    let [tens, ones] = input else {
+        return None;
+    };
+    if !tens.is_ascii_digit() || !ones.is_ascii_digit() {
+        return None;
+    }
 
-// Attribute key constants for RFC5424 messages
-const SYSLOG_VERSION: &str = "syslog.version";
-const SYSLOG_APP_NAME: &str = "syslog.app_name";
-const SYSLOG_PROCESS_ID: &str = "syslog.process_id";
-const SYSLOG_PROCESS_ID_STR: &str = "syslog.process_id_str";
-const SYSLOG_MSG_ID: &str = "syslog.msg_id";
-const SYSLOG_STRUCTURED_DATA: &str = "syslog.structured_data";
-const SYSLOG_MESSAGE: &str = "syslog.message";
+    Some(u32::from(tens - b'0') * 10 + u32::from(ones - b'0'))
+}
 
-// Attribute key constants for RFC3164 messages
-const SYSLOG_TAG: &str = "syslog.tag";
-const SYSLOG_CONTENT: &str = "syslog.content";
+/// Fast path for the usual 15-byte RFC 3164 timestamp, with calendar validation.
+/// Noncanonical inputs and leap seconds retain the legacy parser as a fallback.
+#[inline]
+fn parse_rfc3164_naive_timestamp(input: &[u8], year: i32) -> Option<NaiveDateTime> {
+    // The legacy formatted year has no leading '+'. Chrono requires one for
+    // positive years beyond four digits, so those must retain the fallback.
+    if year > 9999
+        || input.len() != 15
+        || input[3] != b' '
+        || input[6] != b' '
+        || input[9] != b':'
+        || input[12] != b':'
+    {
+        return None;
+    }
 
-// Attribute key constants for CEF messages
-const CEF_VERSION: &str = "cef.version";
-const CEF_DEVICE_VENDOR: &str = "cef.device_vendor";
-const CEF_DEVICE_PRODUCT: &str = "cef.device_product";
-const CEF_DEVICE_VERSION: &str = "cef.device_version";
-const CEF_DEVICE_EVENT_CLASS_ID: &str = "cef.device_event_class_id";
-const CEF_NAME: &str = "cef.name";
-const CEF_SEVERITY: &str = "cef.severity";
+    let month = match &input[..3] {
+        b"Jan" => 1,
+        b"Feb" => 2,
+        b"Mar" => 3,
+        b"Apr" => 4,
+        b"May" => 5,
+        b"Jun" => 6,
+        b"Jul" => 7,
+        b"Aug" => 8,
+        b"Sep" => 9,
+        b"Oct" => 10,
+        b"Nov" => 11,
+        b"Dec" => 12,
+        _ => return None,
+    };
 
-// Attribute key constant for detected input format
-const INPUT_FORMAT: &str = "input.format";
+    let day = match input[4] {
+        b' ' => {
+            let digit = input[5];
+            if !digit.is_ascii_digit() {
+                return None;
+            }
+            u32::from(digit - b'0')
+        }
+        b'0'..=b'9' => parse_two_digits(&input[4..6])?,
+        _ => return None,
+    };
+    let hour = parse_two_digits(&input[7..9])?;
+    let minute = parse_two_digits(&input[10..12])?;
+    let second = parse_two_digits(&input[13..15])?;
+
+    NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, second)
+}
+
+/// Preserves Chrono's acceptance of uncommon forms such as mixed-case months,
+/// whitespace-padded time fields, and leap seconds without penalizing normal input.
+#[cold]
+#[inline(never)]
+fn parse_rfc3164_naive_timestamp_fallback(input: &[u8], year: i32) -> Option<NaiveDateTime> {
+    let timestamp = std::str::from_utf8(input).ok()?;
+    NaiveDateTime::parse_from_str(&format!("{year} {timestamp}"), "%Y %b %d %H:%M:%S").ok()
+}
 
 /// Enum to represent different parsed message types
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +151,16 @@ impl ParsedSyslogMessage<'_> {
     /// Returns the time when the event occurred.
     // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
     pub(crate) fn timestamp(&self) -> Option<u64> {
+        self.timestamp_inner(None)
+    }
+
+    /// Uses the receiver's local year for yearless RFC 3164 timestamps.
+    /// RFC 5424 and raw CEF keep their existing timestamp semantics.
+    pub(crate) fn timestamp_with_year(&self, received_local_year: i32) -> Option<u64> {
+        self.timestamp_inner(Some(received_local_year))
+    }
+
+    fn timestamp_inner(&self, received_local_year: Option<i32>) -> Option<u64> {
         match self {
             ParsedSyslogMessage::Rfc5424(msg) | ParsedSyslogMessage::CefWithRfc5424(msg, _) => {
                 msg.timestamp.and_then(|ts| {
@@ -121,31 +175,16 @@ impl ParsedSyslogMessage<'_> {
             }
             ParsedSyslogMessage::Rfc3164(msg) | ParsedSyslogMessage::CefWithRfc3164(msg, _) => {
                 msg.timestamp.and_then(|ts| {
-                    std::str::from_utf8(ts).ok().and_then(|timestamp_str| {
-                        // RFC 3164 format: "Oct 11 22:14:15"
-                        // We need to assume the current year and local timezone
-                        let current_year = Local::now().year();
-
-                        // Parse the timestamp with assumed year
-                        let full_timestamp = format!("{current_year} {timestamp_str}");
-
-                        // Try to parse with format "%Y %b %d %H:%M:%S"
-                        if let Ok(naive_dt) =
-                            NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S")
-                        {
-                            // Convert to local timezone, then to UTC
-                            if let Some(local_dt) = Local.from_local_datetime(&naive_dt).single() {
-                                return Some(
-                                    local_dt
-                                        .with_timezone(&Utc)
-                                        .timestamp_nanos_opt()
-                                        .unwrap_or(0) as u64,
-                                );
-                            }
-                        }
-
-                        None
-                    })
+                    // Encoded messages retain the receipt year. Only the eager
+                    // compatibility path infers it from the clock here. Resolve
+                    // local time for the event date, preserving DST behavior.
+                    let year = received_local_year.unwrap_or_else(|| Local::now().year());
+                    let naive = parse_rfc3164_naive_timestamp(ts, year)
+                        .or_else(|| parse_rfc3164_naive_timestamp_fallback(ts, year))?;
+                    Local
+                        .from_local_datetime(&naive)
+                        .single()
+                        .map(|local| local.timestamp_nanos_opt().unwrap_or(0) as u64)
                 })
             }
             ParsedSyslogMessage::Cef(_) => None,
@@ -170,7 +209,7 @@ impl ParsedSyslogMessage<'_> {
     #[must_use]
     pub(crate) fn add_attributes_to_arrow(
         &self,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count: u16 = match self {
             ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg) => {
@@ -201,7 +240,7 @@ impl ParsedSyslogMessage<'_> {
         };
 
         // Always emit the detected input format attribute
-        log_attributes_arrow_records.append_key(INPUT_FORMAT);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::InputFormat);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(self.format().as_bytes());
@@ -214,27 +253,27 @@ impl ParsedSyslogMessage<'_> {
     fn add_rfc5424_attributes(
         &self,
         msg: &Rfc5424Message<'_>,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count = 3; // version, facility, and severity are always present
 
-        log_attributes_arrow_records.append_key(SYSLOG_VERSION);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::Version);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.version.into());
 
-        log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::Facility);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.priority.facility.into());
 
-        log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::Severity);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.priority.severity.into());
 
         if let Some(hostname) = msg.hostname {
-            log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::HostName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(hostname);
@@ -242,7 +281,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(appname) = msg.app_name {
-            log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::AppName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(appname);
@@ -251,7 +290,7 @@ impl ParsedSyslogMessage<'_> {
 
         if let Some(proc_id) = msg.proc_id {
             // Always store the original string value (per RFC 5424: PROCID = 1*128PRINTUSASCII)
-            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID_STR);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::ProcessIdStr);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(proc_id);
@@ -262,7 +301,7 @@ impl ParsedSyslogMessage<'_> {
                 .unwrap_or_default()
                 .parse::<i64>()
             {
-                log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+                log_attributes_arrow_records.append_known_key(KnownAttributeKey::ProcessId);
                 log_attributes_arrow_records
                     .any_values_builder
                     .append_int(proc_id_int);
@@ -271,7 +310,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(msg_id) = msg.msg_id {
-            log_attributes_arrow_records.append_key(SYSLOG_MSG_ID);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::MessageId);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(msg_id);
@@ -279,7 +318,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(structured_data) = &msg.structured_data {
-            log_attributes_arrow_records.append_key(SYSLOG_STRUCTURED_DATA);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::StructuredData);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(structured_data);
@@ -287,7 +326,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(message) = msg.message {
-            log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Message);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(message);
@@ -300,19 +339,19 @@ impl ParsedSyslogMessage<'_> {
     fn add_rfc3164_attributes(
         &self,
         msg: &Rfc3164Message<'_>,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count = 0;
 
         // Only add facility and severity if they were present in the original message
         if let Some(priority) = msg.priority.as_ref() {
-            log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Facility);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_int(priority.facility.into());
             attributes_count += 1;
 
-            log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Severity);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_int(priority.severity.into());
@@ -320,7 +359,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(hostname) = msg.hostname {
-            log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::HostName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(hostname);
@@ -328,7 +367,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(tag) = msg.tag {
-            log_attributes_arrow_records.append_key(SYSLOG_TAG);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Tag);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(tag);
@@ -336,7 +375,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(app_name) = msg.app_name {
-            log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::AppName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(app_name);
@@ -346,7 +385,7 @@ impl ParsedSyslogMessage<'_> {
         if let Some(proc_id) = msg.proc_id {
             // RFC 3164 proc_id is always numeric (parser filters to numeric-only),
             // so we store only as integer
-            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::ProcessId);
             log_attributes_arrow_records.any_values_builder.append_int(
                 std::str::from_utf8(proc_id)
                     .unwrap_or_default()
@@ -357,7 +396,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(content) = msg.content {
-            log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Content);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(content);
@@ -370,41 +409,41 @@ impl ParsedSyslogMessage<'_> {
     fn add_cef_attributes(
         &self,
         msg: &CefMessage<'_>,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count = 7; // version, device_vendor, device_product, device_version, device_event_class_id, name, and severity are always present
 
-        log_attributes_arrow_records.append_key(CEF_VERSION);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefVersion);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.version.into());
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_VENDOR);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceVendor);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_vendor);
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_PRODUCT);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceProduct);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_product);
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_VERSION);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceVersion);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_version);
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_EVENT_CLASS_ID);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefEventClassId);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_event_class_id);
 
-        log_attributes_arrow_records.append_key(CEF_NAME);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefName);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.name);
 
-        log_attributes_arrow_records.append_key(CEF_SEVERITY);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefSeverity);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.severity);
@@ -456,23 +495,297 @@ mod tests {
         assert_eq!(timestamp_nanos, expected_nanos);
     }
 
+    /// Scenario: A plain RFC 3164 message contains a valid fixed-format timestamp.
+    /// Guarantees: Timestamp conversion uses the current year and local timezone.
     #[test]
     fn test_parsed_syslog_message_timestamp_rfc3164() {
         let input = b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8";
         let result = parse(input).unwrap();
 
-        // Test the ParsedSyslogMessage::timestamp method
         let timestamp_nanos = result.timestamp().unwrap();
-        // For RFC 3164, we expect the current year to be used since it's not specified
         let current_year = Local::now().year();
-        let full_timestamp = format!("{current_year} Oct 11 22:14:15");
-        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&full_timestamp, "%Y %b %d %H:%M:%S") {
-            if let Some(local_dt) = Local.from_local_datetime(&naive_dt).single() {
-                let expected_nanos = local_dt
-                    .with_timezone(&Utc)
-                    .timestamp_nanos_opt()
-                    .unwrap_or(0) as u64;
-                assert_eq!(timestamp_nanos, expected_nanos);
+        let expected_naive = NaiveDate::from_ymd_opt(current_year, 10, 11)
+            .unwrap()
+            .and_hms_opt(22, 14, 15)
+            .unwrap();
+        let expected_nanos = Local
+            .from_local_datetime(&expected_naive)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        assert_eq!(timestamp_nanos, expected_nanos);
+    }
+
+    /// Scenario: RFC 3164 dates use supported day padding and every month abbreviation.
+    /// Guarantees: The direct decoder accepts space-padded, zero-padded, and two-digit days.
+    #[test]
+    fn test_parse_rfc3164_naive_timestamp_accepts_days_and_months() {
+        let day_cases: &[(&[u8], u32)] = &[
+            (b"Jan  1 00:00:00", 1),
+            (b"Jan 01 00:00:00", 1),
+            (b"Jan 31 00:00:00", 31),
+        ];
+        for (input, expected_day) in day_cases {
+            let parsed = parse_rfc3164_naive_timestamp(input, 2024).unwrap();
+            assert_eq!(parsed.date().day(), *expected_day);
+        }
+
+        let month_cases: &[(&[u8], u32)] = &[
+            (b"Jan 01 00:00:00", 1),
+            (b"Feb 01 00:00:00", 2),
+            (b"Mar 01 00:00:00", 3),
+            (b"Apr 01 00:00:00", 4),
+            (b"May 01 00:00:00", 5),
+            (b"Jun 01 00:00:00", 6),
+            (b"Jul 01 00:00:00", 7),
+            (b"Aug 01 00:00:00", 8),
+            (b"Sep 01 00:00:00", 9),
+            (b"Oct 01 00:00:00", 10),
+            (b"Nov 01 00:00:00", 11),
+            (b"Dec 01 00:00:00", 12),
+        ];
+        for (input, expected_month) in month_cases {
+            let parsed = parse_rfc3164_naive_timestamp(input, 2024).unwrap();
+            assert_eq!(parsed.date().month(), *expected_month);
+        }
+    }
+
+    /// Scenario: RFC 3164 input contains leap dates and out-of-range calendar days.
+    /// Guarantees: The direct decoder applies Gregorian calendar validation for the supplied year.
+    #[test]
+    fn test_parse_rfc3164_naive_timestamp_validates_calendar_dates() {
+        assert!(parse_rfc3164_naive_timestamp(b"Feb 29 00:00:00", 2024).is_some());
+        assert!(parse_rfc3164_naive_timestamp(b"Feb 29 00:00:00", 2023).is_none());
+        assert!(parse_rfc3164_naive_timestamp(b"Jan 00 00:00:00", 2024).is_none());
+        assert!(parse_rfc3164_naive_timestamp(b"Jan 32 00:00:00", 2024).is_none());
+        assert!(parse_rfc3164_naive_timestamp(b"Apr 31 00:00:00", 2024).is_none());
+    }
+
+    /// Scenario: RFC 3164 input has invalid length, fields, digits, separators, or time values.
+    /// Guarantees: Malformed fixed-format timestamps return `None` without accepting partial input.
+    #[test]
+    fn test_parse_rfc3164_naive_timestamp_rejects_malformed_input() {
+        let invalid: &[&[u8]] = &[
+            b"",
+            b"Jan 01 00:00:00x",
+            b"Jan 01 00:00:0",
+            b"J\xffn 01 00:00:00",
+            b"Jan  \xff 00:00:00",
+            b"Jan 01 00:00:\xff0",
+            b"Jax 01 00:00:00",
+            b"Jan-01 00:00:00",
+            b"Jan 01-00:00:00",
+            b"Jan 01 00-00:00",
+            b"Jan 01 00:00-00",
+            b"Jan  x 00:00:00",
+            b"Jan 0x 00:00:00",
+            b"Jan 01 0x:00:00",
+            b"Jan 01 00:0x:00",
+            b"Jan 01 00:00:0x",
+            b"Jan 01 24:00:00",
+            b"Jan 01 00:60:00",
+            b"Jan 01 00:00:60",
+        ];
+        for input in invalid {
+            assert!(
+                parse_rfc3164_naive_timestamp(input, 2024).is_none(),
+                "accepted malformed timestamp: {input:?}"
+            );
+        }
+    }
+
+    /// Scenario: Receipt years include signed, short, four-digit, and oversized values.
+    /// Guarantees: The fast path and fallback preserve the legacy parser's accepted year range.
+    #[test]
+    fn test_rfc3164_timestamp_preserves_legacy_year_range() {
+        for year in [
+            i32::MIN,
+            -10000,
+            -1,
+            0,
+            1,
+            2024,
+            9999,
+            10000,
+            262142,
+            i32::MAX,
+        ] {
+            for timestamp in ["Jan 01 00:00:00", "Feb 29 12:34:56", "Dec 31 23:59:59"] {
+                let expected = NaiveDateTime::parse_from_str(
+                    &format!("{year} {timestamp}"),
+                    "%Y %b %d %H:%M:%S",
+                )
+                .ok();
+                let actual = parse_rfc3164_naive_timestamp(timestamp.as_bytes(), year)
+                    .or_else(|| parse_rfc3164_naive_timestamp_fallback(timestamp.as_bytes(), year));
+                assert_eq!(actual, expected, "year: {year}, timestamp: {timestamp}");
+            }
+        }
+    }
+
+    /// Scenario: An RFC 3164 message has timestamp-shaped bytes with an invalid month.
+    /// Guarantees: Message parsing still succeeds while timestamp conversion returns `None`.
+    #[test]
+    fn test_malformed_rfc3164_timestamp_does_not_reject_message() {
+        let result = parse(b"<34>Jax 01 00:00:00 host tag: message").unwrap();
+
+        assert!(matches!(result, ParsedSyslogMessage::Rfc3164(_)));
+        assert_eq!(result.timestamp(), None);
+    }
+
+    /// Scenario: A CEF event is wrapped by an RFC 3164 syslog header.
+    /// Guarantees: The combined representation uses the same local timestamp conversion as RFC 3164.
+    #[test]
+    fn test_parsed_syslog_message_timestamp_cef_with_rfc3164() {
+        let input = b"<134>Oct 11 22:14:15 host CEF:0|Security|threatmanager|1.0|100|test|10|";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, ParsedSyslogMessage::CefWithRfc3164(_, _)));
+
+        let year = 2024;
+        let expected_naive = NaiveDate::from_ymd_opt(year, 10, 11)
+            .unwrap()
+            .and_hms_opt(22, 14, 15)
+            .unwrap();
+        let expected_nanos = Local
+            .from_local_datetime(&expected_naive)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        assert_eq!(result.timestamp_with_year(year), Some(expected_nanos));
+    }
+
+    /// Scenario: RFC 3164 and wrapped CEF contain normal, unusual, or malformed timestamps.
+    /// Guarantees: The fast path and fallback preserve the former Chrono timestamp results.
+    #[test]
+    fn test_rfc3164_timestamp_preserves_legacy_acceptance() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"Jan 01 01:02:03", true),
+            (b"jAn 01 01:02:03", true),
+            (b"JAN 01 01:02:03", true),
+            (b"Jan \t1 01:02:03", true),
+            (b"Jan  1  1: 2: 3", true),
+            (b"Jun 30 23:59:60", true),
+            (b"Jan 01 01:02:61", false),
+            (b"Jan 00 01:02:03", false),
+            (b"Jax 01 01:02:03", false),
+            (b"J\xffn 01 01:02:03", false),
+        ];
+        let year = 2024;
+        for &(timestamp, accepted) in cases {
+            let naive = std::str::from_utf8(timestamp).ok().and_then(|text| {
+                NaiveDateTime::parse_from_str(&format!("{year} {text}"), "%Y %b %d %H:%M:%S").ok()
+            });
+            assert_eq!(
+                naive.is_some(),
+                accepted,
+                "legacy acceptance: {timestamp:?}"
+            );
+            let expected = naive
+                .and_then(|dt| Local.from_local_datetime(&dt).single())
+                .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64);
+            for body in ["tag: message", "CEF:0|Security|product|1.0|100|test|10|"] {
+                let mut input = b"<34>".to_vec();
+                input.extend_from_slice(timestamp);
+                input.extend_from_slice(format!(" host {body}").as_bytes());
+                let parsed = parse(&input).expect("timestamp failure must not reject a message");
+                assert_eq!(
+                    parsed.timestamp_with_year(year),
+                    expected,
+                    "timestamp: {timestamp:?}"
+                );
+            }
+        }
+    }
+
+    /// Scenario: Deferred RFC 3164 and wrapped CEF decoding infers a year for February 29.
+    /// Guarantees: Canonical and mixed-case dates use the receipt year for leap-day validation.
+    #[test]
+    fn test_receipt_year_controls_leap_day_validation() {
+        let expected = Local
+            .with_ymd_and_hms(2024, 2, 29, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        for month in ["Feb", "fEb"] {
+            for body in ["tag: message", "CEF:0|Security|product|1.0|100|test|10|"] {
+                let input = format!("<34>{month} 29 12:00:00 host {body}");
+                let parsed = parse(input.as_bytes()).unwrap();
+                assert_eq!(parsed.timestamp_with_year(2024), Some(expected));
+                assert_eq!(parsed.timestamp_with_year(2023), None);
+            }
+        }
+    }
+
+    /// Scenario: RFC 3164 and wrapped CEF timestamps straddle local DST transitions.
+    /// Guarantees: Gaps and ambiguous times have no timestamp; adjacent times resolve normally.
+    #[cfg(unix)]
+    #[test]
+    fn test_rfc3164_local_dst_transitions() {
+        use chrono::NaiveDate;
+
+        const CHILD: &str = "OTEL_SYSLOG_DST_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // A subprocess avoids mutating process-wide TZ while other tests run.
+            let module = module_path!()
+                .split_once("::")
+                .expect("crate-qualified module")
+                .1;
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(format!("{module}::test_rfc3164_local_dst_transitions"))
+                .env(CHILD, "1")
+                .env("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2")
+                .output()
+                .expect("run isolated local-timezone test");
+            assert!(output.status.success(), "child failed: {output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+
+        let year = Local::now().year();
+        let sunday = |month: u32, week: u32| {
+            let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+            let offset = (7 - first.weekday().num_days_from_sunday()) % 7 + 7 * (week - 1);
+            first + chrono::Duration::days(i64::from(offset))
+        };
+        let spring = sunday(3, 2);
+        let fall = sunday(11, 1);
+        let gap = spring.and_hms_opt(2, 30, 0).unwrap();
+        let ambiguous = fall.and_hms_opt(1, 30, 0).unwrap();
+        assert!(matches!(
+            Local.from_local_datetime(&gap),
+            chrono::LocalResult::None
+        ));
+        assert!(matches!(
+            Local.from_local_datetime(&ambiguous),
+            chrono::LocalResult::Ambiguous(_, _)
+        ));
+        for (date, hour, resolved) in [
+            (spring, 1, true),
+            (spring, 2, false),
+            (spring, 3, true),
+            (fall, 0, true),
+            (fall, 1, false),
+            (fall, 2, true),
+        ] {
+            let naive = date.and_hms_opt(hour, 30, 0).unwrap();
+            let expected = Local
+                .from_local_datetime(&naive)
+                .single()
+                .map(|dt| dt.timestamp_nanos_opt().unwrap() as u64);
+            assert_eq!(expected.is_some(), resolved);
+            for body in ["tag: message", "CEF:0|Security|product|1.0|100|test|10|"] {
+                let input = format!("<34>{} host {body}", naive.format("%b %e %H:%M:%S"));
+                let parsed = parse(input.as_bytes()).unwrap();
+                assert_eq!(parsed.timestamp(), expected, "local timestamp: {naive}");
+                assert_eq!(
+                    parsed.timestamp_with_year(year),
+                    expected,
+                    "receipt timestamp: {naive}"
+                );
             }
         }
     }

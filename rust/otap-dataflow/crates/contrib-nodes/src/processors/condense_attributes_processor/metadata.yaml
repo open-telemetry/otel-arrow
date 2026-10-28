@@ -1,0 +1,6 @@
+type: condense_attributes
+status:
+  class: processor
+  codeowners:
+    active:
+      - drewrelmas

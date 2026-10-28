@@ -201,7 +201,7 @@ pub struct DecodedField {
 /// encoders therefore only perform hex/dash formatting and never need to know
 /// the source byte order, so a value that is already canonical cannot be
 /// silently byte-swapped a second time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct CanonicalGuid(pub [u8; 16]);
 
 impl CanonicalGuid {
@@ -270,6 +270,15 @@ impl std::fmt::Display for CanonicalGuid {
 pub struct EtwEventData {
     /// Provider GUID that produced the event, in canonical byte order.
     pub provider_id: CanonicalGuid,
+    /// Best-effort provider name resolved once during session startup.
+    ///
+    /// The configured name takes precedence. GUID-only providers use the
+    /// registered-provider database when available; unregistered providers or
+    /// lookup failures leave this as `None`. The owned string avoids a shared
+    /// cross-core reference count at the cost of one allocation and copy per
+    /// named event. Event-metadata provider names are not discovered yet; a
+    /// startup lookup miss remains `None` even if later events contain a name.
+    pub provider_name: Option<String>,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
     /// Derived from `EVENT_HEADER.TimeStamp` (QPC ticks) using a reference
@@ -359,6 +368,13 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderGuidResolution {
+    ExplicitGuid,
+    Registered(ProviderSchemaSource),
+    NameHash,
+}
+
 /// Resolve a [`ProviderConfig`] to a [`Guid`], parameterized over the
 /// registered-provider `lookup` so the `kind` branching, name-hash fallback,
 /// and enumeration-failure handling can be tested without a live TDH call.
@@ -411,7 +427,7 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 fn resolve_provider_guid_with(
     cfg: &ProviderConfig,
     lookup: impl FnOnce(&str) -> Result<Option<RegisteredProvider>, Error>,
-) -> Result<Guid, Error> {
+) -> Result<(Guid, ProviderGuidResolution), Error> {
     debug_assert!(
         cfg.name.is_some() != cfg.guid.is_some(),
         "Config::validate must be called before resolve_provider_guid; \
@@ -421,7 +437,7 @@ fn resolve_provider_guid_with(
     );
 
     if let Some(guid_str) = &cfg.guid {
-        return parse_guid(guid_str);
+        return parse_guid(guid_str).map(|guid| (guid, ProviderGuidResolution::ExplicitGuid));
     }
 
     let name = cfg
@@ -439,11 +455,17 @@ fn resolve_provider_guid_with(
             match lookup(&name.to_ascii_lowercase()) {
                 Ok(Some(provider)) => {
                     log_name_resolved(name, &provider);
-                    Ok(provider.guid)
+                    Ok((
+                        provider.guid,
+                        ProviderGuidResolution::Registered(provider.schema_source),
+                    ))
                 }
                 Ok(None) => {
                     log_name_hashed(name);
-                    Ok(guid_from_provider_name(name))
+                    Ok((
+                        guid_from_provider_name(name),
+                        ProviderGuidResolution::NameHash,
+                    ))
                 }
                 Err(err) => {
                     // Best-effort: the database is unavailable, so we cannot
@@ -454,7 +476,10 @@ fn resolve_provider_guid_with(
                     // is WARN-logged for the operator. `kind: manifest` or an
                     // explicit `guid` avoids this ambiguity.
                     log_name_hashed_after_enumeration_error(name, &err);
-                    Ok(guid_from_provider_name(name))
+                    Ok((
+                        guid_from_provider_name(name),
+                        ProviderGuidResolution::NameHash,
+                    ))
                 }
             }
         }
@@ -463,7 +488,10 @@ fn resolve_provider_guid_with(
             match lookup(&name.to_ascii_lowercase())? {
                 Some(provider) => {
                     log_name_resolved(name, &provider);
-                    Ok(provider.guid)
+                    Ok((
+                        provider.guid,
+                        ProviderGuidResolution::Registered(provider.schema_source),
+                    ))
                 }
                 None => Err(manifest_not_registered_error(name)),
             }
@@ -471,7 +499,10 @@ fn resolve_provider_guid_with(
         Some(ProviderKind::Tracelogging) => {
             // Explicit: derive the GUID from the name, no OS lookup.
             log_name_hashed(name);
-            Ok(guid_from_provider_name(name))
+            Ok((
+                guid_from_provider_name(name),
+                ProviderGuidResolution::NameHash,
+            ))
         }
     }
 }
@@ -494,47 +525,91 @@ fn wanted_lookup_names(providers: &[ProviderConfig]) -> HashSet<String> {
         .collect()
 }
 
-/// Enumerate the OS provider database once, retaining only the providers whose
-/// (lowercased) name is in `wanted` and stopping as soon as every wanted name
-/// has been found.
+/// Collect GUID-only providers whose registered names should be discovered.
+fn wanted_lookup_guids(providers: &[ProviderConfig]) -> Result<HashSet<CanonicalGuid>, Error> {
+    providers
+        .iter()
+        .filter_map(|provider| provider.guid.as_deref())
+        .map(parse_guid)
+        .map(|result| result.map(CanonicalGuid::from))
+        .collect()
+}
+
+#[derive(Default)]
+struct ProviderLookup {
+    by_name: HashMap<String, RegisteredProvider>,
+    names_by_guid: HashMap<CanonicalGuid, String>,
+}
+
+/// Enumerate the OS provider database once, retaining only providers requested
+/// by configured name or GUID and stopping as soon as every target is found.
 ///
-/// Unlike materializing the whole database, this keeps at most `wanted.len()`
-/// entries and breaks early (via [`ControlFlow::Break`]) once all configured
-/// names are matched, so a typical small configured set does not scan the full
-/// system provider list. Names are lowercased for case-insensitive lookup and
-/// the first entry wins when the OS reports duplicate names, matching
-/// [`one_collect::etw::for_each_registered_provider`]'s enumeration order.
+/// Unlike materializing the whole database, this keeps at most the requested
+/// entries. Names are lowercased for case-insensitive lookup and the first
+/// entry wins for duplicate names or GUIDs, matching enumeration order.
 ///
 /// `enumerate` is the database driver (in production,
 /// [`one_collect::etw::for_each_registered_provider`]); passing it as a
 /// parameter lets the collection and early-break logic be tested without a live
 /// TDH call. On enumeration failure the underlying source message is returned
-/// verbatim for the caller to wrap via [`tdh_enumerate_error`].
-fn collect_wanted_providers<E: std::fmt::Display>(
-    wanted: &HashSet<String>,
+/// verbatim for the caller to handle according to provider kind.
+fn collect_provider_lookup<E: std::fmt::Display>(
+    wanted_names: &HashSet<String>,
+    wanted_guids: &HashSet<CanonicalGuid>,
     enumerate: impl FnOnce(&mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>) -> Result<(), E>,
-) -> Result<HashMap<String, RegisteredProvider>, String> {
-    let mut found: HashMap<String, RegisteredProvider> = HashMap::with_capacity(wanted.len());
+) -> Result<ProviderLookup, String> {
+    let mut found = ProviderLookup {
+        by_name: HashMap::with_capacity(wanted_names.len()),
+        names_by_guid: HashMap::with_capacity(wanted_guids.len()),
+    };
     enumerate(&mut |name, provider| {
-        // Retain only configured names so the whole database is never
-        // materialized. ASCII case-folding is intentional: ETW provider names
-        // are ASCII in practice, and `for_each_registered_provider` yields
-        // names as registered by the OS (it does not case-fold), so the
-        // consumer owns normalization. A non-ASCII name whose registered
-        // casing differs from the configured casing would not match here.
-        let name_lc = name.to_ascii_lowercase();
-        if wanted.contains(name_lc.as_str()) {
-            // First entry wins for duplicate names; never overwrite.
-            let _ = found.entry(name_lc).or_insert(provider);
-            // Stop once every wanted name has been found.
-            if found.len() == wanted.len() {
-                return ControlFlow::Break(());
+        if found.by_name.len() < wanted_names.len() {
+            let name_lc = name.to_ascii_lowercase();
+            if wanted_names.contains(name_lc.as_str()) {
+                let _ = found.by_name.entry(name_lc).or_insert(provider);
             }
+        }
+
+        let guid = CanonicalGuid::from(provider.guid);
+        if wanted_guids.contains(&guid) {
+            let _ = found
+                .names_by_guid
+                .entry(guid)
+                .or_insert_with(|| name.to_owned());
+        }
+
+        if found.by_name.len() == wanted_names.len()
+            && found.names_by_guid.len() == wanted_guids.len()
+        {
+            return ControlFlow::Break(());
         }
         ControlFlow::Continue(())
     })
     .map_err(|source| source.to_string())?;
     Ok(found)
+}
+
+#[cfg(test)]
+fn collect_wanted_providers<E: std::fmt::Display>(
+    wanted: &HashSet<String>,
+    enumerate: impl FnOnce(&mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>) -> Result<(), E>,
+) -> Result<HashMap<String, RegisteredProvider>, String> {
+    collect_provider_lookup(wanted, &HashSet::new(), enumerate).map(|lookup| lookup.by_name)
+}
+
+fn resolve_provider_name(
+    provider: &ProviderConfig,
+    guid: Guid,
+    lookup: &Result<ProviderLookup, String>,
+) -> Option<String> {
+    provider.name.clone().or_else(|| {
+        lookup.as_ref().ok().and_then(|lookup| {
+            lookup
+                .names_by_guid
+                .get(&CanonicalGuid::from(guid))
+                .cloned()
+        })
+    })
 }
 
 /// Log that a provider name was resolved via the registered database.
@@ -585,6 +660,16 @@ fn log_name_hashed_after_enumeration_error(name: &str, error: &Error) {
     );
 }
 
+/// Log a failed optional reverse lookup without preventing GUID-based capture.
+fn log_guid_name_lookup_failed(error: &str) {
+    otel_warn!(
+        "etw_receiver.provider_guid_name_lookup_failed",
+        message = "could not enumerate the ETW provider database; GUID-based \
+                   capture will continue without etw.provider.name",
+        error = error,
+    );
+}
+
 // -- Registered provider lookup (TDH) -----------------------------------------
 //
 // The `TdhEnumerateProviders` enumeration itself lives in `one_collect`
@@ -626,6 +711,37 @@ fn tdh_enumerate_error(source: impl std::fmt::Display) -> Error {
             ),
         },
     ))
+}
+
+/// Reject `event_ids` unless the provider is positively identified as a
+/// registered manifest provider.
+///
+/// ETW silently ignores `EVENT_FILTER_TYPE_EVENT_ID` for TraceLogging providers
+/// (which do not have static event IDs) and cannot apply additional routing or
+/// filtering for classic MOF/WMI providers because they use legacy enablement.
+/// A literal GUID is also ambiguous: the GUID alone does not prove whether the
+/// provider is manifest, TraceLogging, or classic MOF. Keeping the accepted
+/// surface to registered manifest names guarantees that an accepted
+/// configuration receives the server-side filtering it requested.
+fn require_event_ids_registered_manifest(
+    provider_index: usize,
+    resolution: ProviderGuidResolution,
+) -> Result<(), Error> {
+    if matches!(
+        resolution,
+        ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+    ) {
+        return Ok(());
+    }
+
+    Err(Error::ConfigError(Box::new(
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "provider[{provider_index}]: 'event_ids' requires a named provider \
+                 that resolves to a registered ETW manifest provider"
+            ),
+        },
+    )))
 }
 
 // -- TDH field extraction -----------------------------------------------------
@@ -783,7 +899,9 @@ fn decode_utf16le(data: &[u8]) -> String {
 
     // ASCII fast path: find the first NUL or first non-ASCII code unit.
     let ascii_end = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .position(|c| c[0] == 0 || c[1] != 0)
         .map(|i| i * 2)
         .unwrap_or(len);
@@ -792,7 +910,7 @@ fn decode_utf16le(data: &[u8]) -> String {
         // Entirely ASCII up to the end (or a terminating NUL): copy the low
         // bytes directly, no surrogate logic needed.
         let mut out = String::with_capacity(ascii_end / 2);
-        for chunk in bytes[..ascii_end].chunks_exact(2) {
+        for chunk in bytes[..ascii_end].as_chunks::<2>().0 {
             out.push(chunk[0] as char);
         }
         return out;
@@ -802,7 +920,9 @@ fn decode_utf16le(data: &[u8]) -> String {
     // substituting U+FFFD for invalid surrogate pairs.
     let mut out = String::with_capacity(len / 2);
     let u16_iter = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|&c| c != 0);
     out.extend(char::decode_utf16(u16_iter).map(|r| r.unwrap_or('\u{FFFD}')));
@@ -862,33 +982,33 @@ fn extract_decoded_fields(
 pub(super) struct SessionWideMetrics {
     /// Every event the `ProcessTrace` callback observed from the trace
     /// session, counted *before* any per-core channel send is attempted.
-    /// Published as `received_events_total` in the metric set.
+    /// Published as `events.received` (`receiver.etw.events.received`) in the metric set.
     ///
     /// This is the producer-side ingress denominator. The slow-worker drop
     /// rate is computable as `dropped_slow_worker / total`. See the
     /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
     pub total: AtomicU64,
     /// Events dropped because a per-core channel was full (internal backpressure).
-    /// Published as `received_events_dropped_slow_worker` in the metric set.
+    /// Published as `events` with `reason="slow_worker"` (`receiver.etw.drops.events`) in the metric set.
     pub dropped_slow_worker: AtomicU64,
-    /// Events whose TDH decode failed (`received_events_invalid`).
+    /// Events whose TDH decode failed (`receiver.etw.decode.errors`).
     pub decode_failed: AtomicU64,
     /// Kernel-side ETW events lost (buffer overrun) before `one_collect` ever
     /// saw them, from `TraceStats::events_lost`. A background poller converts
     /// the cumulative session counter into per-interval deltas and
-    /// `fetch_add`s them here. Published as `received_events_lost_kernel`.
+    /// `fetch_add`s them here. Published as `events.lost` (`receiver.etw.session.events.lost`).
     /// Distinct from `dropped_slow_worker`, which is our own downstream loss.
     pub kernel_events_lost: AtomicU64,
     /// Real-time delivery buffers lost (consumer too slow to drain the ETW
     /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
-    /// Published as `kernel_real_time_buffers_lost`.
+    /// Published as `buffers.lost` with `delivery="real_time"` (scope `receiver.etw.session`, instrument `buffers.lost`).
     pub kernel_real_time_buffers_lost: AtomicU64,
     /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`. Published as `kernel_log_buffers_lost`.
+    /// `TraceStats::log_buffers_lost`. Published as `buffers.lost` with `delivery="log_file"` (scope `receiver.etw.session`, instrument `buffers.lost`).
     pub kernel_log_buffers_lost: AtomicU64,
     /// Total ETW buffers written by the session, from
     /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal. Published as `kernel_buffers_written`.
+    /// than a loss signal. Published as `buffers.written` (scope `receiver.etw.session`, instrument `buffers.written`).
     pub kernel_buffers_written: AtomicU64,
 }
 
@@ -1069,29 +1189,44 @@ fn spawn_etw_session(
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
     //
-    // Only automatic and `manifest` names need the OS provider database. Gather
-    // that set first, then enumerate the database a single time - retaining
-    // just those names and breaking early once all are found - instead of
-    // materializing the whole provider list. The stored result (or its failure
-    // message) is shared across every provider's resolution so an enumeration
-    // failure is surfaced per kind: `auto` names hash-fall-back, `manifest`
-    // names error.
-    let wanted = wanted_lookup_names(&config.providers);
-    let lookup: Result<HashMap<String, RegisteredProvider>, String> = if wanted.is_empty() {
-        Ok(HashMap::new())
-    } else {
-        collect_wanted_providers(&wanted, |visit| for_each_registered_provider(visit))
-    };
-    let resolved_providers: Vec<(Guid, u8, Option<u64>)> = config
+    // Automatic and `manifest` names need the OS provider database to resolve
+    // their GUIDs. GUID-only providers use the same enumeration to discover a
+    // best-effort name. Retain only requested names and GUIDs, and stop once
+    // all are found instead of materializing the whole provider list.
+    let wanted_names = wanted_lookup_names(&config.providers);
+    let wanted_guids = wanted_lookup_guids(&config.providers)?;
+    let lookup: Result<ProviderLookup, String> =
+        if wanted_names.is_empty() && wanted_guids.is_empty() {
+            Ok(ProviderLookup::default())
+        } else {
+            collect_provider_lookup(&wanted_names, &wanted_guids, |visit| {
+                for_each_registered_provider(visit)
+            })
+        };
+    if !wanted_guids.is_empty()
+        && let Err(source) = &lookup
+    {
+        log_guid_name_lookup_failed(source);
+    }
+
+    let resolved_providers: Vec<(Guid, Option<String>, u8, Option<u64>, Vec<u16>)> = config
         .providers
         .iter()
-        .map(|p| {
-            let guid = resolve_provider_guid_with(p, |name_lc| match &lookup {
-                Ok(map) => Ok(map.get(name_lc).copied()),
+        .enumerate()
+        .map(|(i, p)| {
+            let (guid, resolution) = resolve_provider_guid_with(p, |name_lc| match &lookup {
+                Ok(lookup) => Ok(lookup.by_name.get(name_lc).copied()),
                 Err(source) => Err(tdh_enumerate_error(source)),
             })?;
+
+            if p.event_ids.is_some() {
+                require_event_ids_registered_manifest(i, resolution)?;
+            }
+
+            let provider_name = resolve_provider_name(p, guid, &lookup);
             let level = trace_level_to_etw(&p.level);
-            Ok((guid, level, p.keywords))
+            let event_ids = p.event_ids.iter().flatten().copied().collect::<Vec<_>>();
+            Ok((guid, provider_name, level, p.keywords, event_ids))
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -1104,7 +1239,7 @@ fn spawn_etw_session(
     // intended dual-capture case (the same name under `kind: manifest` vs
     // `kind: tracelogging`) resolves to two different GUIDs and is unaffected.
     let mut seen: HashSet<[u8; 16]> = HashSet::with_capacity(resolved_providers.len());
-    for (guid, _, _) in &resolved_providers {
+    for (guid, _, _, _, _) in &resolved_providers {
         if !seen.insert(guid.to_bytes()) {
             return Err(Error::ConfigError(Box::new(
                 otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -1128,11 +1263,14 @@ fn spawn_etw_session(
             let mut session = EtwSession::new();
 
             // Enable each configured provider.
-            for (guid, level, keywords) in &resolved_providers {
+            for (guid, _, level, keywords, event_ids) in &resolved_providers {
                 let enabler = session.enable_provider(*guid);
                 enabler.ensure_level(*level);
                 if let Some(kw) = keywords {
                     enabler.ensure_keyword(*kw);
+                }
+                for id in event_ids {
+                    enabler.add_event(*id, false);
                 }
             }
 
@@ -1166,7 +1304,7 @@ fn spawn_etw_session(
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
-            for (guid, level, keywords) in &resolved_providers {
+            for (guid, provider_name, level, keywords, _) in &resolved_providers {
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
                 // Mark as a wildcard event so the callback fires for ALL
                 // event IDs from this provider, not just event ID 0.
@@ -1184,6 +1322,7 @@ fn spawn_etw_session(
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
+                let provider_name = provider_name.clone();
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1228,12 +1367,20 @@ fn spawn_etw_session(
                         // schema.  A failure (NotFound for manifest-based
                         // events, or other decode errors) leaves the empty
                         // defaults in place and is counted via
-                        // `received_events_invalid` - the event is still
+                        // `decode.errors` (`receiver.etw.decode.errors`) - the event is still
                         // forwarded with empty `decoded_fields`.  Future work
                         // will add manifest decoding with a
                         // (Provider, Id, Version) cache key.
                         match decoder.borrow_mut().decode(record) {
                             Ok(result) => {
+                                // TODO(etw-provider-name-metadata): Extend one_collect's
+                                // CachedSchema to extract TRACE_EVENT_INFO.ProviderNameOffset
+                                // and expose the cached optional name in TdhDecodedEvent.
+                                // When no configured/startup name exists, retain that name
+                                // in this provider's callback for subsequent events. Reuse
+                                // schema discovery; do not add per-event OS lookups.
+                                // Cover GUID-only TraceLogging, absent/invalid offsets,
+                                // cache reuse, and configured/startup-name precedence.
                                 event_name = result.event_name.unwrap_or("").to_owned();
                                 decoded_fields = extract_decoded_fields(
                                     result.event_data.format(),
@@ -1266,6 +1413,7 @@ fn spawn_etw_session(
                     let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
                         provider_id: CanonicalGuid::from(anc.provider()),
+                        provider_name: provider_name.clone(),
                         timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
@@ -1287,7 +1435,7 @@ fn spawn_etw_session(
 
                     // Count every event the session produced, *before* the
                     // send is attempted. This is the producer-side ingress
-                    // denominator (`received_events_total` in the metric set).
+                    // denominator (`receiver.etw.events.received` in the metric set).
                     // The slow-worker drop rate is therefore
                     // `dropped_slow_worker / total`.
                     let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
@@ -1299,7 +1447,7 @@ fn spawn_etw_session(
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             // Bump the shared atomic so the async receiver can
-                            // surface it as `received_events_dropped_slow_worker`
+                            // surface it as `receiver.etw.drops.events{reason="slow_worker"}`
                             // on the next `CollectTelemetry`.
                             let _ = telemetry
                                 .dropped_slow_worker
@@ -1566,10 +1714,10 @@ mod tests {
 
     impl Drop for TestSession {
         fn drop(&mut self) {
-            if let Ok(mut guard) = SESSIONS.lock() {
-                if let Some(sessions) = guard.as_mut() {
-                    let _ = sessions.remove(&self.name);
-                }
+            if let Ok(mut guard) = SESSIONS.lock()
+                && let Some(sessions) = guard.as_mut()
+            {
+                let _ = sessions.remove(&self.name);
             }
         }
     }
@@ -1583,6 +1731,7 @@ mod tests {
                 kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
+                event_ids: None,
             }],
             batching: None,
         }
@@ -1685,6 +1834,7 @@ mod tests {
                 kind: None,
                 level: TraceLevel::Verbose,
                 keywords: None,
+                event_ids: None,
             }],
             batching: None,
         };
@@ -1719,6 +1869,7 @@ mod tests {
                     kind: None,
                     level: TraceLevel::default(),
                     keywords: None,
+                    event_ids: None,
                 },
                 ProviderConfig {
                     name: None,
@@ -1726,6 +1877,7 @@ mod tests {
                     kind: None,
                     level: TraceLevel::Verbose,
                     keywords: None,
+                    event_ids: None,
                 },
             ],
             batching: None,
@@ -1738,6 +1890,67 @@ mod tests {
             msg.contains("resolve to the same GUID"),
             "expected a duplicate-GUID config error, got: {msg}"
         );
+    }
+
+    /// Scenario: A name-based provider that resolves by hash (explicit
+    /// `tracelogging`) configures `event_ids`.
+    /// Guarantees: `spawn_etw_session` rejects the config before the session
+    /// thread is spawned, because hash-resolved providers cannot be filtered
+    /// by `EventDescriptor.Id`.
+    #[test]
+    fn spawn_rejects_event_ids_for_hash_resolved_provider() {
+        let config = Config {
+            session_name: "test-hashed-event-ids".to_string(),
+            providers: vec![ProviderConfig {
+                name: Some("My-Custom-EventSource".to_string()),
+                guid: None,
+                kind: Some(ProviderKind::Tracelogging),
+                level: TraceLevel::default(),
+                keywords: None,
+                event_ids: Some([1, 2].into_iter().collect()),
+            }],
+            batching: None,
+        };
+        let (tx, _rx) = mpsc::channel::<EtwEventData>(1);
+        let telemetry = Arc::new(SessionWideMetrics::default());
+        let err = spawn_etw_session(&config, vec![tx], telemetry).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' requires a named provider"),
+            "expected hash-resolution event_ids rejection, got: {msg}"
+        );
+    }
+
+    /// Scenario: `event_ids` are configured for providers with each possible
+    /// resolution source.
+    /// Guarantees: The receiver only accepts event-ID filters for providers
+    /// positively identified as registered manifests, avoiding silent filter
+    /// drops for explicit GUIDs, TraceLogging name hashes, classic MOF/WMI, and
+    /// unknown registered-provider source types.
+    #[test]
+    fn event_ids_require_registered_manifest_resolution() {
+        assert!(
+            require_event_ids_registered_manifest(
+                0,
+                ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+            )
+            .is_ok()
+        );
+
+        for resolution in [
+            ProviderGuidResolution::ExplicitGuid,
+            ProviderGuidResolution::NameHash,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Wmi),
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Unknown(99)),
+        ] {
+            let msg = require_event_ids_registered_manifest(7, resolution)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("provider[7]") && msg.contains("registered ETW manifest provider"),
+                "unexpected event_ids rejection for {resolution:?}: {msg}"
+            );
+        }
     }
 
     // -- GUID parsing ---------------------------------
@@ -1825,6 +2038,7 @@ mod tests {
             kind,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         }
     }
 
@@ -1856,8 +2070,8 @@ mod tests {
 
     /// Scenario: A provider is configured with a `guid`.
     /// Guarantees: The GUID is parsed directly and the `lookup` is never
-    /// invoked, so GUID configs incur no OS lookup. `wanted_lookup_names` also
-    /// excludes it, so it contributes nothing to the enumeration pass.
+    /// invoked for GUID resolution; startup metadata discovery still includes
+    /// the GUID so its registered name can be cached.
     #[test]
     fn resolve_guid_provider_ignores_registry() {
         let cfg = ProviderConfig {
@@ -1866,16 +2080,25 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
+            event_ids: None,
         };
         let guid = resolve_provider_guid_with(&cfg, |_| {
             unreachable!("a GUID provider must not consult the registered database")
         })
         .expect("valid GUID parses");
         let expected = Guid::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
-        assert_eq!(guid.to_bytes(), expected.to_bytes());
+        assert_eq!(guid.0.to_bytes(), expected.to_bytes());
+        assert_eq!(guid.1, ProviderGuidResolution::ExplicitGuid);
         assert!(
             wanted_lookup_names(std::slice::from_ref(&cfg)).is_empty(),
-            "a GUID provider must not contribute a name to the enumeration pass"
+            "a GUID provider must not contribute a configured name"
+        );
+        assert_eq!(
+            wanted_lookup_guids(std::slice::from_ref(&cfg))
+                .expect("valid GUID")
+                .len(),
+            1,
+            "a GUID provider must be included in reverse-name discovery"
         );
     }
 
@@ -1889,7 +2112,11 @@ mod tests {
         let map = registered("MyProvider", expected, ProviderSchemaSource::Manifest);
         let cfg = name_provider("MyProvider", None);
         let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
-        assert_eq!(guid.to_bytes(), expected.to_bytes());
+        assert_eq!(guid.0.to_bytes(), expected.to_bytes());
+        assert_eq!(
+            guid.1,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+        );
     }
 
     /// Scenario: An automatic (omitted-kind) name provider is absent from the
@@ -1902,9 +2129,10 @@ mod tests {
         let cfg = name_provider("MyProvider", None);
         let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
         assert_eq!(
-            guid.to_bytes(),
+            guid.0.to_bytes(),
             guid_from_provider_name("MyProvider").to_bytes()
         );
+        assert_eq!(guid.1, ProviderGuidResolution::NameHash);
     }
 
     /// Scenario: A `tracelogging` name provider is configured while a matching
@@ -1920,9 +2148,10 @@ mod tests {
         })
         .expect("resolves");
         assert_eq!(
-            guid.to_bytes(),
+            guid.0.to_bytes(),
             guid_from_provider_name("MyProvider").to_bytes()
         );
+        assert_eq!(guid.1, ProviderGuidResolution::NameHash);
     }
 
     /// Scenario: A `manifest` name provider is not registered in the database.
@@ -1953,7 +2182,29 @@ mod tests {
         let map = registered("MyProvider", expected, ProviderSchemaSource::Manifest);
         let cfg = name_provider("MyProvider", Some(ProviderKind::Manifest));
         let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
-        assert_eq!(guid.to_bytes(), expected.to_bytes());
+        assert_eq!(guid.0.to_bytes(), expected.to_bytes());
+        assert_eq!(
+            guid.1,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+        );
+    }
+
+    /// Scenario: A provider name resolves to a registered classic MOF/WMI
+    /// provider.
+    /// Guarantees: Resolution preserves the provider schema source instead of
+    /// collapsing it with manifests, so later validation can reject `event_ids`
+    /// for providers where ETW cannot apply additional filters.
+    #[test]
+    fn resolve_registered_provider_preserves_wmi_schema_source() {
+        let expected = Guid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        let map = registered("ClassicProvider", expected, ProviderSchemaSource::Wmi);
+        let cfg = name_provider("ClassicProvider", None);
+        let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
+        assert_eq!(guid.0.to_bytes(), expected.to_bytes());
+        assert_eq!(
+            guid.1,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Wmi)
+        );
     }
 
     /// Scenario: An automatic (omitted-kind) name provider is resolved while the
@@ -1969,10 +2220,11 @@ mod tests {
             resolve_provider_guid_with(&cfg, |_| Err(tdh_enumerate_error("simulated failure")))
                 .expect("auto must not error when enumeration fails");
         assert_eq!(
-            guid.to_bytes(),
+            guid.0.to_bytes(),
             guid_from_provider_name("MyProvider").to_bytes(),
             "auto must hash-fall-back when the provider database cannot be enumerated"
         );
+        assert_eq!(guid.1, ProviderGuidResolution::NameHash);
     }
 
     /// Scenario: A `manifest` name provider is resolved while the registered
@@ -2032,9 +2284,10 @@ mod tests {
         ];
         let wanted: HashSet<String> = ["alpha".to_string()].into_iter().collect();
         let visited = Cell::new(0);
-        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
-        assert_eq!(map.len(), 1);
-        assert!(map.contains_key("alpha"));
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(lookup.len(), 1);
+        assert!(lookup.contains_key("alpha"));
         assert_eq!(
             visited.get(),
             1,
@@ -2059,11 +2312,12 @@ mod tests {
             .into_iter()
             .collect();
         let visited = Cell::new(0);
-        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
-        assert_eq!(map.len(), 2);
-        assert!(map.contains_key("alpha") && map.contains_key("gamma"));
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(lookup.len(), 2);
+        assert!(lookup.contains_key("alpha") && lookup.contains_key("gamma"));
         assert!(
-            !map.contains_key("beta"),
+            !lookup.contains_key("beta"),
             "unwanted names must not be retained"
         );
         assert_eq!(visited.get(), 3, "must scan through the last wanted name");
@@ -2084,9 +2338,114 @@ mod tests {
         ];
         let wanted: HashSet<String> = ["dup".to_string()].into_iter().collect();
         let visited = Cell::new(0);
-        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
-        assert_eq!(map["dup"].guid.to_bytes(), first.to_bytes());
+        let lookup =
+            collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(lookup["dup"].guid.to_bytes(), first.to_bytes());
         assert_eq!(visited.get(), 1, "first match satisfies the wanted set");
+    }
+
+    /// Scenario: A GUID-only provider appears in the registered-provider
+    /// database after an unrelated entry.
+    /// Guarantees: Its registered name is retained by GUID and enumeration
+    /// stops as soon as the requested GUID is found.
+    #[test]
+    fn collect_provider_lookup_discovers_guid_name() {
+        let wanted_guid = Guid::from_u128(2);
+        let entries = [
+            (
+                "Unrelated",
+                Guid::from_u128(1),
+                ProviderSchemaSource::Manifest,
+            ),
+            (
+                "Registered.By.Guid",
+                wanted_guid,
+                ProviderSchemaSource::Manifest,
+            ),
+            ("After", Guid::from_u128(3), ProviderSchemaSource::Wmi),
+        ];
+        let wanted_guids = [CanonicalGuid::from(wanted_guid)].into_iter().collect();
+        let visited = Cell::new(0);
+        let lookup =
+            collect_provider_lookup(&HashSet::new(), &wanted_guids, drive(&entries, &visited))
+                .expect("enumerates");
+
+        assert_eq!(
+            lookup.names_by_guid.get(&CanonicalGuid::from(wanted_guid)),
+            Some(&"Registered.By.Guid".to_string())
+        );
+        assert_eq!(visited.get(), 2);
+    }
+
+    /// Scenario: A GUID-only subscription identifies the registered Windows
+    /// kernel-process provider in the real TDH provider database.
+    /// Guarantees: Startup enumeration discovers its registered name without
+    /// a configured name, an event-metadata lookup, or an elevated ETW session.
+    #[test]
+    fn registered_guid_name_discovery_uses_windows_provider_database() {
+        let provider = ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: None,
+        };
+        let wanted_guids =
+            wanted_lookup_guids(std::slice::from_ref(&provider)).expect("valid GUID");
+        let lookup = collect_provider_lookup(&HashSet::new(), &wanted_guids, |visit| {
+            for_each_registered_provider(visit)
+        });
+        assert!(
+            lookup.is_ok(),
+            "Windows provider database enumeration must succeed"
+        );
+        let guid =
+            parse_guid(provider.guid.as_deref().expect("GUID configured")).expect("valid GUID");
+        assert_eq!(
+            resolve_provider_name(&provider, guid, &lookup).as_deref(),
+            Some("Microsoft-Windows-Kernel-Process")
+        );
+    }
+
+    /// Scenario: A configured provider name differs from the registered name
+    /// associated with the same GUID.
+    /// Guarantees: The configured name takes precedence in emitted metadata.
+    #[test]
+    fn resolve_provider_name_prefers_configured_name() {
+        let guid = Guid::from_u128(1);
+        let provider = name_provider("Configured.Name", Some(ProviderKind::Tracelogging));
+        let mut lookup = ProviderLookup::default();
+        let _ = lookup
+            .names_by_guid
+            .insert(CanonicalGuid::from(guid), "Registered.Name".to_string());
+
+        assert_eq!(
+            resolve_provider_name(&provider, guid, &Ok(lookup)).as_deref(),
+            Some("Configured.Name")
+        );
+    }
+
+    /// Scenario: Registered-provider enumeration fails for a GUID-only
+    /// subscription.
+    /// Guarantees: Capture remains valid and the optional provider name is
+    /// omitted rather than replaced with a misleading fallback.
+    #[test]
+    fn resolve_provider_name_omits_guid_name_on_lookup_failure() {
+        let guid = Guid::from_u128(1);
+        let provider = ProviderConfig {
+            name: None,
+            guid: Some(CanonicalGuid::from(guid).to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: None,
+        };
+
+        assert_eq!(
+            resolve_provider_name(&provider, guid, &Err("simulated failure".to_string())),
+            None
+        );
     }
 
     /// Scenario: The enumeration driver itself fails (as a live
@@ -2119,6 +2478,7 @@ mod tests {
                 kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
+                event_ids: None,
             },
             name_provider("AutoName", None),
             name_provider("ManifestName", Some(ProviderKind::Manifest)),

@@ -13,8 +13,8 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.processor.filter",
 );
 
-use self::config::Config;
-use self::metrics::FilterPdataMetrics;
+use self::config::{Config, Filters};
+use self::metrics::FilterDropMetrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
@@ -34,8 +34,10 @@ use otel_arrow_dfe_engine::processor::{
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
 };
-use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::{
+    OTAP_PROCESSOR_FACTORIES,
+    pdata::{NativePdataProcessor, NativeProcessorAdapter, OtapArrowPdata, OtapPdata},
+};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
@@ -50,8 +52,8 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
-    config: Config,
-    metrics: MeasurementMetricSet<FilterPdataMetrics>,
+    filters: Filters,
+    metrics: MeasurementMetricSet<FilterDropMetrics>,
     compute_duration: ComputeDuration,
     /// Reusable paged-bitmap pool for filtering metric child batches across
     /// successive `Message::PData` calls. Storing the pool on the processor
@@ -92,35 +94,40 @@ pub static FILTER_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<Ota
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
+        context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+        validate_config: |value| {
+            let config: Config =
+                otel_arrow_dfe_config::validation::deserialize_typed_config(value)?;
+
+            // Attempt to compile any matchers/regular expressions
+            config.compile().map(|_| ())
+        },
     };
 
 impl FilterProcessor {
     /// Creates a new FilterProcessor
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
-        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
+    pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Result<Self, ConfigError> {
+        let metrics = FilterDropMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
-        FilterProcessor {
-            config,
+        Ok(FilterProcessor {
+            filters: config.compile()?,
             metrics,
             compute_duration,
             metric_id_pool: IdBitmapPool::new(),
-        }
+        })
     }
 
     /// Creates a new FilterProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
+        let metrics = FilterDropMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
         Ok(FilterProcessor {
-            config,
+            filters: config.compile()?,
             metrics,
             compute_duration,
             metric_id_pool: IdBitmapPool::new(),
@@ -131,9 +138,7 @@ impl FilterProcessor {
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
-        // The filter processor drops signal items, so it records
-        // `dropped.items` when it lies within a flow that enables it.
-        ProcessorRuntimeRequirements::none().with_drop_decisions()
+        NativePdataProcessor::runtime_requirements(self)
     }
 
     async fn process(
@@ -141,108 +146,124 @@ impl local::Processor<OtapPdata> for FilterProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match msg {
-            Message::Control(control) => {
-                if let NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } = control
-                {
-                    _ = metrics_reporter.report_measurement(&mut self.metrics);
-                    self.compute_duration.report(&mut metrics_reporter);
-                }
-                Ok(())
-            }
-            Message::PData(pdata) => {
-                let signal = pdata.signal_type();
-                // convert to arrow records
-                let (context, payload) = pdata.into_parts();
+        NativeProcessorAdapter::process(self, msg, effect_handler).await
+    }
+}
 
-                let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
-                arrow_records.decode_transport_optimized_ids()?;
+#[async_trait(?Send)]
+impl NativePdataProcessor for FilterProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The filter processor drops signal items, so it records
+        // `dropped.items` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
 
-                let (filtered_arrow_records, _signals_consumed, dropped_items): (
-                    OtapArrowRecords,
-                    u64,
-                    u64,
-                ) =
-                    effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
-                        match signal {
-                            SignalType::Metrics => {
-                                let (filtered, consumed, filtered_count) = self
-                                    .config
-                                    .metric_filters()
-                                    .filter(arrow_records, &mut self.metric_id_pool)
-                                    .map_err(|e| {
-                                        let source_detail = format_error_sources(&e);
-                                        Error::ProcessorError {
-                                            processor: effect_handler.processor_id(),
-                                            kind: ProcessorErrorKind::Other,
-                                            error: format!("Filter error: {e}"),
-                                            source_detail,
-                                        }
-                                    })?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                            SignalType::Logs => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.config.log_filters().filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                            SignalType::Traces => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.config.trace_filters().filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                        }
-                    })?;
-
-                let metric = self.metrics.with(SignalAttributes { signal });
-                metric.dropped_items.add(dropped_items);
-
-                // Record the drop flow-metric. A no-op unless this node is
-                // a decision node in a flow that enables `dropped.items`.
-                // `dropped_items` is the dropped count.
-                effect_handler.record_flow_dropped_items(signal, dropped_items);
-
-                let kept_items = filtered_arrow_records.num_items();
-                let mut pdata = OtapPdata::new(context, filtered_arrow_records.into());
-                if kept_items == 0 {
-                    pdata.complete_processor_without_output(effect_handler);
-                    effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-                } else {
-                    effect_handler.send_message_with_source_node(pdata).await?;
-                }
-                Ok(())
-            }
+    async fn process_control(
+        &mut self,
+        control: NodeControlMsg<OtapPdata>,
+        _effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if let NodeControlMsg::CollectTelemetry {
+            mut metrics_reporter,
+        } = control
+        {
+            _ = metrics_reporter.report_measurement(&mut self.metrics);
+            self.compute_duration.report(&mut metrics_reporter);
         }
+        Ok(())
+    }
+
+    async fn process_native(
+        &mut self,
+        arrow_pdata: OtapArrowPdata,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let signal = arrow_pdata.signal_type();
+        let (context, mut arrow_records) = arrow_pdata.into_parts();
+        arrow_records.decode_transport_optimized_ids()?;
+
+        let (filtered_arrow_records, _signals_consumed, dropped_items): (
+            OtapArrowRecords,
+            u64,
+            u64,
+        ) = effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
+            match signal {
+                SignalType::Metrics => {
+                    let (filtered, consumed, filtered_count) = self
+                        .filters
+                        .metrics
+                        .filter(arrow_records, &mut self.metric_id_pool)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?;
+                    Ok((filtered, consumed, filtered_count))
+                }
+                SignalType::Logs => {
+                    let (filtered, consumed, filtered_count) =
+                        self.filters.logs.filter(arrow_records).map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?;
+                    Ok((filtered, consumed, filtered_count))
+                }
+                SignalType::Traces => {
+                    let (filtered, consumed, filtered_count) =
+                        self.filters.traces.filter(arrow_records).map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?;
+                    Ok((filtered, consumed, filtered_count))
+                }
+            }
+        })?;
+
+        let metric = self.metrics.with(SignalAttributes { signal });
+        metric.dropped_items.add(dropped_items);
+
+        // Record the drop flow-metric. A no-op unless this node is
+        // a decision node in a flow that enables `dropped.items`.
+        // `dropped_items` is the dropped count.
+        effect_handler.record_flow_dropped_items(signal, dropped_items);
+
+        let kept_items = filtered_arrow_records.num_items();
+        let mut pdata = OtapPdata::new(context, filtered_arrow_records.into());
+        if kept_items == 0 {
+            pdata.complete_processor_without_output(effect_handler);
+            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+        } else {
+            effect_handler.send_message_with_source_node(pdata).await?;
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::processors::filter_processor::{
-        FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
+    use crate::processors::filter_processor::config::{
+        AnyValueConfig as AnyValueFilter, Config, KeyValueConfig as KeyValueFilter,
+        LogFilterConfig as LogFilter, LogMatchPropertiesConfig as LogMatchProperties,
+        LogSeverityNumberConfig as LogSeverityNumberMatchProperties, MatchType,
+        MetricFilterConfig as MetricFilter, MetricMatchPropertiesConfig as MetricMatchProperties,
+        TraceFilterConfig as TraceFilter, TraceMatchPropertiesConfig as TraceMatchProperties,
     };
+    use crate::processors::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor};
+    use bytes::Bytes;
     use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_engine::Interests;
@@ -258,12 +279,6 @@ mod tests {
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::TryIntoWithOptions;
-    use otel_arrow_dfe_pdata::otap::filter::{
-        AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
-        logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
-        metrics::{MetricFilter, MetricMatchProperties},
-        traces::{TraceFilter, TraceMatchProperties},
-    };
     use otel_arrow_dfe_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -278,6 +293,7 @@ mod tests {
             status::StatusCode,
         },
     };
+    use otel_arrow_dfe_pdata_codec::{CodecRegistry, PdataEncoding};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -916,6 +932,55 @@ mod tests {
         }
     }
 
+    /// Scenario: the native processor adapter receives malformed generalized OTLP input.
+    /// Guarantees: the filter permanently Nacks the exact bytes instead of returning a node error.
+    #[test]
+    fn malformed_encoded_input_is_recoverable() {
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let controller = ControllerContext::new(test_runtime.metrics_registry());
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::from_config(pipeline_ctx, &json!({})).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN)),
+            test_runtime.config(),
+        );
+        let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+        let pointer = bytes.as_ptr();
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let pdata =
+            OtapPdata::new_default(codec.admit(SignalType::Logs, bytes.clone()).unwrap().into())
+                .test_subscribe_to(
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    CallData::new(),
+                    11,
+                );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
+                ctx.process(Message::PData(pdata)).await.unwrap();
+                assert!(ctx.drain_pdata().await.is_empty());
+                match completion_rx.recv().await.unwrap() {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        assert!(nack.permanent);
+                        assert!(nack.reason.contains("otlp-bytes"));
+                        let recovered = nack.refused.payload_ref().encoded_bytes().unwrap();
+                        assert_eq!(recovered.as_ptr(), pointer);
+                        assert_eq!(recovered, &bytes);
+                    }
+                    other => panic!("expected codec Nack, got {other:?}"),
+                }
+            })
+            .validate(|_| async {});
+    }
+
     #[test]
     fn test_filter_processor_logs_strict() {
         let test_runtime = TestRuntime::new();
@@ -968,22 +1033,22 @@ mod tests {
                 AnyValueFilter::Boolean(true),
             ],
         );
-        let log_filter = LogFilter::new(
-            Some(include_props),
-            Some(exclude_props),
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(Some(include_props), Some(exclude_props));
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1061,17 +1126,18 @@ mod tests {
             None,
             Vec::new(),
         );
-        let config = Config::new(
-            LogFilter::new(Some(include_props), None, Vec::new()),
-            TraceFilter::new(None, None),
-        );
+        let config = Config {
+            logs: LogFilter::new(Some(include_props), None),
+            traces: TraceFilter::new(None, None),
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1092,17 +1158,21 @@ mod tests {
             vec!["test.counter1".into(), "test.counter3".into()],
         );
         let metric_filter = MetricFilter::new(Some(metric_props), None);
-        let log_filter = LogFilter::new(None, None, Vec::new());
+        let log_filter = LogFilter::new(None, None);
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new_with_metrics(metric_filter, log_filter, trace_filter);
+        let config = Config {
+            metrics: metric_filter,
+            logs: log_filter,
+            traces: trace_filter,
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1129,18 +1199,18 @@ mod tests {
             )),
             None,
         );
-        let config = Config::new_with_metrics(
-            metric_filter,
-            LogFilter::new(None, None, Vec::new()),
-            TraceFilter::new(None, None),
-        );
+        let config = Config {
+            metrics: metric_filter,
+            logs: LogFilter::new(None, None),
+            traces: TraceFilter::new(None, None),
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1232,22 +1302,22 @@ mod tests {
                 AnyValueFilter::String(r"^heartbeat$".to_string()),
             ],
         );
-        let log_filter = LogFilter::new(
-            Some(include_props),
-            Some(exclude_props),
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(Some(include_props), Some(exclude_props));
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1333,22 +1403,22 @@ mod tests {
             ], // test bodies
         );
 
-        let log_filter = LogFilter::new(
-            Some(include_props),
-            None,
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(Some(include_props), None);
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1442,22 +1512,22 @@ mod tests {
             ],
         );
 
-        let log_filter = LogFilter::new(
-            None,
-            Some(exclude_props),
-            Vec::new(), // log_record ignored
-        );
+        let log_filter = LogFilter::new(None, Some(exclude_props));
 
         let trace_filter = TraceFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1597,16 +1667,20 @@ mod tests {
 
         let trace_filter = TraceFilter::new(Some(strict_include), Some(strict_exclude));
 
-        let log_filter = LogFilter::new(None, None, vec![]);
+        let log_filter = LogFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1713,16 +1787,20 @@ mod tests {
         );
 
         let trace_filter = TraceFilter::new(Some(include_only), None);
-        let log_filter = LogFilter::new(None, None, vec![]);
+        let log_filter = LogFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1893,17 +1971,18 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let config = Config::new(
-            LogFilter::new(None, None, Vec::new()),
-            TraceFilter::new(Some(include_only), None),
-        );
+        let config = Config {
+            logs: LogFilter::new(None, None),
+            traces: TraceFilter::new(Some(include_only), None),
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),
@@ -1956,16 +2035,20 @@ mod tests {
 
         let trace_filter = TraceFilter::new(None, Some(exclude_only));
 
-        let log_filter = LogFilter::new(None, None, vec![]);
+        let log_filter = LogFilter::new(None, None);
 
-        let config = Config::new(log_filter, trace_filter);
+        let config = Config {
+            logs: log_filter,
+            traces: trace_filter,
+            ..Default::default()
+        };
         let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
-            FilterProcessor::new(config, pipeline_ctx),
+            FilterProcessor::new(config, pipeline_ctx).expect("valid filter config"),
             test_node(test_runtime.config().name.clone()),
             user_config,
             test_runtime.config(),

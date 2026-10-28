@@ -3,8 +3,7 @@
 
 //! Error and result types
 
-use crate::otlp::common::EncodeFailure;
-use crate::otlp::metrics::MetricType;
+use crate::otlp::{EncodeFailure, metrics::MetricType};
 use crate::{
     otlp::attributes::AttributeValueType, proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -138,6 +137,9 @@ pub enum Error {
     #[error("Failed to batch OTAP data: {}", source)]
     Batching { source: ArrowError },
 
+    #[error("Failed to sanitize OTAP data: {}", source)]
+    Sanitization { source: ArrowError },
+
     #[error("Failed to measure logical Arrow bytes: {}", source)]
     LogicalArrowSize { source: ArrowError },
 
@@ -253,10 +255,15 @@ pub enum Error {
         found: SignalType,
         expected: SignalType,
     },
+
+    #[error("Unsupported batch store type: no OTAP signal has batch width {batch_width}")]
+    UnsupportedBatchStoreType { batch_width: usize },
 }
 
 impl From<EncodeFailure> for Error {
-    fn from(_: EncodeFailure) -> Self {
-        Error::Dropped
+    fn from(f: EncodeFailure) -> Self {
+        match f {
+            EncodeFailure::Dropped => Error::Dropped,
+        }
     }
 }

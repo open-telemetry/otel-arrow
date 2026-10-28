@@ -766,10 +766,10 @@ impl<const N: usize> HistogramNN<N> {
         // The common case is a word already inside the active window, which
         // moves nothing. Testing that first keeps the emptiness check, and the
         // load it makes, off the recording path.
-        if word_index < self.word_start || word_index > self.word_end {
-            if let Some(blocked) = self.open_word(word_index) {
-                return blocked;
-            }
+        if (word_index < self.word_start || word_index > self.word_end)
+            && let Some(blocked) = self.open_word(word_index)
+        {
+            return blocked;
         }
 
         if let Err(oflow) = self.bucket_try_increment(&addr, incr) {

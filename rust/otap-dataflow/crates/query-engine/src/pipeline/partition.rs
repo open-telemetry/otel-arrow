@@ -31,9 +31,10 @@ use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::Pipeline;
-use crate::pipeline::expr::ScopedExpr;
-use crate::pipeline::expr::eval::align_value_to_root;
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_record};
 use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::expr::{RecordScope, ScopedExpr};
+use crate::pipeline::planner::{RecordType, SignalContext};
 use crate::pipeline::project::anyval::is_any_value_data_type;
 
 /// Produces partitioned record batches by the results of some evaluated expression.
@@ -82,8 +83,9 @@ impl Partitioner {
     pub fn try_new(
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
+        signal_context: SignalContext,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new();
+        let expr_planner = ExprPlanner::new(true, RecordType::Signal(signal_context));
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {
@@ -268,6 +270,8 @@ impl PartitionValue {
             | ScalarValue::FixedSizeList(_)
             | ScalarValue::List(_)
             | ScalarValue::LargeList(_)
+            | ScalarValue::ListView(_)
+            | ScalarValue::LargeListView(_)
             | ScalarValue::Map(_)
             | ScalarValue::Union(_, _, _) => {
                 return Err(Error::ExecutionError {
@@ -363,15 +367,20 @@ fn partition(
     id_bitmap_pool: &mut IdBitmapPool,
     group_id_pool: &mut GroupIdPool,
 ) -> Result<()> {
-    // nothing to evaluate
     if otap_batch.num_items() == 0 {
+        // nothing to evaluate
         return Ok(());
     }
 
-    let eval_result = match expr.execute_as_value(&otap_batch, session_ctx)? {
+    let Some(root_rb) = otap_batch.root_record_batch() else {
+        // nothing to evaluate
+        return Ok(());
+    };
+
+    let eval_result = match expr.execute_as_value(&otap_batch, &EvalContext::new(session_ctx))? {
         Some(result) => {
             // align value to root so we can calculate partitions for the root record batch
-            align_value_to_root(result, &otap_batch)?
+            align_value_to_record(result, RecordScope::Signal, root_rb, &otap_batch)?
         }
         None => {
             // the result evaluated to `null` for all rows, which means there is only one
@@ -1073,6 +1082,7 @@ mod test {
     use crate::pipeline::partition::{
         AnyValueStructComparator, ArrayComparator, GroupIdPool, PartitionValue, Partitioner,
     };
+    use crate::pipeline::{SignalContext, SignalKind};
 
     #[test]
     fn test_partition_logs_by_severity_number() {
@@ -1106,7 +1116,12 @@ mod test {
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("severity_number", default_parser_options())
                 .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner = Partitioner::try_new(
+            scalar_expr,
+            functions,
+            SignalContext::Single(SignalKind::Logs),
+        )
+        .unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
@@ -1199,7 +1214,12 @@ mod test {
 
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("name", default_parser_options()).unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner = Partitioner::try_new(
+            scalar_expr,
+            functions,
+            SignalContext::Single(SignalKind::Traces),
+        )
+        .unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
@@ -1295,7 +1315,12 @@ mod test {
             default_parser_options(),
         )
         .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner = Partitioner::try_new(
+            scalar_expr,
+            functions,
+            SignalContext::Single(SignalKind::Logs),
+        )
+        .unwrap();
         let partitions = partitioner.partition(input).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 2);
 
@@ -1380,7 +1405,8 @@ mod test {
             default_parser_options(),
         )
         .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner =
+            Partitioner::try_new(scalar_expr, functions, SignalContext::All).unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 1);
         assert_eq!(partitions[0].value, PartitionValue::Null);
@@ -1454,7 +1480,8 @@ mod test {
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("attributes[\"x\"]", default_parser_options())
                 .unwrap();
-        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let mut partitioner =
+            Partitioner::try_new(scalar_expr, functions, SignalContext::All).unwrap();
         let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 3);
 

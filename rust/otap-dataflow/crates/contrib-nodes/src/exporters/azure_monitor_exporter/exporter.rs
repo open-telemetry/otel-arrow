@@ -12,10 +12,15 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::http_client_auth::*;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, PdataEncoding, PdataView};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -27,29 +32,30 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents};
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 
 use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
 
 use bytes::Bytes;
 use std::cell::RefCell;
+use std::future::poll_fn;
 use std::rc::Rc;
 
 /// Max concurrent HTTP requests in flight to the Logs Ingestion API.
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 
-/// Raises shared bearer-auth warnings under the Azure Monitor event namespace.
-const AZURE_MONITOR_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
-    invalid_token: |error| {
-        otel_warn!("azure_monitor_exporter.auth.invalid_bearer_token", error = %error);
+/// Raises shared auth warnings under the Azure Monitor event namespace.
+const AZURE_MONITOR_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+    validate_header_name: |_| Ok(()),
+    on_invalid: |source, error| {
+        otel_warn!("azure_monitor_exporter.auth.invalid", source = %source, error = %error);
     },
-    token_stream_closed: || {
+    on_stream_closed: |source| {
         otel_warn!(
-            "azure_monitor_exporter.auth.token_stream_closed",
-            message =
-                "bearer token provider closed its stream; no further token refreshes will arrive"
+            "azure_monitor_exporter.auth.stream_closed",
+            source = %source,
+            message = "auth provider closed its stream; no further auth refreshes will arrive"
         );
     },
 };
@@ -140,7 +146,7 @@ impl AzureMonitorExporter {
     async fn finalize_export(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
         completed_export: CompletedExport,
     ) -> Result<(), EngineError> {
         let CompletedExport {
@@ -148,8 +154,9 @@ impl AzureMonitorExporter {
             client,
             result,
             row_count,
-            body_size_bytes,
             token_generation,
+            compressed_size,
+            uncompressed_size,
         } = completed_export;
 
         // Return the client to the pool
@@ -165,14 +172,21 @@ impl AzureMonitorExporter {
                     effect_handler,
                     batch_id,
                     row_count,
-                    body_size_bytes,
                     duration,
+                    compressed_size,
+                    uncompressed_size,
                 )
                 .await
             }
             Err(e) => {
-                self.handle_export_failure(effect_handler, batch_id, row_count, body_size_bytes, e)
-                    .await
+                self.handle_export_failure(
+                    effect_handler,
+                    batch_id,
+                    e,
+                    compressed_size,
+                    uncompressed_size,
+                )
+                .await
             }
         }
     }
@@ -182,20 +196,17 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: u64,
-        body_size_bytes: u64,
         duration: std::time::Duration,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
-        {
-            let mut m = self.metrics.borrow_mut();
-            m.record_export(
-                Outcome::Success,
-                row_count,
-                completed_messages.len() as u64,
-                body_size_bytes,
-            );
-        }
+        self.metrics.borrow_mut().record_completed_batch(
+            Outcome::Success,
+            compressed_size,
+            uncompressed_size,
+        );
 
         otel_debug!(
             "azure_monitor_exporter.export.success",
@@ -204,9 +215,9 @@ impl AzureMonitorExporter {
             duration_ms = duration.as_millis() as u64
         );
 
-        for (_, context, payload) in completed_messages {
+        for (_, delivery) in completed_messages {
             effect_handler
-                .notify_ack(AckMsg::new(OtapPdata::new(context, payload)))
+                .notify_ack(AckMsg::new(delivery.into_pdata()))
                 .await?;
         }
         Ok(())
@@ -216,30 +227,32 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
-        row_count: u64,
-        body_size_bytes: u64,
         error: Error,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
-        {
-            let mut m = self.metrics.borrow_mut();
-            m.record_export(
-                Outcome::Failure,
-                row_count,
-                failed_messages.len() as u64,
-                body_size_bytes,
-            );
-        }
+        // A 4xx client-error status is a backend refusal, not an exporter
+        // failure; classify the terminal batch outcome the same way the shared
+        // per-attempt metrics do. `is_refusal` unwraps the retry-exhausted
+        // `ExportFailed` wrapper so a non-retryable 4xx still reports `refused`.
+        let outcome = if error.is_refusal() {
+            Outcome::Refused
+        } else {
+            Outcome::Failure
+        };
+        self.metrics.borrow_mut().record_completed_batch(
+            outcome,
+            compressed_size,
+            uncompressed_size,
+        );
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
-        for (_, context, payload) in failed_messages {
+        for (_, delivery) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(
-                    error.to_string(),
-                    OtapPdata::new(context, payload),
-                ))
+                .notify_nack(NackMsg::new(error.to_string(), delivery.into_pdata()))
                 .await?;
         }
         Ok(())
@@ -248,19 +261,15 @@ impl AzureMonitorExporter {
     async fn queue_pending_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         let pending_batch = match self.gzip_batcher.take_pending_batch() {
             Some(batch) => batch,
             None => return Ok(()), // No pending batch - nothing to do
         };
 
-        self.metrics
-            .borrow_mut()
-            .add_batch_uncompressed_size(pending_batch.uncompressed_size as f64);
-        self.metrics
-            .borrow_mut()
-            .add_batch_size(pending_batch.compressed_data.len() as f64);
+        let compressed_size = pending_batch.compressed_data.len() as u64;
+        let uncompressed_size = pending_batch.uncompressed_size as u64;
 
         // Settle the completion that frees the slot before reading the token: a
         // 401 completion invalidates the cached header, and stamping this batch
@@ -270,17 +279,23 @@ impl AzureMonitorExporter {
                 .await?;
         }
 
-        let Some((auth_header, token_generation)) = auth.header() else {
-            let error = Error::NoBearerToken {
-                reason: auth.not_ready_reason(),
-            };
+        let Some((_, auth_header, token_generation)) = auth.header() else {
+            let reason = auth.not_ready_reason();
+            let attempt = self.metrics.borrow().boundary.attempt(SignalType::Logs);
+            let completed = attempt
+                .run(async |attempt| {
+                    attempt.set_item_count_with(|| pending_batch.row_count);
+                    Err::<std::time::Duration, _>(attempt.failed(Error::NoBearerToken { reason }))
+                })
+                .await;
+            let _ = self.metrics.borrow_mut().boundary.record(completed);
             return self
                 .handle_export_failure(
                     effect_handler,
                     pending_batch.batch_id,
-                    pending_batch.row_count,
-                    pending_batch.compressed_data.len() as u64,
-                    error,
+                    Error::NoBearerToken { reason },
+                    compressed_size,
+                    uncompressed_size,
                 )
                 .await;
         };
@@ -293,6 +308,8 @@ impl AzureMonitorExporter {
             pending_batch.compressed_data,
             auth_header,
             token_generation,
+            compressed_size,
+            uncompressed_size,
         );
 
         self.last_batch_queued_at = tokio::time::Instant::now();
@@ -303,18 +320,12 @@ impl AzureMonitorExporter {
     async fn handle_logs(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        context: Context,
-        payload: OtapPayload,
+        delivery: PdataDelivery,
         log_entries: Vec<Bytes>,
         msg_id: u64,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
-        if context.may_return_payload() {
-            self.state.add_msg_to_data(msg_id, context, payload);
-        } else {
-            self.state
-                .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
-        }
+        self.state.add_msg_to_data(msg_id, delivery);
 
         for log_entry in log_entries {
             let entry_len = log_entry.len();
@@ -336,12 +347,9 @@ impl AzureMonitorExporter {
                         msg_id = msg_id,
                         size_bytes = entry_len
                     );
-                    if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some(delivery) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
-                            .notify_nack(NackMsg::new(
-                                error.to_string(),
-                                OtapPdata::new(context, payload),
-                            ))
+                            .notify_nack(NackMsg::new(error.to_string(), delivery.into_pdata()))
                             .await?;
                     }
                     return Err(EngineError::InternalError {
@@ -350,12 +358,9 @@ impl AzureMonitorExporter {
                 }
                 Err(error) => {
                     otel_error!("azure_monitor_exporter.message.batch_push_failed", msg_id = msg_id, error = %error);
-                    if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some(delivery) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
-                            .notify_nack(NackMsg::new(
-                                error.to_string(),
-                                OtapPdata::new(context, payload),
-                            ))
+                            .notify_nack(NackMsg::new(error.to_string(), delivery.into_pdata()))
                             .await?;
                     }
                     return Err(EngineError::InternalError {
@@ -365,7 +370,7 @@ impl AzureMonitorExporter {
             }
         }
 
-        if let Some((context, payload)) = self.state.delete_msg_data_if_orphaned(msg_id) {
+        if let Some(delivery) = self.state.delete_msg_data_if_orphaned(msg_id) {
             otel_debug!(
                 "azure_monitor_exporter.message.no_valid_entries",
                 msg_id = msg_id
@@ -373,7 +378,7 @@ impl AzureMonitorExporter {
             effect_handler
                 .notify_nack(NackMsg::new_permanent(
                     "No valid log entries produced",
-                    OtapPdata::new(context, payload),
+                    delivery.into_pdata(),
                 ))
                 .await?;
         }
@@ -384,7 +389,7 @@ impl AzureMonitorExporter {
     async fn drain_in_flight_exports(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         let completed_exports = self.in_flight_exports.drain().await;
         for completed_export in completed_exports {
@@ -397,7 +402,7 @@ impl AzureMonitorExporter {
     async fn queue_current_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         match self.gzip_batcher.finalize() {
             Ok(FinalizeResult::Ok) => {
@@ -413,14 +418,14 @@ impl AzureMonitorExporter {
     async fn handle_shutdown(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         if auth.is_ready() {
             self.queue_current_batch(effect_handler, auth).await?;
         }
         self.drain_in_flight_exports(effect_handler, auth).await?;
 
-        for (msg_id, context, payload) in self.state.drain_all() {
+        for (msg_id, delivery) in self.state.drain_all() {
             otel_warn!(
                 "azure_monitor_exporter.shutdown.orphaned_message",
                 msg_id = msg_id
@@ -428,7 +433,7 @@ impl AzureMonitorExporter {
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",
-                    OtapPdata::new(context, payload),
+                    delivery.into_pdata(),
                 ))
                 .await?;
         }
@@ -441,9 +446,10 @@ impl AzureMonitorExporter {
     async fn handle_message(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
+        accepted_encodings: &AcceptedEncodings,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
-        auth: &mut BearerAuth,
+        auth: &mut impl HttpClientAuthProvider,
     ) -> Result<(), EngineError> {
         match msg {
             Ok(Message::PData(pdata)) => {
@@ -456,15 +462,28 @@ impl AzureMonitorExporter {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
 
-                let log_entries = match payload.data() {
-                    PayloadData::OtapArrowRecords(otap_records) => match otap_records {
+                let view = match effect_handler.view(&payload, accepted_encodings).await {
+                    Ok(view) => view,
+                    Err(error) => {
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(
+                                error.to_string(),
+                                OtapPdata::new(context, payload),
+                            ))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let log_entries = match view {
+                    PdataView::Native(otap_records) => match otap_records.as_ref() {
                         OtapArrowRecords::Logs(_) => {
-                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
-                                let error = Error::LogsViewCreationFailed { source: e };
-                                EngineError::InternalError {
-                                    message: error.to_string(),
-                                }
-                            })?;
+                            let logs_view =
+                                OtapLogsView::try_from(otap_records.as_ref()).map_err(|e| {
+                                    let error = Error::LogsViewCreationFailed { source: e };
+                                    EngineError::InternalError {
+                                        message: error.to_string(),
+                                    }
+                                })?;
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
@@ -476,13 +495,12 @@ impl AzureMonitorExporter {
                             None
                         }
                     },
-                    PayloadData::OtlpBytes(otlp_bytes) => match otlp_bytes {
-                        OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                            let logs_view = RawLogsData::new(bytes.as_ref());
+                    PdataView::Encoded(view) => match view.signal_type() {
+                        SignalType::Logs => {
+                            let logs_view = RawLogsData::new(view.bytes());
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
-                        OtlpProtoBytes::ExportMetricsRequest(_)
-                        | OtlpProtoBytes::ExportTracesRequest(_) => {
+                        SignalType::Metrics | SignalType::Traces => {
                             otel_warn!(
                                 "azure_monitor_exporter.message.unsupported_signal",
                                 signal = "metrics_or_traces",
@@ -494,8 +512,14 @@ impl AzureMonitorExporter {
                 };
 
                 if let Some(log_entries) = log_entries {
-                    self.handle_logs(effect_handler, context, payload, log_entries, *msg_id, auth)
-                        .await?;
+                    self.handle_logs(
+                        effect_handler,
+                        OtapPdata::new(context, payload).into_delivery(),
+                        log_entries,
+                        *msg_id,
+                        auth,
+                    )
+                    .await?;
                 }
             }
 
@@ -519,6 +543,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let accepted_encodings =
+            effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?;
         otel_info!(
             "azure_monitor_exporter.start",
             endpoint = self.config.api.dcr_endpoint.as_str(),
@@ -529,11 +555,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut auth = BearerAuth::new(
+        let mut auth = new_http_client_auth_provider_from_bearer_token_provider(
             self.token_provider
                 .take()
                 .expect("bearer token provider is present before startup"),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
         );
 
         self.client_pool
@@ -576,14 +601,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     continue;
                 }
 
-                () = auth.poll_refresh(), if auth.is_active() => {
+                () = poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)), if auth.is_active() => {
                     continue;
                 }
 
                 _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
                     next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
                     if let Some(ref mut hb) = self.heartbeat {
-                        let (header, generation) = auth
+                        let (_, header, generation) = auth
                             .header()
                             .expect("heartbeat is gated on a usable bearer token");
                         hb.update_auth(header);
@@ -627,15 +652,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             if tracing::enabled!(tracing::Level::DEBUG) {
                                 let m = self.metrics.borrow();
                                 let cl = m.http_for(HttpResponse::Http2xx).latency.get();
-                                let bs = m.batch_size();
+                                let success = m.batch_for(Outcome::Success);
+                                let bs = success.batch_size.get();
                                 otel_debug!(
                                     "azure_monitor_exporter.metrics.collect",
-                                    successful_items = m.export_for(Outcome::Success).items.get(),
-                                    successful_batches = m.export_for(Outcome::Success).batches.get(),
-                                    successful_messages = m.export_for(Outcome::Success).messages.get(),
-                                    failed_items = m.export_for(Outcome::Failure).items.get(),
-                                    failed_batches = m.export_for(Outcome::Failure).batches.get(),
-                                    failed_messages = m.export_for(Outcome::Failure).messages.get(),
+                                    successful_batches = success.batches.get(),
+                                    failed_batches = m.batch_for(Outcome::Failure).batches.get(),
                                     client_success_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
                                     client_success_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
                                     client_success_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
@@ -658,7 +680,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             ));
                         }
                         other => {
-                            self.handle_message(&effect_handler, other, &mut msg_id, &mut auth).await?;
+                            self.handle_message(&effect_handler, &accepted_encodings, other, &mut msg_id, &mut auth).await?;
                         }
                     }
                 }
@@ -674,7 +696,6 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
     use http::StatusCode;
-    use http::header::HeaderValue;
     use otel_arrow_dfe_channel::mpsc;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::capability::CapabilityError;
@@ -686,9 +707,11 @@ mod tests {
     use otel_arrow_dfe_engine::local::message::LocalReceiver;
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
-    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
+    use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_ctx_with_interests};
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_otap::testing::TestCallData;
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use rand::{RngExt, SeedableRng, rngs::SmallRng};
@@ -776,6 +799,7 @@ mod tests {
                 name: "test_exporter".to_string().into(),
             },
             reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         )
     }
 
@@ -784,8 +808,11 @@ mod tests {
         otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
     ) {
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
-        let mut effect_handler =
-            EffectHandler::new(test_node("azure-monitor-completion-test"), reporter);
+        let mut effect_handler = EffectHandler::new(
+            test_node("azure-monitor-completion-test"),
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(1);
         effect_handler.set_pipeline_completion_msg_sender(completion_tx);
         (effect_handler, completion_rx)
@@ -809,18 +836,16 @@ mod tests {
         exporter
     }
 
-    async fn auth_with_cached_token() -> BearerAuth {
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
-        auth.poll_refresh().await;
+    async fn auth_with_cached_token() -> impl HttpClientAuthProvider {
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
+        poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;
         assert!(auth.is_ready());
         auth
     }
 
-    /// Scenario: A completed export succeeds with a known compressed request-body size.
-    /// Guarantees: The successful outcome records the resolved request-body bytes.
+    /// Scenario: A completed export succeeds.
+    /// Guarantees: The successful outcome records one completed compressed batch.
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
@@ -833,30 +858,32 @@ mod tests {
             index: 0,
             name: "test_exporter".to_string().into(),
         };
-        let effect_handler = EffectHandler::new(node_id, reporter);
+        let effect_handler = EffectHandler::new(
+            node_id,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
         let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
-        exporter
-            .state
-            .add_msg_to_data(msg_id, context.clone(), payload);
+        exporter.state.add_msg_to_data(
+            msg_id,
+            OtapPdata::new(context.clone(), payload).into_delivery(),
+        );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(&effect_handler, batch_id, 10, 1_024, Duration::from_secs(1))
+            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1), 0, 0)
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        let success = m.export_for(Outcome::Success);
+        let success = m.batch_for(Outcome::Success);
         assert_eq!(success.batches.get(), 1);
-        assert_eq!(success.messages.get(), 1);
-        assert_eq!(success.items.get(), 10);
-        assert_eq!(success.bytes.get(), 1_024);
         drop(m);
 
         // Verify state cleared
@@ -864,8 +891,8 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: A completed export fails with a known compressed request-body size.
-    /// Guarantees: The failed outcome records the resolved request-body bytes.
+    /// Scenario: A completed export fails.
+    /// Guarantees: The failed outcome records one completed compressed batch.
     #[tokio::test]
     async fn test_handle_export_failure() {
         let config = create_test_config();
@@ -878,16 +905,21 @@ mod tests {
             index: 0,
             name: "test_exporter".to_string().into(),
         };
-        let effect_handler = EffectHandler::new(node_id, reporter);
+        let effect_handler = EffectHandler::new(
+            node_id,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
         let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
-        exporter
-            .state
-            .add_msg_to_data(msg_id, context.clone(), payload);
+        exporter.state.add_msg_to_data(
+            msg_id,
+            OtapPdata::new(context.clone(), payload).into_delivery(),
+        );
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         let error = Error::ServerError {
@@ -897,16 +929,13 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, 10, 512, error)
+            .handle_export_failure(&effect_handler, batch_id, error, 0, 0)
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        let failure = m.export_for(Outcome::Failure);
+        let failure = m.batch_for(Outcome::Failure);
         assert_eq!(failure.batches.get(), 1);
-        assert_eq!(failure.messages.get(), 1);
-        assert_eq!(failure.items.get(), 10);
-        assert_eq!(failure.bytes.get(), 512);
         drop(m);
 
         // Verify state cleared
@@ -914,8 +943,60 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: Azure Monitor returns HTTP 401 for an export stamped with the
-    /// currently cached bearer-token generation.
+    /// Scenario: A completed export terminates on a 4xx backend refusal (429).
+    /// Guarantees: The terminal batch is recorded under `refused`, not `failure`,
+    /// so `exporter.azure_monitor.batches` and both batch-size instruments expose
+    /// the refused backend rejection.
+    #[tokio::test]
+    async fn refused_export_records_terminal_batch_as_refused() {
+        let config = create_test_config();
+        let pipeline_ctx = create_test_pipeline_ctx();
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
+
+        let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
+        let node_id = NodeId {
+            index: 0,
+            name: "test_exporter".to_string().into(),
+        };
+        let effect_handler = EffectHandler::new(
+            node_id,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let batch_id = 1;
+        let msg_id = 100;
+        let context = Context::default();
+        let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
+
+        exporter.state.add_msg_to_data(
+            msg_id,
+            OtapPdata::new(context.clone(), payload).into_delivery(),
+        );
+        exporter.state.add_batch_msg_relationship(batch_id, msg_id);
+
+        // Retry-exhausted 429 refusal wrapped in `ExportFailed`, mirroring what
+        // `LogsIngestionClient::export` returns after exhausting retries.
+        let error = Error::ExportFailed {
+            attempts: 3,
+            last_error: Box::new(Error::RateLimited {
+                body: "Too Many Requests".to_string(),
+                retry_after: None,
+            }),
+        };
+
+        let _ = exporter
+            .handle_export_failure(&effect_handler, batch_id, error, 512, 1024)
+            .await;
+
+        let m = exporter.metrics.borrow();
+        let refused = m.batch_for(Outcome::Refused);
+        assert_eq!(refused.batches.get(), 1);
+        assert_eq!(refused.batch_size.get().sum, 512.0);
+        assert_eq!(refused.batch_uncompressed_size.get().sum, 1024.0);
+        assert_eq!(m.batch_for(Outcome::Failure).batches.get(), 0);
+    }
     /// Guarantees: completion handling invalidates that generation so the exporter
     /// stops accepting pdata until the provider publishes a replacement token.
     #[tokio::test]
@@ -924,12 +1005,10 @@ mod tests {
         let pipeline_ctx = create_test_pipeline_ctx();
         let mut exporter =
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
-        auth.poll_refresh().await;
-        let (_, token_generation) = auth.header().expect("mock provider publishes a token");
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
+        poll_fn(|cx| auth.poll_refresh(cx, &AZURE_MONITOR_AUTH_EVENTS)).await;
+        let (_, _, token_generation) = auth.header().expect("mock provider publishes a token");
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let effect_handler = EffectHandler::new(
@@ -938,6 +1017,7 @@ mod tests {
                 name: "test_exporter".to_string().into(),
             },
             reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let client = super::super::client::LogsIngestionClient::from_parts(
             reqwest::Client::new(),
@@ -949,8 +1029,9 @@ mod tests {
             client,
             result: Err(Error::unauthorized("rejected".to_string())),
             row_count: 1,
-            body_size_bytes: 1,
             token_generation,
+            compressed_size: 0,
+            uncompressed_size: 0,
         };
 
         exporter
@@ -1019,14 +1100,124 @@ mod tests {
             exporter.state.batch_to_msg.is_empty(),
             "the undispatchable batch must be failed, not stranded"
         );
+        // The reaped 401 is a 4xx backend refusal, so its terminal batch lands
+        // in the `refused` bucket. The batch that could not be stamped failed
+        // locally with no bearer token, so it lands in the `failure` bucket.
         assert_eq!(
             exporter
                 .metrics
                 .borrow()
-                .export_for(Outcome::Failure)
+                .batch_for(Outcome::Refused)
                 .batches
                 .get(),
-            2
+            1,
+            "the 401-completed batch must be recorded as refused"
+        );
+        assert_eq!(
+            exporter
+                .metrics
+                .borrow()
+                .batch_for(Outcome::Failure)
+                .batches
+                .get(),
+            1,
+            "the batch that could not be stamped must be recorded as failed"
+        );
+    }
+
+    /// Build an exporter with the given node interests so tests can observe the
+    /// interest-gated shared exporter attempt metrics.
+    async fn exporter_with_interests(
+        endpoint: String,
+        interests: Interests,
+    ) -> AzureMonitorExporter {
+        let mut config = create_test_config();
+        config.api.dcr_endpoint = endpoint;
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(interests);
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
+        exporter
+            .client_pool
+            .initialize(&exporter.config.api)
+            .await
+            .unwrap();
+        exporter
+    }
+
+    /// Reads the shared `exporter.attempted.messages` count for a logs outcome
+    /// bucket, returning 0 when that bucket recorded no observation.
+    fn attempted_messages(snapshots: &[MetricSetSnapshot], outcome: Outcome) -> u64 {
+        let outcome = match outcome {
+            Outcome::Success => "success",
+            Outcome::Failure => "failure",
+            Outcome::Refused => "refused",
+        };
+        let Some(snapshot) = snapshots.iter().find(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+        }) else {
+            return 0;
+        };
+        let index = snapshot
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|m| m.name == "messages")
+            .expect("messages metric");
+        snapshot.get_metrics()[index].to_u64_lossy()
+    }
+
+    /// Scenario: a finalized batch is ready to export but no usable bearer token
+    /// is cached, so the exporter drops it before reaching the HTTP client.
+    /// Guarantees: the pre-submission preparation failure still records exactly
+    /// one shared `exporter.attempted` observation in the `failure` bucket, so
+    /// attempt accounting stays aligned with the terminal batch outcome even
+    /// though no HTTP request is sent.
+    #[tokio::test]
+    async fn no_bearer_token_drop_records_a_failed_shared_attempt() {
+        let mut exporter = exporter_with_interests(
+            "http://localhost".to_string(),
+            Interests::NODE_INPUT_METRICS,
+        )
+        .await;
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
+        assert!(!auth.is_ready(), "no token has been polled yet");
+        let effect_handler = test_effect_handler();
+
+        prime_pending_batch(&mut exporter);
+        exporter
+            .queue_pending_batch(&effect_handler, &mut auth)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            exporter.in_flight_exports.len(),
+            0,
+            "no export may be dispatched without a usable token"
+        );
+        assert_eq!(
+            exporter
+                .metrics
+                .borrow()
+                .batch_for(Outcome::Failure)
+                .batches
+                .get(),
+            1,
+            "the dropped batch must be recorded as a failed terminal batch"
+        );
+        let snapshots = exporter.metrics.borrow_mut().terminal_snapshots();
+        assert_eq!(
+            attempted_messages(&snapshots, Outcome::Failure),
+            1,
+            "the no-token drop must record one failed shared attempt"
+        );
+        assert_eq!(
+            attempted_messages(&snapshots, Outcome::Success),
+            0,
+            "the no-token drop must not record a successful attempt"
         );
     }
 
@@ -1037,17 +1228,20 @@ mod tests {
     #[tokio::test]
     async fn pdata_is_refused_while_no_bearer_token_is_cached() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
         assert!(!auth.not_ready_reason().is_empty());
 
+        let effect_handler = test_effect_handler();
+        let accepted_encodings = effect_handler
+            .resolve_accepted_encodings(&[PdataEncoding::OTLP])
+            .unwrap();
         let mut msg_id = 0;
         exporter
             .handle_message(
-                &test_effect_handler(),
+                &effect_handler,
+                &accepted_encodings,
                 Ok(Message::PData(OtapPdata::new(
                     Context::default(),
                     OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
@@ -1062,44 +1256,57 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: an empty logs batch arrives once a bearer token is cached.
-    /// Guarantees: the exporter permanently NACKs the batch so it cannot enter
-    /// a downstream retry loop.
+    /// Scenario: Empty legacy and generalized encoded OTLP logs arrive with a cached token.
+    /// Guarantees: Inspection creates no codecs, and each batch is permanently NACKed
+    /// without retaining pending state or entering a downstream retry loop.
     #[tokio::test]
     async fn empty_logs_batch_is_permanently_nacked() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
         let mut auth = auth_with_cached_token().await;
         let (effect_handler, mut completion_rx) = completion_harness();
 
-        let mut msg_id = 0;
-        exporter
-            .handle_message(
-                &effect_handler,
-                Ok(Message::PData(
-                    OtapPdata::new(
-                        Context::default(),
-                        OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
-                    )
-                    .test_subscribe_to(
-                        Interests::NACKS,
-                        TestCallData::default().into(),
-                        42,
-                    ),
-                )),
-                &mut msg_id,
-                &mut auth,
-            )
-            .await
+        let accepted_encodings = effect_handler
+            .resolve_accepted_encodings(&[PdataEncoding::OTLP])
             .unwrap();
+        let codecs = effect_handler.codec_service();
+        let codec = codecs.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        let inputs: [OtapPayload; 2] = [
+            OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            codec.admit(SignalType::Logs, Bytes::new()).unwrap().into(),
+        ];
+        let mut msg_id = 0;
+        for (index, payload) in inputs.into_iter().enumerate() {
+            exporter
+                .handle_message(
+                    &effect_handler,
+                    &accepted_encodings,
+                    Ok(Message::PData(
+                        OtapPdata::new(Context::default(), payload).test_subscribe_to(
+                            Interests::NACKS,
+                            TestCallData::default().into(),
+                            42,
+                        ),
+                    )),
+                    &mut msg_id,
+                    &mut auth,
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(msg_id, 1, "admitted pdata consumes a message id");
-        assert!(exporter.state.msg_to_data.is_empty());
-        match completion_rx.recv().await.expect("receive completion") {
-            PipelineCompletionMsg::DeliverNack { nack } => {
-                assert!(nack.permanent);
-                assert_eq!(nack.reason, "No valid log entries produced");
+            assert_eq!(
+                msg_id,
+                (index + 1) as u64,
+                "each batch consumes a message id"
+            );
+            assert!(exporter.state.msg_to_data.is_empty());
+            match completion_rx.recv().await.expect("receive completion") {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert!(nack.permanent);
+                    assert_eq!(nack.reason, "No valid log entries produced");
+                }
+                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
             }
-            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
+            assert_eq!(codecs.test_instance_count().unwrap(), 0);
         }
     }
 
@@ -1124,8 +1331,7 @@ mod tests {
         exporter
             .handle_logs(
                 &effect_handler,
-                Context::default(),
-                OtapPayload::empty(SignalType::Logs),
+                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_delivery(),
                 vec![Bytes::from_static(br#"{"Message":"hello"}"#)],
                 1,
                 &mut auth,
@@ -1142,8 +1348,8 @@ mod tests {
         assert_eq!(exporter.in_flight_exports.len(), 0);
         assert!(exporter.state.msg_to_data.is_empty());
         let m = exporter.metrics.borrow();
-        assert_eq!(m.export_for(Outcome::Success).batches.get(), 1);
-        assert_eq!(m.export_for(Outcome::Failure).batches.get(), 0);
+        assert_eq!(m.batch_for(Outcome::Success).batches.get(), 1);
+        assert_eq!(m.batch_for(Outcome::Failure).batches.get(), 0);
     }
 
     /// Scenario: a single logs message carries enough records to fill a batch.
@@ -1178,8 +1384,7 @@ mod tests {
         exporter
             .handle_logs(
                 &effect_handler,
-                Context::default(),
-                OtapPayload::empty(SignalType::Logs),
+                OtapPdata::new_default(OtapPayload::empty(SignalType::Logs)).into_delivery(),
                 entries,
                 1,
                 &mut auth,
@@ -1201,7 +1406,7 @@ mod tests {
             exporter
                 .metrics
                 .borrow()
-                .export_for(Outcome::Success)
+                .batch_for(Outcome::Success)
                 .batches
                 .get(),
             1
@@ -1214,15 +1419,15 @@ mod tests {
     #[tokio::test]
     async fn shutdown_without_a_token_releases_buffered_messages() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
-        let mut auth = BearerAuth::new(
-            Box::new(MockTokenProvider),
-            AZURE_MONITOR_BEARER_AUTH_EVENTS,
-        );
+        let mut auth =
+            new_http_client_auth_provider_from_bearer_token_provider(Box::new(MockTokenProvider));
         assert!(!auth.is_ready(), "no token has been polled yet");
 
-        exporter
-            .state
-            .add_msg_to_data(7, Context::default(), OtapPayload::empty(SignalType::Logs));
+        exporter.state.add_msg_to_data(
+            7,
+            OtapPdata::new(Context::default(), OtapPayload::empty(SignalType::Logs))
+                .into_delivery(),
+        );
 
         exporter
             .handle_shutdown(&test_effect_handler(), &mut auth)
@@ -1230,17 +1435,6 @@ mod tests {
             .unwrap();
 
         assert!(exporter.state.msg_to_data.is_empty());
-    }
-
-    /// Scenario: the bearer-auth adapter reports an unusable token and a closed
-    /// token stream.
-    /// Guarantees: both hooks are wired to Azure Monitor's event namespace and
-    /// can be raised without panicking.
-    #[test]
-    fn bearer_auth_events_are_reportable() {
-        let invalid = HeaderValue::from_str("\n").expect_err("control chars are invalid");
-        (AZURE_MONITOR_BEARER_AUTH_EVENTS.invalid_token)(&invalid);
-        (AZURE_MONITOR_BEARER_AUTH_EVENTS.token_stream_closed)();
     }
 
     // Azure Monitor can temporarily stop accepting new pdata while it is at

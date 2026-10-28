@@ -34,18 +34,21 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::process_duration::ComputeDuration;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+#[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, OtapPdataUpdateCause, PdataEffectHandlerExtension};
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
@@ -128,27 +131,27 @@ impl Config {
         }
 
         // Validate that destination_key is not in source_keys
-        if let Some(ref keys) = source_keys {
-            if keys.contains(&destination_key) {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "destination_key '{}' cannot be included in source_keys",
-                        destination_key
-                    ),
-                });
-            }
+        if let Some(ref keys) = source_keys
+            && keys.contains(&destination_key)
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "destination_key '{}' cannot be included in source_keys",
+                    destination_key
+                ),
+            });
         }
 
         // Validate that destination_key is not in exclude_keys
-        if let Some(ref keys) = exclude_keys {
-            if keys.contains(&destination_key) {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "destination_key '{}' cannot be included in exclude_keys",
-                        destination_key
-                    ),
-                });
-            }
+        if let Some(ref keys) = exclude_keys
+            && keys.contains(&destination_key)
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "destination_key '{}' cannot be included in exclude_keys",
+                    destination_key
+                ),
+            });
         }
 
         Ok(Self {
@@ -207,6 +210,7 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Process
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| Config::from_config(config).map(|_| ()),
 };
@@ -568,7 +572,7 @@ impl CondenseAttributesProcessor {
         Ok(condensed_count)
     }
 
-    #[cfg(feature = "condense-attributes-processor-bench")]
+    #[cfg(feature = "condense-attributes-bench")]
     #[doc(hidden)]
     pub fn condense_for_benchmark(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         self.condense(records)
@@ -646,57 +650,56 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
             }
             Message::PData(pdata) => {
                 let signal = pdata.signal_type();
-                let (context, payload) = pdata.into_parts();
-                let saved_payload = if context.may_return_payload() {
-                    payload.clone()
-                } else {
-                    OtapPayload::empty(signal)
-                };
-
-                let mut records: OtapArrowRecords = payload.try_into_with_default()?;
-
-                let input_items = records.num_items() as u64;
-
-                otel_debug!("condense_attributes_processor.processing", input_items);
-
-                let result = effect_handler.timed(&self.compute_duration, || match signal {
-                    SignalType::Logs => self.condense(&mut records),
-                    _ => Err(Error::InternalError {
-                        message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
-                            .to_string(),
-                    }),
-                });
+                let mut input_items = 0;
+                let result = effect_handler
+                    .update_otap(pdata, |records| {
+                        input_items = records.num_items() as u64;
+                        otel_debug!("condense_attributes_processor.processing", input_items);
+                        effect_handler.timed(&self.compute_duration, || match signal {
+                            SignalType::Logs => self.condense(records),
+                            _ => Err(Error::InternalError {
+                                message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                                    .to_string(),
+                            }),
+                        })
+                    })
+                    .await;
 
                 match result {
-                    Ok(condensed) => {
-                        let output_items = records.num_items() as u64;
+                    Ok((pdata, condensed)) => {
+                        let output_items = pdata.records().num_items() as u64;
                         otel_debug!(
                             "condense_attributes_processor.success",
                             input_items,
                             output_items,
                             condensed_items = condensed
                         );
-                        effect_handler
-                            .send_message(OtapPdata::new(context, records.into()))
-                            .await?;
+                        effect_handler.send_message(pdata.into_pdata()).await?;
                         Ok(())
                     }
-                    Err(e) => {
-                        let message = e.to_string();
-                        otel_error!(
-                            "condense_attributes_processor.failure",
-                            input_items,
-                            signal = ?signal,
-                            message,
-                        );
-
-                        effect_handler
-                            .notify_nack(NackMsg::new(
-                                message,
-                                OtapPdata::new(context, saved_payload),
-                            ))
-                            .await?;
-                        Err(e)
+                    Err(error) => {
+                        let (cause, pdata) = error.into_parts();
+                        match cause {
+                            OtapPdataUpdateCause::Decode(error) => {
+                                effect_handler
+                                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                    .await?;
+                                Ok(())
+                            }
+                            OtapPdataUpdateCause::Update(error) => {
+                                let message = error.to_string();
+                                otel_error!(
+                                    "condense_attributes_processor.failure",
+                                    input_items,
+                                    signal = ?signal,
+                                    message,
+                                );
+                                effect_handler
+                                    .notify_nack(NackMsg::new(message, pdata))
+                                    .await?;
+                                Err(error)
+                            }
+                        }
                     }
                 }
             }
@@ -1283,6 +1286,8 @@ mod condense_tests {
         });
     }
 
+    /// Scenario: unsupported encoded metrics request asks for the original input on failure.
+    /// Guarantees: the transient Nack retains identical nonempty bytes and the original subscriber.
     #[test]
     fn test_nack_preserves_original_payload_for_unsupported_signal() {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -1314,15 +1319,18 @@ mod condense_tests {
                 ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut bytes = BytesMut::new();
-                ExportMetricsServiceRequest::default()
-                    .encode(&mut bytes)
-                    .expect("encode metrics request");
+                ExportMetricsServiceRequest {
+                    resource_metrics: vec![Default::default()],
+                }
+                .encode(&mut bytes)
+                .expect("encode metrics request");
 
+                let bytes = bytes.freeze();
                 let pdata_in = OtapPdata::new_default(
-                    OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into(),
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.clone()).into(),
                 )
                 .test_subscribe_to(
-                    Interests::NACKS,
+                    Interests::NACKS | Interests::RETURN_DATA,
                     TestCallData::default().into(),
                     777,
                 );
@@ -1339,6 +1347,12 @@ mod condense_tests {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 777);
                         assert_eq!(nack.refused.signal_type(), SignalType::Metrics);
+                        assert!(!nack.permanent);
+                        assert_eq!(nack.refused.payload_ref().encoded_bytes(), Some(&bytes));
+                        assert_eq!(
+                            nack.refused.payload_ref().encoded_bytes().unwrap().as_ptr(),
+                            bytes.as_ptr()
+                        );
                     }
                     other => panic!("expected DeliverNack, got: {other:?}"),
                 }

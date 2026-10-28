@@ -5,7 +5,7 @@
 ## Metadata
 
 - Type: `processor:type_router` (`urn:otel:processor:type_router`)
-- Feature gate: Default
+- Feature gate: Always enabled
 - Stability: Experimental
 
 ## Overview
@@ -97,13 +97,8 @@ The selected route can produce three admission outcomes:
 
 - `reject_immediately`: emit an immediate route-local retryable NACK with
   `cause = RouteFull`; unrelated healthy signal routes continue to flow.
-- `backpressure`: park at most one message per blocked output port, keep
-  admitting pdata while at least one selectable route is still making progress,
-  close pdata admission only when every selectable route currently has a parked
-  full message, and reopen admission once at least one parked route forwards.
-
-Later messages for an already parked route are retryable-NACKed with
-`cause = RouteFull`.
+- `backpressure`: park one message for the blocked output port and pause pdata
+  admission immediately. Admission reopens once the parked route forwards.
 
 ## Shutdown Behavior
 

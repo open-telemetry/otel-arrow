@@ -20,8 +20,9 @@ cd opamp-go/internal/examples
 go run ./server -no-tls
 ```
 
-- OpAMP endpoint: `ws://127.0.0.1:4320/v1/opamp` - web UI: <http://localhost:4321>
-- `-no-tls` is required because this extension currently supports `ws://` only.
+- OpAMP endpoint: `ws://127.0.0.1:4320/v1/opamp` -- web UI: <http://localhost:4321>
+- `-no-tls` disables TLS for plaintext WebSocket. Omit this flag to test with
+  TLS/mTLS instead (see below).
 
 ### 2. Run the engine
 
@@ -129,3 +130,11 @@ Stop either side with Ctrl-C. The engine keeps retrying the connection with
 exponential backoff while the server is down and re-registers when it returns;
 note that the example server keeps agent state (including pushed config) in
 memory only, so it forgets the agent on restart.
+
+### Testing with TLS / mTLS
+
+To test with TLS, run the opamp-go server **without** `-no-tls` (TLS is on by
+default) and use `configs/opamp-controller-extension-tls.yaml` instead. Update
+the `ca_file` path in that config to point to your local opamp-go checkout. The
+config file also contains instructions for generating a client certificate to
+test mTLS.

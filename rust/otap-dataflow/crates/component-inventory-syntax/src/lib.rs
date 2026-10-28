@@ -517,17 +517,17 @@ impl ComponentInventoryArgs {
         let Some(urn) = literal_urn else {
             return Ok(());
         };
-        if let Some(mid) = urn.split(':').nth(2) {
-            if mid != seg {
-                return Err(syn::Error::new_spanned(
-                    &self.category,
-                    format!(
-                        "category `{}` (URN segment `{seg}`) does not match the \
-                         component URN `{urn}` (segment `{mid}`)",
-                        self.category
-                    ),
-                ));
-            }
+        if let Some(mid) = urn.split(':').nth(2)
+            && mid != seg
+        {
+            return Err(syn::Error::new_spanned(
+                &self.category,
+                format!(
+                    "category `{}` (URN segment `{seg}`) does not match the \
+                     component URN `{urn}` (segment `{mid}`)",
+                    self.category
+                ),
+            ));
         }
         Ok(())
     }

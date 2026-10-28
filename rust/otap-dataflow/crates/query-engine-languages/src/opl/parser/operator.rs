@@ -10,8 +10,9 @@ use otel_arrow_contrib_data_engine_expressions::{
     NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction,
     PipelineFunctionExpression, PipelineFunctionParameter, PipelineFunctionParameterType,
     QueryLocation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
-    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-    StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
+    ScalarExpression, ScaleTransformExpression, SetTransformExpression, SourceScalarExpression,
+    StaticScalarExpression, StringScalarExpression, StringValue, TransformExpression,
+    ValueAccessor, ValueType,
 };
 use otel_arrow_contrib_data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -39,6 +40,9 @@ pub(crate) fn parse_operator_call(
             }
             Rule::rename_operator_call => parse_rename_operator_call(rule, pipeline_builder)?,
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
+            Rule::scale_metric_operator_call => {
+                parse_scale_metric_operator_call(rule, pipeline_builder)?
+            }
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
             Rule::drop_operator_call => parse_drop_operator_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
@@ -53,6 +57,68 @@ pub(crate) fn parse_operator_call(
             }
         };
     }
+
+    Ok(())
+}
+
+pub(crate) fn parse_scale_metric_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+    let mut multiplier = None;
+    let mut unit = None;
+    let mut negative = false;
+
+    for rule in operator_call_rule.into_inner() {
+        match rule.as_rule() {
+            Rule::negate_token => negative = true,
+            Rule::number_literal => {
+                let value = rule.as_str().parse::<f64>().map_err(|error| {
+                    ParserError::SyntaxError(
+                        to_query_location(&rule),
+                        format!("invalid scale_metric multiplier: {error}"),
+                    )
+                })?;
+                let value = if negative { -value } else { value };
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(ParserError::SyntaxError(
+                        to_query_location(&rule),
+                        "scale_metric multiplier must be finite and greater than zero".to_string(),
+                    ));
+                }
+                multiplier = Some(value);
+            }
+            Rule::string_literal => {
+                unit = match parse_standard_string_literal(rule)? {
+                    StaticScalarExpression::String(value) => Some(value.get_value().to_string()),
+                    invalid_expr => {
+                        return Err(ParserError::SyntaxError(
+                            query_location,
+                            format!("expected static string literal, found {invalid_expr:?}"),
+                        ));
+                    }
+                };
+            }
+            invalid_rule => {
+                return Err(invalid_child_rule_error(
+                    to_query_location(&rule),
+                    Rule::scale_metric_operator_call,
+                    invalid_rule,
+                ));
+            }
+        }
+    }
+
+    let multiplier = multiplier.ok_or_else(|| {
+        ParserError::SyntaxError(
+            query_location.clone(),
+            "scale_metric requires a multiplier".to_string(),
+        )
+    })?;
+    pipeline_builder.push_data_expression(DataExpression::Transform(TransformExpression::Scale(
+        ScaleTransformExpression::new(query_location, multiplier, unit),
+    )));
 
     Ok(())
 }
@@ -623,9 +689,9 @@ mod tests {
         MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
         PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
         PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
-        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        TransformExpression, ValueAccessor, ValueType,
+        RenameMapKeysTransformExpression, ScalarExpression, ScaleTransformExpression,
+        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
     };
     use otel_arrow_contrib_data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -657,6 +723,64 @@ mod tests {
         ));
 
         assert_eq!(&expressions[0], &expected);
+    }
+
+    /// Scenario: Parse scale_metric with a positive multiplier and unit.
+    /// Guarantees: The parser emits a dedicated scale metric transform with both arguments.
+    #[test]
+    fn test_parse_scale_metric_operator_call() {
+        let query = "scale_metric 1000.0 \"ms\"";
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+        let result = state.build().unwrap();
+
+        let expected =
+            DataExpression::Transform(TransformExpression::Scale(ScaleTransformExpression::new(
+                QueryLocation::new_fake(),
+                1000.0,
+                Some("ms".to_string()),
+            )));
+        assert_eq!(result.get_expressions(), &[expected]);
+    }
+
+    /// Scenario: Parse scale_metric with only its required multiplier.
+    /// Guarantees: The unit remains unset when the optional argument is omitted.
+    #[test]
+    fn test_parse_scale_metric_operator_call_without_unit() {
+        let query = "scale_metric 0.001";
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+        let result = state.build().unwrap();
+
+        let expected = DataExpression::Transform(TransformExpression::Scale(
+            ScaleTransformExpression::new(QueryLocation::new_fake(), 0.001, None),
+        ));
+        assert_eq!(result.get_expressions(), &[expected]);
+    }
+
+    /// Scenario: Parse scale_metric calls with missing or invalid arguments.
+    /// Guarantees: Invalid argument shapes are rejected instead of producing a transform.
+    #[test]
+    fn test_parse_scale_metric_operator_call_invalid_arguments() {
+        for query in [
+            "scale_metric",
+            "scale_metric \"two\"",
+            "scale_metric 2 3",
+            "scale_metric 2 \"ms\" \"extra\"",
+            "scale_metric(2)",
+            "scale_metric 0",
+            "scale_metric -0.5",
+            "scale_metric 1e309",
+        ] {
+            assert!(
+                OplParser::parse(query).is_err(),
+                "query should fail: {query}"
+            );
+        }
     }
 
     #[test]

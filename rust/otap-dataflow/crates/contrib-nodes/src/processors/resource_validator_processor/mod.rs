@@ -65,7 +65,6 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::PayloadData;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -74,19 +73,20 @@ use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata_codec::{AcceptedEncodings, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use otel_arrow_dfe_pdata_views::views::trace::{ResourceSpansView, TracesView};
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 
 /// URN identifier for the Resource Validator processor
 pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:processor:resource_validator";
@@ -109,7 +109,7 @@ pub enum AllowedValuesSource {
 }
 
 /// Validation result indicating why validation failed
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum ValidationFailure {
     /// The required attribute is missing from the resource
     MissingAttribute,
@@ -155,7 +155,11 @@ pub struct ResourceValidatorProcessor {
     /// Whether to perform case-sensitive comparison
     case_sensitive: bool,
     /// Telemetry metrics
-    metrics: MetricSet<ResourceValidatorMetrics>,
+    metrics: ResourceValidatorMetrics,
+    /// Resolved on first use because processors currently receive codec services
+    /// only while processing messages. A future PR will expose the pipeline registry
+    /// at construction so this set can be required instead of optional.
+    accepted_encodings: Option<AcceptedEncodings>,
 }
 
 /// Factory function to create a Resource Validator processor
@@ -189,6 +193,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processo
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -196,7 +201,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processo
 impl ResourceValidatorProcessor {
     /// Creates a new ResourceValidatorProcessor from configuration
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -209,6 +214,7 @@ impl ResourceValidatorProcessor {
             source_mode: AllowedValuesSource::Static,
             case_sensitive: config.case_sensitive,
             metrics,
+            accepted_encodings: None,
         })
     }
 
@@ -221,13 +227,14 @@ impl ResourceValidatorProcessor {
         case_sensitive: bool,
         pipeline_ctx: PipelineContext,
     ) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::new(&pipeline_ctx);
         Self {
             required_attribute_key,
             allowed_values,
             source_mode: AllowedValuesSource::Static,
             case_sensitive,
             metrics,
+            accepted_encodings: None,
         }
     }
 
@@ -435,35 +442,15 @@ impl ResourceValidatorProcessor {
         }
     }
 
-    /// Updates metrics and logs warnings based on validation result
-    fn update_metrics(&mut self, result: &Result<(), (ValidationFailure, String)>, num_items: u64) {
-        match result {
-            Ok(()) => {
-                self.metrics.batches_accepted.add(1);
-                self.metrics.items_accepted.add(num_items);
-            }
-            Err((failure, msg)) => {
-                otel_warn!(
-                    "resource_validator_processor.validation.fail",
-                    failure_reason = %failure,
-                    message = msg.as_str()
-                );
-                self.metrics.items_rejected.add(num_items);
-                match failure {
-                    ValidationFailure::MissingAttribute => {
-                        self.metrics.batches_rejected_missing.add(1);
-                    }
-                    ValidationFailure::InvalidAttributeType => {
-                        self.metrics.batches_rejected_invalid_type.add(1);
-                    }
-                    ValidationFailure::ConversionError => {
-                        self.metrics.batches_rejected_conversion_error.add(1);
-                    }
-                    ValidationFailure::NotInAllowedList => {
-                        self.metrics.batches_rejected_not_allowed.add(1);
-                    }
-                }
-            }
+    /// Records and logs resource validation failures.
+    fn record_validation_failure(&mut self, result: &Result<(), (ValidationFailure, String)>) {
+        if let Err((failure, msg)) = result {
+            otel_warn!(
+                "resource_validator_processor.validation.fail",
+                failure_reason = %failure,
+                message = msg.as_str()
+            );
+            self.metrics.record_failure(*failure);
         }
     }
 }
@@ -481,45 +468,68 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                     mut metrics_reporter,
                 } = control
                 {
-                    let _ = metrics_reporter.report(&mut self.metrics);
+                    let _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Ok(())
             }
-            Message::PData(mut pdata) => {
+            Message::PData(pdata) => {
                 let signal_type = pdata.signal_type();
+
+                if self.accepted_encodings.is_none() {
+                    self.accepted_encodings =
+                        Some(effect_handler.resolve_accepted_encodings(&[PdataEncoding::OTLP])?);
+                }
+                // SAFETY: If absent, the set is stored in Some above; resolution errors
+                // return via `?`. There is no intervening mutation or await.
+                // A future PR will resolve this set at construction and remove this expect.
+                let accepted_encodings = self
+                    .accepted_encodings
+                    .as_ref()
+                    .expect("accepted encodings initialized");
+
+                let view = match effect_handler
+                    .view(pdata.payload_ref(), accepted_encodings)
+                    .await
+                {
+                    Ok(view) => view,
+                    Err(error) => {
+                        let failure = ValidationFailure::ConversionError;
+                        let result = Err((failure, error.to_string()));
+                        self.record_validation_failure(&result);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
 
                 // Get allowed values (extension point for future dynamic auth)
                 let allowed_values = self.get_allowed_values(&pdata);
 
-                // Validate based on payload type
-                let validation_result = match pdata.payload_ref().data() {
-                    PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
-                        (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
-                            let logs_data = RawLogsData::new(bytes.as_ref());
+                let validation_result = match view {
+                    PdataView::Encoded(view) => match view.signal_type() {
+                        SignalType::Logs => {
+                            let logs_data = RawLogsData::new(view.bytes());
                             self.validate_logs(&logs_data, &allowed_values)
                         }
-                        (SignalType::Metrics, OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
-                            let metrics_data = RawMetricsData::new(bytes.as_ref());
+                        SignalType::Metrics => {
+                            let metrics_data = RawMetricsData::new(view.bytes());
                             self.validate_metrics(&metrics_data, &allowed_values)
                         }
-                        (SignalType::Traces, OtlpProtoBytes::ExportTracesRequest(bytes)) => {
-                            let trace_data = RawTraceData::new(bytes.as_ref());
+                        SignalType::Traces => {
+                            let trace_data = RawTraceData::new(view.bytes());
                             self.validate_traces(&trace_data, &allowed_values)
                         }
-                        _ => {
-                            // Signal type doesn't match payload type - this shouldn't happen
-                            // but pass through rather than fail
-                            Ok(())
-                        }
                     },
-                    PayloadData::OtapArrowRecords(arrow_records) => match signal_type {
+                    PdataView::Native(arrow_records) => match signal_type {
                         SignalType::Logs => {
-                            self.validate_arrow_logs(arrow_records, &allowed_values)
+                            self.validate_arrow_logs(arrow_records.as_ref(), &allowed_values)
                         }
                         // Metrics/Traces Arrow views not yet available - convert to OTLP
                         // TODO: Implement OtapMetricsView/OtapTracesView to avoid clone + conversion
                         SignalType::Metrics | SignalType::Traces => {
-                            match OtlpProtoBytes::try_from_with_default(arrow_records.clone()) {
+                            match OtlpProtoBytes::try_from_with_default(arrow_records.into_owned())
+                            {
                                 Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                                     let data = RawMetricsData::new(bytes.as_ref());
                                     self.validate_metrics(&data, &allowed_values)
@@ -538,9 +548,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                     },
                 };
 
-                // Update metrics
-                let num_items = pdata.num_items() as u64;
-                self.update_metrics(&validation_result, num_items);
+                self.record_validation_failure(&validation_result);
 
                 match validation_result {
                     Ok(()) => {
