@@ -318,15 +318,10 @@ impl<T> Receiver<T> {
         let mut state = self.channel.state.borrow_mut();
 
         if let Some(value) = state.buffer.pop_front() {
-            // Wake one sender if channel was full
-            println!("state.buffer.len() = {:?}", state.buffer.len());
-            println!("capacity = {:?}", state.capacity);
+            // Wake one sender since the channel now surely has capacity for any waiting senders.
+            // Only one live waiter is awoken at a time (FIFO) to avoid thundering-herd wakeups.
+            state.wake_one_sender_waiter();
 
-            if state.buffer.len() == state.capacity - 1 {
-                println!("Calling waker");
-                // Wake one live waiter (FIFO) to avoid thundering-herd wakeups.
-                state.wake_one_sender_waiter();
-            }
             Ok(value)
         } else if state.is_closed {
             Err(RecvError::Closed)
@@ -696,6 +691,8 @@ mod tests {
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: channel is full and multiple senders are blocked waiting to send
+    /// Guarantees: the senders become unblocked
     #[test]
     fn test_all_blocked_senders_woken() {
         let rt = create_test_runtime();
@@ -712,23 +709,19 @@ mod tests {
             let tx_a = tx.clone();
             let sender_a = tokio::task::spawn_local(async move {
                 tx_a.send_async(30).await.expect("sender A must complete");
-                println!("A WOKEN");
             });
 
             // Sender B: will also block because the channel is still full.
             let tx_b = tx.clone();
             let sender_b = tokio::task::spawn_local(async move {
                 tx_b.send_async(40).await.expect("sender B must complete");
-                println!("B WOKEN");
             });
 
             // Yield so both sender tasks poll once and register as waiters.
             tokio::task::yield_now().await;
             tokio::task::yield_now().await;
 
-            // Drain BOTH items
-            // first pop transitions full -> capacity-1 and wakes sender A
-            // second pop transitions capacity-1 -> capacity-2; BUG: does NOT wake sender B
+            // Drain first two items items
             let v1 = rx.try_recv().expect("first try_recv must succeed");
             let v2 = rx.try_recv().expect("second try_recv must succeed");
             assert_eq!(v1, 10);
@@ -736,15 +729,12 @@ mod tests {
 
             // call recv() to try to get values from both waiting senders. simulates the receiver
             // continuously being polled like it would be in a downstream component.
-            //
-            // this will actually time out ....
-            let _ = timeout(Duration::from_millis(2000), async {
+            let result = timeout(Duration::from_millis(2000), async {
                 let mut received = Vec::new();
                 // We expect 2 more values (30 from A, 40 from B).
                 for _ in 0..2 {
                     match rx.recv().await {
                         Ok(v) => {
-                            println!("GOT {v:?}");
                             received.push(v);
                         },
                         Err(_) => break,
@@ -755,7 +745,10 @@ mod tests {
             .await
             .unwrap();
 
+            // assert we got the results we expected
+            assert_eq!(result, vec![30, 40]);
 
+            // assert clean exit on the now unblocked sender tasks
             sender_a.await.expect("sender A task must not panic");
             sender_b.await.expect("sender B task must not panic");
         });
