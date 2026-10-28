@@ -8,9 +8,12 @@
 //! background task spawned by the controller.
 //!
 //! **Metrics**
-//! - `memory_rss` (`ObserveUpDownCounter<u64>`, `{By}`):
+//! - `memory.rss` (`ObserveUpDownCounter<u64>`, `{By}`):
 //!   Process-wide Resident Set Size -- physical memory currently held in RAM.
 //!   Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+//!
+//! - `memory.commit` (`ObserveUpDownCounter<u64>`, `{By}`, Windows only):
+//!   Process-wide private committed memory, including paged-out private memory.
 //!
 //! - `cpu_utilization` (`Gauge<f64>`, `{1}`):
 //!   Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across **all
@@ -64,6 +67,11 @@ pub struct EngineMetrics {
     #[metric(unit = "{By}")]
     pub memory_rss: ObserveUpDownCounter<u64>,
 
+    /// Process-wide private committed memory, including paged-out private memory.
+    #[cfg(windows)]
+    #[metric(unit = "{By}")]
+    pub memory_commit: ObserveUpDownCounter<u64>,
+
     /// Process-wide CPU utilization as a ratio in [0, 1], normalized across all
     /// logical CPU cores on the system (not just engine-assigned cores).
     /// Aligned with the OTel semantic convention `process.cpu.utilization`.
@@ -87,6 +95,19 @@ pub struct EngineMetrics {
     /// Effective process-wide memory limiter hard limit, in bytes.
     #[metric(unit = "{By}")]
     pub process_memory_hard_limit_bytes: Gauge<u64>,
+}
+
+impl EngineMetrics {
+    fn observe_memory(&mut self, stats: Option<memory_stats::MemoryStats>) {
+        self.memory_rss
+            .observe(stats.as_ref().map_or(0, |stats| stats.physical_mem as u64));
+        #[cfg(windows)]
+        {
+            // Windows virtual_mem is PagefileUsage (private commit), not address space.
+            self.memory_commit
+                .observe(stats.as_ref().map_or(0, |stats| stats.virtual_mem as u64));
+        }
+    }
 }
 
 /// Standard stream served by one console output writer.
@@ -250,13 +271,13 @@ impl EngineMetricsMonitor {
         }
     }
 
-    /// Samples current engine-wide metrics (RSS, CPU utilization, etc.).
+    /// Samples current engine-wide metrics (process memory, CPU utilization, etc.).
     pub fn update(&mut self) {
         self.update_with_console_stats(OutputService::stats());
     }
 
     fn update_with_console_stats(&mut self, console_stats: ServiceStats) {
-        self.metrics.memory_rss.observe(get_rss_bytes());
+        self.metrics.observe_memory(memory_stats::memory_stats());
 
         // Compute process-wide CPU utilization normalized across all cores.
         let now_wall = Instant::now();
@@ -337,13 +358,6 @@ impl EngineMetricsMonitor {
     }
 }
 
-/// Returns the current process-wide RSS (Resident Set Size) in bytes.
-fn get_rss_bytes() -> u64 {
-    memory_stats::memory_stats()
-        .map(|stats| stats.physical_mem as u64)
-        .unwrap_or(0)
-}
-
 impl Drop for EngineMetricsMonitor {
     fn drop(&mut self) {
         for key in [
@@ -368,8 +382,10 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// Scenario: the engine samples the current process's memory.
+    /// Guarantees: RSS and, on Windows, private commit report nonzero values.
     #[test]
-    fn engine_metrics_reports_nonzero_rss() {
+    fn engine_metrics_reports_nonzero_memory() {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry.clone());
         let entity_key = controller.register_engine_entity();
@@ -385,7 +401,40 @@ mod tests {
 
         assert!(
             monitor.metrics.memory_rss.get() > 0,
-            "memory_rss should report non-zero process RSS"
+            "process RSS should be nonzero"
+        );
+        #[cfg(windows)]
+        assert!(
+            monitor.metrics.memory_commit.get() > 0,
+            "process private commit should be nonzero"
+        );
+    }
+
+    /// Scenario: resident and committed memory samples differ.
+    /// Guarantees: RSS remains resident bytes; Windows adds private commit as a separate metric.
+    #[test]
+    fn engine_memory_metric_matches_platform_semantics() {
+        let mut metrics = EngineMetrics::default();
+        metrics.observe_memory(Some(memory_stats::MemoryStats {
+            physical_mem: 1024,
+            virtual_mem: 4096,
+        }));
+        assert_eq!(metrics.memory_rss.get(), 1024);
+        #[cfg(windows)]
+        assert_eq!(metrics.memory_commit.get(), 4096);
+        let descriptor = metrics.descriptor();
+        assert!(
+            descriptor
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "memory.rss")
+        );
+        assert!(
+            descriptor
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "memory.commit")
+                == cfg!(windows)
         );
     }
 
