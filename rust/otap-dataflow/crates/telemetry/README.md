@@ -117,25 +117,29 @@ Implement `StructuredValue` to encode an object's state without converting its
 fields to text:
 
 ```rust
-use otel_arrow_dfe_telemetry::{encode, otel_info};
+use otel_arrow_dfe_telemetry::otel_info;
 use otel_arrow_dfe_telemetry::self_tracing::{StructBox, StructuredValue, ValueWriter};
 use otel_arrow_dfe_telemetry::self_tracing::structured::EncodeResult;
 
 struct Probe {
     id: i64,
-    name: String,
+    label: String,
     tags: Vec<String>,
 }
 
 impl StructuredValue for Probe {
     fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-        encode!(w, "probe {}: {}: blahblah: [{}]", self.id, self.name, self.tags)
+        w.encode_struct("Probe")?
+            .field("id", &self.id)?
+            .field("label", &self.label)?
+            .field("tags", &self.tags)?
+            .finish()
     }
 }
 
 let probe = StructBox::new(Probe {
     id: 7,
-    name: "example".into(),
+    label: "example".into(),
     tags: vec!["a".into(), "b".into()],
 });
 otel_info!("probe.observed", state = probe.as_struct());
@@ -145,28 +149,14 @@ The `state` field is an OTLP AnyValue map equivalent to:
 
 ```json
 {
-  "msg": "probe {id}: {name}: blahblah: [{tags}]",
+  "name": "Probe",
   "id": 7,
-  "name": "example",
+  "label": "example",
   "tags": ["a", "b"]
 }
 ```
 
-`encode!` derives short names from identifiers and named field accesses.
-Other expressions supply their own labels: `encode!(w, "count {}", items.len())`
-produces `"count {items.len()}"` and an `items.len()` field.
-
-Each placeholder consumes one argument in order. A placeholder name or argument
-alias can supply a label instead: `encode!(w, "count {count:04}", items.len())`
-retains `"count {count:04}"` and encodes the numeric value under `count`.
-Placeholder names take precedence over argument aliases such as
-`count = items.len()`.
-
-Formatting instructions, including `{:?}`, are preserved in `msg` for later
-rendering, not applied to the values. Escaped `{{` and `}}` remain escaped.
-Names must be unique, and `msg` is reserved.
-
-The macro encodes into the supplied writer; it does not emit a log event or
+The builder encodes into the supplied writer; it does not emit a log event or
 build an intermediate value tree. Keep the `StructBox` for repeated logging:
 `as_struct()` borrows its current state without allocating. Pass it directly,
 without `?` or `%`, to preserve structure.
@@ -175,24 +165,13 @@ Handwritten encoders propagate failures with `?`. The encoder tracks
 truncation, retains completed container prefixes, and accounts for lost
 attributes without caller bookkeeping.
 
-For an object that does not need a format macro, use the struct builder directly:
-
-```rust
-w.encode_struct("Probe")?
-    .field("id", &self.id)?
-    .field("name", &self.name)?
-    .field("tags", &self.tags)?
-    .finish()
-```
-
-The struct name becomes `msg`. Each `.field()` borrows and encodes its value
+The struct name becomes `name`. Each `.field()` borrows and encodes its value
 immediately. A failed field rolls back that field; exiting through `?` finalizes
 the completed prefix and reports truncation, even though `finish()` was skipped.
 Dropping an unfinished builder has the same behavior.
 
-`encode!` expands into this builder chain. It uses `.field_with()` to defer
-each argument expression until its key fits; handwritten encoders can use that
-method too when computing a field value is expensive.
+Use `.field_with()` to defer encoding a field until its key fits when computing
+the field value is expensive.
 
 ### Logging suppression and sampling
 

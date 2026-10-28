@@ -211,7 +211,7 @@ fn structured_fields_preserve_lazy_evaluation() {
 
     impl StructuredValue for Point {
         fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-            w.encode_struct("point ({x}, {y})")?
+            w.encode_struct("Point")?
                 .field("x", &*self.x.borrow())?
                 .field("y", &self.y)?
                 .finish()
@@ -267,7 +267,7 @@ fn structured_fields_preserve_lazy_evaluation() {
             vec![KeyValue::new(
                 "to",
                 AnyValue::new_kvlist(vec![
-                    KeyValue::new("msg", AnyValue::new_string("point ({x}, {y})")),
+                    KeyValue::new("name", AnyValue::new_string("Point")),
                     KeyValue::new("x", AnyValue::new_int(expected_x)),
                     KeyValue::new("y", AnyValue::new_int(2)),
                 ]),

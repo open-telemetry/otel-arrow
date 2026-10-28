@@ -25,9 +25,6 @@
 //! * Export of a registry compatible with the semantic registry format
 //! * Native OTAP metric-set representation
 
-#[cfg(test)]
-extern crate self as otel_arrow_dfe_telemetry;
-
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
@@ -68,7 +65,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
-pub use otel_arrow_dfe_telemetry_macros::{encode, otel_component_scope};
+pub use otel_arrow_dfe_telemetry_macros::otel_component_scope;
 pub use tracing_init::TracingSetup;
 
 #[cfg(test)]

@@ -21,5 +21,5 @@ issues: [1746]
 subtext: |
   Structured values are limited to 16 container levels. Loss from structured
   attributes increments dropped_attributes_count; bodies retain existing
-  rollback behavior. Structured message maps support a msg template with
-  named placeholders and separate typed fields.
+  rollback behavior. Structured structs contain a name field identifying
+  the struct and separate typed fields.

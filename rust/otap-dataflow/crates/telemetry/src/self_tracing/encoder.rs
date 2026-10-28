@@ -637,7 +637,7 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
             len_start: self.buf.len() - width,
             width,
         });
-        StructEncoder::new(self).field("msg", name)
+        StructEncoder::new(self).field("name", name)
     }
 
     fn encode_str(&mut self, value: &str) -> EncodeResult {
@@ -2115,18 +2115,16 @@ mod tests {
 
     impl StructuredValue for Probe {
         fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-            crate::encode!(
-                w,
-                "probe {}: {}: blahblah: [{}]",
-                self.id,
-                self.name,
-                self.tags
-            )
+            w.encode_struct("Probe")?
+                .field("id", &self.id)?
+                .field("label", &self.name)?
+                .field("tags", &self.tags)?
+                .finish()
         }
     }
 
     /// Scenario: a boxed map/array value is mutated between events and encoded under small and roomy budgets.
-    /// Guarantees: logging borrows current state, preserves wire types, stays within each budget, and counts partial values once.
+    /// Guarantees: logging borrows current state, preserves wire types across all placeholder widths, stays within each budget, and counts partial values once.
     #[test]
     fn boxed_values_preserve_mutation_and_budgets() {
         let mut slot = StructBox::new(Probe {
@@ -2151,26 +2149,26 @@ mod tests {
                 panic!("expected map");
             };
             assert_eq!(map.values[1], KeyValue::new("id", AnyValue::new_int(count)));
-            for limit in [8, 32, 64, 128, 16384] {
-                let mut buf = ProtoBuffer::with_capacity_and_limit(limit, limit);
+            for limit in [8, 32, 64, 128, 2048, 1 << 16, 1 << 28] {
+                let mut buf = ProtoBuffer::with_capacity_and_limit(limit.min(256), limit);
                 let mut visitor = DirectFieldVisitor::new(&mut buf);
                 visitor.record_error(&field, slot.as_struct());
                 assert_eq!(
                     visitor.dropped_count(),
-                    u32::from(limit < 16384),
+                    u32::from(limit <= 128),
                     "limit {limit}"
                 );
                 assert!(buf.len() <= limit);
                 let decoded = LogRecord::decode(buf.as_ref()).expect("valid bounded record");
-                if limit == 16384 {
+                if limit >= 2048 {
                     assert_eq!(decoded, expected);
                 }
             }
         }
     }
 
-    /// Scenario: encode! produces a structured `message` with string, integer, and array fields.
-    /// Guarantees: the body contains the named template and typed values, not interpolated text or an attribute.
+    /// Scenario: a struct builder produces a structured `message` with string, integer, and array fields.
+    /// Guarantees: the body contains the struct name and typed values rather than an attribute.
     #[test]
     fn structured_message_is_log_body() {
         let slot = StructBox::new(Probe {
@@ -2190,12 +2188,9 @@ mod tests {
         assert_eq!(
             decoded.body,
             Some(AnyValue::new_kvlist(vec![
-                KeyValue::new(
-                    "msg",
-                    AnyValue::new_string("probe {id}: {name}: blahblah: [{tags}]")
-                ),
+                KeyValue::new("name", AnyValue::new_string("Probe")),
                 KeyValue::new("id", AnyValue::new_int(7)),
-                KeyValue::new("name", AnyValue::new_string("example")),
+                KeyValue::new("label", AnyValue::new_string("example")),
                 KeyValue::new(
                     "tags",
                     AnyValue::new_array(vec![AnyValue::new_string("a"), AnyValue::new_string("b")]),
@@ -2204,31 +2199,29 @@ mod tests {
         );
     }
 
-    /// Scenario: encode! mixes expression labels, named/formatted placeholders, aliases, raw identifiers, and internal-binding names.
-    /// Guarantees: template formatting survives, placeholder names select keys, and values are borrowed and encoded with their original types.
+    /// Scenario: a struct builder encodes integers, booleans, strings, and an array of floats.
+    /// Guarantees: borrowed values retain their original types in the encoded fields.
     #[test]
-    fn structured_macro_preserves_types_and_argument_bindings() {
+    fn struct_builder_preserves_field_types() {
         let field = BUDGET_TEST_METADATA
             .fields()
             .field("a")
             .expect("known field");
         let mut buf = ProtoBuffer::with_capacity(256);
         let mut visitor = DirectFieldVisitor::new(&mut buf);
-        let __map = 7u64;
-        let __value = true;
-        let r#type = "sample";
+        let number = 8u64;
+        let enabled = true;
+        let kind = "sample";
         let samples = [0.5f32, 1.0];
         visitor.record_toplevel_field(&field, |buf| {
             ValueEncoder::new(buf, 0).encode_structured(|w| {
-                crate::encode!(
-                    w,
-                    "count {}; {number:04} {:?} {} [{:#?}] {{literal}}",
-                    samples.len(),
-                    id = __map + 1,
-                    __value,
-                    r#type,
-                    samples
-                )
+                w.encode_struct("Samples")?
+                    .field("count", &samples.len())?
+                    .field("number", &number)?
+                    .field("enabled", &enabled)?
+                    .field("type", &kind)?
+                    .field("samples", &samples)?
+                    .finish()
             })
         });
         assert_eq!(visitor.dropped_count(), 0);
@@ -2238,15 +2231,10 @@ mod tests {
             vec![KeyValue::new(
                 "a",
                 AnyValue::new_kvlist(vec![
-                    KeyValue::new(
-                        "msg",
-                        AnyValue::new_string(
-                            "count {samples.len()}; {number:04} {__value:?} {type} [{samples:#?}] {{literal}}"
-                        )
-                    ),
-                    KeyValue::new("samples.len()", AnyValue::new_int(2)),
+                    KeyValue::new("name", AnyValue::new_string("Samples")),
+                    KeyValue::new("count", AnyValue::new_int(2)),
                     KeyValue::new("number", AnyValue::new_int(8)),
-                    KeyValue::new("__value", AnyValue::new_bool(true)),
+                    KeyValue::new("enabled", AnyValue::new_bool(true)),
                     KeyValue::new("type", AnyValue::new_string("sample")),
                     KeyValue::new(
                         "samples",
@@ -2260,28 +2248,27 @@ mod tests {
         );
     }
 
-    /// Scenario: encode! truncates its template, encodes one value, then encounters a key that cannot fit.
-    /// Guarantees: truncation needs no caller bookkeeping, accepted expressions run once, rejected expressions do not run, and later log fields survive.
+    /// Scenario: a struct builder truncates its name, encodes one value, then encounters a key that cannot fit.
+    /// Guarantees: truncation needs no caller bookkeeping, accepted callbacks run once, rejected callbacks do not run, and later log fields survive.
     #[test]
-    fn structured_macro_stops_evaluating_after_failed_entry() {
+    fn struct_builder_skips_callback_when_key_does_not_fit() {
         let fields = BUDGET_TEST_METADATA.fields();
         let a = fields.field("a").expect("known field");
         let b = fields.field("b").expect("known field");
         let mut buf = ProtoBuffer::with_capacity_and_limit(256, 256);
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         let mut evaluations = 0;
-        let rejected = || -> bool { panic!("oversized key skips its expression") };
         visitor.record_toplevel_field(&a, |buf| {
             ValueEncoder::new(buf, 0).encode_structured(|w| {
-                crate::encode!(
-                    w,
-                    "{} {}",
-                    first = {
+                w.encode_struct(&"x".repeat(80))?
+                    .field_with("first", &mut |w| {
                         evaluations += 1;
-                        true
-                    },
-                    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = rejected(),
-                )
+                        w.encode_bool(true)
+                    })?
+                    .field_with(&"x".repeat(64), &mut |_| {
+                        panic!("oversized key skips its callback")
+                    })?
+                    .finish()
             })
         });
         visitor.record_bool(&b, true);
@@ -2307,59 +2294,15 @@ mod tests {
             panic!("expected map")
         };
         assert_eq!(map.values.len(), 2);
-        assert_eq!(map.values[0].key, "msg");
-        let Some(StringValue(template)) = &map.values[0].value.as_ref().expect("msg").value else {
-            panic!("expected template")
+        assert_eq!(map.values[0].key, "name");
+        let Some(StringValue(name)) = &map.values[0].value.as_ref().expect("name").value else {
+            panic!("expected struct name")
         };
-        assert!(template.ends_with("[...]"));
+        assert!(name.ends_with("[...]"));
         assert_eq!(
             map.values[1],
             KeyValue::new("first", AnyValue::new_bool(true))
         );
-    }
-
-    /// Scenario: the handwritten struct chain and macro encode the same object at small and large limits.
-    /// Guarantees: both paths have identical bytes and loss counts, with valid framing across all placeholder widths.
-    #[test]
-    fn struct_builder_matches_macro_across_budgets() {
-        let probe = Probe {
-            id: 7,
-            name: "example".into(),
-            tags: vec!["a".into(), "b".into()],
-        };
-        let field = BUDGET_TEST_METADATA
-            .fields()
-            .field("a")
-            .expect("known field");
-        for limit in [8, 32, 64, 128, 256, 2048, 1 << 16, 1 << 28] {
-            let mut results = Vec::new();
-            for use_macro in [false, true] {
-                let mut buf = ProtoBuffer::with_capacity_and_limit(limit.min(256), limit);
-                let mut visitor = DirectFieldVisitor::new(&mut buf);
-                visitor.record_toplevel_field(&field, |buf| {
-                    ValueEncoder::new(buf, 0).encode_structured(|w| {
-                        if use_macro {
-                            probe.encode(w)
-                        } else {
-                            w.encode_struct("probe {id}: {name}: blahblah: [{tags}]")?
-                                .field("id", &probe.id)?
-                                .field("name", &probe.name)?
-                                .field("tags", &probe.tags)?
-                                .finish()
-                        }
-                    })
-                });
-                assert_eq!(
-                    visitor.dropped_count(),
-                    u32::from(limit <= 256),
-                    "limit {limit}"
-                );
-                assert!(buf.len() <= limit);
-                let _ = LogRecord::decode(buf.as_ref()).expect("valid struct framing");
-                results.push(buf.into_bytes());
-            }
-            assert_eq!(results[0], results[1], "limit {limit}");
-        }
     }
 
     /// Scenario: a struct field writes a scalar and then fails, exiting its chain through `?`.
@@ -2400,7 +2343,7 @@ mod tests {
         assert_eq!(visitor.dropped_count(), 1);
         assert_eq!(value.attempts.get(), 2);
         let prefix = AnyValue::new_kvlist(vec![
-            KeyValue::new("msg", AnyValue::new_string("Partial")),
+            KeyValue::new("name", AnyValue::new_string("Partial")),
             KeyValue::new("first", AnyValue::new_int(7)),
         ]);
         let record = LogRecord::decode(buf.as_ref()).expect("valid prefix framing");
@@ -2442,7 +2385,7 @@ mod tests {
                 expected.push(KeyValue::new(
                     "a",
                     AnyValue::new_kvlist(vec![
-                        KeyValue::new("msg", AnyValue::new_string("Partial")),
+                        KeyValue::new("name", AnyValue::new_string("Partial")),
                         KeyValue::new("first", AnyValue::new_int(7)),
                     ]),
                 ));
@@ -2705,13 +2648,13 @@ mod tests {
             assert_eq!(visitor.dropped_count(), u32::from(truncated));
             assert_eq!(visited, depth.min(MAX_DEPTH));
             let mut expected = if truncated {
-                AnyValue::new_kvlist(vec![KeyValue::new("msg", AnyValue::new_string("chain"))])
+                AnyValue::new_kvlist(vec![KeyValue::new("name", AnyValue::new_string("chain"))])
             } else {
                 AnyValue::new_bool(true)
             };
             for _ in 0..depth.min(MAX_DEPTH) - usize::from(truncated) {
                 expected = AnyValue::new_kvlist(vec![
-                    KeyValue::new("msg", AnyValue::new_string("chain")),
+                    KeyValue::new("name", AnyValue::new_string("chain")),
                     KeyValue::new("child", expected),
                     KeyValue::new("tail", AnyValue::new_bool(true)),
                 ]);
