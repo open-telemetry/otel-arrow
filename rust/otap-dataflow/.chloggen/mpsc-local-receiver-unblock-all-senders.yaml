@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: engine
+note: Prevent senders of local MSPC channel becoming blocked under condition of channel at capacity and multiple senders.
+issues: [4568]
