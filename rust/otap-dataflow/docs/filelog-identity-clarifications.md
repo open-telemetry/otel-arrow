@@ -1,15 +1,17 @@
 # Proposed changes and clarifications for file identity
 
-**Status: proposal for review, not an approved specification change.**
+**Status: specification amendment included in the Task 12 PR for review.**
 
-Task 12 already implements the behavior described below. One part differs from
-the literal specification: how to handle an I/O error while checking saved file
-progress. Another part makes fingerprint matching more precise.
+This PR updates the [receiver specification][spec] and [conformance matrix][matrix]
+to distinguish failed continuity checks from environmental read errors. The
+change needs explicit review; inclusion in this branch is not evidence of
+maintainer approval. It changes recovery policy wording, not the checkpoint
+wire format. Discovery design PR #4443 remains a separate PR; carry this rule
+forward if those documents are combined.
 
-This is a follow-up for review after discovery design PR #4443 merges. It does
-not change that PR or the checkpoint wire format. Before claiming Phase 1
-conformance, update the binding specification, conformance matrix and tests
-together with the wording reviewers agree on.
+Section 1 explains the specification amendment. Section 2 records Task 12's
+association interpretation and its tradeoffs; this amendment does not change
+association policy. Section 3 lists component and integration test obligations.
 
 ## 1. A read error does not prove that a file changed
 
@@ -17,13 +19,14 @@ Before resuming a file, Filelog checks a small byte window near the saved offset
 This is the **frontier window**: it helps check whether the saved progress still
 belongs to the file being opened.
 
-The current specification says that failure to read this window follows the
-identity-mismatch policy. Read literally, that includes an I/O error, such as a
-disk error.
+The previous specification said that failure to read this window follows the
+identity-mismatch policy. Read literally, that included an I/O error, such as a
+disk error, conflicting with the general rule that environmental failures
+preserve progress. This PR removes that conflict.
 
-Task 12 makes a distinction:
+The amended specification and Task 12 make this distinction:
 
-| What happened | Proposed behavior |
+| What happened | Behavior |
 | --- | --- |
 | The bytes do not match the saved digest | Apply the identity-mismatch policy. |
 | The saved offset is beyond the file size, or EOF prevents reading the full window | Apply the identity-mismatch policy. |
@@ -39,8 +42,13 @@ On an I/O error, preserve the record, file ID, offset, epoch, prefix and frontie
 Do not replace the identity or quarantine it solely because of the error.
 Repeated errors do not turn into proof of replacement.
 
-**This is a behavior change that needs specification approval**, even though it
-is intended to protect saved progress.
+The cost is availability: a persistently unreadable file retains its tracked
+slot and cannot resume until continuity validates. The worker must use bounded
+environmental backoff and health reporting rather than silently spin or convert
+repeated failures into mismatch. Failed checkpoint syncs remain terminal.
+
+**Review this as a deliberate recovery-policy correction**, not an assertion
+that the old wording already permitted this behavior.
 
 Tests cover EIO, WouldBlock, successful retries after Interrupted, retry-budget
 exhaustion, cancellation between retries, partial reads that complete, and early
@@ -126,3 +134,6 @@ These cases make the admission and checkpoint contracts explicit:
 
 Throttling fingerprint growth at size thresholds remains an optional performance
 improvement. It is not required to fix the confirmed failure paths.
+
+[spec]: filelog-receiver-phase1-spec.md#committed-frontier-continuity-guard
+[matrix]: filelog-receiver-phase1-conformance.md

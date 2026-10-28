@@ -1250,19 +1250,29 @@ fn interrupted_evidence_reads_retry_without_reset() {
 }
 
 /// Scenario: Either prefix or frontier read returns EIO, WouldBlock, or an unending stream of EINTR.
-/// Guarantees: Errors retain their kind, preserve the complete checkpoint record, release the lease, and permit a later clean recovery.
+/// Guarantees: Under every mismatch policy, errors retain their kind and the complete record, release the lease, and permit later recovery.
 #[test]
 fn environmental_read_errors_never_supersede() {
     for offset in [0, 86] {
-        for kind in [
+        for (kind, policy) in [
             std::io::ErrorKind::Other,
             std::io::ErrorKind::WouldBlock,
             std::io::ErrorKind::Interrupted,
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|kind| {
+            [
+                RecoveryMismatch::Beginning,
+                RecoveryMismatch::SkipToEnd,
+                RecoveryMismatch::Fail,
+            ]
+            .into_iter()
+            .map(move |policy| (kind, policy))
+        }) {
             let f = Fixture::new();
             let bytes = vec![b'x'; 200];
             let path = f.write("app", &bytes);
-            let inputs = f.inputs(|_| {});
+            let inputs = f.inputs(|c| c.identity.on_recovery_mismatch = policy);
             let mut owner = f.owner(&inputs);
             let seed = commit(&mut owner, &path, Context::Unrelated);
             let id = seed.file_id;

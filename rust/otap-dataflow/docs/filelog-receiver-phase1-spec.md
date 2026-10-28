@@ -1119,9 +1119,30 @@ allows an advance shorter than 64 bytes to combine newly read bytes with the
 required pre-resume bytes without rereading mutable path content after Ack.
 
 Recovery validates the guard from the reopened handle before seeking past the
-guarded frontier. Failure to read the window or a digest mismatch is exact-locator
-identity-evidence mismatch and follows `identity.on_recovery_mismatch` without
-inheriting progress. The guard materially reduces same-locator reuse and
+guarded frontier. A digest mismatch, or EOF before the complete required window
+can be read, is exact-locator identity-evidence mismatch and follows
+`identity.on_recovery_mismatch` without inheriting progress. A successful partial
+read is not itself a mismatch: continue the bounded read until the window is
+complete, EOF is reached, cancellation occurs, or a read error is returned.
+
+An environmental read error, such as `EIO` or `EAGAIN`/`WouldBlock`, is not evidence
+of replacement. Preserve the saved record, including its file ID, epoch, offset,
+prefix and frontier guard, and return the source error for the environmental
+retry and health handling in [Failure containment](#failure-containment). Do not
+reset, supersede or quarantine the record solely because of that error,
+regardless of `identity.on_recovery_mismatch`. Repeated errors do not change this
+classification. Until a later attempt validates continuity, do not resume reads
+from the saved offset or advance progress. Persistent failure may leave the file
+unavailable while retaining its tracked slot; this is preferable to discarding
+valid recovery state without evidence of a mismatch.
+
+Retry `Interrupted` reads only within a finite per-operation budget, checking
+cancellation between attempts. Exhaustion returns a source error for the same
+environmental handling. Cancellation preserves saved state and does not authorize
+admission. These source-read rules do not relax the terminal handling of failed
+checkpoint file or directory synchronization.
+
+The guard materially reduces same-locator reuse and
 in-place replacement ambiguity but cannot distinguish a replacement that
 reproduces the checked locator, prefix, size bound, and frontier window while
 changing unchecked bytes between the sampled regions. Phase 1 states that residual
@@ -1140,7 +1161,8 @@ The following conditions never inherit an old offset:
 - the candidate has a changed runtime locator, even with an equal full
   fingerprint;
 - an exact-locator fingerprint prefix fails;
-- an exact-locator committed-frontier guard fails or cannot be read;
+- an exact-locator committed-frontier digest differs, or EOF prevents reading
+  its complete required window;
 - committed progress exceeds current size;
 - exact-locator identity evidence changed while it was observed; or
 - a native locator appears reused after a `RotatedFinalized` record.
