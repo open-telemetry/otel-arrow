@@ -233,8 +233,9 @@ impl<'input> Envelope<'input> {
 impl Request<'_, '_> {
     /// Validate To against the exact HTTP path and, when configured, the public origin.
     ///
-    /// `public_endpoint` must be a validated configuration origin. Without it,
-    /// only HTTPS URL shape and path are checked, not the authority.
+    /// `public_origin` must be derived once from the validated configuration
+    /// endpoint, not parsed per request. Without it, only HTTPS URL shape and
+    /// path are checked, not the authority.
     /// End also accepts the exact WS-Addressing anonymous URI used by MS-WSMV.
     ///
     /// # Errors
@@ -244,7 +245,7 @@ impl Request<'_, '_> {
     /// End addressed to the exact anonymous URI.
     pub fn validate_destination(
         &self,
-        public_endpoint: Option<&str>,
+        public_origin: Option<&url::Origin>,
         path: &str,
     ) -> Result<(), Error> {
         if self.action == Action::End && self.destination == ANONYMOUS {
@@ -270,11 +271,10 @@ impl Request<'_, '_> {
         {
             return Err(invalid());
         }
-        if let Some(endpoint) = public_endpoint {
-            let expected = url::Url::parse(endpoint).map_err(|_| invalid())?;
-            if destination.origin() != expected.origin() {
-                return Err(invalid());
-            }
+        if let Some(expected) = public_origin
+            && destination.origin() != *expected
+        {
+            return Err(invalid());
         }
         Ok(())
     }
@@ -344,8 +344,9 @@ impl Request<'_, '_> {
     }
 
     fn encode_response(&self, response_id: Uuid, enumeration: bool) -> Result<Vec<u8>, Error> {
-        // UTF-8 needs at most three bytes per UTF-16 code unit. Bound the
-        // intermediate representation too, then check the exact wire size.
+        // UTF-8 needs at most three bytes per UTF-16 code unit, which is two
+        // bytes on the wire. Bound the intermediate representation to 1.5x
+        // the response byte limit, then check the exact wire size.
         let mut writer = Writer::new(BoundedXml {
             bytes: Vec::new(),
             limit: self
@@ -714,10 +715,13 @@ mod tests {
         let xml = request_xml(Action::Heartbeat, "<w:Events/>", DELIVERY_HEADERS);
         let envelope = parse_envelope(&xml);
         let mut request = envelope.request(&route, 4096).unwrap();
+        let public_origin = url::Url::parse("https://collector.example/")
+            .unwrap()
+            .origin();
         for origin in ["https://collector.example", "https://COLLECTOR.example:443"] {
             request.destination = format!("{origin}{path}");
             request
-                .validate_destination(Some("https://collector.example/"), path)
+                .validate_destination(Some(&public_origin), path)
                 .unwrap();
             request.validate_destination(None, path).unwrap();
         }
@@ -738,7 +742,7 @@ mod tests {
             request.destination = destination;
             assert!(
                 request
-                    .validate_destination(Some("https://collector.example"), path)
+                    .validate_destination(Some(&public_origin), path)
                     .is_err(),
                 "{}",
                 request.destination
@@ -748,12 +752,47 @@ mod tests {
         assert!(request.validate_destination(None, path).is_ok());
     }
 
+    /// Scenario: the configured public origin uses the explicit WinRM HTTPS port 5986.
+    /// Guarantees: matching explicit ports are accepted and default or different ports are rejected.
+    #[test]
+    fn validates_explicit_destination_port() {
+        let path = "/wsman/subscriptions/subscription/v";
+        let route = Route::Delivery { version: "v" };
+        let public_origin = url::Url::parse("https://collector.example:5986")
+            .unwrap()
+            .origin();
+        for (origin, accepted) in [
+            ("https://collector.example:5986", true),
+            ("https://COLLECTOR.example:5986", true),
+            ("https://collector.example", false),
+            ("https://collector.example:443", false),
+            ("https://collector.example:5987", false),
+        ] {
+            let xml = request_xml(Action::Heartbeat, "<w:Events/>", DELIVERY_HEADERS).replace(
+                "https://collector.example/wsman",
+                &format!("{origin}{path}"),
+            );
+            let envelope = parse_envelope(&xml);
+            let request = envelope.request(&route, 4096).unwrap();
+            assert_eq!(
+                request
+                    .validate_destination(Some(&public_origin), path)
+                    .is_ok(),
+                accepted,
+                "{origin}"
+            );
+        }
+    }
+
     /// Scenario: End uses the MS-WSMV anonymous To on either supported route.
     /// Guarantees: request and destination validation accept only the exact anonymous URI exception.
     #[test]
     fn validates_anonymous_end_destination() {
         let headers = format!("<w:ResourceURI>{FULL_DUPLEX_RESOURCE}</w:ResourceURI>");
         let valid = request_xml(Action::End, "", &headers);
+        let public_origin = url::Url::parse("https://collector.example")
+            .unwrap()
+            .origin();
         for (route, path) in [
             (Route::SubscriptionManager, "/wsman/SubscriptionManager"),
             (
@@ -775,12 +814,12 @@ mod tests {
                 let envelope = parse_envelope(&xml);
                 let request = envelope.request(&route, 4096).unwrap();
                 assert_eq!(request.action(), Action::End);
-                for endpoint in [None, Some("https://collector.example")] {
+                for origin in [None, Some(&public_origin)] {
                     assert_eq!(
-                        request.validate_destination(endpoint, path).is_ok(),
+                        request.validate_destination(origin, path).is_ok(),
                         destination == ANONYMOUS
                             || destination == format!("https://collector.example{path}"),
-                        "{destination} {route:?} {endpoint:?}"
+                        "{destination} {route:?} {origin:?}"
                     );
                 }
             }
@@ -793,7 +832,7 @@ mod tests {
             assert!(request.validate_destination(None, path).is_ok());
             assert!(
                 request
-                    .validate_destination(Some("https://collector.example"), path)
+                    .validate_destination(Some(&public_origin), path)
                     .is_err()
             );
         }
@@ -803,6 +842,9 @@ mod tests {
     /// Guarantees: the End exception does not bypass destination checks for any other action.
     #[test]
     fn rejects_anonymous_destination_for_other_actions() {
+        let public_origin = url::Url::parse("https://collector.example")
+            .unwrap()
+            .origin();
         for (action, body, headers, route) in [
             (
                 Action::Enumerate,
@@ -833,10 +875,10 @@ mod tests {
                 .replace("https://collector.example/wsman", ANONYMOUS);
             let envelope = parse_envelope(&xml);
             let request = envelope.request(&route, 4096).unwrap();
-            for endpoint in [None, Some("https://collector.example")] {
+            for origin in [None, Some(&public_origin)] {
                 assert!(
-                    request.validate_destination(endpoint, "/wsman").is_err(),
-                    "{action:?} {endpoint:?}"
+                    request.validate_destination(origin, "/wsman").is_err(),
+                    "{action:?} {origin:?}"
                 );
             }
         }
