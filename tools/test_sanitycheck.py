@@ -68,8 +68,9 @@ VENDORED_CASES = [
 ]
 
 
+# Scenario: Check vendored, ordinary, and similarly prefixed paths from multiple directories.
+# Guarantees: Only paths under vendor/semconv are excluded, independently of the cwd.
 def check_excluded_cases():
-    """is_excluded() must not depend on the working directory."""
     failures = 0
     original_cwd = os.getcwd()
     try:
