@@ -1,0 +1,99 @@
+groups:
+  - id: registry.telemetry
+    type: attribute_group
+    display_name: Telemetry Attributes
+    brief: >
+        This document defines attributes for telemetry SDK.
+    attributes:
+      - id: telemetry.sdk.name
+        type: string
+        stability: stable
+        brief: >
+          The name of the telemetry SDK as defined above.
+        note: |
+          The OpenTelemetry SDK MUST set the `telemetry.sdk.name` attribute to `opentelemetry`.
+          If another SDK, like a fork or a vendor-provided implementation, is used, this SDK MUST set the
+          `telemetry.sdk.name` attribute to the fully-qualified class or module name of this SDK's main entry point
+          or another suitable identifier depending on the language.
+          The identifier `opentelemetry` is reserved and MUST NOT be used in this case.
+          All custom identifiers SHOULD be stable across different versions of an implementation.
+        examples: ["opentelemetry"]
+      - id: telemetry.sdk.language
+        type:
+          members:
+            - id: cpp
+              value: "cpp"
+              brief: "[C++](https://opentelemetry.io/docs/languages/cpp/)"
+              stability: stable
+            - id: dotnet
+              value: "dotnet"
+              brief: "[.NET](https://opentelemetry.io/docs/languages/dotnet/)"
+              stability: stable
+            - id: erlang
+              value: "erlang"
+              brief: "[Erlang/Elixir](https://opentelemetry.io/docs/languages/erlang/)"
+              stability: stable
+            - id: go
+              value: "go"
+              brief: "[Go](https://opentelemetry.io/docs/languages/go/)"
+              stability: stable
+            - id: java
+              value: "java"
+              brief: "[Java](https://opentelemetry.io/docs/languages/java/)"
+              stability: stable
+            - id: kotlin
+              value: "kotlin"
+              brief: "[Kotlin](https://opentelemetry.io/docs/languages/kotlin/)"
+              stability: stable
+            - id: nodejs
+              value: "nodejs"
+              brief: "[Node.js](https://opentelemetry.io/docs/languages/js/)"
+              stability: stable
+            - id: php
+              value: "php"
+              brief: "[PHP](https://opentelemetry.io/docs/languages/php/)"
+              stability: stable
+            - id: python
+              value: "python"
+              brief: "[Python](https://opentelemetry.io/docs/languages/python/)"
+              stability: stable
+            - id: ruby
+              value: "ruby"
+              brief: "[Ruby](https://opentelemetry.io/docs/languages/ruby/)"
+              stability: stable
+            - id: rust
+              value: "rust"
+              brief: "[Rust](https://opentelemetry.io/docs/languages/rust/)"
+              stability: stable
+            - id: swift
+              value: "swift"
+              brief: "[Swift](https://opentelemetry.io/docs/languages/swift/)"
+              stability: stable
+            - id: webjs
+              value: "webjs"
+              brief: "[Browser](https://opentelemetry.io/docs/languages/js/)"
+              stability: stable
+        stability: stable
+        brief: >
+          The language of the telemetry SDK.
+      - id: telemetry.sdk.version
+        type: string
+        stability: stable
+        brief: >
+          The version string of the telemetry SDK.
+        examples: ["1.2.3"]
+      - id: telemetry.distro.name
+        type: string
+        stability: stable
+        brief: >
+          The name of the auto instrumentation agent or distribution, if used.
+        note: |
+          Official auto instrumentation agents and distributions SHOULD set the `telemetry.distro.name` attribute to
+          a string starting with `opentelemetry-`, e.g. `opentelemetry-java-instrumentation`.
+        examples: ["parts-unlimited-java"]
+      - id: telemetry.distro.version
+        type: string
+        stability: stable
+        brief: >
+          The version string of the auto instrumentation agent or distribution, if used.
+        examples: ["1.2.3"]

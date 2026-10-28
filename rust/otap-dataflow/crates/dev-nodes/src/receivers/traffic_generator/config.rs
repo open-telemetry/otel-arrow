@@ -863,4 +863,18 @@ mod tests {
         let result = cfg.validate();
         assert!(result.is_err(), "zero max_batch_size should be rejected");
     }
+
+    /// The remote default registry and the vendored copy used by tests and
+    /// benchmarks must stay on the same upstream tag.
+    #[test]
+    fn default_refspec_matches_vendored_registry_version() {
+        let version_file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/semconv/VERSION");
+        let vendored = std::fs::read_to_string(version_file)
+            .unwrap_or_else(|e| panic!("failed to read {version_file}: {e}"));
+        assert_eq!(
+            super::SEMCONV_REGISTRY_REFSPEC,
+            vendored.trim(),
+            "bump SEMCONV_REGISTRY_REFSPEC together with `cargo xtask update-semconv`"
+        );
+    }
 }

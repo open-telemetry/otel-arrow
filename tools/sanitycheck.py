@@ -18,6 +18,16 @@ _tracked_files = set(
     ).stdout.splitlines()
 )
 
+# Third-party content copied verbatim from upstream (see
+# rust/otap-dataflow/vendor/semconv/README.md). It follows upstream's style, so
+# none of the checks below apply to it.
+VENDORED_PREFIXES = (
+    os.path.normpath('rust/otap-dataflow/vendor') + os.sep,
+)
+
+def is_vendored(filename):
+    return os.path.normpath(filename).startswith(VENDORED_PREFIXES)
+
 def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1):
     error_count = 0
 
@@ -25,6 +35,8 @@ def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1)
         if not os.path.isfile(filename):
             continue
         if os.path.normpath(filename) not in _tracked_files:
+            continue
+        if is_vendored(filename):
             continue
         with open(filename, 'rb') as file:
             content = file.read()
@@ -259,6 +271,8 @@ def nonascii_check(pattern):
         if not os.path.isfile(filename):
             continue
         if os.path.normpath(filename) not in _tracked_files:
+            continue
+        if is_vendored(filename):
             continue
         with open(filename, 'rb') as file:
             content = file.read()
