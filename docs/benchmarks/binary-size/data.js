@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793227230493,
+  "lastUpdate": 1793228365263,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -74231,6 +74231,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "406501f6006f582febf5e7557743ef040544c5e7",
+          "message": "chore(windows_perf_counters): replace query engine with PDH array reads and add runtime (#4532)\n\n# Chore Summary\n\nReplaces the receiver's custom per-instance query engine with a thin PDH\nwrapper that behaves like the Go Collector receiver, and adds the\nreceiver runtime. The receiver stays unregistered; enabling it, docs and\nthe changelog follow in the next PR.\n\n## Commits\n\n1. **Remove per-instance query engine**: deletes the old engine and its\ntests.\n   No new code.\n2. **Add PDH array-read engine**\n- Counters are configured by English name and work on any display\nlanguage.\n- Wildcard instances are read in one PDH call, and PDH does the counter\nmath.\n- Each counter has its own query, so one failing counter doesn't stop\nthe others. Failed adds are retried, and a failed query is reopened on\nthe next scrape.\n- Configuration that would silently collect nothing is rejected at load.\n3. **Add receiver runtime (unregistered)**\n   - Scrapes on a fixed interval with at most one scrape in flight.\n   - Shutdown is bounded.\n- Each warning is logged once per episode per counter, with self-metrics\nfor scrapes, failures and overruns.\n\n## Related issue\n\nPart of #4074.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>\nCopilot-Session: 20fdf80b-e0a9-45aa-a715-1b8de389e6e6",
+          "timestamp": "2026-10-28T21:53:52Z",
+          "tree_id": "f3a449856bf361c78360e47e018d741242b277c8",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/406501f6006f582febf5e7557743ef040544c5e7"
+        },
+        "date": 1793228340690,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 2.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.45,
             "unit": "MB"
           },
           {
