@@ -180,6 +180,13 @@ callback through `?` retains the completed prefix and reports truncation.
 An error returned after the container completes rolls back the enclosing value.
 Entry callbacks run only after their keys fit.
 
+Containers beyond `MAX_DEPTH` become a string containing a bracketed vertical
+ellipsis (U+22EE), indicating a structural cutoff without invoking the container
+callback. If the marker cannot fit, the member rolls back instead. Truncation
+anywhere in an attribute increments `dropped_attributes_count` once; body
+truncation does not increment that count. Depth cutoffs are visible in bodies
+when the marker fits, but capacity-truncated containers retain unmarked prefixes.
+
 ### Logging suppression and sampling
 
 The `otel_arrow_dfe_telemetry::Sampler` and `Logger` traits

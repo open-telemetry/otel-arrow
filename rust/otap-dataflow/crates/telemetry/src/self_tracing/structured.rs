@@ -20,7 +20,8 @@ use std::ops::{Deref, DerefMut};
 
 pub use otel_arrow_dfe_pdata::otlp::{EncodeFailure, EncodeResult};
 
-/// Maximum nesting of maps and arrays; deeper values are dropped.
+/// Maximum nesting of maps and arrays; deeper containers become a string
+/// containing a bracketed vertical ellipsis (U+22EE), or are dropped if it cannot fit.
 pub const MAX_DEPTH: usize = 16;
 
 /// A value that can encode itself as an OTLP AnyValue.

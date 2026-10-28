@@ -518,6 +518,25 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         })
     }
 
+    /// Applies the structured-log policy without changing resource/scope encoding.
+    fn encode_structured_nested(
+        &mut self,
+        field: u64,
+        body: impl FnOnce(&mut NestedEncoder<'_, B>) -> EncodeResult,
+    ) -> EncodeResult {
+        self.truncation = if self.depth >= MAX_DEPTH {
+            self.once(|buf| buf.encode_string(ANY_VALUE_STRING_VALUE, "[\u{22ee}]"))?;
+            Truncation::Some
+        } else {
+            self.encode_nested(field, |encoder| match body(encoder) {
+                Ok(()) => Ok(encoder.truncation),
+                // Each member is atomic, so its failure leaves a valid prefix.
+                Err(EncodeFailure::Dropped) => Ok(Truncation::Some),
+            })?
+        };
+        Ok(())
+    }
+
     fn encode_str(&mut self, value: &str) -> TruncateResult {
         self.once(|buf| bounded::string_truncating(buf, ANY_VALUE_STRING_VALUE, value))
     }
@@ -578,18 +597,6 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
         bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, self.depth, &mut f)
     }
 
-    /// Applies the structured-log policy without changing resource/scope encoding.
-    fn structured(&mut self, f: impl FnOnce(&mut Self) -> EncodeResult) -> TruncateResult {
-        if self.depth > MAX_DEPTH {
-            return Err(EncodeFailure::Dropped);
-        }
-        match f(self) {
-            Ok(()) => Ok(self.truncation),
-            // Each member is atomic, so its failure leaves a valid prefix.
-            Err(EncodeFailure::Dropped) => Ok(Truncation::Some),
-        }
-    }
-
     fn member(
         &mut self,
         f: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
@@ -633,20 +640,14 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
         &mut self,
         f: &mut dyn FnMut(&mut dyn MapWriter) -> EncodeResult,
     ) -> EncodeResult {
-        self.truncation = self.encode_nested(ANY_VALUE_KVLIST_VALUE, |encoder| {
-            encoder.structured(|encoder| f(encoder))
-        })?;
-        Ok(())
+        self.encode_structured_nested(ANY_VALUE_KVLIST_VALUE, |encoder| f(encoder))
     }
 
     fn encode_array(
         &mut self,
         f: &mut dyn FnMut(&mut dyn ArrayWriter) -> EncodeResult,
     ) -> EncodeResult {
-        self.truncation = self.encode_nested(ANY_VALUE_ARRAY_VALUE, |encoder| {
-            encoder.structured(|encoder| f(encoder))
-        })?;
-        Ok(())
+        self.encode_structured_nested(ANY_VALUE_ARRAY_VALUE, |encoder| f(encoder))
     }
 }
 
@@ -2510,50 +2511,128 @@ mod tests {
         );
     }
 
-    fn encode_chain(w: &mut dyn ValueWriter, depth: usize, visited: &mut usize) -> EncodeResult {
+    fn encode_chain(
+        w: &mut dyn ValueWriter,
+        depth: usize,
+        visited: &mut usize,
+        array: bool,
+    ) -> EncodeResult {
         if depth == 0 {
             w.encode_bool(true)
+        } else if array {
+            w.encode_array(&mut |a| {
+                *visited += 1;
+                a.encode_element(&mut |v| encode_chain(v, depth - 1, visited, array))?;
+                a.encode_element(&mut |v| v.encode_bool(true))
+            })
         } else {
             w.encode_map(&mut |m| {
                 *visited += 1;
-                m.encode_entry("child", &mut |v| encode_chain(v, depth - 1, visited))?;
+                m.encode_entry("child", &mut |v| encode_chain(v, depth - 1, visited, array))?;
                 m.encode_entry("tail", &mut |v| v.encode_bool(true))
             })
         }
     }
 
-    /// Scenario: nested maps reach the exact depth boundary with enough byte budget for every level.
-    /// Guarantees: MAX_DEPTH maps and their scalar leaf fit; deeper maps fail, ancestors retain their prefixes and tails, and loss is reported once.
+    /// Scenario: structured bodies and attributes reach the depth boundary with ample byte budgets.
+    /// Guarantees: scalars at MAX_DEPTH fit; deeper maps and arrays become vertical-ellipsis strings without running their callbacks, preserving tails and counting only attribute loss.
     #[test]
     fn structured_depth_limit_is_independent_of_byte_budget() {
-        let field = BUDGET_TEST_METADATA
+        let attribute = BUDGET_TEST_METADATA
             .fields()
             .field("a")
             .expect("known field");
-        for depth in [0, MAX_DEPTH - 1, MAX_DEPTH, MAX_DEPTH + 1] {
-            let mut buf = ProtoBuffer::with_capacity(256);
-            let mut visited = 0;
-            let mut visitor = DirectFieldVisitor::new(&mut buf);
-            visitor.record_toplevel_field(&field, |buf| {
-                ValueEncoder::new(buf, 0)
-                    .encode_structured(|w| encode_chain(w, depth, &mut visited))
-            });
-            let truncated = depth > MAX_DEPTH;
-            assert_eq!(visitor.dropped_count(), u32::from(truncated));
-            assert_eq!(visited, depth.min(MAX_DEPTH));
-            let mut expected = if truncated {
-                AnyValue::new_kvlist(vec![])
-            } else {
-                AnyValue::new_bool(true)
-            };
-            for _ in 0..depth.min(MAX_DEPTH) - usize::from(truncated) {
-                expected = AnyValue::new_kvlist(vec![
-                    KeyValue::new("child", expected),
-                    KeyValue::new("tail", AnyValue::new_bool(true)),
-                ]);
+        let message = MESSAGE_TEST_METADATA
+            .fields()
+            .field("message")
+            .expect("known field");
+        for field in [&attribute, &message] {
+            for array in [false, true] {
+                for depth in [0, MAX_DEPTH - 1, MAX_DEPTH, MAX_DEPTH + 1] {
+                    let mut buf = ProtoBuffer::with_capacity(256);
+                    let mut visited = 0;
+                    let mut visitor = DirectFieldVisitor::new(&mut buf);
+                    visitor.record_toplevel_field(field, |buf| {
+                        ValueEncoder::new(buf, 0)
+                            .encode_structured(|w| encode_chain(w, depth, &mut visited, array))
+                    });
+                    let truncated = depth > MAX_DEPTH;
+                    assert_eq!(
+                        visitor.dropped_count(),
+                        u32::from(truncated && field.name() != "message")
+                    );
+                    assert_eq!(visited, depth.min(MAX_DEPTH));
+                    let mut expected = if truncated {
+                        AnyValue::new_string("[\u{22ee}]")
+                    } else {
+                        AnyValue::new_bool(true)
+                    };
+                    for _ in 0..depth.min(MAX_DEPTH) {
+                        expected = if array {
+                            AnyValue::new_array(vec![expected, AnyValue::new_bool(true)])
+                        } else {
+                            AnyValue::new_kvlist(vec![
+                                KeyValue::new("child", expected),
+                                KeyValue::new("tail", AnyValue::new_bool(true)),
+                            ])
+                        };
+                    }
+                    let record =
+                        LogRecord::decode(buf.as_ref()).expect("valid depth-limited value");
+                    if field.name() == "message" {
+                        assert_eq!(record.body, Some(expected));
+                        assert!(record.attributes.is_empty());
+                    } else {
+                        assert_eq!(record.attributes, vec![KeyValue::new("a", expected)]);
+                        assert!(record.body.is_none());
+                    }
+                }
             }
-            let record = LogRecord::decode(buf.as_ref()).expect("valid depth-limited value");
-            assert_eq!(record.attributes, vec![KeyValue::new("a", expected)]);
+        }
+    }
+
+    /// Scenario: a depth-cutoff body has exactly enough space for its marker or one byte too little.
+    /// Guarantees: maps and arrays emit the complete marker and report truncation, or roll back without invoking their callbacks; later fields remain encodable.
+    #[test]
+    fn structured_depth_marker_is_atomic() {
+        for array in [false, true] {
+            for limit in [8, 9] {
+                let mut buf = StackProtoBuffer::<32>::default();
+                let result = buf.with_max_remaining(limit, |buf| {
+                    buf.try_atomic(|buf| {
+                        bounded::value_encoder(buf, LOG_RECORD_BODY, MAX_DEPTH, &mut |encoder| {
+                            encoder.encode_structured(|w| {
+                                if array {
+                                    w.encode_array(&mut |_| panic!("depth-exhausted array"))
+                                } else {
+                                    w.encode_map(&mut |_| panic!("depth-exhausted map"))
+                                }
+                            })
+                        })
+                    })
+                });
+                if limit == 9 {
+                    assert_eq!(result, Ok(Truncation::Some));
+                } else {
+                    assert_eq!(result, Err(EncodeFailure::Dropped));
+                    assert!(buf.is_empty());
+                }
+                assert!(buf.len() <= limit);
+                let field = BUDGET_TEST_METADATA
+                    .fields()
+                    .field("b")
+                    .expect("known field");
+                DirectFieldVisitor::new(&mut buf).record_bool(&field, true);
+                let record = LogRecord::decode(buf.as_ref()).expect("valid cutoff record");
+                assert_eq!(
+                    record.body,
+                    (limit == 9).then(|| AnyValue::new_string("[\u{22ee}]"))
+                );
+                assert_eq!(
+                    record.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_bool(true))]
+                );
+            }
         }
     }
 
