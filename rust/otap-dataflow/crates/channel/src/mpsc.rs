@@ -765,7 +765,7 @@ mod tests {
 
             // call recv() to try to get values from both waiting senders. simulates the receiver
             // continuously being polled like it would be in a downstream component.
-            let result = timeout(Duration::from_millis(2000), async {
+            let mut result = timeout(Duration::from_millis(2000), async {
                 let mut received = Vec::new();
                 // We expect 2 more values (30 from A, 40 from B).
                 for _ in 0..2 {
@@ -782,6 +782,7 @@ mod tests {
             .unwrap();
 
             // assert we got the results we expected
+            result.sort_unstable();
             assert_eq!(result, vec![30, 40]);
 
             // assert clean exit on the now unblocked sender tasks
