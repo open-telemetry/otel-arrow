@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793145440031,
+  "lastUpdate": 1793146649280,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -73369,6 +73369,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "54870357+MSNev@users.noreply.github.com",
+            "name": "Nev",
+            "username": "MSNev"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2b6bcc0478697d427fa1e75112b52aa4c34a00b5",
+          "message": "chore(azure-data-explorer): Additional Skeleton for Azure Data Explorer exporter (#4464)\n\n# Change Summary\n\nThis is **PR 3 of the unified multi-signal Azure Data Explorer\nexporter**, building on the component foundation merged in #4311 and the\nbounded signal transformations added in #4382.\n\n`urn:microsoft:exporter:azure_data_explorer`\n\nThis phase adds the standalone, signal-agnostic HTTP transport client\nand telemetry contracts needed for ADX managed streaming ingestion.\n\nThe client implements bounded request attempts, retry handling,\noperation deadlines, response classification, and transport metrics for\nlogs, metrics, and traces. It accepts already transformed and\ngzip-compressed payloads produced by later runtime integration.\n\nThe exporter remains explicitly non-operational after this phase. The\nclient and metrics are not yet wired into the exporter loop, and\npipeline messages are not sent, acknowledged, or negatively\nacknowledged.\n\n## Signals Supported\n\nThe transport and telemetry contracts support batches for:\n\n- Logs\n- Metrics\n- Traces\n\nSignal transformation continues to use the bounded implementation\nintroduced in #4382.\n\n## Includes\n\n- A standalone HTTP client for the ADX managed streaming ingestion\nendpoint\n- Signal-agnostic client reuse across log, metric, and trace destination\ntables\n- Percent-encoding of database, table, and mapping names\n- JSON streaming-ingestion endpoint construction using\n`streamFormat=JSON`\n- Authorization, content type, gzip content encoding, and ADX\nclient-request headers\n- Stable operation IDs across retries with per-attempt request\nidentifiers\n- A total operation deadline covering:\n  - HTTP submission\n  - Response handling\n  - Retry backoff\n  - All physical attempts\n- Configurable retries after the initial submission\n- Exponential retry backoff with jitter:\n  - 3-second initial delay\n  - 30-second maximum delay\n- `Retry-After` support for both:\n  - Delta-seconds values\n  - HTTP-date values\n- Retry handling for:\n  - Network failures\n  - HTTP 408\n  - HTTP 429\n  - HTTP 5xx\n  - Retryable response-body failures\n- Error classification for:\n  - Retryable failures\n  - Backend refusals\n  - Permanent refusals\n  - Unauthorized responses\n- Bounded ADX error-response retention\n- UTF-8-safe response diagnostics\n- Optional response-body debug logging with:\n  - 512-byte chunks\n  - A maximum of 128 events per response\n  - No response content in warning-level events\n- Shared exporter-attempt telemetry for:\n  - Attempt count\n  - Duration\n  - Item count\n  - Payload size\n  - Signal\n  - Outcome\n- ADX-specific metrics for:\n  - Logical batch outcomes by signal\n  - HTTP attempts by bounded response category\n- Exactly one HTTP response category per physical attempt, including\nresponse-body timeouts\n- Pipeline-local `Rc<RefCell<_>>` metric ownership without shared\ncross-core state\n- Focused tests covering endpoint construction, headers, retries,\ndeadlines, response bounds, metric outcomes, and diagnostic-work limits\n\n## Resource, Runtime, and Correctness Requirements\n\n- The complete operation, including retries and backoff, must remain\nbounded by the configured timeout.\n- Retry delays must never extend beyond the operation deadline.\n- Error-response retention must remain bounded independently of\nserver-provided content length.\n- Optional diagnostic logging must have bounded bytes, allocations, and\nevent count.\n- One physical HTTP attempt must produce exactly one bounded\nHTTP-response metric category.\n- Retried attempts must be measured independently while retaining the\nlogical operation identity.\n- Sensitive response content must never appear in warning-level\ndiagnostics.\n- Response content may be emitted only when `log_response_body` is\nexplicitly enabled.\n- All client and metric state must remain local to one pipeline\ninstance.\n- The implementation must not introduce shared cross-core\nsynchronization or unbounded queues.\n- Rust source must remain ASCII-only.\n- Every test must include the required `Scenario` and `Guarantees`\ndocumentation.\n\n## Explicit Exclusions from This PR\n\nThese capabilities remain deferred so Phase 3 stays focused on the\nstandalone transport and telemetry contracts:\n\n- Wiring the client into the exporter runtime\n- Constructing or managing the runtime HTTP client pool\n- Enforcing `max_in_flight` through runtime scheduling\n- Azure Identity token acquisition\n- Token refresh and replacement-token handling\n- Retaining HTTP 401 requests while awaiting a replacement token\n- Gzip compression of transformed payloads\n- Cross-message batching and request coalescing\n- Runtime backpressure and retained-message ownership\n- Pipeline ACK/NACK behavior\n- Recording logical batch metrics from the exporter loop\n- Periodic runtime metric reporting\n- Shutdown draining and pending-request cancellation\n- ADX queued ingestion\n- Provisioning ADX databases, tables, or mappings\n- Activating the exporter for production use\n\n## Related Issue\n\nThis is Phase 3 of #4159.\n\nIt builds on:\n\n- #4311 — component skeleton, configuration, and design\n- #4382 — bounded logs, metrics, and traces transformation\n\nLater phases will connect transformation, compression, authentication,\ntransport, batching, telemetry reporting, and pipeline completion\nhandling into the operational exporter runtime.\n\n## Validation\n\nThe following validation completed successfully:\n\n- `cargo fmt --all` - passed\n- `cargo fmt --all -- --check` - passed\n- `cargo build -p otel-arrow-dfe --bin df_engine --features\nazure-data-explorer` - passed\n- `cargo test -p otel-arrow-dfe-contrib-nodes --features\nazure-data-explorer azure_data_explorer_exporter` - passed\n- `cargo xtask check` - passed, including workspace structure, component\ninventory, formatting, Clippy, unit tests, integration tests, and\ndoctests\n- `npx markdownlint-cli2\nrust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/README.md`\n- passed\n- `git diff --check` - passed\n\n## User-Facing Changes\n\nNone. The exporter remains non-operational and continues to return its\nexplicit not-implemented error.\n\nNo changelog entry is required because this is an internal\nimplementation phase and the PR title includes `chore`.\n\n## Additional Context\n\nPhase 1 established the exporter component, configuration model,\nschemas, and complete intended design.\n\nPhase 2 added bounded transformation of logs, metrics, and traces into\nADX-compatible JSON rows.\n\nPhase 3 adds the standalone managed-streaming transport client, retry\nand timeout behavior, bounded response diagnostics, error\nclassification, and exporter telemetry contracts while deliberately\nleaving runtime integration disabled.\n\nRelevant design documentation:\n\n[Azure Data Explorer exporter\ndesign](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/design.md)",
+          "timestamp": "2026-10-27T22:51:41Z",
+          "tree_id": "003ee43f78ee2e397c81e97b4021f106602f6543",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2b6bcc0478697d427fa1e75112b52aa4c34a00b5"
+        },
+        "date": 1793146632659,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.46,
             "unit": "MB"
           },
           {
