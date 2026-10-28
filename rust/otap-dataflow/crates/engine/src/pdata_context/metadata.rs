@@ -1,25 +1,25 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Message context carried by pdata: request-scoped [`Metadata`], verified
+//! Message metadata carried by pdata: request-scoped [`Metadata`], verified
 //! identity storage, the value source used to materialize composites, and
 //! peer-address merging.
 //!
-//! Delivery state (Ack/Nack frames, flow metrics, signal) stays in the parent
-//! module.
+//! Delivery state (Ack/Nack frames, flow metrics, signal) belongs to the pdata
+//! type that carries this metadata.
 
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
-use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
-use otel_arrow_dfe_engine::pdata_context::{
+use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
+use crate::pdata_context::{
     ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
     ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
     MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
 };
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
 
 /// Request-scoped message metadata.
 ///
@@ -74,7 +74,9 @@ impl Metadata {
         (!self.authorized_identity.is_empty()).then_some(&self.authorized_identity)
     }
 
-    pub(super) fn capture_authorized_identity(
+    /// Replaces the authorized identity entries with the claims `policy`
+    /// selects from a verified identity.
+    pub fn capture_authorized_identity(
         &mut self,
         policy: &AuthorizedIdentityPolicy,
         identity: &AuthorizedIdentity,
@@ -537,6 +539,63 @@ impl PeerAddrMerger {
 mod tests {
     use super::*;
 
+    /// Scenario: an identity contains one selected multi-valued claim while
+    /// another configured claim is absent.
+    /// Guarantees: claim cardinality is preserved and missing claims do not
+    /// create empty context entries.
+    #[test]
+    fn authorized_identity_capture_preserves_many_and_omits_missing() {
+        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "groups", "store_as": "access_groups"},
+            {"claim": "missing", "store_as": "missing_entry"}
+        ]))
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_claim_values("groups", ["reader", "writer"]);
+        let mut metadata = Metadata::default();
+
+        metadata.capture_authorized_identity(&policy, &identity);
+
+        let entries = metadata
+            .authorized_identity_entries()
+            .expect("selected claim captured");
+        assert_eq!(entries.len(), 1);
+        let groups = entries
+            .get("access_groups")
+            .expect("groups destination exists")
+            .value();
+        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader", "writer"]);
+        assert!(groups.is_many());
+        assert!(entries.get("missing_entry").is_none());
+    }
+
+    /// Scenario: one claim is encoded as `One` and another as one-element `Many`.
+    /// Guarantees: packed storage preserves cardinality instead of inferring it from count.
+    #[test]
+    fn authorized_identity_capture_preserves_single_value_cardinality() {
+        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "subject"},
+            {"claim": "groups", "store_as": "groups"}
+        ]))
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new()
+            .with_subject("reader")
+            .with_claim_values("groups", ["reader"]);
+        let mut metadata = Metadata::default();
+
+        metadata.capture_authorized_identity(&policy, &identity);
+
+        let entries = metadata
+            .authorized_identity_entries()
+            .expect("selected claims captured");
+        let subject = entries.get("subject").expect("subject entry").value();
+        let groups = entries.get("groups").expect("groups entry").value();
+        assert_eq!(subject.as_str(), Some("reader"));
+        assert!(!subject.is_many());
+        assert_eq!(groups.as_str(), None);
+        assert!(groups.is_many());
+        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader"]);
+    }
+
     /// Scenario: equal claims occupy different offsets in identities with different unrelated data.
     /// Guarantees: claim and entry equality use cardinality and values, not packed storage identity.
     #[test]
@@ -657,5 +716,47 @@ mod tests {
 
         let value = entries.get("groups").expect("groups entry").value();
         let _ = value.values().next();
+    }
+
+    #[test]
+    fn peer_addr_merger_matches_merge_peer_addr() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty.
+        let m = PeerAddrMerger::new();
+        assert_eq!(m.finish(), None);
+
+        // Single Some.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // All identical.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(a));
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // Any None poisons subsequent pushes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(None);
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
+
+        // Distinct Somes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        assert_eq!(m.finish(), None);
+
+        // After conflict, further identical pushes do not "heal" the result.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
     }
 }

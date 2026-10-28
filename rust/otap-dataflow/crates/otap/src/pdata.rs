@@ -29,8 +29,8 @@ use otel_arrow_dfe_engine::control::{
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
 use otel_arrow_dfe_engine::pdata_context::{
-    ContextMaterializationPlan, ContextProjection, MaterializedContext,
-    MaterializedContextProjection,
+    AuthorizedIdentityEntries, ContextMaterializationPlan, ContextProjection, MaterializedContext,
+    MaterializedContextProjection, Metadata, PeerAddrMerger,
 };
 use otel_arrow_dfe_engine::processor::{
     FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
@@ -47,12 +47,7 @@ use otel_arrow_dfe_pdata_codec::{
     OtapPayload, PdataEncoding, PdataPayloadDecodeError, PdataView,
 };
 
-mod context;
 mod delivery;
-pub use context::{
-    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntry, Metadata,
-    PeerAddrMerger,
-};
 pub use delivery::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataDelivery};
 
 /// Context for OTAP requests.
@@ -3743,63 +3738,6 @@ mod test {
         assert_eq!(context.signal(), Some(SignalType::Logs));
     }
 
-    /// Scenario: an identity contains one selected multi-valued claim while
-    /// another configured claim is absent.
-    /// Guarantees: claim cardinality is preserved and missing claims do not
-    /// create empty context entries.
-    #[test]
-    fn authorized_identity_capture_preserves_many_and_omits_missing() {
-        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
-            {"claim": "groups", "store_as": "access_groups"},
-            {"claim": "missing", "store_as": "missing_entry"}
-        ]))
-        .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new().with_claim_values("groups", ["reader", "writer"]);
-        let mut pdata = create_test_pdata();
-
-        pdata.capture_authorized_identity(&policy, &identity);
-
-        let entries = pdata
-            .authorized_identity_entries()
-            .expect("selected claim captured");
-        assert_eq!(entries.len(), 1);
-        let groups = entries
-            .get("access_groups")
-            .expect("groups destination exists")
-            .value();
-        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader", "writer"]);
-        assert!(groups.is_many());
-        assert!(entries.get("missing_entry").is_none());
-    }
-
-    /// Scenario: one claim is encoded as `One` and another as one-element `Many`.
-    /// Guarantees: packed storage preserves cardinality instead of inferring it from count.
-    #[test]
-    fn authorized_identity_capture_preserves_single_value_cardinality() {
-        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
-            {"claim": "sub", "store_as": "subject"},
-            {"claim": "groups", "store_as": "groups"}
-        ]))
-        .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new()
-            .with_subject("reader")
-            .with_claim_values("groups", ["reader"]);
-        let mut pdata = create_test_pdata();
-
-        pdata.capture_authorized_identity(&policy, &identity);
-
-        let entries = pdata
-            .authorized_identity_entries()
-            .expect("selected claims captured");
-        let subject = entries.get("subject").expect("subject entry").value();
-        let groups = entries.get("groups").expect("groups entry").value();
-        assert_eq!(subject.as_str(), Some("reader"));
-        assert!(!subject.is_many());
-        assert_eq!(groups.as_str(), None);
-        assert!(groups.is_many());
-        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader"]);
-    }
-
     /// Scenario: pdata carries authorized identity entries captured from
     /// single- and multi-valued claims.
     /// Guarantees: debug output exposes destination names and value counts but
@@ -4389,48 +4327,6 @@ mod test {
 
         // Distinct Somes -> None (refuse to misattribute).
         assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
-    }
-
-    #[test]
-    fn peer_addr_merger_matches_merge_peer_addr() {
-        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
-        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
-
-        // Empty.
-        let m = PeerAddrMerger::new();
-        assert_eq!(m.finish(), None);
-
-        // Single Some.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        assert_eq!(m.finish(), Some(a));
-
-        // All identical.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(a));
-        m.push(Some(a));
-        assert_eq!(m.finish(), Some(a));
-
-        // Any None poisons subsequent pushes.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(None);
-        m.push(Some(a));
-        assert_eq!(m.finish(), None);
-
-        // Distinct Somes.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(b));
-        assert_eq!(m.finish(), None);
-
-        // After conflict, further identical pushes do not "heal" the result.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(b));
-        m.push(Some(a));
-        assert_eq!(m.finish(), None);
     }
 
     /// Scenario: OTLP PData is cloned before and after its item count is measured.
