@@ -1249,7 +1249,7 @@ fn interrupted_evidence_reads_retry_without_reset() {
     }
 }
 
-/// Scenario: Either prefix or frontier read returns EIO, WouldBlock, or an unending stream of EINTR.
+/// Scenario: Three successive preparations fail on prefix or frontier reads with EIO, WouldBlock, or repeated EINTR.
 /// Guarantees: Under every mismatch policy, errors retain their kind and the complete record, release the lease, and permit later recovery.
 #[test]
 fn environmental_read_errors_never_supersede() {
@@ -1280,13 +1280,15 @@ fn environmental_read_errors_never_supersede() {
             drop(seed);
             let record = owner.state().unwrap().get(&id).unwrap().clone();
             let sequence = owner.state().unwrap().last_sequence();
-            let result = prepare_fault(&mut owner, &path, offset, 100, Some(kind), usize::MAX);
-            assert!(
-                matches!(result, Err(IdentityError::Source(ref error)) if error.os_error().is_some_and(|e| if kind == std::io::ErrorKind::Other { e.raw_os_error() == Some(libc::EIO) } else { e.kind() == kind }))
-            );
-            assert_eq!(owner.state().unwrap().get(&id), Some(&record));
-            assert_eq!(owner.state().unwrap().last_sequence(), sequence);
-            assert!(f.registry.is_empty().unwrap());
+            for _ in 0..3 {
+                let result = prepare_fault(&mut owner, &path, offset, 100, Some(kind), usize::MAX);
+                assert!(
+                    matches!(result, Err(IdentityError::Source(ref error)) if error.os_error().is_some_and(|e| if kind == std::io::ErrorKind::Other { e.raw_os_error() == Some(libc::EIO) } else { e.kind() == kind }))
+                );
+                assert_eq!(owner.state().unwrap().get(&id), Some(&record));
+                assert_eq!(owner.state().unwrap().last_sequence(), sequence);
+                assert!(f.registry.is_empty().unwrap());
+            }
             assert_eq!(commit(&mut owner, &path, Context::Unrelated).file_id, id);
         }
     }

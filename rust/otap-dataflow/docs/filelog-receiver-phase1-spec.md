@@ -1125,10 +1125,14 @@ can be read, is exact-locator identity-evidence mismatch and follows
 read is not itself a mismatch: continue the bounded read until the window is
 complete, EOF is reached, cancellation occurs, or a read error is returned.
 
-An environmental read error, such as `EIO` or `EAGAIN`/`WouldBlock`, is not evidence
-of replacement. Preserve the saved record, including its file ID, epoch, offset,
-prefix and frontier guard, and return the source error for the environmental
-retry and health handling in [Failure containment](#failure-containment). Do not
+A source I/O error while reading either the fingerprint prefix or frontier
+window, such as `EIO` or `EAGAIN`/`WouldBlock`, is not evidence of replacement.
+Preserve the saved record, including its file ID, epoch, offset, prefix and
+frontier guard, and return the original source error. Retry or termination
+follows the operation-specific classification in
+[Failure containment](#failure-containment); an error does not automatically mean
+a temporary failure. Environmental retries use bounded backoff and rate-limited
+health reporting, including when the file remains unreadable. Do not
 reset, supersede or quarantine the record solely because of that error,
 regardless of `identity.on_recovery_mismatch`. Repeated errors do not change this
 classification. Until a later attempt validates continuity, do not resume reads

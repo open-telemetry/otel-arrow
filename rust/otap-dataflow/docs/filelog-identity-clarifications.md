@@ -1,30 +1,18 @@
-# Proposed changes and clarifications for file identity
+# File identity design rationale
 
-**Status: specification amendment included in the Task 12 PR for review.**
-
-This PR updates the [receiver specification][spec] and [conformance matrix][matrix]
-to distinguish failed continuity checks from environmental read errors. The
-change needs explicit review; inclusion in this branch is not evidence of
-maintainer approval. It changes recovery policy wording, not the checkpoint
-wire format. Discovery design PR #4443 remains a separate PR; carry this rule
-forward if those documents are combined.
-
-Section 1 explains the specification amendment. Section 2 records Task 12's
-association interpretation and its tradeoffs; this amendment does not change
-association policy. Section 3 lists component and integration test obligations.
+The [receiver specification][spec] and [conformance matrix][matrix] define the
+recovery contract. This document explains its source-read error handling,
+Task 12's association interpretation and the relevant test obligations. These
+rules do not change the checkpoint wire format.
 
 ## 1. A read error does not prove that a file changed
 
-Before resuming a file, Filelog checks a small byte window near the saved offset.
-This is the **frontier window**: it helps check whether the saved progress still
-belongs to the file being opened.
+Before resuming a file, Filelog checks its fingerprint prefix and a small byte
+window near the saved offset. This **frontier window** helps check whether the
+saved progress still belongs to the file being opened.
 
-The previous specification said that failure to read this window follows the
-identity-mismatch policy. Read literally, that included an I/O error, such as a
-disk error, conflicting with the general rule that environmental failures
-preserve progress. This PR removes that conflict.
-
-The amended specification and Task 12 make this distinction:
+An inability to read evidence is different from evidence that the file changed.
+The specification makes this distinction:
 
 | What happened | Behavior |
 | --- | --- |
@@ -43,16 +31,18 @@ Do not replace the identity or quarantine it solely because of the error.
 Repeated errors do not turn into proof of replacement.
 
 The cost is availability: a persistently unreadable file retains its tracked
-slot and cannot resume until continuity validates. The worker must use bounded
-environmental backoff and health reporting rather than silently spin or convert
-repeated failures into mismatch. Failed checkpoint syncs remain terminal.
-
-**Review this as a deliberate recovery-policy correction**, not an assertion
-that the old wording already permitted this behavior.
+slot and cannot resume until continuity validates. Errors retain their original
+classification: retry or termination depends on the operation and failure, not
+on an assumption that every error is temporary. Environmental retries use
+bounded backoff and rate-limited health reporting, including for persistent
+unreadability. Repeated failure does not become mismatch evidence. Failed
+checkpoint syncs remain terminal.
 
 Tests cover EIO, WouldBlock, successful retries after Interrupted, retry-budget
 exhaustion, cancellation between retries, partial reads that complete, and early
-EOF. They inject failures through a private helper around a real `SourceFile`;
+EOF. Repeated source-read failures preserve state under every mismatch policy
+until a later attempt validates continuity. Tests inject failures through a
+private helper around a real `SourceFile`;
 there is no new public source-backend framework.
 
 ## 2. How a file at a different locator can be associated
@@ -68,7 +58,7 @@ The baseline conformance cases include both short and full matching fingerprints
 They favor rereading copied bytes over accidentally skipping unread bytes. Task
 12 keeps that preference rather than using the earlier path-only proposal.
 
-The proposed comparison rule is:
+Task 12's comparison rule is:
 
 - Consider retained Active records only.
 - A full native path matches when its kind, complete length and digest match.

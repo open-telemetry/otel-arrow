@@ -188,10 +188,11 @@ to the worker for bounded backoff and health reporting. Prefix and frontier read
 share a cancellation-aware helper that retries `Interrupted` at most eight times
 per bounded read.
 
-This PR updates the receiver specification and conformance matrix for this
-frontier-error rule. The [design rationale][clarifications] explains the change
-from the earlier wording and its availability tradeoff. Reviewers must approve
-the amendment before it supports a Phase 1 conformance claim.
+The receiver specification and conformance matrix require this distinction for
+prefix and frontier reads. The [design rationale][clarifications] explains the
+availability tradeoff. A source error is not necessarily temporary; the worker
+applies operation-specific retry or termination handling and rate-limited health
+reporting for persistent environmental failures.
 
 Age filtering uses one supplied wall-clock time and the open handle's mtime.
 Files exactly at the age threshold remain eligible. Future mtimes count as age
