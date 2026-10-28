@@ -417,11 +417,6 @@ impl Context {
         &self.metadata
     }
 
-    /// Replaces the request-scoped message metadata.
-    pub fn set_metadata(&mut self, metadata: Metadata) {
-        self.metadata = metadata;
-    }
-
     /// Returns this context with the given message metadata.
     #[must_use]
     pub fn with_metadata(mut self, metadata: Metadata) -> Self {
@@ -961,15 +956,10 @@ impl OtapPdata {
         self.context.metadata()
     }
 
-    /// Replaces the request-scoped message metadata.
-    pub fn set_metadata(&mut self, metadata: Metadata) {
-        self.context.set_metadata(metadata);
-    }
-
     /// Returns this pdata with the given message metadata.
     #[must_use]
     pub fn with_metadata(mut self, metadata: Metadata) -> Self {
-        self.context.set_metadata(metadata);
+        self.context = self.context.with_metadata(metadata);
         self
     }
 
