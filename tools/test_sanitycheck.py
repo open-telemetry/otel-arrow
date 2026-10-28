@@ -50,6 +50,42 @@ CASES = [
 ]
 
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# (name, cwd relative to the repo root, path relative to that cwd, expected)
+VENDORED_CASES = [
+    ('vendored file from repo root', '.',
+     'rust/otap-dataflow/vendor/semconv/model/manifest.yaml', True),
+    ('vendored file from rust/otap-dataflow', 'rust/otap-dataflow',
+     'vendor/semconv/model/manifest.yaml', True),
+    ('vendored file from tools', 'tools',
+     '../rust/otap-dataflow/vendor/semconv/model/manifest.yaml', True),
+    ('non-vendored file from repo root', '.', 'rust/otap-dataflow/Cargo.toml', False),
+    ('non-vendored file from rust/otap-dataflow', 'rust/otap-dataflow',
+     'Cargo.toml', False),
+    ('sibling with a vendor prefix is not vendored', '.',
+     'rust/otap-dataflow/vendored.md', False),
+]
+
+
+def check_vendored_cases():
+    """is_vendored() must not depend on the working directory."""
+    failures = 0
+    original_cwd = os.getcwd()
+    try:
+        for name, cwd, path, expected in VENDORED_CASES:
+            os.chdir(os.path.join(REPO_ROOT, cwd))
+            got = sanitycheck.is_vendored(path)
+            ok = got == expected
+            print('{} {}: expected {}, got {}'.format(
+                'PASS' if ok else 'FAIL', name, expected, got))
+            if not ok:
+                failures += 1
+    finally:
+        os.chdir(original_cwd)
+    return failures
+
+
 def main():
     failures = 0
     for name, content, expected in CASES:
@@ -59,10 +95,12 @@ def main():
             'PASS' if ok else 'FAIL', name, expected, got))
         if not ok:
             failures += 1
+    failures += check_vendored_cases()
+    total = len(CASES) + len(VENDORED_CASES)
     if failures:
         print('{} test(s) failed'.format(failures))
         return 1
-    print('all {} tests passed'.format(len(CASES)))
+    print('all {} tests passed'.format(total))
     return 0
 
 

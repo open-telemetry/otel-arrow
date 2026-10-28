@@ -9,24 +9,36 @@ CR = b'\r'
 CRLF = b'\r\n'
 LF = b'\n'
 
+# This script lives in <repo>/tools. Paths are compared as absolute paths so
+# the checks behave the same no matter which directory the script is run from.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def abs_path(path):
+    """Absolute, normalized form of `path` (resolved against the cwd)."""
+    return os.path.normpath(os.path.abspath(path))
+
+def repo_prefix(path):
+    """Absolute directory prefix for a repo-root-relative directory."""
+    return os.path.join(REPO_ROOT, os.path.normpath(path)) + os.sep
+
+# Directories which are excluded from the sanity check
+EXCLUSIONS = (
+    # Vendored semantic conventions
+    repo_prefix('rust/otap-dataflow/vendor/semconv'),
+)
+
 # Only check git-tracked files so local build artifacts, venvs, perf results,
-# etc. are skipped automatically.
+# etc. are skipped automatically. `git ls-files` prints paths relative to its
+# cwd, so run it from the repo root and store absolute paths.
 _tracked_files = set(
-    os.path.normpath(f)
+    os.path.join(REPO_ROOT, os.path.normpath(f))
     for f in subprocess.run(
-        ['git', 'ls-files'], capture_output=True, text=True, check=True
+        ['git', 'ls-files'], cwd=REPO_ROOT, capture_output=True, text=True, check=True
     ).stdout.splitlines()
 )
 
-# Third-party content copied verbatim from upstream (see
-# rust/otap-dataflow/vendor/semconv/README.md). It follows upstream's style, so
-# none of the checks below apply to it.
-VENDORED_PREFIXES = (
-    os.path.normpath('rust/otap-dataflow/vendor') + os.sep,
-)
-
-def is_vendored(filename):
-    return os.path.normpath(filename).startswith(VENDORED_PREFIXES)
+def is_excluded(filename):
+    return abs_path(filename).startswith(EXCLUSIONS)
 
 def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1):
     error_count = 0
@@ -34,9 +46,9 @@ def sanitycheck(pattern, allow_utf8 = False, allow_eol = (CRLF, LF), indent = 1)
     for filename in glob.glob(pattern, recursive=True):
         if not os.path.isfile(filename):
             continue
-        if os.path.normpath(filename) not in _tracked_files:
+        if abs_path(filename) not in _tracked_files:
             continue
-        if is_vendored(filename):
+        if is_excluded(filename):
             continue
         with open(filename, 'rb') as file:
             content = file.read()
@@ -270,9 +282,9 @@ def nonascii_check(pattern):
     for filename in glob.glob(pattern, recursive=True):
         if not os.path.isfile(filename):
             continue
-        if os.path.normpath(filename) not in _tracked_files:
+        if abs_path(filename) not in _tracked_files:
             continue
-        if is_vendored(filename):
+        if is_excluded(filename):
             continue
         with open(filename, 'rb') as file:
             content = file.read()
