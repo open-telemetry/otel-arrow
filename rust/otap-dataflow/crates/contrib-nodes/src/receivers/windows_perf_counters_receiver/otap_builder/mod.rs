@@ -325,12 +325,4 @@ pub(super) fn project_sample(
 }
 
 #[cfg(test)]
-pub(super) fn into_otap(
-    counters: &[CounterConfig],
-    sample: Sample,
-) -> Result<Option<OtapArrowRecords>, ArrowError> {
-    project_sample(counters, &sample).map_err(|error| error.0)
-}
-
-#[cfg(test)]
 mod tests;

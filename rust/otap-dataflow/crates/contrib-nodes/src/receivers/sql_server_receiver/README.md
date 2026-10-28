@@ -1,25 +1,74 @@
-# SQL Server Preparation and Driver Adapter
+# SQL Server Receiver
 
 <!-- markdownlint-configure-file
 { "MD013": { "tables": false, "code_blocks": false } }
 -->
 
-This is the internal preparation and driver-integration layer for a SQL Server
-query-to-logs receiver, not a runnable receiver. Enable `sql-server` explicitly
-to expose validated configuration, T-SQL plans, and `SqlServerAdapter<C>` for
-the shared scraper. The feature is excluded from all aggregate features, and
-the top-level feature forwards only to contrib nodes.
+This is a **scheduled query-to-logs receiver**, not CDC or
+database-monitoring metrics. Enable `sql-server` explicitly to register
+`urn:otel:receiver:sql_server`. The feature is excluded from all aggregates;
+the root feature also enables `flat-file-user-pass-auth`.
 
-**No `urn:otel:receiver:sql_server` factory is registered.** This layer has no
-production TCP/TLS connector, node capability wiring, component inventory entry,
-or live fixture. The adapter uses Tiberius through an injected
-`SqlServerConnector` and obtains credentials from an injected `BasicAuthProvider`.
-It does not enable `flat-file-user-pass-auth`. Do not use it in runtime YAML yet.
+`TcpConnector` defaults to verified native TLS (Windows Schannel/Linux OpenSSL),
+platform certificate roots, and an optional additional CA file. The factory
+requires one pipeline core and `basic_auth_provider`, acquires shared checkpoint
+ownership, and initializes admission from process memory-pressure state.
+The shared scraper provides scheduling, backpressure, feedback, and persistence;
+it contains no vendor driver and Oracle behavior is unchanged.
 
-Part 1 [#4359][part-1] supplied preparation under [RFC #3918][rfc].
-This adapter integration is Part 2 [#4360][part-2]; the production connector,
-runtime activation, live fixtures, and deployment documentation remain
-Part 3 [#4361][part-3].
+The receiver follows the shared database polling architecture described in
+[RFC #3918][rfc]. See the operating limits and deployment qualification
+requirements below.
+
+## Getting Started
+
+See the [PowerShell demo](DEMO.md) for a short fixture setup, run, verification,
+and cleanup walkthrough.
+The complete pipeline is [`configs/sql-server-console.yaml`][example].
+Build from `rust/otap-dataflow` with:
+
+```powershell
+cargo build --locked --no-default-features `
+    --features sql-server,core-nodes,crypto-ring --bin df_engine
+```
+
+Use a dedicated SQL login with CONNECT access to the configured database and
+SELECT access only to the intended table/view. Metadata discovery requires
+permission to execute the same query; no blanket administrator grant is needed.
+Integrated/Entra authentication is not supported. Credentials come from the
+`basic_auth_provider` capability, never a connection string or inline password.
+
+Set `SQL_SERVER_HOST`, `SQL_SERVER_PORT`, `SQL_SERVER_DATABASE`,
+`SQL_SERVER_USERNAME`, `SQL_SERVER_PASSWORD_FILE`, and `SQL_SERVER_CA_FILE`
+for the example. Omit `ca_file` from the YAML when platform trust is sufficient.
+The password and CA file paths default to `/run/sql-server-secrets/password`
+and `/run/sql-server-secrets/ca.pem` so offline configuration validation needs
+no fixture environment. These are paths, not bundled secrets or trust bypasses:
+provide the files or override the paths before starting the receiver.
+Set `SQL_SERVER_STATE_DIR` to persistent local checkpoint storage (default
+`./state/sql_server`). On Windows use this receiver setting directly:
+optional managed `engine.state_dir` provisioning is Linux-only.
+Run the built engine with `--config configs/sql-server-console.yaml` and an
+appropriate loopback admin bind, such as `--http-admin-bind 127.0.0.1:0`.
+
+The console demonstrates collection and feedback, **not durable delivery**.
+Conditional at-least-once delivery requires a feedback-preserving path to a
+durable destination, unique stable commit-visible cursors, unchanged selected
+values, and source retention covering the replay window. Crash recovery may
+replay accepted rows. There is no exactly-once or deduplication guarantee,
+lookback, or automatic distributed partitioning.
+
+Use **one active poller per logical source range** and stop-before-start
+replacement. Checkpoint ownership does not detect equivalent queries under
+different identities or state directories. Do not bypass locks. Snapshots
+are periodic observations, not guaranteed replay of transient rows.
+
+Receiver operation needs no separately installed ODBC/JDBC driver, JVM, SQL
+tools, or native database client. Docker, Python, and the OpenSSL command-line
+tool are fixture-only. Linux receiver binaries also need OpenSSL runtime
+libraries and an up-to-date platform root store.
+Distributors should provide feature-enabled binaries; users need no Rust
+toolchain to run an existing binary.
 
 ## Preparation API
 
@@ -62,15 +111,14 @@ configuration and checkpoint representations are unchanged.
 
 ### SQL Server TLS Settings
 
-These `connection.tls` settings define the transport contract passed to the
-injected connector. **The production TLS connector is not included here.**
+These `connection.tls` settings are enforced by the production connector.
 They are SQL Server-specific; shared database/TLS configuration is unchanged.
 
-| Field | Default | Prepared meaning |
+| Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Require TLS with no silent non-TLS fallback. |
 | `trust_server_certificate` | `false` | When true, bypass both certificate-chain and hostname validation; controlled testing only. |
-| `ca_file` | Omitted | Optional PEM CA path; validated syntactically, never opened during preparation. |
+| `ca_file` | Omitted | Optional additional PEM CA bundle, at most 4 MiB; never opened during preparation. |
 | `server_name_override` | Omitted | Optional DNS name or unbracketed IP for TLS identity/SNI, instead of `connection.host`; not a new connection address. |
 
 Omitting `tls` or supplying an empty object preserves TLS and certificate/name
@@ -78,6 +126,8 @@ verification. Explicit null or nonboolean flags are rejected. Optional strings
 must not be null; CA paths must be nonempty, and identity overrides follow the
 same DNS/IP rules as `host`, rejecting whitespace, wildcards, URLs, ports,
 userinfo, bracketed IPs, and control characters. DNS names normalize to lowercase.
+SQL Server native TLS does not require a process-installed Rustls provider.
+Unrelated engine components still honor the selected `crypto-*` features.
 
 `enabled: false` requests a non-TLS connection; SQL Server policy may refuse it
 or require encryption. The Tiberius mapping is `NotSupported`, not `Off`
@@ -92,6 +142,10 @@ native-TLS bypass disables SNI as well as **both certificate-chain and hostname
 validation**. Use an override only with verified TLS; bypass alone remains an
 explicit controlled-testing option. Configurations that previously combined
 bypass and an override must remove the override or restore verification.
+
+The factory warns when either unsafe test mode is selected. These modes may
+expose credentials/rows or permit server impersonation; use only non-sensitive
+test data in an isolated environment. Defaults never enable them implicitly.
 
 Connection accessors `tls_enabled()`, `trust_server_certificate()`, and
 `server_name_override()` expose this contract. The override getter returns
@@ -194,7 +248,8 @@ expressions such as the examples above, missing objects, denied permissions,
 metadata-reported errors, and nullable cursors at startup and after reconnect.
 Shared-controller tests assert no emitted page, unchanged checkpoints, and no
 extra fetch or reconnect after permanent rejection. These protocol fixtures
-exercise the real driver; real-server qualification remains in Part 3.
+exercise the real driver; the explicitly requested live suite below separately
+exercises the pinned SQL Server fixture.
 
 Database acceptance does not replace preparation's polling and checkpoint
 rules, or prove the source ordering, uniqueness, and immutability requirements
@@ -219,8 +274,9 @@ Its futures, session, metadata plan, and cancellation state stay on the pipeline
 executor. The transport is `Send` only because Tiberius requires it; this does
 not introduce a session pool or multithreaded polling runtime.
 
-An embedding harness supplies the connector and local `BasicAuthProvider`,
-then constructs the shared `DatabaseReceiver`. The shared scraper owns
+The factory supplies `TcpConnector` and the local `BasicAuthProvider`,
+then constructs the shared `DatabaseReceiver`. Embedding harnesses may still
+inject a connector for deterministic tests. The shared scraper owns
 scheduling, catch-up, memory-pressure admission, OTLP encoding, one pending
 page, ACK/NACK replay, retry backoff, checkpoint commits, ownership, and
 telemetry. It contains no Tiberius dependency. SQL Server adds only its
@@ -246,6 +302,17 @@ before submission or after confirmed completion do not cancel an idle session.
 A connector must cancel on future drop and confirm any owned connection work
 has stopped in `shutdown`; the default no-op shutdown is only appropriate for
 connectors with no outstanding off-core work.
+
+Connection establishment uses at most one owned worker thread per receiver,
+with no queued jobs or Tokio blocking-pool job. It owns synchronous DNS and CA
+loading/native TLS setup, using the pipeline's existing Tokio reactor for
+socket I/O. It resolves names on that worker rather than abandoning a Tokio
+blocking-pool DNS task when the connect future is dropped.
+After handoff, query I/O remains local. Dropping the connect future requests
+cancellation; shutdown confirms completion before releasing ownership.
+Synchronous OS/file work cannot be forcibly interrupted. If it does not finish,
+the shared shutdown deadline quarantines ownership instead of permitting a
+replacement receiver to overlap it.
 
 The published 0.13.0 driver's [token stream][tiberius-token-stream] defers server
 errors until response EOF, so a returned server error also confirms completion.
@@ -276,11 +343,30 @@ validation before the next fetch and a new cancellation generation.
 
 The shared controller retries a metadata/fetch timeout only after the server
 acknowledges cancellation. The adapter returns a distinct `QueryTimeout` in
-this case; the generic `Deadline` remains terminal for credential/connection
-timeouts and other unconfirmed deadlines. Retry uses shared bounded backoff,
-reconnects, revalidates metadata, and resumes at the last durable cursor.
+this case; other unconfirmed query deadlines remain terminal. Retry uses shared
+bounded backoff, reconnects, revalidates metadata, and resumes at the last
+durable cursor.
 Neither the failed operation nor its retry advances the checkpoint before a
 downstream ACK.
+
+Initial connections and reconnects use the same recovery loop for the total
+credential/connection deadline, socket timeouts, unavailable hosts/networks,
+and allowlisted connection resets/refusals. DNS failures also retry, including
+unclassified OS resolver causes: the platform can erase temporary resolver
+failures into a generic I/O category. This fallback applies only to name
+resolution, not arbitrary socket, TLS, or query errors. Known invalid-input,
+permission, and unsupported resolver errors remain terminal. An unresolvable
+but syntactically valid hostname can therefore keep retrying until DNS or the
+configuration is corrected. Invalid configuration, unusable credentials,
+certificate/identity/expiry failures, and unclassified TLS errors stay terminal.
+
+Each failed connection attempt must confirm owned-worker shutdown within one
+second before it can enter backoff. Failed or unconfirmed cleanup blocks
+reconnect and keeps source ownership quarantined; it never admits a second
+worker. Dropping setup also blocks reuse until shutdown confirms completion.
+Retry delays start at one second, double to a 30-second cap,
+and reset after a successful poll. Recovery revalidates the query and preserves
+the last durably acknowledged cursor, with the same at-least-once semantics.
 
 Transport errors are retryable only when there is no outstanding submitted
 response, or when ATTENTION has explicitly confirmed completion. An established
@@ -290,6 +376,22 @@ bytes reached the server. A reset before the connector returns a session uses
 the connector's cancellation/owned-work contract. A reset after submission or
 during streaming requires cleanup confirmation; socket closure alone never
 permits recovery.
+
+During connection setup, Tiberius turns native-TLS failures into text. The
+connector separately records the first underlying socket read failure/EOF,
+retaining only `io::ErrorKind`. This lets the shared controller retry an
+allowlisted network failure after owned setup cleanup, without parsing native
+error strings or broadly retrying TLS failures. Certificate, identity, expiry,
+and unclassified TLS failures remain permanent. A failed write of a TLS
+rejection alert is not evidence of a retryable handshake; write-only failures
+whose structured cause is erased remain conservatively terminal.
+
+If an established session is closed while idle, the next metadata request is
+marked pending before submission. A failed socket write/read cannot prove
+whether that request ran. Without acknowledged ATTENTION the receiver stops
+and quarantines ownership, preserving the last acknowledged checkpoint. This
+accepted availability cost is covered over the production native-TLS connector,
+not treated as safe automatic reconnect.
 
 If confirmed, the original allowlisted transport error is preserved for retry
 on a fresh connection. If not confirmed, `UnconfirmedTransport` preserves the
@@ -307,11 +409,34 @@ discard their connection even after confirmation. Deterministic tests exercise
 subsequent responses on the same logged-in session, stale cancellation handles,
 and shared normalized/encoded prefix replay from the acknowledged cursor.
 
-SQL, metadata, authorization, conversion, TLS, and unconfirmed failures are not
-automatically retried. Raw driver error text is
+SQL, metadata, authorization, conversion, certificate, and unconfirmed failures
+are not automatically retried. Raw driver error text is
 discarded, keeping safe categories and numeric server codes. Tiberius can log
 server error text and row contents, so its futures run with a suppressed tracing
 subscriber; shared redacted diagnostics remain enabled.
+
+### Recovering a Quarantined Source
+
+1. Stop automatic replacement/restart for this source range. Preserve the error,
+   last durable checkpoint, configuration identity, and restricted diagnostics.
+   Do not delete locks, reset progress, or launch a differently named poller.
+2. Have the database operator identify the prior receiver's session/request
+   using the dedicated login, database, application name `otel-arrow-sql-server`,
+   and deployment connection records. Check active requests and rollback state
+   through the operator's approved SQL Server administration procedure.
+3. Wait for confirmed completion or have the authorized database operator
+   terminate the specific request/session and verify termination/rollback.
+   Socket closure, a client timeout, or killing/restarting the engine alone
+   does **not** prove that prior server work stopped. If this cannot be
+   established, keep the source stopped and escalate; do not bypass quarantine.
+4. After server-side quiescence is established, stop the previous engine process
+   completely so its quarantined lease is released. Start exactly one replacement
+   with the same source identity, compatible query, and preserved checkpoint.
+   Validate source retention and unchanged replayable rows; expect duplicates
+   if downstream accepted rows before their checkpoint was installed.
+
+The fixture's `disconnect-readers` command is narrowly scoped fault injection
+for its disposable database, **not** a general production recovery command.
 
 ## Values and Resource Limits
 
@@ -340,11 +465,10 @@ TOP bounds returned rows, not necessarily database scan or sort work.
 
 ## Published Driver and Native TLS
 
-Tiberius is optional and resolves from crates.io at 0.13.0 in the reviewed
+Tiberius is optional and resolves from crates.io at 0.13.0 in the workspace
 lockfile, with default features disabled and `tds73,native-tls` enabled.
 Both Tiberius and `tiberius-macros` are registry dependencies; no Git pin or
-producer-local patch is required. The provider-neutral Rustls proposal is no
-longer a prerequisite for this receiver.
+producer-local patch is required.
 
 SQL Server explicitly uses platform-native TLS: Schannel on Windows, OpenSSL
 on Linux, and Security Framework on macOS. This scoped choice is independent
@@ -355,19 +479,36 @@ through feature unification.
 
 Linux builds require suitable OpenSSL development libraries and discovery
 tooling. Deployments require the corresponding native libraries and trusted
-root store; linking strategy, library/root updates, and complete production
-artifact dependency/governance qualification belong to Part 3. Windows uses
-its system TLS libraries and certificate stores. Selecting native TLS is not
-by itself a compliance certification or proof that the complete engine has no
-other crypto backends.
+root store. The default non-vendored Linux build discovers system OpenSSL
+through `openssl-sys`/`pkg-config`; distributors must record the actual linked
+`libssl`/`libcrypto` ABI in the built artifact rather than assume a version from
+Cargo.lock. Supply the matching runtime packages and CA bundle in the deployed
+image. The OS/image owner patches those libraries and roots; a static/custom
+build shifts library updates and relinking to the binary distributor.
 
-The injected production connector must honor CA/name verification and the
-explicit SQL Server test modes. Native connector setup and certificate loading
-can be synchronous, so Part 3 must keep bounded, owned connection setup off the
-local executor and confirm cleanup before releasing source ownership.
-The deterministic connector sets `NotSupported` against in-memory protocol
-bytes: these tests do **not** qualify native TLS handshakes, CA rotation, or
-server identity verification. Those live checks remain in Part 3.
+Windows uses system Schannel/CryptoAPI libraries and certificate stores,
+serviced by Windows update policy. It does not need an OpenSSL SDK or DLL
+for the SQL Server path. An embedding process does not need a Rustls provider
+for SQL Server; the sample engine still selects `crypto-ring` for unrelated
+components. Test-only Rustls/rcgen dependencies belong to the loopback peer,
+not the production SQL Server dependency path.
+
+Record both `cargo tree --edges normal` for `sql-server` alone and for the full
+intended engine feature set, plus actual binary imports (`dumpbin /dependents`
+on Windows, `readelf -d`/`ldd` in a trusted Linux build environment). Retain
+crate/native-library versions, linking mode, image/OS and root-store ownership,
+scan/SBOM results, and applicable organizational component-governance approval.
+`cargo deny` alone does not scan system OpenSSL or establish compliance.
+Using this component or an OS-native crypto library does not imply applicable
+external governance approval.
+
+The production connector honors CA/name verification and the explicit SQL
+Server test modes without changing checkpoint fingerprints. Its owned
+connection worker keeps synchronous CA loading/native setup off the local
+executor. The loopback TLS tests use the real native client and a Rustls test
+peer, not the TLS-disabled injected protocol connector. They qualify actual
+handshakes, expiry/replacement/identity checks and encrypted cancellation
+containment, but do not substitute for the pinned SQL Server live suite.
 
 This adapter does not require customer-installed ODBC/JDBC drivers, a JVM, or
 native database client. No server, container, or certificate-generation tools
@@ -377,24 +518,129 @@ are required for its deterministic tests.
 
 Run from `rust/otap-dataflow`:
 
-```console
-cargo check -p otel-arrow-dfe-contrib-nodes --no-default-features --features sql-server
-cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features --features sql-server --lib sql_server_receiver
-cargo clippy -p otel-arrow-dfe-contrib-nodes --no-default-features --features sql-server --lib --tests -- -D warnings
-cargo test -p otel-arrow-dfe-contrib-nodes -p otel-arrow-dfe-scraper --no-default-features --features otel-arrow-dfe-contrib-nodes/sql-server,otel-arrow-dfe-contrib-nodes/oracle --lib
-cargo tree -p otel-arrow-dfe-contrib-nodes --no-default-features --features sql-server --edges normal
+```powershell
+python -B -m unittest discover `
+    -s crates\contrib-nodes\src\receivers\sql_server_receiver\ci `
+    -p test_sql_server_fixture.py
+cargo check -p otel-arrow-dfe-contrib-nodes --no-default-features `
+    --features sql-server
+cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features `
+    --features sql-server --lib sql_server_receiver
+cargo clippy -p otel-arrow-dfe-contrib-nodes --no-default-features `
+    --features sql-server --lib --tests -- -D warnings
+cargo test -p otel-arrow-dfe-contrib-nodes -p otel-arrow-dfe-scraper `
+    --no-default-features --features sql-server,oracle,postgresql --lib
+cargo tree -p otel-arrow-dfe-contrib-nodes --no-default-features `
+    --features sql-server --edges normal
 ```
 
-These deterministic preparation, conversion, protocol, and shared-delivery tests
-require no SQL Server. They also preserve the absence of a runtime factory.
-Linux all-feature CI and the synchronized Windows CI/cache feature sets include
-the opt-in adapter. Live TLS/SQL Server and runnable-engine evidence belong to
-Part 3, not these tests.
+These deterministic preparation, conversion, protocol, connector, factory, and
+shared-delivery tests require no SQL Server. Linux all-feature CI and the
+synchronized Windows CI/cache feature sets include the opt-in receiver.
 
-[part-1]: https://github.com/open-telemetry/otel-arrow/issues/4359
-[part-2]: https://github.com/open-telemetry/otel-arrow/issues/4360
-[part-3]: https://github.com/open-telemetry/otel-arrow/issues/4361
+## Live Fixture and Qualification
+
+Live tests are ignored by default and **fail, rather than skip**, if explicitly
+requested without fixture inputs. Python, OpenSSL, and Docker with Linux
+containers are developer-only prerequisites. Windows setup discovers OpenSSL
+bundled with Git for Windows when it is absent from PATH.
+
+Starting the fixture accepts the SQL Server Developer container license terms;
+review and authorize that locally first. Use a new private directory outside
+the checkout, and do not proceed if setup fails.
+
+```powershell
+# From the repository root; use a new directory for each run.
+python rust\otap-dataflow\crates\contrib-nodes\src\receivers\sql_server_receiver\ci\sql-server-fixture.py start `
+    --directory C:\temp\otel-sql-fixture --allow-unencrypted
+if ($LASTEXITCODE -ne 0) { throw 'Fixture setup failed' }
+$fixture = Get-Content C:\temp\otel-sql-fixture\fixture.json -Raw | ConvertFrom-Json
+foreach ($entry in $fixture.env.PSObject.Properties) {
+    Set-Item -Path "Env:$($entry.Name)" -Value $entry.Value
+}
+Push-Location rust\otap-dataflow
+try {
+    cargo test --locked -p otel-arrow-dfe-contrib-nodes --no-default-features `
+        --features sql-server sql_server_receiver::live_tests `
+        -- --ignored --nocapture --test-threads=1
+    if ($LASTEXITCODE -ne 0) { throw 'Live tests failed' }
+} finally {
+    Pop-Location
+    python rust\otap-dataflow\crates\contrib-nodes\src\receivers\sql_server_receiver\ci\sql-server-fixture.py stop `
+        --directory C:\temp\otel-sql-fixture
+}
+```
+
+The fixture pins SQL Server 2022 build 16.0.4295.3 to image digest
+`sha256:4402d880dd4c34bfa7d8705e56a86cd6c88da80a1f6bbbe741f999e76264a090`.
+It binds an ephemeral loopback port, generates short-lived certificates and
+isolated credentials, and provisions a SELECT-only reader. Setup also verifies
+TLS. Stop verifies container ownership and removes only owned resources and
+generated secrets. Keep its directory private; never upload credential/key
+files. Certificates expire after two days.
+
+Recovery metadata is saved before generating secrets or launching Docker, and
+manifest updates are atomic. If setup fails before launch, generated secrets
+are removed without contacting Docker. After a launch attempt, cleanup verifies
+ownership and targets the inspected container ID, including when `docker run`
+times out without returning an ID. If inspection or removal fails, setup reports
+unconfirmed cleanup and retains the private directory and recovery metadata.
+Retry `stop` with the same directory once Docker is available. A failed inspection
+does not prove the container is absent; if it still cannot be inspected, verify
+the reserved container name in `fixture.json` and the launch outcome with a
+Docker administrator before discarding recovery files. Do not reuse that
+directory for another launch.
+
+Omitting `--allow-unencrypted` enforces TLS on the server (the demo default).
+The explicit flag permits the full suite's non-TLS cases; secure-default tests
+still verify TLS. Use a fresh three-row fixture for tests, not one modified
+during the interactive demo.
+
+Eight live scenarios cover polling modes/type fidelity, CA/hostname rejection,
+connection cancellation, factory NACK/replay/ACK/restart, explicit TLS policies,
+native TLS without a Rustls provider, certificate rotation state, and a healthy
+session disconnected between completed polls. Run the live suite serially on
+an exclusively owned fixture: the idle-fault test deliberately disconnects its
+reader sessions.
+
+To exercise replacement/expiry, stop all receiver clients, then run
+`sql-server-fixture.py rotate-certificate --directory <fixture> --certificate
+replacement` (or `expired`, then `valid`). This restarts only the owned
+container and does not change host trust. Docker may reassign the ephemeral
+host port when it restarts; rotation refreshes the loopback-only port in the
+manifest. Reload `fixture.json` environment values and run only
+`live_certificate_rotation_state` after each rotation.
+Expired-certificate readiness uses an explicit bypass solely for the fixture
+administrator probe; the receiver test must reject expiry. Restore `valid`
+before any other live scenario or engine trial. Stop removes all generated
+original/replacement/expired private keys.
+
+The component-local [`ci/integration-test.json`](ci/integration-test.json)
+registers an advisory Linux live job with the shared contrib integration
+workflow. It runs the serial live suite, rotates replacement/expired/valid
+certificates, and then builds/runs the exact example YAML. The engine trial
+requires console payload output, an acknowledged ID-3 checkpoint, and clean
+shutdown. The trial sets `SQL_SERVER_CATCH_UP_MAX_PAGES=1` so shutdown after
+that checkpoint cannot race an immediately started catch-up query. The example
+defaults to 32 pages when the variable is omitted; mid-query cancellation and
+quarantine remain covered separately by the receiver tests.
+It stores only a non-secret result summary in CI artifacts; fixture
+credentials/keys and engine output stay outside the upload directory. The
+cleanup command always attempts owned removal. Windows CI includes real
+Schannel loopback/protocol coverage, not a hosted live SQL Server job.
+
+Live SQL Server and full engine qualification must be executed explicitly in
+the target Windows/Schannel and Linux/OpenSSL environments. Passing ignored
+test compilation, dependency graphs, or a loopback peer is not a live-server
+pass. Fixture startup accepts the license and requires the operator's approval.
+
+Driver-internal preallocation/RSS limits, exhaustive fault/cancellation/load
+tests, clean-machine packaging, and broader deployment qualification remain
+readiness work. This does not qualify Windows-hosted SQL Server, other server
+versions, Azure SQL/Managed Instance, or ARM64.
+
 [rfc]: https://github.com/open-telemetry/otel-arrow/issues/3918
 [tiberius-token-stream]: https://docs.rs/crate/tiberius/0.13.0/source/src/tds/stream/token.rs
 [attention-bug]: https://github.com/tiberius-rs/tiberius/issues/459
 [attention-fix]: https://github.com/tiberius-rs/tiberius/pull/460
+[example]: ../../../../../configs/sql-server-console.yaml

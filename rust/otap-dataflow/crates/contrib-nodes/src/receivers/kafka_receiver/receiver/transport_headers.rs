@@ -8,8 +8,8 @@
 //! of the `resource_attrs_from_headers` mechanism that injects headers into
 //! resource attributes.
 
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};

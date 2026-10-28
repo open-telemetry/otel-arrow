@@ -11,11 +11,13 @@ use std::fmt;
 use std::sync::Arc;
 
 use otel_arrow_dfe_config::context::ContextEntryName;
-use otel_arrow_dfe_config::context_policy::{
+use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind,
 };
+use otel_arrow_dfe_config::context::transport_headers::{
+    TransportHeaders, TransportHeadersData, ValueKind,
+};
 use otel_arrow_dfe_config::error::Error;
-use otel_arrow_dfe_config::transport_headers::{TransportHeaders, TransportHeadersData, ValueKind};
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::{
@@ -638,8 +640,8 @@ impl<'a> MaterializedContextProjection<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::context_policy::{ContextEntryDefinition, ContextScope};
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+    use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use std::collections::BTreeMap;
 
     fn name(value: &str) -> ContextEntryName {
@@ -1067,7 +1069,7 @@ mod tests {
         let projection = ContextProjection::Composite {
             layout,
             entry,
-            members: Box::new([crate::context_declaration::ContextMember {
+            members: Box::new([crate::pdata_context::ContextMember {
                 name: name("route"),
                 source: ContextMemberSource::Constant("altered".into()),
             }]),
