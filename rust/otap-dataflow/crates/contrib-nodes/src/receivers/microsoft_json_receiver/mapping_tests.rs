@@ -1,17 +1,149 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::bounded::{
-    Budget, CONFIG_FILE_BYTES, Limits, MappingError, inspect, json_size, read_config,
-};
 use super::config::{Config, EndpointConfig};
+use super::error::MappingError;
 use super::event_mapping::{DropReason, MappedLog, MappingContext, MappingOutcome};
 use super::field_mapping::{CompiledEndpoint, load_endpoints};
+use otel_arrow_dfe_config::data_limits::{
+    Budget, CONFIG_FILE_BYTES, DataLimitError, Limits, inspect_json, json_size, read_config,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 fn no_environment(_: &str) -> Result<String, std::env::VarError> {
     Err(std::env::VarError::NotPresent)
+}
+
+/// Scenario: wildcard parents consume literal dotted keys before virtual child-key validation.
+/// Guarantees: dotted wildcard boundaries cannot bypass allowed children or reject explicitly allowed real children.
+#[test]
+fn wildcard_parent_boundaries_enforce_allowed_keys() {
+    let ep = endpoint("rules: [{ path: 'groups.*.parent', allowed_keys: [ok] }]");
+    for event in [
+        json!({"groups": {"foo.bar": {"parent.bad": 1}}}),
+        json!({"groups.foo.bar": {"parent.bad": 1}}),
+        json!({"groups": {"foo.bar": {"parent": {"bad": 1}}}}),
+    ] {
+        let result = ep.map_event(&event, &MappingContext::default());
+        assert!(
+            matches!(result, Err(MappingError::Rejected(_))),
+            "{event}: {result:?}"
+        );
+    }
+    let event = json!({"groups": {"foo.bar": {"parent.ok": 1}}});
+    assert_eq!(accepted(&ep, event.clone()).body, Some(event));
+    let ep = endpoint("rules: [{ path: 'groups.*', allowed_keys: [safe] }]");
+    for event in [
+        json!({"groups": {"foo.bar": {"safe": 1}}}),
+        json!({"groups.foo.bar": {"safe": 1}}),
+    ] {
+        assert_eq!(accepted(&ep, event.clone()).body, Some(event));
+    }
+}
+
+/// Scenario: many additional drop targets receive one large validated string.
+/// Guarantees: untransformed fanout borrows its input and does not copy payload-sized values for each target.
+#[test]
+fn untransformed_drop_fanout_borrows_large_values() {
+    let targets: Vec<_> = (0..4096)
+        .map(|_| json!({"target": {"kind": "drop"}}))
+        .collect();
+    let config = serde_json::from_value(json!({"rules": [{"path": "large", "also": targets}]}))
+        .expect("schema");
+    let ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+    assert!(
+        ep.map_event(
+            &json!({"large": "x".repeat(2 * 1024 * 1024)}),
+            &MappingContext::default()
+        )
+        .is_ok()
+    );
+}
+
+/// Scenario: a drop container and explicitly mapped child are encoded with dotted keys instead of real parents.
+/// Guarantees: virtual dropped ancestors suppress hidden body/retained-source fields while explicit children still map.
+#[test]
+fn virtual_drop_parents_suppress_unmapped_descendants() {
+    let ep = endpoint(
+        "filtered_item_size: true\nrules:\n  - path: secret\n    target: { kind: drop }\n  - path: secret.visible\n    target: { kind: attribute, key: visible }",
+    );
+    let event = json!({"secret.hidden": "private", "secret.visible": true});
+    let log = accepted(&ep, event);
+    assert_eq!(log.attributes["visible"], true);
+    assert!(log.body.is_none());
+    assert_eq!(
+        log.attributes["filtered_item_size"],
+        json!(
+            serde_json::to_vec(&json!({"secret.visible": true}))
+                .expect("serialize")
+                .len()
+        )
+    );
+    let ep = endpoint(
+        "rules: [{ path: secret, validate: {} }, { path: secret, target: { kind: drop } }]",
+    );
+    assert_eq!(
+        accepted(&ep, json!({"secret.hidden": "kept"})).body,
+        Some(json!({"secret.hidden": "kept"}))
+    );
+}
+
+/// Scenario: inherited rules contain large owned target strings in each supported string-bearing target option.
+/// Guarantees: compilation refuses expansion before cloning those bytes beyond the startup work allowance.
+#[test]
+fn inherited_target_strings_are_fully_budgeted() {
+    let large = "x".repeat(512 * 1024);
+    for target in [
+        json!({"kind": "event_name", "split_last": large}),
+        json!({"kind": "event_name", "strip_segment": {"index": 1, "match_field": large}}),
+        json!({"kind": "severity", "map": {large.clone(): {"number": 1, "text": "TRACE"}}}),
+        json!({"kind": "scope", "field": "name_version", "split": {"last_char": large}}),
+    ] {
+        let config: EndpointConfig =
+            serde_json::from_value(json!({"rules": [{"path": "value", "target": target}]}))
+                .expect("schema");
+        assert!(CompiledEndpoint::compile(&config, None, &no_environment).is_ok());
+        let mut expanded = config;
+        expanded.event_overrides =
+            serde_json::from_value(json!({"A": {}, "B": {}, "C": {}, "D": {}})).expect("overrides");
+        assert!(matches!(
+            CompiledEndpoint::with_limits(
+                &expanded,
+                None,
+                &no_environment,
+                Limits {
+                    work: 2 * 1024 * 1024,
+                    ..Limits::default()
+                }
+            ),
+            Err(MappingError::Limit("traversal work"))
+        ));
+    }
+}
+
+/// Scenario: the selected event-name segment appears first, in the middle, last or as the entire name.
+/// Guarantees: matching final segments remove their preceding separator; nonmatching segments remain unchanged.
+#[test]
+fn event_name_stripping_handles_final_segments() {
+    for (index, input, key, expected) in [
+        (0, "key.Event", "key", "Event"),
+        (1, "Event.key.Tail", "key", "Event.Tail"),
+        (1, "Event.key", "key", "Event"),
+        (0, "key", "key", ""),
+        (1, "Event.key", "different", "Event.key"),
+        (4, "Event.key", "key", "Event.key"),
+    ] {
+        let ep = endpoint(&format!(
+            "rules: [{{ path: name, target: {{ kind: event_name, strip_segment: {{ index: {index}, match_field: iKey }} }} }}]"
+        ));
+        assert_eq!(
+            accepted(&ep, json!({"name": input, "iKey": key}))
+                .event_name
+                .as_deref(),
+            Some(expected)
+        );
+    }
 }
 
 /// Scenario: allowed children include a literal dotted name and events use actual or virtual containers.
@@ -1315,18 +1447,21 @@ fn mapping_limits_are_enforced_at_boundaries() {
         depth: 2,
         ..Limits::default()
     };
-    assert!(inspect(&source, limits, &mut Budget::new(100)).is_ok());
+    assert!(inspect_json(&source, limits, &mut Budget::new(100)).is_ok());
     assert_eq!(
-        inspect(&json!({"a": "x", "b": 2}), limits, &mut Budget::new(100)),
-        Err(MappingError::Limit("value nodes"))
+        inspect_json(&json!({"a": "x", "b": 2}), limits, &mut Budget::new(100)),
+        Err(DataLimitError::Limit("value nodes"))
     );
     assert_eq!(
-        inspect(&json!({"a": {"b": 1}}), limits, &mut Budget::new(100)),
-        Err(MappingError::Limit("nesting depth"))
+        inspect_json(&json!({"a": {"b": 1}}), limits, &mut Budget::new(100)),
+        Err(DataLimitError::Limit("nesting depth"))
     );
     let mut budget = Budget::new(3);
     assert!(budget.charge(3).is_ok());
-    assert_eq!(budget.charge(1), Err(MappingError::Limit("traversal work")));
+    assert_eq!(
+        budget.charge(1),
+        Err(DataLimitError::Limit("traversal work"))
+    );
 
     let config = serde_yaml::from_str("rules: [{ path: '*', target: { kind: attribute } }]")
         .expect("config");
@@ -1363,7 +1498,7 @@ fn mapping_limits_are_enforced_at_boundaries() {
     assert_eq!(json_size(&json!("\""), 4), Ok(4));
     assert_eq!(
         json_size(&json!("\""), 3),
-        Err(MappingError::Limit("serialized bytes"))
+        Err(DataLimitError::Limit("serialized bytes"))
     );
 }
 
@@ -1453,7 +1588,7 @@ fn endpoint_file_loading_is_confined_bounded_and_atomic() {
     .expect("over limit");
     assert_eq!(
         read_config(&dir.path().join("endpoint.yaml")),
-        Err(MappingError::Limit("configuration file bytes"))
+        Err(DataLimitError::Limit("configuration file bytes"))
     );
 }
 
