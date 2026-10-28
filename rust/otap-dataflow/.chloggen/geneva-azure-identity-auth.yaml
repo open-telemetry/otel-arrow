@@ -1,5 +1,5 @@
 change_type: enhancement
 component: pipeline
 note: "Allow the Geneva exporter to consume Entra tokens from Azure Identity Auth."
-issues: 4457
+issues: [4457]
 subtext: "Azure Identity Auth owns token acquisition, caching, refresh, and readiness; managed identity work runs on a dedicated worker that does not delay pipeline teardown. Token lookups time out after five seconds and keep failure causes. Requires geneva-uploader 0.9.0."

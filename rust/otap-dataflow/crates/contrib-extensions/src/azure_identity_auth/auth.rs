@@ -9,18 +9,13 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
-use azure_identity::{
-    DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
-    ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
-    WorkloadIdentityCredentialOptions,
-};
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
 use tokio::runtime::Runtime;
 use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 
 use super::config::Config;
 use super::error::Error;
-use crate::common::azure_identity::{IdentityOptions, create_credential};
+use crate::common::azure_identity::{AuthMethod, IdentityOptions, create_credential};
 use crate::common::background_refresh::BackgroundProviderSource;
 
 /// Wraps an Azure credential plus the scope it acquires tokens for.
