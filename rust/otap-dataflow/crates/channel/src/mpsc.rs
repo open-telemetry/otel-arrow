@@ -736,7 +736,7 @@ mod tests {
                     match rx.recv().await {
                         Ok(v) => {
                             received.push(v);
-                        },
+                        }
                         Err(_) => break,
                     }
                 }
