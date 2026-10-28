@@ -5,12 +5,13 @@
 
 #![allow(dead_code)] // The receiver remains non-operational until the runtime phase.
 
-use super::bounded::{Budget, Limits, MappingError, inspect, read_config};
 use super::config::{
     Config, EndpointConfig, EventAction, FieldRule, MappingTarget, OnMissing, ScopeField,
     ScopeSplit, ValueTransform,
 };
+use super::error::MappingError;
 use super::ikey_filter::{self, IkeyValidator};
+use otel_arrow_dfe_config::data_limits::{Budget, Limits, inspect_json, read_config};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
@@ -22,6 +23,53 @@ pub(crate) struct CompiledRule {
 }
 
 impl CompiledRule {
+    pub fn ancestor_child<'a>(
+        &self,
+        path: &'a [String],
+        budget: &mut Budget,
+    ) -> Result<Option<(&'a str, Vec<String>)>, MappingError> {
+        budget.charge(path.iter().map(|key| key.len() + 1).sum::<usize>() + 1)?;
+        if self.path.first().is_some_and(|first| {
+            first != "*"
+                && path.first().and_then(|key| key.split('.').next()) != Some(first.as_str())
+        }) || path.iter().map(|key| key.split('.').count()).sum::<usize>() <= self.path.len()
+            || self.matches(path, budget)?
+        {
+            return Ok(None);
+        }
+        let mut preceding_parts = 0;
+        for (index, key) in path.iter().enumerate() {
+            budget.charge(key.len() + 1)?;
+            // Prefer a whole literal key before interpreting its dots as
+            // virtual boundaries, just as the matcher does for wildcards.
+            for end in std::iter::once(key.len()).chain(
+                key.char_indices()
+                    .rev()
+                    .filter_map(|(offset, ch)| (ch == '.').then_some(offset)),
+            ) {
+                budget.charge(end + 1)?;
+                if preceding_parts + key[..end].split('.').count() < self.path.len() {
+                    continue;
+                }
+                let child = if end == key.len() {
+                    path.get(index + 1).map(String::as_str)
+                } else {
+                    Some(&key[end + 1..])
+                };
+                let Some(child) = child else { continue };
+                budget
+                    .charge(path[..index].iter().map(|s| s.len() + 1).sum::<usize>() + end + 1)?;
+                let mut prefix = path[..index].to_vec();
+                prefix.push(key[..end].to_owned());
+                if self.matches(&prefix, budget)? {
+                    return Ok(Some((child, prefix)));
+                }
+            }
+            preceding_parts += key.split('.').count();
+        }
+        Ok(None)
+    }
+
     pub fn matches(&self, path: &[String], budget: &mut Budget) -> Result<bool, MappingError> {
         let pattern_bytes = self.path.iter().map(String::len).sum::<usize>();
         budget.charge(pattern_bytes + path.iter().map(String::len).sum::<usize>() + 1)?;
@@ -441,7 +489,7 @@ fn flatten(
                     ));
                 }
                 if let Some(value) = &required.default_value {
-                    inspect(value, limits, budget)?;
+                    inspect_json(value, limits, budget)?;
                 }
             }
             if let Some(target) = &rule.target {
@@ -510,6 +558,12 @@ fn validate_target(target: &MappingTarget, budget: &mut Budget) -> Result<(), Ma
                     "event-name split delimiter must not be empty".into(),
                 ));
             }
+            if let Some(separator) = split_last {
+                budget.charge(separator.len())?;
+            }
+            if let Some(path) = strip_segment.as_ref().and_then(|strip| strip.match_field()) {
+                budget.charge(path.len())?;
+            }
             if let Some(strip) = strip_segment
                 && let Some(path) = strip.match_field()
                 && (path.is_empty() || path.split('.').any(|p| p.is_empty() || p.contains('*')))
@@ -548,9 +602,13 @@ fn validate_target(target: &MappingTarget, budget: &mut Budget) -> Result<(), Ma
                 "scope split delimiter must not be empty".into(),
             ));
         }
+        MappingTarget::Scope {
+            split: Some(ScopeSplit::LastChar(delimiter)),
+            ..
+        } => budget.charge(delimiter.len())?,
         MappingTarget::Severity { map } => {
-            for entry in map.values() {
-                budget.charge(entry.text.len() + 1)?;
+            for (key, entry) in map {
+                budget.charge(key.len() + entry.text.len() + 1)?;
                 if !(0..=24).contains(&entry.number) {
                     return Err(MappingError::Config(
                         "severity numbers must be in 0..=24".into(),

@@ -197,11 +197,14 @@ Required-field lookup prefers a literal dotted key over nested traversal.
 segment. Listing `foo.bar` accepts that literal key but does not permit a
 separate nested `foo` object; listing `foo` permits both forms. The same check
 applies when a parent is represented only by flattened source keys.
+Wildcard parents preserve whole literal-key boundaries when applying these
+checks; for example, `groups.*` treats `foo.bar` as one child of `groups`.
 
 Object and array values mapped directly to attributes become compact JSON
 strings. Unmapped body values retain their original JSON types and nesting.
 A `drop` container suppresses unmapped descendants but still permits explicitly
 mapped child rules.
+This suppression also applies to virtual parents in flattened dotted keys.
 
 ```yaml
 rules:

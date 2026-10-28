@@ -451,7 +451,7 @@ pub(crate) fn resolve_config_path(file_path: &str, config_dir: &Path) -> Result<
 
 /// Load and parse an external iKey filter YAML file.
 pub(crate) fn load_filter_file(path: &Path) -> Result<IkeyFilterFileConfig, String> {
-    let content = super::bounded::read_config(path)
+    let content = otel_arrow_dfe_config::data_limits::read_config(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     serde_yaml::from_str::<IkeyFilterFileConfig>(&content)
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))
