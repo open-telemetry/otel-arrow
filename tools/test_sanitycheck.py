@@ -68,14 +68,14 @@ VENDORED_CASES = [
 ]
 
 
-def check_vendored_cases():
-    """is_vendored() must not depend on the working directory."""
+def check_excluded_cases():
+    """is_excluded() must not depend on the working directory."""
     failures = 0
     original_cwd = os.getcwd()
     try:
         for name, cwd, path, expected in VENDORED_CASES:
             os.chdir(os.path.join(REPO_ROOT, cwd))
-            got = sanitycheck.is_vendored(path)
+            got = sanitycheck.is_excluded(path)
             ok = got == expected
             print('{} {}: expected {}, got {}'.format(
                 'PASS' if ok else 'FAIL', name, expected, got))
