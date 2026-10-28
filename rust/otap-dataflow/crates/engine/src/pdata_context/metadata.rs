@@ -542,6 +542,18 @@ impl PeerAddrMerger {
 mod tests {
     use super::*;
 
+    /// Scenario: default metadata is given a peer address.
+    /// Guarantees: the peer address starts absent and reads back as set.
+    #[test]
+    fn metadata_peer_addr_round_trips() {
+        let mut metadata = Metadata::default();
+        assert_eq!(metadata.peer_addr(), None);
+
+        let addr: SocketAddr = "10.0.0.1:5005".parse().expect("valid address");
+        metadata.set_peer_addr(addr);
+        assert_eq!(metadata.peer_addr(), Some(addr));
+    }
+
     /// Scenario: an identity contains one selected multi-valued claim while
     /// another configured claim is absent.
     /// Guarantees: claim cardinality is preserved and missing claims do not
