@@ -68,8 +68,18 @@ config:
 
 ## Telemetry
 
-These tables list telemetry emitted directly by this node. Common engine
-runtime metric sets may also be attached by the pipeline telemetry policy.
+This receiver opts into the shared `receiver.received` and
+`receiver.processing` metric sets. See the
+[shared receiver contract](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for their definitions and telemetry policy.
+
+The boundary is one topic delivery; local processing currently records
+`success`, independently of downstream forwarding. Processing duration
+excludes downstream channel waiting. Payload size is omitted because topics
+transport internal PData rather than encoded application payloads.
+
+The tables below list node-specific diagnostics. Common engine runtime metric
+sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
@@ -77,17 +87,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.received.messages` | `{message}` | `signal`, `outcome` | Number of topic deliveries processed at the receiver boundary. Topic delivery processing currently records `success`; downstream forwarding is reported separately. |
-| `receiver.processing.duration` | `s` | `signal` | Optional receiver-local topic delivery processing duration. Enabled by the node-local duration telemetry policy and excludes downstream channel waiting. |
 | `receiver.topic.lag.events` | `{event}` | `event.type` | Number of lag events emitted by broadcast subscriptions, dimensionalized by `event.type` (`notification`, `disconnect`). |
 | `receiver.topic.bridge.controls` | `{control}` | `control`, `result` | Number of downstream ACK/NACK bridge controls, dimensionalized by `control` (`ack`, `nack`) and `result` (`success`, `ignored_propagation_disabled`, `missing_calldata`, `invalid_or_untracked_id`, `runtime_failure`). |
 | `receiver.topic.lagged.messages` | `{message}` | | Total messages missed across lag notifications. |
 | `receiver.topic.downstream.backpressure.events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
 | `receiver.topic.downstream.blocked.duration` | `s` | | Distribution of per-message downstream channel waits, using the configured duration tier. |
 
-All receiver metrics include the configured `topic` entity attribute. The
-shared boundary does not report payload size because the topic transports
-internal pdata rather than an encoded application payload.
+All receiver metrics include the configured `topic` entity attribute.
 
 ### Events
 

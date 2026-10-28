@@ -259,7 +259,7 @@ metrics.
 | --- | --- |
 | `receiver.received.messages` | Record one classified external message when receiver-local handling reaches its terminal local outcome. |
 | `receiver.received.payload.size` | Record the encoded application payload bytes observed at the receiver boundary. |
-| `receiver.processing.duration` | Measure the receiver's documented local processing boundary, ending before downstream handoff or channel wait. |
+| `receiver.processing.duration` | Measure one receiver-local processing operation without signal or outcome dimensions, ending before downstream handoff or channel wait. |
 | `exporter.attempted.messages` | Record each node-local delivery attempt, including preparation failures and retries represented as attempts. |
 | `exporter.attempted.duration` | Measure from attempt start through the terminal local or backend result, excluding Ack/Nack notification delivery. |
 | `exporter.attempted.payload.size` | Record the encoded application payload bytes produced or submitted by the attempt when available. |
@@ -307,6 +307,12 @@ flags enable them individually. Compose the helper under a `boundary` field
 when the node also has diagnostic metrics.
 
 ### Receiver implementation
+
+`receiver.processing.duration` records one sample per local operation without
+`signal` or `outcome` measurement attributes. An operation may yield zero, one,
+or several signals; failures before signal classification still contribute
+duration. Node entity context and signal/outcome dimensions on
+`receiver.received` counters are preserved.
 
 Every receiver implementation should follow this shape:
 
@@ -357,7 +363,8 @@ class alone.
 
 Record the completed observation before downstream handoff. Return classified
 errors through `processing.failed` or `processing.refused`; failures before
-signal classification require node-specific diagnostics. For asynchronous
+signal classification contribute enabled duration but no `receiver.received`
+counters, and still require node-specific error diagnostics. For asynchronous
 batching, record success when the external message enters the node-owned batch,
 not when the batch flushes.
 
