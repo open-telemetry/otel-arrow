@@ -711,15 +711,51 @@ mod tests {
                 tx_a.send_async(30).await.expect("sender A must complete");
             });
 
+            // wait for sender A to become blocked
+            timeout(Duration::from_millis(2000), async {
+                loop {
+                    tokio::task::yield_now().await;
+                    let num_parked = tx
+                        .channel
+                        .state
+                        .borrow()
+                        .sender_waiters
+                        .as_ref()
+                        .map(|waiters| waiters.queue.len())
+                        .unwrap_or_default();
+                    if num_parked > 0 {
+                        break;
+                    };
+                }
+            })
+            .await
+            .unwrap();
+
             // Sender B: will also block because the channel is still full.
             let tx_b = tx.clone();
             let sender_b = tokio::task::spawn_local(async move {
                 tx_b.send_async(40).await.expect("sender B must complete");
             });
 
-            // Yield so both sender tasks poll once and register as waiters.
-            tokio::task::yield_now().await;
-            tokio::task::yield_now().await;
+            // wait for sender B to become blocked
+            timeout(Duration::from_millis(2000), async {
+                loop {
+                    tokio::task::yield_now().await;
+                    let num_parked = tx
+                        .channel
+                        .state
+                        .borrow()
+                        .sender_waiters
+                        .as_ref()
+                        .map(|waiters| waiters.queue.len())
+                        .unwrap_or_default();
+                    if num_parked > 1 {
+                        break;
+                    };
+                }
+            })
+            .await
+            .unwrap();
 
             // Drain first two items items
             let v1 = rx.try_recv().expect("first try_recv must succeed");
