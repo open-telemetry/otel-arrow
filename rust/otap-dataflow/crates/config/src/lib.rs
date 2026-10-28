@@ -22,6 +22,7 @@ pub mod codecs;
 pub mod config_provider;
 pub mod context;
 pub mod conversion;
+pub mod data_limits;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
