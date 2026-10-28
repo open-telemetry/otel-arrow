@@ -2049,10 +2049,17 @@ mod tests {
 
     impl StructuredValue for Probe {
         fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-            w.encode_struct(&mut |s| {
-                s.field("id", &self.id)?
-                    .field("name", &self.name)?
-                    .field("tags", &self.tags)
+            w.encode_map(&mut |m| {
+                m.encode_entry("id", &mut |v| v.encode_i64(self.id))?;
+                m.encode_entry("name", &mut |v| v.encode_str(&self.name))?;
+                m.encode_entry("tags", &mut |v| {
+                    v.encode_array(&mut |a| {
+                        for tag in &self.tags {
+                            a.encode_element(&mut |v| v.encode_str(tag))?;
+                        }
+                        Ok(())
+                    })
+                })
             })
         }
     }
@@ -2101,7 +2108,7 @@ mod tests {
         }
     }
 
-    /// Scenario: a struct builder produces a structured `message` with string, integer, and array fields.
+    /// Scenario: a custom encoder produces a structured `message` with string, integer, and array fields.
     /// Guarantees: the body contains only caller-supplied typed fields, including an ordinary field named name.
     #[test]
     fn structured_message_is_log_body() {
@@ -2133,38 +2140,32 @@ mod tests {
     }
 
     /// Scenario: an owned structured root encodes a temporary nested view borrowing its strings.
-    /// Guarantees: non-static structured views, string references, and vectors of borrowed strings retain their wire types through the stored carrier.
+    /// Guarantees: non-static structured views encode borrowed strings through the stored carrier.
     #[test]
     fn structured_values_encode_borrowed_nested_views() {
         struct State {
             name: String,
-            tags: Vec<String>,
         }
 
         struct Snapshot<'a> {
             name: &'a str,
-            tags: Vec<&'a str>,
         }
 
         impl StructuredValue for Snapshot<'_> {
             fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-                w.encode_struct(&mut |s| s.field("name", &self.name)?.field("tags", &self.tags))
+                w.encode_map(&mut |m| m.encode_entry("name", &mut |v| v.encode_str(self.name)))
             }
         }
 
         impl StructuredValue for State {
             fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-                let snapshot = Snapshot {
-                    name: &self.name,
-                    tags: self.tags.iter().map(String::as_str).collect(),
-                };
-                w.encode_struct(&mut |s| s.field("snapshot", &snapshot))
+                let snapshot = Snapshot { name: &self.name };
+                w.encode_map(&mut |m| m.encode_entry("snapshot", &mut |v| snapshot.encode(v)))
             }
         }
 
         let state = StructBox::new(State {
             name: "example".into(),
-            tags: vec!["a".into(), "b".into()],
         });
         let field = BUDGET_TEST_METADATA
             .fields()
@@ -2181,144 +2182,32 @@ mod tests {
                 "a",
                 AnyValue::new_kvlist(vec![KeyValue::new(
                     "snapshot",
-                    AnyValue::new_kvlist(vec![
-                        KeyValue::new("name", AnyValue::new_string("example")),
-                        KeyValue::new(
-                            "tags",
-                            AnyValue::new_array(vec![
-                                AnyValue::new_string("a"),
-                                AnyValue::new_string("b"),
-                            ]),
-                        ),
-                    ]),
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("example"),
+                    )]),
                 )]),
             )],
         );
     }
 
-    /// Scenario: a struct builder encodes integers, booleans, strings, and an array of floats.
-    /// Guarantees: borrowed values retain their original types in the encoded fields.
-    #[test]
-    fn struct_builder_preserves_field_types() {
-        let field = BUDGET_TEST_METADATA
-            .fields()
-            .field("a")
-            .expect("known field");
-        let mut buf = ProtoBuffer::with_capacity(256);
-        let mut visitor = DirectFieldVisitor::new(&mut buf);
-        let number = 8u64;
-        let enabled = true;
-        let kind = "sample";
-        let samples = [0.5f32, 1.0];
-        visitor.record_toplevel_field(&field, |buf| {
-            ValueEncoder::new(buf, 0).encode_structured(|w| {
-                w.encode_struct(&mut |s| {
-                    s.field("count", &samples.len())?
-                        .field("number", &number)?
-                        .field("enabled", &enabled)?
-                        .field("type", &kind)?
-                        .field("samples", &samples)
-                })
-            })
-        });
-        assert_eq!(visitor.dropped_count(), 0);
-        let record = LogRecord::decode(buf.as_ref()).expect("valid record");
-        assert_eq!(
-            record.attributes,
-            vec![KeyValue::new(
-                "a",
-                AnyValue::new_kvlist(vec![
-                    KeyValue::new("count", AnyValue::new_int(2)),
-                    KeyValue::new("number", AnyValue::new_int(8)),
-                    KeyValue::new("enabled", AnyValue::new_bool(true)),
-                    KeyValue::new("type", AnyValue::new_string("sample")),
-                    KeyValue::new(
-                        "samples",
-                        AnyValue::new_array(vec![
-                            AnyValue::new_double(0.5),
-                            AnyValue::new_double(1.0),
-                        ])
-                    ),
-                ])
-            )]
-        );
-    }
-
-    /// Scenario: a struct builder truncates a string field, encodes another value, then encounters a key that cannot fit.
-    /// Guarantees: truncation needs no caller bookkeeping, accepted callbacks run once, rejected callbacks do not run, and later log fields survive.
-    #[test]
-    fn struct_builder_skips_callback_when_key_does_not_fit() {
-        let fields = BUDGET_TEST_METADATA.fields();
-        let a = fields.field("a").expect("known field");
-        let b = fields.field("b").expect("known field");
-        let mut buf = ProtoBuffer::with_capacity_and_limit(256, 256);
-        let mut visitor = DirectFieldVisitor::new(&mut buf);
-        let mut evaluations = 0;
-        visitor.record_toplevel_field(&a, |buf| {
-            ValueEncoder::new(buf, 0).encode_structured(|w| {
-                w.encode_struct(&mut |s| {
-                    s.field("text", &"x".repeat(80))?
-                        .field_with("first", &mut |w| {
-                            evaluations += 1;
-                            w.encode_bool(true)
-                        })?
-                        .field_with(&"x".repeat(64), &mut |_| {
-                            panic!("oversized key skips its callback")
-                        })
-                })
-            })
-        });
-        visitor.record_bool(&b, true);
-        assert_eq!(visitor.dropped_count(), 1);
-        assert_eq!(evaluations, 1);
-        assert!(buf.len() <= 256);
-        let mut attributes = LogRecord::decode(buf.as_ref())
-            .expect("valid record")
-            .attributes;
-        assert_eq!(attributes.len(), 2);
-        assert_eq!(
-            attributes.pop(),
-            Some(KeyValue::new("b", AnyValue::new_bool(true)))
-        );
-        let AnyValueKind::KvlistValue(map) = attributes[0]
-            .value
-            .as_ref()
-            .expect("value")
-            .value
-            .as_ref()
-            .expect("map")
-        else {
-            panic!("expected map")
-        };
-        assert_eq!(map.values.len(), 2);
-        assert_eq!(map.values[0].key, "text");
-        let Some(StringValue(text)) = &map.values[0].value.as_ref().expect("text").value else {
-            panic!("expected string field")
-        };
-        assert!(text.ends_with("[...]"));
-        assert_eq!(
-            map.values[1],
-            KeyValue::new("first", AnyValue::new_bool(true))
-        );
-    }
-
-    /// Scenario: a struct field writes a scalar and then fails, exiting its chain through `?`.
+    /// Scenario: a map entry writes a scalar and then fails, exiting its callback through `?`.
     /// Guarantees: the field rolls back, the body and attribute retain their completed prefixes, and later log fields survive.
     #[test]
-    fn struct_builder_retains_prefix_when_field_fails() {
+    fn structured_map_retains_prefix_when_entry_fails() {
         struct Partial {
             attempts: std::cell::Cell<usize>,
         }
         impl StructuredValue for Partial {
             fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-                w.encode_struct(&mut |s| {
-                    s.field("first", &7)?
-                        .field_with("failed", &mut |w| {
-                            self.attempts.set(self.attempts.get() + 1);
-                            w.encode_bool(true)?;
-                            Err(EncodeFailure::Dropped)
-                        })?
-                        .field_with("last", &mut |_| panic!("failed field must stop the chain"))
+                w.encode_map(&mut |m| {
+                    m.encode_entry("first", &mut |v| v.encode_i64(7))?;
+                    m.encode_entry("failed", &mut |v| {
+                        self.attempts.set(self.attempts.get() + 1);
+                        v.encode_bool(true)?;
+                        Err(EncodeFailure::Dropped)
+                    })?;
+                    panic!("failed entry must stop the callback")
                 })
             }
         }
@@ -2351,10 +2240,10 @@ mod tests {
         );
     }
 
-    /// Scenario: a struct callback returns an empty or populated builder, fails inside, or succeeds before an outer failure.
-    /// Guarantees: returned builders finalize valid structs, callback errors retain prefixes, and outer errors roll back the value without losing later fields.
+    /// Scenario: a map callback succeeds empty or populated, fails inside, or succeeds before an outer failure.
+    /// Guarantees: callback completion finalizes valid maps, callback errors retain prefixes, and outer errors roll back the value without losing later fields.
     #[test]
-    fn struct_builder_finalizes_at_callback_boundary() {
+    fn structured_map_finalizes_at_callback_boundary() {
         let fields = BUDGET_TEST_METADATA.fields();
         let a = fields.field("a").expect("known field");
         let b = fields.field("b").expect("known field");
@@ -2363,15 +2252,15 @@ mod tests {
             let mut visitor = DirectFieldVisitor::new(&mut buf);
             visitor.record_toplevel_field(&a, |buf| {
                 ValueEncoder::new(buf, 0).encode_structured(|w| {
-                    w.encode_struct(&mut |s| {
+                    w.encode_map(&mut |m| {
                         if completion == "empty" {
-                            return Ok(s);
+                            return Ok(());
                         }
-                        let builder = s.field("first", &7)?;
+                        m.encode_entry("first", &mut |v| v.encode_i64(7))?;
                         if completion == "inside_callback" {
                             return Err(EncodeFailure::Dropped);
                         }
-                        Ok(builder)
+                        Ok(())
                     })?;
                     if completion != "outside_callback" {
                         return Ok(());
@@ -2625,16 +2514,16 @@ mod tests {
         if depth == 0 {
             w.encode_bool(true)
         } else {
-            w.encode_struct(&mut |s| {
+            w.encode_map(&mut |m| {
                 *visited += 1;
-                s.field_with("child", &mut |v| encode_chain(v, depth - 1, visited))?
-                    .field("tail", &true)
+                m.encode_entry("child", &mut |v| encode_chain(v, depth - 1, visited))?;
+                m.encode_entry("tail", &mut |v| v.encode_bool(true))
             })
         }
     }
 
-    /// Scenario: struct builders reach the exact depth boundary with enough byte budget for every level.
-    /// Guarantees: MAX_DEPTH structs and their scalar leaf fit; deeper builders fail, ancestors retain their prefixes and tails, and loss is reported once.
+    /// Scenario: nested maps reach the exact depth boundary with enough byte budget for every level.
+    /// Guarantees: MAX_DEPTH maps and their scalar leaf fit; deeper maps fail, ancestors retain their prefixes and tails, and loss is reported once.
     #[test]
     fn structured_depth_limit_is_independent_of_byte_budget() {
         let field = BUDGET_TEST_METADATA

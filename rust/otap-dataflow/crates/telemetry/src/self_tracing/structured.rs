@@ -38,16 +38,6 @@ pub trait StructuredValue {
 /// This object-safe interface lets type-erased structured values use the same
 /// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
-    /// Encodes a struct containing only caller-supplied fields.
-    /// Return the field chain directly, or `Ok(s)` for an empty struct.
-    /// The callback propagates field failures with `?`, retaining the completed
-    /// prefix and reporting truncation when it returns an error.
-    fn encode_struct(
-        &mut self,
-        f: &mut dyn for<'a> FnMut(StructEncoder<'a>) -> EncodeResult<StructEncoder<'a>>,
-    ) -> EncodeResult {
-        self.encode_map(&mut |writer| f(StructEncoder { writer }).map(|_| ()))
-    }
     /// Encodes a string, maybe truncated.
     fn encode_str(&mut self, value: &str) -> EncodeResult;
     /// Encodes the `Debug` value as a string, maybe truncated.
@@ -86,110 +76,6 @@ pub trait ArrayWriter {
         &mut self,
         f: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
     ) -> EncodeResult;
-}
-
-/// A callback-scoped struct encoder. Field failures propagate immediately with
-/// `?`; the enclosing callback finalizes the completed prefix.
-#[must_use]
-pub struct StructEncoder<'a> {
-    writer: &'a mut dyn MapWriter,
-}
-
-impl<'a> StructEncoder<'a> {
-    /// Encodes a borrowed field and returns the builder for chaining.
-    pub fn field<T: StructuredValue + ?Sized>(self, name: &str, value: &T) -> EncodeResult<Self> {
-        self.field_with(name, &mut |encoder| value.encode(encoder))
-    }
-
-    /// Encodes a field lazily, invoking `encode` only after its key fits.
-    pub fn field_with(
-        self,
-        name: &str,
-        encode: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
-    ) -> EncodeResult<Self> {
-        self.writer.encode_entry(name, encode)?;
-        Ok(self)
-    }
-}
-
-macro_rules! encode_integers {
-    ($($ty:ty),*) => {
-        $(
-            impl StructuredValue for $ty {
-                fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-                    encoder.encode_i64(*self as i64)
-                }
-            }
-        )*
-    };
-}
-
-// Match tracing's integer encoding, including u64's two's-complement conversion.
-encode_integers!(i8, i16, i32, isize, u8, u16, u32, u64, usize);
-
-impl StructuredValue for i64 {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        encoder.encode_i64(*self)
-    }
-}
-
-impl StructuredValue for f64 {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        encoder.encode_f64(*self)
-    }
-}
-
-impl StructuredValue for f32 {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        encoder.encode_f64(f64::from(*self))
-    }
-}
-
-impl StructuredValue for bool {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        encoder.encode_bool(*self)
-    }
-}
-
-impl StructuredValue for str {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        encoder.encode_str(self)
-    }
-}
-
-impl StructuredValue for String {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        self.as_str().encode(encoder)
-    }
-}
-
-impl<T: StructuredValue + ?Sized> StructuredValue for &T {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        T::encode(self, encoder)
-    }
-}
-
-impl<T: StructuredValue> StructuredValue for [T] {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        encoder.encode_array(&mut |array| {
-            for value in self {
-                array.encode_element(&mut |encoder| value.encode(encoder))?;
-            }
-            Ok(())
-        })
-    }
-}
-
-impl<T: StructuredValue, const N: usize> StructuredValue for [T; N] {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        self.as_slice().encode(encoder)
-    }
-}
-
-impl<T: StructuredValue> StructuredValue for Vec<T> {
-    fn encode(&self, encoder: &mut dyn ValueWriter) -> EncodeResult {
-        self.as_slice().encode(encoder)
-    }
 }
 
 /// A typed, exclusively owned value that can be borrowed as a structured field.

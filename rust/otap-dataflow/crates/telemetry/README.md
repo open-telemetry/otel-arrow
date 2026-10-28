@@ -129,10 +129,17 @@ struct Probe {
 
 impl StructuredValue for Probe {
     fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-        w.encode_struct(&mut |s| {
-            s.field("id", &self.id)?
-                .field("label", &self.label)?
-                .field("tags", &self.tags)
+        w.encode_map(&mut |m| {
+            m.encode_entry("id", &mut |v| v.encode_i64(self.id))?;
+            m.encode_entry("label", &mut |v| v.encode_str(&self.label))?;
+            m.encode_entry("tags", &mut |v| {
+                v.encode_array(&mut |a| {
+                    for tag in &self.tags {
+                        a.encode_element(&mut |v| v.encode_str(tag))?;
+                    }
+                    Ok(())
+                })
+            })
         })
     }
 }
@@ -155,7 +162,7 @@ The `state` field is an OTLP AnyValue map equivalent to:
 }
 ```
 
-The builder encodes into the supplied writer; it does not emit a log event or
+The encoder writes into the supplied writer; it does not emit a log event or
 build an intermediate value tree. Keep the `StructBox` for repeated logging:
 `as_struct()` borrows its current state without allocating. Pass it directly,
 without `?` or `%`, to preserve structure.
@@ -167,15 +174,11 @@ Handwritten encoders propagate failures with `?`. The encoder tracks
 truncation, retains completed container prefixes, and accounts for lost
 attributes without caller bookkeeping.
 
-Only caller-supplied fields are encoded; no struct name or reserved field is
-added. Each `.field()` borrows and encodes its value immediately. A failed field
-rolls back that field; exiting the callback through `?` retains the completed
-prefix and reports truncation. The callback boundary finalizes the struct;
-return the last `.field()` result directly, or `Ok(s)` for an empty struct.
-An error returned after `encode_struct` completes rolls back the enclosing value.
-
-Use `.field_with()` to defer encoding a field until its key fits when computing
-the field value is expensive.
+Only caller-supplied entries are encoded; no struct name or reserved field is
+added. A failed entry or element rolls back that member; exiting the container
+callback through `?` retains the completed prefix and reports truncation.
+An error returned after the container completes rolls back the enclosing value.
+Entry callbacks run only after their keys fit.
 
 ### Logging suppression and sampling
 
