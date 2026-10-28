@@ -1,5 +1,6 @@
 # FOO
 # BAR
+# BAZ
 queries:
   - name: Filter superfluous metadata
     sql: |
