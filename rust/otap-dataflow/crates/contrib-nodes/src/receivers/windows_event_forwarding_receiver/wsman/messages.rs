@@ -235,16 +235,21 @@ impl Request<'_, '_> {
     ///
     /// `public_endpoint` must be a validated configuration origin. Without it,
     /// only HTTPS URL shape and path are checked, not the authority.
+    /// End also accepts the exact WS-Addressing anonymous URI used by MS-WSMV.
     ///
     /// # Errors
     ///
     /// Rejects credentials, queries/fragments, non-HTTPS destinations, normalized
-    /// path aliases, and mismatched paths or configured origins.
+    /// path aliases, and mismatched paths or configured origins, except for
+    /// End addressed to the exact anonymous URI.
     pub fn validate_destination(
         &self,
         public_endpoint: Option<&str>,
         path: &str,
     ) -> Result<(), Error> {
+        if self.action == Action::End && self.destination == ANONYMOUS {
+            return Ok(());
+        }
         let invalid = || Error::InvalidEnvelope("To does not match collector destination");
         let destination = url::Url::parse(&self.destination).map_err(|_| invalid())?;
         let uri = self
@@ -741,6 +746,100 @@ mod tests {
         }
         request.destination = format!("https://elsewhere{path}");
         assert!(request.validate_destination(None, path).is_ok());
+    }
+
+    /// Scenario: End uses the MS-WSMV anonymous To on either supported route.
+    /// Guarantees: request and destination validation accept only the exact anonymous URI exception.
+    #[test]
+    fn validates_anonymous_end_destination() {
+        let headers = format!("<w:ResourceURI>{FULL_DUPLEX_RESOURCE}</w:ResourceURI>");
+        let valid = request_xml(Action::End, "", &headers);
+        for (route, path) in [
+            (Route::SubscriptionManager, "/wsman/SubscriptionManager"),
+            (
+                Route::Delivery { version: "v" },
+                "/wsman/subscriptions/subscription/v",
+            ),
+        ] {
+            for destination in [
+                ANONYMOUS.to_owned(),
+                format!("https://collector.example{path}"),
+                format!("{ANONYMOUS}/"),
+                format!("{ANONYMOUS}?query"),
+                format!("{ANONYMOUS}#fragment"),
+                ANONYMOUS.replace("http:", "https:"),
+                format!("http://collector.example{path}"),
+                format!("https://collector.example{path}/other"),
+            ] {
+                let xml = valid.replace("https://collector.example/wsman", &destination);
+                let envelope = parse_envelope(&xml);
+                let request = envelope.request(&route, 4096).unwrap();
+                assert_eq!(request.action(), Action::End);
+                for endpoint in [None, Some("https://collector.example")] {
+                    assert_eq!(
+                        request.validate_destination(endpoint, path).is_ok(),
+                        destination == ANONYMOUS
+                            || destination == format!("https://collector.example{path}"),
+                        "{destination} {route:?} {endpoint:?}"
+                    );
+                }
+            }
+            let xml = valid.replace(
+                "https://collector.example/wsman",
+                &format!("https://elsewhere{path}"),
+            );
+            let envelope = parse_envelope(&xml);
+            let request = envelope.request(&route, 4096).unwrap();
+            assert!(request.validate_destination(None, path).is_ok());
+            assert!(
+                request
+                    .validate_destination(Some("https://collector.example"), path)
+                    .is_err()
+            );
+        }
+    }
+
+    /// Scenario: actions other than End use the exact anonymous To URI.
+    /// Guarantees: the End exception does not bypass destination checks for any other action.
+    #[test]
+    fn rejects_anonymous_destination_for_other_actions() {
+        for (action, body, headers, route) in [
+            (
+                Action::Enumerate,
+                OPTIMIZED_ENUMERATE,
+                format!("<w:ResourceURI>{SUBSCRIPTION_RESOURCE}</w:ResourceURI>"),
+                Route::SubscriptionManager,
+            ),
+            (
+                Action::Heartbeat,
+                "<w:Events/>",
+                DELIVERY_HEADERS.into(),
+                Route::Delivery { version: "v" },
+            ),
+            (
+                Action::Events,
+                "<w:Events><w:Event/></w:Events>",
+                DELIVERY_HEADERS.into(),
+                Route::Delivery { version: "v" },
+            ),
+            (
+                Action::SubscriptionEnd,
+                "<e:SubscriptionEnd/>",
+                DELIVERY_HEADERS.into(),
+                Route::Delivery { version: "v" },
+            ),
+        ] {
+            let xml = request_xml(action, body, &headers)
+                .replace("https://collector.example/wsman", ANONYMOUS);
+            let envelope = parse_envelope(&xml);
+            let request = envelope.request(&route, 4096).unwrap();
+            for endpoint in [None, Some("https://collector.example")] {
+                assert!(
+                    request.validate_destination(endpoint, "/wsman").is_err(),
+                    "{action:?} {endpoint:?}"
+                );
+            }
+        }
     }
 
     /// Scenario: Enumerate and End contain missing resources or unsupported enumeration options.
