@@ -69,7 +69,7 @@ pub struct EngineMetrics {
 
     /// Process-wide private committed memory, including paged-out private memory.
     #[cfg(windows)]
-    #[metric(unit = "{By}")]
+    #[metric(unit = "By")]
     pub memory_commit: ObserveUpDownCounter<u64>,
 
     /// Process-wide CPU utilization as a ratio in [0, 1], normalized across all
