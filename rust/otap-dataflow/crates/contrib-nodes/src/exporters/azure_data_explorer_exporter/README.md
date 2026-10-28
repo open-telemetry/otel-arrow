@@ -4,7 +4,7 @@
 
 - Type: `urn:microsoft:exporter:azure_data_explorer`
 - Feature gate: `azure-data-explorer`
-- Stability: In-Progress; Not-Operational; supports logs, metrics, and traces
+- Stability: Experimental; supports logs, metrics, and traces
 
 ## Overview
 
@@ -95,11 +95,6 @@ nodes:
       # Gzip compression level (0-9, default: 6)
       gzip_compression_level: 6
 
-      # Optional log-schema compatibility controls.
-      legacy_logs_body_string: false
-      export_event_name: true
-      add_event_name_to_log_attributes: true
-
       # Maximum serialized JSON row size, including its newline separator.
       # May be lowered but cannot exceed the 900 KiB safety ceiling.
       max_row_bytes: 921600
@@ -139,10 +134,10 @@ or fragment. HTTP is accepted only for loopback development endpoints.
 
 ### Network request coalescing
 
-`network_requests.coalesce` is an explicit opt-in that combines multiple
-inbound PData messages into fewer, larger ADX HTTP requests. It reduces
-outbound request rate, but each source acknowledgement remains pending until
-ADX accepts the coalesced request.
+`network_requests.coalesce` is disabled by default. It is an explicit opt-in
+that combines multiple inbound PData messages into fewer, larger ADX HTTP
+requests. It reduces outbound request rate, but each source acknowledgement
+remains pending until ADX accepts the coalesced request.
 
 Configure the group as follows:
 
@@ -157,7 +152,7 @@ Configure the group as follows:
 An individual inbound PData message is never split to satisfy these limits. If
 its transformed rows exceed either boundary, the exporter permanently refuses
 the complete source message. When appending a valid message would cross a
-request boundary, the existing partial request is flushed first.
+request boundary, the existing partial request is sealed for dispatch first.
 
 `max_rows` must be between 1 and 100000, `max_bytes` between 1 and 4194304,
 and `max_in_flight` between 1 and 1024.
@@ -173,9 +168,11 @@ use HTTP/1.1 or many clients send concurrently. Coalescing delays their
 responses until ADX completes the corresponding request. The bound applies per
 exporter instance, so multiply it by the configured engine core count when
 estimating process-wide pending requests. It is both a global admission bound
-and a per-request message cap; in-flight requests count against the global
-bound. Increase it deliberately if more than one full coalesced request must
-run concurrently.
+and a per-request message cap; accumulators, in-flight requests, retained
+authentication retries, and pending completion routes all count against it.
+At the global cap, partial requests are flushed to release capacity.
+`max_in_flight` independently bounds concurrent requests. With coalescing
+disabled, it also bounds admitted source messages and completion routes.
 
 `flush_interval` applies only when `coalesce: true`. With coalescing disabled,
 each non-empty input message is dispatched immediately. With coalescing
@@ -186,16 +183,24 @@ therefore adds directly to acknowledgement latency during low-volume periods.
 Setting it too high can retain receiver responses, consume the pending-message
 bound, and apply backpressure that holds up the upstream pipeline.
 
-When a 401 rejects a coalesced request, the exporter retains that request and
-its acknowledgement contexts, waits for the bearer-token provider to publish
-a replacement token, and retries with the replacement. Authentication retries
-are bounded by `max_retries`; the value counts retries after the initial
-submission. Retry exhaustion and transient failures return retryable NACKs.
-Terminal client refusals return permanent NACKs. During shutdown, unresolved
-messages are routed with the `node_shutdown` cause while the engine deadline
-permits. At the deadline, remaining work is recorded as failed and abandoned
-so shutdown cannot block indefinitely. Setting `max_retries: 0` disables both
+When a 401 rejects a coalesced request, the exporter retains the compressed
+request and its acknowledgement contexts, waits for a replacement token, and
+retries with that token. Authentication retries are bounded by `max_retries`;
+the value counts retries after the initial submission. A late 401 cannot
+invalidate a newer token. Without coalescing, a 401 produces a retryable NACK.
+Retry exhaustion and transient failures return retryable NACKs. Terminal
+client refusals return permanent NACKs. Setting `max_retries: 0` disables both
 transient HTTP retries and retained 401 retries.
+
+During shutdown, the engine can force-drain input despite the normal admission
+gate. The exporter treats this as a shutdown signal, flushes partial requests
+without waiting for their timers, and parks at most one extra source until
+admitted work releases capacity. It does not accumulate the upstream backlog.
+Sources that cannot be dispatched without credentials receive `node_shutdown`
+NACKs. The exporter observes the inbox's latched shutdown deadline even while
+an overflow source is parked. That deadline bounds requests, completion
+routing, and the wait for capacity without requiring further inbox polling;
+unresolved work is canceled and recorded when it expires.
 
 If the bearer-token provider closes its stream while no usable token is
 cached, no replacement can arrive. The exporter retryably NACKs retained
@@ -222,6 +227,7 @@ request transmission, response-body handling, transient retries, and retry
 backoff. A 401 ends the physical operation immediately so the exporter can
 invalidate the rejected token generation and, when coalescing is enabled,
 retain the request until the authentication provider publishes a replacement.
+Each retained authentication retry starts a new HTTP operation deadline.
 
 Database, table, and mapping names are percent-encoded when constructing the
 streaming-ingestion endpoint. Each physical submission, including a transient
@@ -234,9 +240,9 @@ Each serialized JSON row is checked before batching or HTTP submission.
 `max_row_bytes` defaults to 921600 bytes (900 KiB), leaving safety margin below
 ADX's 1 MiB dynamic-value limit. An oversized input is permanently refused:
 operators receive a `row_too_large` warning and counter increment, while OTLP
-senders receive `INVALID_ARGUMENT` over gRPC or HTTP 400 with the actual and
-allowed byte counts. The original input is not split because that could change
-its acknowledgement semantics.
+senders waiting for downstream results receive `INVALID_ARGUMENT` over gRPC or
+HTTP 400 with the actual and allowed byte counts. The original input is not
+split because that could change its acknowledgement semantics.
 
 Raw OTLP protobuf framing is validated before transformation. Malformed logs,
 metrics, or traces are permanently refused rather than treated as empty input.

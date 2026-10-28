@@ -2,9 +2,8 @@
 
 # Azure Data Explorer Exporter Telemetry
 
-This document specifies telemetry planned for the
- `azure_data_explorer_exporter` module. The non-operational skeleton does not
- currently register these instruments or emit these log events.
+This document specifies telemetry emitted by the
+`azure_data_explorer_exporter` module.
 
 ## Metrics
 
@@ -21,10 +20,10 @@ pipeline's telemetry-interest policy.
 
 | Metric name | Description | Type | Produced in file |
 | --- | --- | --- | --- |
-| `exporter.attempted.messages` | Number of ADX attempts by signal and outcome. | Counter | `client.rs`, `exporter.rs` |
-| `exporter.attempted.duration` | Duration in seconds of each ADX attempt. Initial attempts include compression and HTTP work; retries exclude backoff and reuse the encoded payload. Coalescing wait and pre-batch transformation are excluded. | Exponential histogram | `client.rs`, `exporter.rs` |
-| `exporter.attempted.payload.size` | Encoded payload bytes produced or submitted by each attempt. | Counter | `client.rs`, `exporter.rs` |
+| `exporter.attempted.duration` | Duration in seconds of each ADX attempt. Initial attempts include compression and HTTP work; retries exclude backoff and reuse the encoded payload. Coalescing wait and transformation are excluded. | Exponential histogram | `client.rs`, `exporter.rs` |
 | `exporter.attempted.items` | Source OTLP signal items represented by each attempt. Expanded ADX rows do not increase this count. | Counter | `client.rs`, `exporter.rs` |
+| `exporter.attempted.messages` | Number of ADX attempts by signal and outcome. | Counter | `client.rs`, `exporter.rs` |
+| `exporter.attempted.payload.size` | Encoded payload bytes produced or submitted by each attempt. | Counter | `client.rs`, `exporter.rs` |
 
 These metrics are not input-message counters. `node.input.messages` describes
 PData entering the exporter, while `exporter.attempted.messages` describes
@@ -35,7 +34,7 @@ attempt before ACK.
 HTTP error bodies are retained only up to 64 KiB. The `client.http_failure`
 event records whether the body was truncated. Retry backoff honors
 server-provided `Retry-After` values within the operation deadline.
-An HTTP request canceled by the operation deadline is classified as
+An HTTP request canceled by the operation or shutdown deadline is classified as
 `response=network_error` so HTTP-attempt totals remain aligned with shared
 exporter-attempt metrics.
 
@@ -57,6 +56,7 @@ dimension instead of separate instruments for each status category.
 | --- | --- | --- | --- |
 | `exporter.azure_data_explorer.batches` | Terminal logical batches by `signal` and `outcome`. | Counter | `exporter.rs` |
 | `exporter.azure_data_explorer.http.responses` | HTTP attempts by bounded `response` category. | Counter | `client.rs` |
+| `exporter.azure_data_explorer.row_too_large` | Sources refused because a row exceeded `max_row_bytes`, by `signal`. | Counter | `metrics.rs` |
 
 Token acquisition and refresh telemetry is emitted by the bound authentication
 provider. With `azure_identity_auth`, these instruments use scope
@@ -70,19 +70,20 @@ continues to rename its `auth.failures` instrument to
 | --- | --- | --- | --- |
 | `azure_data_explorer_exporter.start` | `info` | Exporter startup with cluster/database/table context. | `exporter.rs` |
 | `azure_data_explorer_exporter.shutdown` | `info` | Exporter shutdown completed. | `exporter.rs` |
+| `azure_data_explorer_exporter.shutdown.draining` | `debug` | Forced input past the admission gate signals shutdown draining; partial batches flush immediately and at most one overflow source is parked. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.failed` | `warn` | Export failed for a batch and messages are nacked; sensitive payload and response content is never included. | `exporter.rs` |
-| `azure_data_explorer_exporter.export.retained_after_unauthorized` | `warn` | A coalesced request is retained until a replacement token is available. | `exporter.rs` |
+| `azure_data_explorer_exporter.export.retained_after_unauthorized` | `warn` | A coalesced request is retained until a replacement token is available, within the authentication retry bound. | `exporter.rs` |
+| `azure_data_explorer_exporter.extraction_failed` | `warn` | The exporter could not construct a signal view from the input payload. | `metrics.rs` |
+| `azure_data_explorer_exporter.payload_refused` | `warn` | A malformed signal payload was permanently refused. | `metrics.rs` |
+| `azure_data_explorer_exporter.invalid_metric_data` | `warn` | Invalid numeric or histogram metric data was permanently refused. | `metrics.rs` |
+| `azure_data_explorer_exporter.row_too_large` | `warn` | A serialized row exceeded `max_row_bytes`; records `actual_row_bytes` and `max_row_bytes`. | `metrics.rs` |
+| `azure_data_explorer_exporter.request_too_large` | `warn` | A source exceeded its row or byte budget; records the corresponding actual and maximum fields. | `metrics.rs` |
+| `azure_data_explorer_exporter.transformation_limit_exceeded` | `warn` | OTLP value nesting or traversal work exceeded a transformation limit; records `limit_kind`, `actual`, and `limit`. | `metrics.rs` |
+| `azure_data_explorer_exporter.batch.timer_flush` | `debug` | A partial coalesced request reached its flush deadline. | `exporter.rs` |
+| `azure_data_explorer_exporter.client_pool_exhausted` | `error` | The bounded client pool was unexpectedly empty at dispatch. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.sample_row` | `debug` | A bounded sample row is logged only when `log_failed_payload` is enabled for debugging. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.failed_payload` | `debug` | The complete failed payload is logged only when `log_failed_payload` is enabled for debugging. | `exporter.rs` |
 | `azure_data_explorer_exporter.message.no_records` | `debug` | An incoming message produced no rows. | `exporter.rs` |
-| `azure_data_explorer_exporter.extraction_failed` | `warn` | The exporter could not construct a signal view from the input payload. | `exporter.rs` |
-| `azure_data_explorer_exporter.payload_refused` | `warn` | A malformed signal payload was permanently refused. | `exporter.rs` |
-| `azure_data_explorer_exporter.invalid_metric_data` | `warn` | Invalid numeric or histogram metric data was permanently refused. | `exporter.rs` |
-| `azure_data_explorer_exporter.row_too_large` | `warn` | A serialized row exceeded `max_row_bytes`; records `actual_row_bytes` and `max_row_bytes`. | `exporter.rs` |
-| `azure_data_explorer_exporter.request_too_large` | `warn` | A request exceeded its row or byte budget; records the corresponding actual and maximum fields. | `exporter.rs` |
-| `azure_data_explorer_exporter.transformation_limit_exceeded` | `warn` | OTLP value nesting or traversal work exceeded a transformation limit; records `limit_kind`, `actual`, and `limit`. | `exporter.rs` |
-| `azure_data_explorer_exporter.batch.timer_flush` | `debug` | A partial coalesced request reached its flush interval. | `exporter.rs` |
-| `azure_data_explorer_exporter.client_pool_exhausted` | `error` | The bounded client pool was unexpectedly empty at dispatch. | `exporter.rs` |
 | `azure_data_explorer_exporter.compression_failed` | `error` | Gzip compression failed for a batch. | `exporter.rs` |
 | `azure_data_explorer_exporter.auth.invalid_bearer_token` | `warn` | A provider token could not be converted to an HTTP authorization header. | `exporter.rs` |
 | `azure_data_explorer_exporter.auth.token_stream_closed` | `warn` | The provider closed its token stream. If no usable token remains, pending and subsequent data receive retryable NACKs. | `exporter.rs` |
@@ -94,6 +95,9 @@ continues to rename its `auth.failures` instrument to
 | `azure_data_explorer_exporter.client.conflict` | `warn` | ADX returned HTTP 409; this event never includes the response body. | `client.rs` |
 | `azure_data_explorer_exporter.client.backoff` | `debug` | Retry backoff delay selected. | `client.rs` |
 | `azure_data_explorer_exporter.shutdown.deadline_elapsed` | `warn` | The shutdown deadline elapsed; unresolved requests were canceled, recorded as failures, and abandoned when completion routing could not finish by the deadline. | `exporter.rs` |
+| `azure_data_explorer_exporter.telemetry.failed` | `warn` | Periodic metric reporting failed. | `exporter.rs` |
+| `azure_data_explorer_exporter.telemetry.cancel_failed` | `warn` | The telemetry timer could not be canceled during shutdown. | `exporter.rs` |
+| `azure_data_explorer_exporter.telemetry.cancel_deadline` | `warn` | The shutdown deadline prevented telemetry timer cancellation. | `exporter.rs` |
 
 ## Sensitive debugging logs
 
