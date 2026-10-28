@@ -11,8 +11,8 @@
 //!
 //! TODO: Implement the sensitive capability for headers
 
+use crate::context::transport_headers::{CapturedTransportHeader, TransportHeaders, ValueKind};
 use crate::context::{ContextEntryName, ContextEntryRef};
-use crate::transport_headers::{CapturedTransportHeader, TransportHeaders, ValueKind};
 use hashbrown::{Equivalent, HashMap};
 use http::{HeaderMap, HeaderName};
 use schemars::JsonSchema;

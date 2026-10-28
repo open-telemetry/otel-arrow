@@ -71,3 +71,7 @@ venv
 
 # Visual Studio
 /.vs
+
+# Syncthing
+**/~syncthing~**
+*.sync-conflict-*

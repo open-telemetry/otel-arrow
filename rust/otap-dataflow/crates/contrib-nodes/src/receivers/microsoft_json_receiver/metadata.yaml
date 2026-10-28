@@ -1,0 +1,8 @@
+type: microsoft_json
+status:
+  class: receiver
+  codeowners:
+    active:
+      - JacksonWeber
+      - lzchen
+      - MSNev

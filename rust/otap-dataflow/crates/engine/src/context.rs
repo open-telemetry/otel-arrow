@@ -12,11 +12,11 @@ use crate::attributes::{
     PipelineAttributeSet, config_map_to_telemetry,
 };
 pub use crate::attributes::{NodeAttributeSet, NodeWithCustomAttributeSet};
-use crate::context_declaration::CompiledContextBindings;
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
+use crate::pdata_context::CompiledContextBindings;
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
