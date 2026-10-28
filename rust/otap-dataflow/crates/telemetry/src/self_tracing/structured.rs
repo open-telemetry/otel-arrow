@@ -36,10 +36,15 @@ pub trait StructuredValue: Any {
 /// This object-safe interface lets type-erased structured values use the same
 /// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
-    /// Starts a struct containing only caller-supplied fields.
-    /// Dropping the builder before `finish()` retains its completed prefix
-    /// and reports truncation at the enclosing value boundary.
-    fn encode_struct(&mut self) -> EncodeResult<StructEncoder<'_>>;
+    /// Encodes a struct containing only caller-supplied fields.
+    /// The callback propagates field failures with `?`, retaining the completed
+    /// prefix and reporting truncation when it returns an error.
+    fn encode_struct(
+        &mut self,
+        f: &mut dyn FnMut(StructEncoder<'_>) -> EncodeResult,
+    ) -> EncodeResult {
+        self.encode_map(&mut |writer| f(StructEncoder { writer }))
+    }
     /// Encodes a string, maybe truncated.
     fn encode_str(&mut self, value: &str) -> EncodeResult;
     /// Encodes the `Debug` value as a string, maybe truncated.
@@ -80,23 +85,14 @@ pub trait ArrayWriter {
     ) -> EncodeResult;
 }
 
-pub(crate) trait StructWriter: MapWriter {
-    /// Finalizes an open struct, if any. Incomplete structs retain their prefix.
-    fn finish_struct(&mut self, incomplete: bool);
-}
-
-/// A streaming struct encoder. Field failures propagate immediately with `?`;
-/// an unfinished builder retains its completed fields and reports truncation.
-#[must_use = "finish the struct, or drop it to retain a truncated prefix"]
+/// A callback-scoped struct encoder. Field failures propagate immediately with
+/// `?`; the enclosing callback finalizes the completed prefix.
+#[must_use]
 pub struct StructEncoder<'a> {
-    writer: &'a mut dyn StructWriter,
+    writer: &'a mut dyn MapWriter,
 }
 
 impl<'a> StructEncoder<'a> {
-    pub(crate) fn new(writer: &'a mut dyn StructWriter) -> Self {
-        Self { writer }
-    }
-
     /// Encodes a borrowed field and returns the builder for chaining.
     pub fn field<T: StructuredValue + ?Sized>(self, name: &str, value: &T) -> EncodeResult<Self> {
         self.field_with(name, &mut |encoder| value.encode(encoder))
@@ -112,16 +108,10 @@ impl<'a> StructEncoder<'a> {
         Ok(self)
     }
 
-    /// Completes the struct, preserving any internally recorded truncation.
+    /// Ends the field chain with a successful callback result.
+    /// The enclosing callback finalizes the struct.
     pub fn finish(self) -> EncodeResult {
-        self.writer.finish_struct(false);
         Ok(())
-    }
-}
-
-impl Drop for StructEncoder<'_> {
-    fn drop(&mut self) {
-        self.writer.finish_struct(true);
     }
 }
 

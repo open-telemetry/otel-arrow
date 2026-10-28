@@ -129,11 +129,12 @@ struct Probe {
 
 impl StructuredValue for Probe {
     fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
-        w.encode_struct()?
-            .field("id", &self.id)?
-            .field("label", &self.label)?
-            .field("tags", &self.tags)?
-            .finish()
+        w.encode_struct(&mut |s| {
+            s.field("id", &self.id)?
+                .field("label", &self.label)?
+                .field("tags", &self.tags)?
+                .finish()
+        })
     }
 }
 
@@ -165,10 +166,11 @@ truncation, retains completed container prefixes, and accounts for lost
 attributes without caller bookkeeping.
 
 Only caller-supplied fields are encoded; no struct name or reserved field is
-added. Each `.field()` borrows and encodes its value
-immediately. A failed field rolls back that field; exiting through `?` finalizes
-the completed prefix and reports truncation, even though `finish()` was skipped.
-Dropping an unfinished builder has the same behavior.
+added. Each `.field()` borrows and encodes its value immediately. A failed field
+rolls back that field; exiting the callback through `?` retains the completed
+prefix and reports truncation. The callback boundary finalizes the struct;
+`.finish()` simply ends the field chain with a successful result. An error
+returned after `encode_struct` completes rolls back the enclosing value.
 
 Use `.field_with()` to defer encoding a field until its key fits when computing
 the field value is expensive.

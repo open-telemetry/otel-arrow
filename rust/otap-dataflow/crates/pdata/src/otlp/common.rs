@@ -843,7 +843,7 @@ impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
 /// The payload length must fit in those bytes, which may be patched only once
 /// with a nonzero length.
 #[inline]
-pub fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
+fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
     buf: &mut B,
     len: usize,
     len_start_pos: usize,
