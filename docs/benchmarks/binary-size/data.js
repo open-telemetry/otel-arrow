@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793216173866,
+  "lastUpdate": 1793226224364,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -73978,6 +73978,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 118.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "aaf4b5434663ba2027daa3db81a9f41f945902f8",
+          "message": "docs (filelog) : clarify filelog discovery and rotation rules  (#4443)\n\n# Summary\n\nWhile planning Task 7 (file discovery) in #2844, we found cases the\ndesign did not fully explain. If a log file is renamed while a scan is\nrunning, the receiver could stop tracking it too early or skip the first\nlogs in its replacement. This PR clarifies what should happen before we\nimplement discovery, including how to handle excluded files, recover\nfrom failures, and stay within resource limits.\n\nFor example, an application can rename `app.log` to `app.log.1` and\ncreate a new `app.log` during a periodic scan. The scan might miss the\nold file even though it still exists. The receiver needs to keep the old\nfile's reading progress and read the replacement from the correct\nstarting point.\n\n## What changes\n\n- Distinguish a file that was not found from a scan that could not\nfinish, a file that is excluded, and a file whose identity could not be\nverified.\n- Require more evidence before permanently marking a rotated file as\nfinished. Finding it again can cancel that decision until the receiver\nstarts handling its final partial record.\n- Allow an already-open deleted file to finish even when discovery is\nstalled, where filesystem behavior has been verified. Reading,\ndownstream acknowledgement, and checkpoint rules still apply.\n- Read a new replacement file from the beginning without waiting for a\ncomplete scan when there is no conflicting file assignment. Keep the old\nfile's progress separate. After restart, verify which file each saved\npath refers to before using it. Resource limits and conflicting\nassignments can still delay admission.\n- Explain how exclusions, missing directories, and directory changes\naffect reading and cleanup.\n\n## Proposed decisions\n\nIf you have concerns about any of these choices or their trade-offs,\nplease share them in the PR comments.\n\n| Proposed rule | Why | Cost or limitation |\n| --- | --- | --- |\n| Before finishing a still-linked rotated file, require a later\nsuccessful scan and a period with no new bytes. Stop allowing\ncancellation before processing its final partial record. | One missed\nscan should not finish a file permanently. | Files stay open longer.\nRepeated moves or an undetected storage outage can still cause duplicate\nor skipped logs. |\n| Do not conclude that files are gone when required parts of a scan\ncannot be completed. Apply this across the receiver. | A scan failure or\nunavailable storage should not look like deleted files. | Missing\ndirectories and persistent failures can delay cleanup and eventually\nprevent reading new files. Valid files can still be read, and verified\nhandling of already-open deleted files remains available. |\n| Check the tracked path before stopping a file because it is excluded.\nIf that check is uncertain, wait for a complete scan. | Stop confirmed\nexclusions without waiting for unrelated scan work. | Stopping the wrong\nreader can lose access to unread logs. Uncertainty can delay stopping an\nexcluded file. |\n| Inspect alternate names only within the bounded scan; do not search\nexcluded directory trees for every possible name. | Keep memory, file\nhandles, and scan work bounded. | Moving a tracked file into an excluded\ndirectory may not immediately stop collection. Exclusions are not an\nimmediate privacy barrier. |",
+          "timestamp": "2026-10-28T20:45:09Z",
+          "tree_id": "1bf192d0420db6f747205dd6e6dd6d5207c04070",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/aaf4b5434663ba2027daa3db81a9f41f945902f8"
+        },
+        "date": 1793226203016,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.22,
             "unit": "MB"
           },
           {
