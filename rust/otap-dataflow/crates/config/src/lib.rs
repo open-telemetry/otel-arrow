@@ -23,6 +23,7 @@ pub mod config_provider;
 /// capture and propagation policies, and authorized identity capture.
 pub mod context;
 pub mod conversion;
+pub mod data_limits;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;

@@ -64,7 +64,6 @@ use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
-mod bounded;
 pub mod config;
 mod error;
 mod event_mapping;

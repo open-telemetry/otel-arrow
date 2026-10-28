@@ -5,14 +5,15 @@
 
 #![allow(dead_code)] // Runtime integration is deliberately deferred.
 
-use super::bounded::{Budget, Limits, MappingError, inspect, json_size};
 use super::config::{
     EventAction, EventNameValidation, ExpectedType, LengthExceeded, MappingTarget, OnMissing,
     ScopeField, ScopeSplit, UnmappedMode, Validation, ValidationFailure, ValueTransform,
     split_dash_semver,
 };
+use super::error::MappingError;
 use super::field_mapping::{CompiledEndpoint, CompiledRule, pattern_matches};
 use super::ikey_filter::FilterVerdict;
+use otel_arrow_dfe_config::data_limits::{Budget, Limits, inspect_json, json_size};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
@@ -64,7 +65,7 @@ impl CompiledEndpoint {
         context: &MappingContext,
     ) -> Result<MappingOutcome, MappingError> {
         let mut budget = Budget::new(self.limits.work);
-        inspect(event, self.limits, &mut budget)?;
+        inspect_json(event, self.limits, &mut budget)?;
         if !event.is_object() {
             return Err(MappingError::Rejected("expected a JSON object".into()));
         }
@@ -166,13 +167,13 @@ impl CompiledEndpoint {
                             .ok_or_else(|| MappingError::Config("missing default value".into()))?;
                         budget.charge(json_size(default, self.limits.output_bytes)?)?;
                         insert_default(logical.to_mut(), &rule.path, default)?;
-                        inspect(&logical, self.limits, &mut budget)?;
+                        inspect_json(&logical, self.limits, &mut budget)?;
                         budget.charge(json_size(&logical, budget.remaining())?)?;
                     }
                 }
             }
         }
-        inspect(&logical, self.limits, &mut budget)?;
+        inspect_json(&logical, self.limits, &mut budget)?;
         let mut state = Mapper {
             endpoint: self,
             event,
@@ -287,7 +288,7 @@ impl Mapper<'_> {
         original: &Value,
         path: &mut Vec<String>,
         rules: &[CompiledRule],
-        suppress_unmapped: bool,
+        mut suppress_unmapped: bool,
     ) -> Result<(Option<Value>, Option<Value>), MappingError> {
         self.budget
             .charge(1 + path.iter().map(String::len).sum::<usize>())?;
@@ -299,30 +300,26 @@ impl Mapper<'_> {
             logical.push(part.to_owned());
         }
         // Flattened SDK keys must not bypass constraints on virtual parents.
-        for container in rules {
-            if let Some(keys) = &container.rule.allowed_keys {
-                self.budget
-                    .charge(container.path.len() + keys.iter().map(String::len).sum::<usize>())?;
-                if logical.len() > container.path.len()
-                    && container.matches(&logical[..container.path.len()], &mut self.budget)?
-                {
-                    let mut remaining = container.path.len();
-                    for key in path.iter() {
-                        let parts = key.split('.').count();
-                        if parts > remaining {
-                            let child = key.splitn(remaining + 1, '.').last().ok_or_else(|| {
-                                MappingError::Rejected("missing child key".into())
-                            })?;
-                            if !allowed_child(keys, child, &mut self.budget)? {
-                                return Err(MappingError::Rejected(
-                                    "unlisted flattened child key".into(),
-                                ));
-                            }
-                            break;
-                        }
-                        remaining -= parts;
+        for (index, container) in rules.iter().enumerate() {
+            if let Some(keys) = &container.rule.allowed_keys
+                && let Some((child, _)) = container.ancestor_child(path, &mut self.budget)?
+                && !allowed_child(keys, child, &mut self.budget)?
+            {
+                return Err(MappingError::Rejected(
+                    "unlisted flattened child key".into(),
+                ));
+            }
+            if matches!(container.rule.target, Some(MappingTarget::Drop))
+                && let Some((_, prefix)) = container.ancestor_child(path, &mut self.budget)?
+            {
+                let mut shadowed = false;
+                for earlier in &rules[..index] {
+                    if earlier.matches(&prefix, &mut self.budget)? {
+                        shadowed = true;
+                        break;
                     }
                 }
+                suppress_unmapped |= !shadowed;
             }
         }
         let replacement;
@@ -368,16 +365,16 @@ impl Mapper<'_> {
             }
             for also in &rule.also {
                 let transformed = match &also.transform {
-                    Some(transform) => {
+                    Some(transform) => Cow::Owned(
                         transform_value(transform, &validated, self.remaining, &mut self.budget)?
                             .ok_or_else(|| {
-                                MappingError::Rejected(format!(
-                                    "transform cannot be applied at {}",
-                                    path.join(".")
-                                ))
-                            })?
-                    }
-                    None => validated.clone(),
+                            MappingError::Rejected(format!(
+                                "transform cannot be applied at {}",
+                                path.join(".")
+                            ))
+                        })?,
+                    ),
+                    None => Cow::Borrowed(&validated),
                 };
                 self.target(&also.target, &transformed, path, Some(compiled))?;
             }
@@ -768,8 +765,12 @@ fn event_name(
         for (index, segment) in raw.split('.').enumerate() {
             if index == strip.index() {
                 let end = offset + segment.len();
-                if end < raw.len() && strip.matches_segment(segment, field) {
-                    name = format!("{}{}", &raw[..offset], &raw[end + 1..]);
+                if strip.matches_segment(segment, field) {
+                    name = if end < raw.len() {
+                        format!("{}{}", &raw[..offset], &raw[end + 1..])
+                    } else {
+                        raw[..offset.saturating_sub(1)].to_owned()
+                    };
                 }
                 break;
             }
