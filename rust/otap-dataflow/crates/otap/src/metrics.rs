@@ -18,7 +18,7 @@ use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::{
-    Outcome, SignalAttributes, SignalOutcomeAttributes,
+    Outcome, OutcomeAttributes, SignalAttributes, SignalOutcomeAttributes,
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
@@ -28,6 +28,18 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::ops::AsyncFnOnce;
 use std::time::{Duration, Instant};
+
+/// Accepted receiver-initiated collection attempts, completed before downstream handoff.
+///
+/// One scrape or bounded query page is one attempt, independent of result rows,
+/// signal classification, and emitted PData. Skipped opportunities are not attempts.
+#[metric_set(name = "receiver.pulled", measurement_attributes = OutcomeAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct ReceiverPulledMetrics {
+    /// Number of accepted collection attempts reaching a terminal local outcome.
+    #[metric(unit = "{attempt}")]
+    pub attempts: Counter<u64>,
+}
 
 /// Receiver-local handling of classified messages received at the external boundary.
 #[metric_set(
@@ -800,6 +812,45 @@ mod tests {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::cell::Cell;
+
+    /// Scenario: Collection attempts terminate with different outcomes before any signal is known.
+    /// Guarantees: Reporting preserves disjoint outcome counts without a signal dimension and drains each bucket once.
+    #[test]
+    fn receiver_pulled_attempts_report_disjoint_outcomes() {
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ReceiverPulledMetrics::register(&pipeline_ctx);
+        let outcomes = [
+            (Outcome::Success, "success", 2),
+            (Outcome::Failure, "failure", 3),
+        ];
+        for (outcome, _, count) in outcomes {
+            let attributes = OutcomeAttributes { outcome };
+            metrics.with(attributes).attempts.add(count);
+            metrics.with(attributes).attempts.inc();
+        }
+
+        let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(4);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("report attempts");
+        let snapshots: Vec<_> = rx.try_iter().collect();
+        assert_eq!(snapshots.len(), outcomes.len());
+        for (_, wire_outcome, count) in outcomes {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| {
+                    snapshot.measurement_attribute_value("outcome") == Some(wire_outcome)
+                })
+                .expect("recorded outcome");
+            assert_eq!(snapshot.descriptor().name, "receiver.pulled");
+            assert_eq!(snapshot.measurement_attribute_value("signal"), None);
+            let descriptor = &snapshot.descriptor().metrics[0];
+            assert_eq!(descriptor.name, "attempts");
+            assert_eq!(descriptor.unit, "{attempt}");
+            assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), count + 1);
+        }
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
 
     fn new_attempted_metrics() -> MeasurementMetricSet<ExporterAttemptedMetrics> {
         let registry = TelemetryRegistryHandle::new();
