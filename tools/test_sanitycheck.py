@@ -95,7 +95,7 @@ def main():
             'PASS' if ok else 'FAIL', name, expected, got))
         if not ok:
             failures += 1
-    failures += check_vendored_cases()
+    failures += check_excluded_cases()
     total = len(CASES) + len(VENDORED_CASES)
     if failures:
         print('{} test(s) failed'.format(failures))
