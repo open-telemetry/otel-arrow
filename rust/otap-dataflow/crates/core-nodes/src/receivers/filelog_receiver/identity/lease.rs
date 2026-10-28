@@ -24,6 +24,8 @@ pub enum LeaseError {
     Conflict {
         /// Bounded logical node name for a rate-limited health event.
         owner: Arc<str>,
+        /// True only for this logical owner, regardless of diagnostic name.
+        same_owner: bool,
     },
     /// The owner's admitted population is exhausted.
     #[error("filelog runtime lease capacity exhausted")]
@@ -140,6 +142,7 @@ impl LeaseOwner {
         if let Some(entry) = state.entries.get(&key) {
             return Err(LeaseError::Conflict {
                 owner: Arc::clone(&entry.name),
+                same_owner: entry.owner == self.0.id,
             });
         }
         let held = self.0.held.load(Ordering::Relaxed);
@@ -245,6 +248,38 @@ impl Drop for LeaseGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: Two distinct owners have the same name and contend for a held locator.
+    /// Guarantees: Self-conflict uses owner identity, and neither conflict releases the lease.
+    #[test]
+    fn conflicts_distinguish_owner_identity_from_name() {
+        let registry = Arc::new(LeaseRegistry::default());
+        let first = registry.owner("same-name", 2).unwrap();
+        let second = registry.owner("same-name", 2).unwrap();
+        let locator = FileLocator {
+            device: 1,
+            inode: 2,
+        };
+        let held = first.acquire(locator).unwrap();
+        assert!(matches!(
+            first.acquire(locator),
+            Err(LeaseError::Conflict {
+                same_owner: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            second.acquire(locator),
+            Err(LeaseError::Conflict {
+                same_owner: false,
+                ..
+            })
+        ));
+        assert_eq!(registry.len().unwrap(), 1);
+        held.release().unwrap();
+        second.acquire(locator).unwrap().release().unwrap();
+        assert!(registry.is_empty().unwrap());
+    }
 
     /// Scenario: A registry lock is poisoned by an unwinding worker.
     /// Guarantees: Subsequent acquisition/release fail closed and never silently clear ownership.

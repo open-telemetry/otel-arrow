@@ -531,7 +531,7 @@ fn cross_namespace_lease_conflict_outlives_descriptor() {
         || false,
     );
     assert!(
-        matches!(outcome, Err(IdentityError::Lease(LeaseError::Conflict { owner })) if &*owner == "test-node")
+        matches!(outcome, Err(IdentityError::Lease(LeaseError::Conflict { owner, same_owner: false })) if &*owner == "test-node")
     );
     drop(seed);
     let _ = commit(&mut other, &path, Context::Unrelated);

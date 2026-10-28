@@ -296,9 +296,11 @@ impl IdentityOwner {
             .min((cp::WAL_MAX_TX_BODY_BYTES / (3 * (cp::MAX_OPERATION_PAYLOAD_BYTES + 8))) as usize)
     }
 
-    /// Runtime readers plus one bounded speculative admission group. Construct
-    /// the lease owner with this capacity so temporary new-file plans cannot
-    /// exhaust the leases needed by an existing identity's recovery/replacement.
+    /// Returns capacity for runtime readers plus one speculative admission group.
+    ///
+    /// Construct the lease owner with this capacity and keep at most
+    /// `admission_limit()` prepared plans outstanding. Temporary new-file plans
+    /// then cannot exhaust leases needed by existing identity recovery/replacement.
     pub fn required_lease_capacity(inputs: &ValidatedInputs) -> Result<usize, IdentityError> {
         (inputs.settings().limits.max_tracked_files as usize)
             .checked_add(Self::batch_capacity(inputs))

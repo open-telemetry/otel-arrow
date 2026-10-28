@@ -65,7 +65,9 @@ before durable work; it does not add another transaction manager.
 
 Move each returned `ReaderSeed` into its logical reader. Revalidate the source
 when reopening it. Closing or evicting a descriptor does not release the lease;
-keep it until the logical reader retires.
+keep it until the logical reader retires. Discovery's `TrackedFile.resident`
+means logical reader ownership, not an open descriptor. Keep it set through
+descriptor eviction and while delivery work prevents retirement.
 
 Before releasing a lease or superseding an identity, lifecycle handling must
 prove that no unresolved source delta remains in an open batch, retained batch
@@ -115,6 +117,12 @@ returned readers when ownership cleanup has stopped the owner.
 | `AppendRejected` | Nothing was written. Invalid encoding/state requests leave the owner usable; compaction and authority failures stop it. |
 | `PendingWrite` | A recoverable write attempt has an unresolved outcome. The owner retains the exact result and leases. Back off on the worker, then call `resolve_pending`. |
 | Failed sync, corruption, authority loss or exhausted failure budget | Terminal: stop the owner. |
+
+After `SyncFailed` or `SyncPoisoned`, the supervisor must prevent reopening the
+namespace in-process, including automatic receiver replacement. This applies to
+errors from `CheckpointStore::open` before an owner exists, errors returned by
+owner operations, and errors inside `SyncOutcome.growth`. A successful required
+progress barrier does not make a later growth sync failure recoverable.
 
 For `PendingWrite`, never resubmit the operation or reopen the store. Resolution
 uses the store's original-handle protocol and returns the retained result once,
@@ -181,7 +189,7 @@ share a cancellation-aware helper that retries `Interrupted` at most eight times
 per bounded read.
 
 The frontier-error rule still needs the [proposed clarification][clarifications].
-PR #4443 is unchanged.
+This implementation does not amend the binding specification or PR #4443.
 
 Age filtering uses one supplied wall-clock time and the open handle's mtime.
 Files exactly at the age threshold remain eligible. Future mtimes count as age
@@ -217,8 +225,10 @@ the confirmed barrier, but may still require pending resolution or shutdown.
 Exact-locator recovery reuses `ReplayState`'s existing index. Only new unmatched
 candidates scan Active history, checking cancellation between records. Worst-case
 association work is O(tracked records * fingerprint width); this is not a finite
-latency guarantee. Measure churn before adding indexes. There is no second
-record or path table.
+latency guarantee. Measure churn before adding indexes. Identity does not keep a
+second authoritative record or path table. The adapter needs a bounded mapping
+between discovery's `TrackedId` and checkpoint `FileId`; this is correlation
+state, not a copy of checkpoint records.
 
 The executor keeps one configured fingerprint buffer. Each prepared plan holds
 one reader seed with a bounded prefix, a compact exact-record stamp, at most
@@ -226,8 +236,11 @@ three checkpoint operations and bounded evidence copies. The stamp does not copy
 the checkpoint's retained fingerprint. `scratch_bytes()` reports allocated
 scratch capacity.
 
-Integration must cap outstanding plans by the candidate-offer bound. Tasks 19/36
-must account for the evidence copies, channel storage and checkpoint staging.
+Keep at most `admission_limit()` prepared plans outstanding, including plans
+waiting for commit or pending-write resolution. Discovery may retain more offers;
+prepare them one bounded group at a time. The lease reserve covers one group,
+not the entire offer population. Tasks 19/36 must account for evidence copies,
+channel storage and checkpoint staging.
 
 ### Lease ownership
 
@@ -248,19 +261,70 @@ Conflicts report the existing owner's name for `filelog.local_locator_conflict`;
 do not silently ignore them. Tests use isolated registries. The registry mutex
 covers only map and counter operations: no I/O, channel waits or telemetry
 formatting occurs while held. The checkpoint store owns namespace locking.
-These are local ownership guarantees, not distributed fencing.
+These are local ownership guarantees, not distributed fencing. A conflict exposes
+`same_owner`, based on registry identity rather than node name. Self-conflict
+means the existing reader or plan still owns the locator; it must not produce a
+cross-node conflict event or release that ownership.
 
 ### Discovery and lifecycle integration
 
-Task 7b is separate from this main-based change. Its adapter must preflight the
-whole group before checkpoint commit, then publish the whole group after success
-or successful pending resolution. Same-locator supersession must retire/replace
-the discovery view without requiring another tracked slot. Changed-locator
-rotation needs an independent durable slot; do not remove its predecessor merely
-to make room.
+The merged discovery API is `Reconciler::admit_batch`. The worker adapter owns
+this sequence:
 
-These transitions are not implemented by this standalone component. Its batch
-tests do not establish that discovery and the worker are correctly integrated.
+1. Prepare at most one admission group and call `select_batch`.
+2. Map the selected plans to exactly the corresponding `AdmissionChange` values.
+3. Call `admit_batch`, which preflights the entire group before its callback.
+4. In the callback, commit that exact group. Resolve recoverable pending writes
+   there, with bounded worker backoff and cancellation handling, while discovery
+   remains exclusively borrowed. Do not return `Ok` while the outcome is uncertain.
+   If cancellation leaves the write unresolved, return `Err`, stop reconciliation,
+   and retain ownership until the worker has stopped accessing the store.
+5. After successful publication, hand reader seeds to the reader scheduler.
+
+The adapter maps lifetime-unique 64-bit discovery IDs to 128-bit durable file
+IDs. Bound this mapping by tracked capacity plus one admission group, including
+reserved IDs. Restore terminal records too: they consume tracked capacity until
+retention removes them. Membership must agree after publication and retirement;
+a frozen durable transition may temporarily precede discovery publication.
+
+Map a decision's `superseded: Some(id)` to `replace_id`. This same-locator
+replacement requires the old discovery entry to be non-resident and eligible
+for replacement. It needs no extra tracked slot. Changed-locator rotation keeps
+its predecessor and needs another slot. Publish committed quarantine with
+`active: false` and no reader.
+
+Callback results have distinct meanings:
+
+| Result | Meaning |
+| --- | --- |
+| `Ok(Some(time))` | The entire group committed or its pending write resolved successfully, and the complete outcome permits publication. |
+| `Ok(None)` | Known-no-write deferral with the owner still running, such as a stale plan or batch-capacity rejection. |
+| `Err` | The owner stopped, the outcome remains uncertain, or another failure requires aborting publication. |
+
+Check `is_stopped()` and all committed outcomes, including quarantine lease
+cleanup, before returning success. Encoding or replay rejection is visible to
+the worker even when it permits known-no-write deferral; do not silently retry
+an invalid request forever.
+
+Preflight rejection writes nothing and rejects the whole group. Capacity becomes
+capacity feedback. Incompatible group members may be separated before a new
+preflight; invalid mappings or lifecycle states need correction. Never commit a
+subset of a group already preflighted, or repeatedly reform a rejected group
+without addressing the cause.
+
+Do not flush fingerprint growth or perform other identity-changing maintenance
+between preparation and commit. Schedule maintenance between groups, including
+when `sync_interval` is zero: immediate progress durability does not itself
+flush fingerprint growth.
+
+A reusable policy-qualified opener is still required integration work. Add it to
+discovery/source access by reusing the existing pin-bound policy checks, then
+use it in the worker adapter for admission and reader reopen with the shared
+probe budget. The existing `SourceFile::open_at` enforces leaf symlink policy,
+but does not perform the complete policy check. Locator equality alone is not
+a substitute. Adapter and lifecycle tests must establish descriptor bounds,
+pending-write correlation, Ack/Nack authorization and safe retirement.
+Standalone identity batch tests do not prove those integration contracts.
 
 ## Validation
 
@@ -281,6 +345,9 @@ compaction, remaining time is approximately the smaller of:
 (max_wal_transactions - applied_sequence) / appends_per_second
 (max_wal_bytes - wal_bytes) / WAL_bytes_per_second
 ```
+
+Restarting does not clear either WAL cap. Without compaction or a supported
+change to the limits, the next required append will encounter the same limit.
 
 Defaults are 10,000 transactions and 64 MiB. Registration, resets, metadata updates
 and quarantine consume this budget too. The store uses these append caps
