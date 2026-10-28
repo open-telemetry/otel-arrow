@@ -3,14 +3,6 @@
 
 //! HTTP client for ADX Kusto streaming ingestion.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the transport is wired into the exporter runtime in a follow-up phase"
-    )
-)]
-
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_otap::metrics::ExporterAttempt;
@@ -24,7 +16,7 @@ use std::time::SystemTime;
 use tokio::time::{Duration, Instant};
 
 use super::error::Error;
-use super::metrics::AzureDataExplorerExporterMetricsRc;
+use super::metrics::{AzureDataExplorerExporterMetricsRc, PendingAttempt};
 
 /// Initial backoff delay between retries.
 const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
@@ -60,6 +52,13 @@ pub struct AzureDataExplorerClient {
 }
 
 impl AzureDataExplorerClient {
+    pub(super) fn http_client_builder() -> reqwest::ClientBuilder {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            // The exporter owns the retry budget and physical-attempt metrics.
+            .retry(reqwest::retry::never())
+    }
+
     /// Emit a bounded ADX response prefix in a fixed maximum number of chunks.
     /// The compact failure event is useful for structured telemetry, but its
     /// single-line summary cannot preserve multiline response detail.
@@ -245,44 +244,46 @@ impl AzureDataExplorerClient {
         deadline: Instant,
         operation_start: Instant,
         compressed_data: Bytes,
-        export_attempt: ExporterAttempt,
+        mut export_attempt: ExporterAttempt,
         metadata: ExportAttemptMetadata,
     ) -> Result<Duration, Error> {
-        let completed = export_attempt
-            .run(async |attempt_metrics| {
-                attempt_metrics.set_item_count_with(|| metadata.items);
-                attempt_metrics.set_payload_size_with(|| metadata.payload_size);
-                let result = tokio::time::timeout_at(
-                    deadline,
-                    self.try_send_request(
-                        table,
-                        json_mapping,
-                        endpoint,
-                        auth_header,
-                        encoded_table,
-                        operation_id,
-                        attempt,
-                        operation_start,
-                        compressed_data,
-                    ),
-                )
-                .await
-                .map_err(|_| {
-                    self.metrics
-                        .borrow_mut()
-                        .record_http_response(HttpResponse::NetworkError);
-                    Error::OperationTimeout {
-                        timeout: self.timeout,
-                    }
-                })?;
-                match result {
-                    Ok(duration) => Ok(duration),
-                    Err(error) if error.is_refusal() => Err(attempt_metrics.refused(error)),
-                    Err(error) => Err(attempt_metrics.failed(error)),
-                }
+        export_attempt.set_item_count_with(|| metadata.items);
+        export_attempt.set_payload_size_with(|| metadata.payload_size);
+        let mut pending_attempt =
+            PendingAttempt::new(self.metrics.clone(), export_attempt).for_http();
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.try_send_request(
+                table,
+                json_mapping,
+                endpoint,
+                auth_header,
+                encoded_table,
+                operation_id,
+                attempt,
+                operation_start,
+                compressed_data,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            self.metrics
+                .borrow_mut()
+                .record_http_response(HttpResponse::NetworkError);
+            Err(Error::OperationTimeout {
+                timeout: self.timeout,
             })
-            .await;
-        self.metrics.borrow_mut().boundary.record(completed)
+        });
+        let attempt = pending_attempt.take();
+        let result = match result {
+            Ok(duration) => Ok(duration),
+            Err(error) if error.is_refusal() => Err(attempt.refused(error)),
+            Err(error) => Err(attempt.failed(error)),
+        };
+        self.metrics
+            .borrow_mut()
+            .boundary
+            .record(attempt.complete(result))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -748,6 +749,156 @@ mod tests {
             .position(|metric| metric.name == "responses")
             .expect("responses metric");
         snapshot.get_metrics()[index].to_u64_lossy()
+    }
+
+    async fn read_http2_frame(stream: &mut tokio::net::TcpStream) -> [u8; 9] {
+        let mut header = [0; 9];
+        let _ = stream
+            .read_exact(&mut header)
+            .await
+            .expect("HTTP/2 frame header");
+        let length =
+            (usize::from(header[0]) << 16) | (usize::from(header[1]) << 8) | usize::from(header[2]);
+        assert!(
+            length <= 16_384,
+            "fixture uses the default HTTP/2 frame limit"
+        );
+        let mut payload = vec![0; length];
+        let _ = stream
+            .read_exact(&mut payload)
+            .await
+            .expect("HTTP/2 frame payload");
+        header
+    }
+
+    async fn check_http2_protocol_retry_budget(goaway: bool) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        for disable_hidden_retries in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+            let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+            let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+            let server = async {
+                let mut submissions = 0;
+                let mut retired_connections = Vec::new();
+                loop {
+                    let (mut stream, _) = tokio::select! {
+                        _ = &mut done_rx => return submissions,
+                        connection = listener.accept() => connection.expect("HTTP/2 connection"),
+                    };
+                    let mut preface = [0; 24];
+                    let _ = stream
+                        .read_exact(&mut preface)
+                        .await
+                        .expect("HTTP/2 preface");
+                    assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+                    stream
+                        .write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0])
+                        .await
+                        .expect("server SETTINGS");
+                    loop {
+                        let frame = tokio::select! {
+                            _ = &mut done_rx => return submissions,
+                            frame = read_http2_frame(&mut stream) => frame,
+                        };
+                        if frame[3] == 4 && frame[4] & 1 == 0 {
+                            stream
+                                .write_all(&[0, 0, 0, 4, 1, 0, 0, 0, 0])
+                                .await
+                                .expect("SETTINGS ACK");
+                        } else if frame[3] == 1 {
+                            submissions += 1;
+                            if goaway {
+                                // NO_ERROR with last-stream-id 0 says this request was not processed.
+                                stream
+                                    .write_all(&[0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                                    .await
+                                    .expect("graceful GOAWAY");
+                                break;
+                            }
+                            let mut reset = vec![0, 0, 4, 3, 0];
+                            reset.extend_from_slice(&frame[5..9]);
+                            reset.extend_from_slice(&7u32.to_be_bytes());
+                            stream.write_all(&reset).await.expect("REFUSED_STREAM");
+                        }
+                    }
+                    // Keep GOAWAY connections alive so unread request data cannot
+                    // cause a TCP reset that masks the graceful protocol signal.
+                    retired_connections.push(stream);
+                }
+            };
+            let builder = if disable_hidden_retries {
+                AzureDataExplorerClient::http_client_builder()
+            } else {
+                reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+            };
+            let metrics = test_metrics();
+            let client = AzureDataExplorerClient::new(
+                &endpoint,
+                "db",
+                builder
+                    .http2_prior_knowledge()
+                    .build()
+                    .expect("HTTP/2 client"),
+                metrics.clone(),
+                0,
+                Duration::from_secs(30),
+                false,
+            );
+            let work = async {
+                let payload = Bytes::from_static(b"compressed-payload");
+                let (attempt, metadata) = export_attempt(&metrics, 3, payload.len());
+                let error = client
+                    .send(
+                        "table",
+                        None,
+                        HeaderValue::from_static("Bearer token"),
+                        payload,
+                        attempt,
+                        metadata,
+                    )
+                    .await
+                    .expect_err("protocol NACK");
+                assert!(matches!(error, Error::ExportFailed { attempts: 1, .. }));
+                let snapshots = metrics.borrow_mut().terminal_snapshots();
+                assert_eq!(
+                    attempted_metric(&snapshots, Outcome::Failure, "messages"),
+                    1
+                );
+                assert_eq!(attempted_metric(&snapshots, Outcome::Failure, "items"), 3);
+                assert_eq!(http_response_metric(&snapshots, "network_error"), 1);
+                done_tx.send(()).expect("stop server");
+            };
+            let (submissions, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::join!(server, work)
+            })
+            .await
+            .expect("HTTP/2 scenario");
+            if disable_hidden_retries {
+                assert_eq!(
+                    submissions, 1,
+                    "zero exporter retries means one wire submission"
+                );
+            } else {
+                assert!(
+                    submissions > 1,
+                    "control must reproduce reqwest's hidden retries"
+                );
+            }
+        }
+    }
+
+    /// Scenario: HTTP/2 refuses a request stream while max_retries is zero.
+    /// Guarantees: the production transport submits once and records one failed attempt; a default-policy control reproduces hidden retries.
+    #[tokio::test]
+    async fn http2_refused_stream_does_not_bypass_retry_budget() {
+        check_http2_protocol_retry_budget(false).await;
+    }
+
+    /// Scenario: HTTP/2 sends a graceful GOAWAY before processing the request while max_retries is zero.
+    /// Guarantees: the production transport does not resubmit on a new connection, and wire submissions match attempt and response counters.
+    #[tokio::test]
+    async fn http2_goaway_does_not_bypass_retry_budget() {
+        check_http2_protocol_retry_budget(true).await;
     }
 
     /// Scenario: database, table, and mapping names contain URL-reserved characters.

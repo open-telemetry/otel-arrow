@@ -816,6 +816,25 @@ pub struct ExporterInbox<
 }
 
 impl<PData, ControlRx, PDataRx> ExporterInbox<PData, ControlRx, PDataRx> {
+    /// Returns the shutdown deadline latched by a previous receive poll, if any.
+    ///
+    /// Shutdown draining can deliver pdata even when normal admission is closed.
+    /// A bounded exporter may then need to stop polling the inbox until its
+    /// in-flight requests or completion routes release capacity. Reading this
+    /// deadline lets that exporter independently bound its wait instead of
+    /// blocking delivery of the final `Shutdown` message indefinitely.
+    ///
+    /// This is an optional, read-only observation: existing receive and drain
+    /// behavior is unchanged, and callers need not use it. It returns `None`
+    /// until a receive poll latches shutdown; it does not poll control traffic.
+    /// Callers that pause receiving can use the returned `std::time::Instant`
+    /// to arm their own deadline timer (for example, with
+    /// `tokio::time::Instant::from_std`) and cancel outstanding work on expiry.
+    #[must_use]
+    pub fn shutdown_deadline(&self) -> Option<Instant> {
+        self.core.shutting_down_deadline
+    }
+
     #[must_use]
     pub(crate) fn new_internal(
         control_rx: ControlRx,
@@ -1266,6 +1285,48 @@ mod tests {
             shutdown,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
+    }
+
+    /// Scenario: an exporter receives a graceful-shutdown request with a future deadline while upstream is still draining accepted data.
+    /// Guarantees: the optional accessor exposes the exact latched deadline without consuming pdata or changing final shutdown delivery.
+    #[tokio::test(start_paused = true)]
+    async fn exporter_inbox_exposes_latched_shutdown_deadline() {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<TestMsg>>::new(4);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<TestMsg>::new(4);
+        let mut inbox = ExporterInbox::new(
+            Receiver::Local(LocalReceiver::mpsc(control_rx)),
+            Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+            9,
+            Interests::empty(),
+        );
+        assert_eq!(inbox.shutdown_deadline(), None);
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(30);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown");
+        assert!(futures::poll!(Box::pin(inbox.recv_when(false))).is_pending());
+        assert_eq!(inbox.shutdown_deadline(), Some(deadline));
+        assert_eq!(inbox.shutdown_deadline(), Some(deadline));
+        pdata_tx
+            .send_async(TestMsg::new("buffered"))
+            .await
+            .expect("pdata");
+        assert!(matches!(
+            inbox.recv_when(false).await.expect("forced pdata"),
+            Message::PData(TestMsg(ref value)) if value == "buffered"
+        ));
+        assert_eq!(inbox.shutdown_deadline(), Some(deadline));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(matches!(
+            inbox.recv_when(false).await.expect("final shutdown"),
+            Message::Control(NodeControlMsg::Shutdown { deadline: observed, reason })
+                if observed == deadline && reason == "shutdown"
+        ));
+        assert_eq!(inbox.shutdown_deadline(), None);
     }
 
     /// Scenario: an exporter has latched shutdown, its bounded inbox is

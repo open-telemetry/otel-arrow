@@ -231,6 +231,7 @@ resource-validator = []
 # Exporters.
 azure-data-explorer = [
     "dep:chrono",
+    "dep:flate2",
     "dep:http",
     "dep:httpdate",
     "dep:humantime-serde",
