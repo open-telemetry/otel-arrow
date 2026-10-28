@@ -42,9 +42,13 @@ otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true
 otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
 futures.workspace = true
 futures-timer.workspace = true
+globset.workspace = true
+sha2.workspace = true
+otel-arrow-dfe-filelog-checkpoint.workspace = true
 hex.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
+memchr.workspace = true
 object_store = { workspace = true, features = ["fs"], optional = true }
 parquet = { workspace = true, optional = true }
 prost.workspace = true
@@ -55,6 +59,7 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 slotmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
@@ -162,6 +167,7 @@ flate2.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tokio-stream.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry", "std"] }
@@ -240,6 +246,10 @@ harness = false
 name = "filelog_grouping"
 harness = false
 path = "benches/filelog_grouping/main.rs"
+
+[[test]]
+name = "filelog_path_memory"
+harness = false
 
 [[bench]]
 name = "filelog_scan"

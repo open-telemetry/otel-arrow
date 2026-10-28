@@ -28,7 +28,8 @@ use otel_arrow_dfe_config::SignalType;
 
 use crate::{
     BatchingSupport, CodecError, CodecOperation, DecodePolicy, EncodePolicy, EncodedPdata,
-    PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding, RegistryError,
+    EncodedPdataBatch, PdataBatcher, PdataDecoder, PdataEncoder, PdataEncoding, PdataPayload,
+    RegistryError,
 };
 
 /// Stateless item scan that needs no mutable codec instance.
@@ -312,6 +313,34 @@ impl ResolvedCodec {
     pub fn admit(self, signal: SignalType, bytes: Bytes) -> Result<EncodedPdata, CodecError> {
         self.require_decoder(signal)?;
         Ok(EncodedPdata::from_resolved(self, signal, bytes))
+    }
+
+    /// Admits a codec-built batch, preserving its established count without a scan.
+    ///
+    /// Unlike [`Self::admit`], this accepts only a typed codec construction result,
+    /// not raw bytes with a caller-supplied count. See [`EncodedPdataBatch`] for the
+    /// extension contract. No counter, decoder, registry lookup, buffer clone, or
+    /// additional allocation is needed on success. Payload storage is unchanged.
+    pub fn admit_built<B: EncodedPdataBatch>(self, batch: B) -> Result<PdataPayload, CodecError> {
+        if self.encoding() != &B::ENCODING {
+            return Err(CodecError::InvalidConstruction {
+                encoding: self.encoding().clone(),
+                reason: format!("batch builder produces `{}`", B::ENCODING),
+            });
+        }
+        let signal = batch.signal_type();
+        self.require_decoder(signal)?;
+        let (bytes, count) = batch.into_parts();
+        if count == usize::MAX {
+            return Err(CodecError::InvalidConstruction {
+                encoding: self.encoding().clone(),
+                reason: "item count exceeds the cache's supported range".into(),
+            });
+        }
+        Ok(
+            PdataPayload::from_encoded(EncodedPdata::from_resolved(self, signal, bytes))
+                .with_item_count(count),
+        )
     }
 
     pub(crate) fn create_decoder(

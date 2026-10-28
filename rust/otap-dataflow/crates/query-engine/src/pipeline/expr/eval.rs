@@ -105,8 +105,7 @@ impl<'a> EvalContext<'a> {
     }
 
     /// return the data_point_type
-    #[cfg(test)]
-    pub(crate) fn data_point_type(&self) -> Option<&MetricDataPointType> {
+    pub fn data_point_type(&self) -> Option<&MetricDataPointType> {
         self.data_point_type.as_ref()
     }
 }
@@ -256,7 +255,7 @@ pub(super) fn eval_datafusion_expr_value(
                     if *missing_data_passes {
                         return Ok(Some(ScopedValue {
                             values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                            scope: scope.clone(),
+                            scope: DataScope::StaticScalar,
                             ids: None,
                             parent_ids: None,
                         }));
@@ -284,7 +283,7 @@ pub(super) fn eval_datafusion_expr_value(
                         if *missing_data_passes {
                             return Ok(Some(ScopedValue {
                                 values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                                scope: scope.clone(),
+                                scope: DataScope::StaticScalar,
                                 ids: None,
                                 parent_ids: None,
                             }));
@@ -1341,7 +1340,7 @@ fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<
 
 /// Converts the row order of the passed value to match the record batch associated with
 /// the attributes identifier.
-fn align_attrs_to_record(
+pub fn align_attrs_to_record(
     value: ScopedValue,
     attrs_id: AttributesIdentifier,
     otap_batch: &OtapArrowRecords,

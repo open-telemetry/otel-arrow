@@ -312,8 +312,14 @@ fn resident_handle_survives_rename_and_unlink() {
         locator
     );
     assert_eq!(descriptors_for(locator), 1);
+    // Keep this unlinked inode reserved while observing SourceFile's drop.
+    // Otherwise another parallel fixture can reuse its locator after the last
+    // close, making a process-wide locator count indistinguishable from a leak.
+    let fixture_pin = source.file.try_clone().expect("pin fixture inode");
+    assert_eq!(descriptors_for(locator), 2);
     drop(source);
-    assert_eq!(descriptors_for(locator), 0);
+    assert_eq!(descriptors_for(locator), 1);
+    drop(fixture_pin);
 }
 
 /// Scenario: Reads use independent offsets across short input, temporary EOF, append and truncation.

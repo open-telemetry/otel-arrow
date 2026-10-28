@@ -68,8 +68,9 @@ otel-arrow-dfe-core-nodes = { version = "0.62.0", path = "crates/core-nodes", de
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.62.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.62.0", path = "crates/expohisto" }
-otel-arrow-dfe-filelog-checkpoint = { path = "crates/filelog-checkpoint" }
+otel-arrow-dfe-filelog-checkpoint = { version = "0.62.0", path = "crates/filelog-checkpoint" }
 otel-arrow-dfe-otap = { version = "0.62.0", path = "crates/otap" }
+otel-arrow-dfe-wasm-guest-sdk = { path = "crates/wasm-guest-sdk", default-features = false }
 otel-arrow-dfe-scraper = { version = "0.62.0", path = "crates/scraper" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
@@ -130,6 +131,7 @@ futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
+httpdate = "1"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
 iso8601 = "0.6.3"
@@ -209,6 +211,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 semver = "1"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
+serde_path_to_error = "0.1.20"
 serde_json = { version = "1.0.149" }
 serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
@@ -224,7 +227,7 @@ socket2 = { version = "0.6.1", features = ["all"] }
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "native-tls"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
-zstd = "0.13"
+zstd = "0.14.3"
 sysinfo = "0.39"
 temp-env = "0.3.6"
 tempfile = "3"
@@ -268,6 +271,7 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "51a5bf95bdbb2e20fb6e16638e6bbe7dde911e93" } # v0.28.0
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
+globset = "0.4.20"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=9.0.5"
 byte-unit = { version = "5.2.0", features = ["serde"] }
@@ -279,6 +283,7 @@ one_collect = "0.1.35021"
 
 azure_core = { version = "1.2.0-beta.1", default-features = false }
 azure_identity = { version = "1.1.0-beta.1", default-features = false }
+azure_security_keyvault_secrets = { version = "1.1.0-beta.1", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -367,8 +372,9 @@ oracle = [
     "otel-arrow-dfe-contrib-nodes/oracle",
     "flat-file-user-pass-auth",
 ]
-sql-server = ["otel-arrow-dfe-contrib-nodes/sql-server"]
+sql-server = ["otel-arrow-dfe-contrib-nodes/sql-server", "flat-file-user-pass-auth"]
 user-events = ["otel-arrow-dfe-contrib-nodes/user-events"]
+microsoft-json = ["otel-arrow-dfe-contrib-nodes/microsoft-json"]
 windows-perf-counters = ["otel-arrow-dfe-contrib-nodes/windows-perf-counters"]
 
 # Contrib processors.
@@ -394,6 +400,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 # Contrib extensions.
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
+azure-key-vault-sasl-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-vault-sasl-auth"]
 flat-file-api-key-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-api-key-auth"]
 flat-file-sasl-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-sasl-auth"]
 flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]

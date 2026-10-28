@@ -165,7 +165,9 @@ Decoder implementations must:
 - Treat the input as untrusted and return `CodecError` instead of panicking.
 - Preserve the signal supplied by the caller.
 - Recover after an error so the same instance can decode a later valid batch.
-- Avoid retaining the input `Bytes`; the engine preserves it for Nack or retry.
+- Avoid retaining input `Bytes` in the decoder instance. An owned incremental
+  job may share them until completion or cancellation; the engine preserves the
+  original message for Nack or retry.
 
 Encoder implementations must produce complete, independently decodable output.
 The basic `encode` method returns owned `Bytes`. An encoder with reusable scratch
@@ -175,20 +177,29 @@ before `.await` to detach ownership from codec state.
 
 ## Execution and asynchronous ownership
 
-Codec decoder, encoder, and batcher methods currently execute synchronously
-while the pipeline-local codec service has exclusive access to the selected
-instance. Prepared output may borrow an encoder's scratch buffer only during a
+Ordinary codec decoder and encoder methods execute synchronously while the
+pipeline-local codec service has exclusive access to the selected instance.
+The incremental decode path releases that access before yielding:
+`start_decode` returns completed records or an owned `PdataDecodeJob`, which
+retains one builder until the entire batch succeeds. The effect handler supplies
+Tokio-aware scheduling; a self-waking future alone may delay I/O under
+`LocalSet`.
+Only incremental jobs allocate a job object; native and synchronous paths do
+not. Prepared output may borrow an encoder's scratch buffer only during a
 synchronous callback. `EncodeOutput::into_bytes` detaches the output before an
 asynchronous transport send; it does not offload or make the encoder itself
 asynchronous.
 
 The node-facing `PdataEffectHandlerExtension` operations are asynchronous so a
 future execution layer can offload work without changing every node API. Their
-current implementations perform the synchronous codec call before the future
-completes. The async signature is therefore an extension seam, not a guarantee
-that codec work runs outside the pipeline runtime.
+implementations run ordinary codecs synchronously, but can drive incremental
+decoding with bounded work segments on that same runtime thread. This does not
+offload CPU work or make synchronous encoding cooperative.
 
-A slow codec would therefore block the calling pipeline runtime today. The
+See the engine's [runtime responsiveness guidance](../../docs/async-best-practices.md#runtime-responsiveness)
+for work budgets, cancellation, backpressure, and full-engine validation.
+
+A non-incremental decoder, encoder, or batcher can still block its caller. The
 engine service boundary is the intended integration point for a future bounded
 executor: fast codecs can remain inline, while codecs explicitly classified as
 blocking can receive owned inputs and return owned outputs through offloaded
@@ -269,6 +280,29 @@ native item batching. Return `None` when malformed bytes cannot be counted; zero
 means the payload was inspected and contains no primary-signal items. Payloads
 cache successful counts, keeping an unavailable count distinct from zero. Count
 caches are codec-owned; receivers and processors cannot inject arbitrary counts.
+
+### Construct batches without recounting
+
+When a codec builds bytes from individual messages, its builder already knows
+the count. Return an opaque type implementing `EncodedPdataBatch`, with private
+bytes and count fields, then let the receiver call `codec.admit_built(batch)`.
+The syslog codec's `SyslogBatchBuilder` and `SyslogBatch` demonstrate this path.
+
+`admit_built` checks the encoding identity, decoder support for the signal, and
+count range. It moves the buffer and caches the count without invoking the
+counter or decoder, copying bytes, or allocating another envelope. This is a
+static extension interface; it does not add mutable codec state or a registry
+factory. The ordinary payload count setter remains private.
+Knowing the count does not validate record contents or bypass the selected
+decoder when a consumer requests OTAP.
+
+The codec must guarantee independently decodable bytes and a count consistent
+with its registered counter. This is a trusted extension contract, like the
+counter itself, not a proof against a faulty codec implementation. Test the
+builder against the counter and decoder, including rejected input and empty
+batches. Keep constructors that accept arbitrary bytes and claimed counts out
+of the codec's public API. For externally supplied bytes, continue to use
+`codec.admit(signal, bytes)`; that path leaves the count unknown until measured.
 
 ## Add native batching
 
@@ -433,3 +467,41 @@ Run `cargo xtask check` before submitting a pull request.
 The built-in OTLP codec is the reference implementation for a codec supporting
 decoding, encoding, borrowed views, stateless item counting, reusable buffers,
 native batching, and all three telemetry signals.
+
+The
+[syslog/CEF codec](../core-nodes/src/receivers/syslog_cef_receiver/codec.rs)
+is a decode-only example. Its receiver emits independently decodable framed
+batches, its decoder materializes native log records only when required, and
+its native batcher merges frames without parsing their syslog contents.
+
+## Cooperative syslog decoding
+
+The syslog codec materializes up to 8,192 messages or 2 MiB of encoded framing
+per input, with a 16 KiB per-message limit. The receiver still defaults to
+100 messages per batch. Inputs with at most 256 messages and 256 KiB decode
+synchronously without allocating a decode job; larger inputs use incremental
+work automatically through the effect-handler APIs.
+
+An incremental job retains one Arrow builder and shared input bytes. Each step
+processes at most 128 records, stops after reaching 64 KiB of message bytes,
+and checks a 1 ms time target every 16 records. The last record can exceed the
+byte target, and an indivisible record can exceed the time target. The job emits
+one complete Arrow batch only after all framing has been validated.
+
+Jobs do not spawn or enqueue background work. Mutable codec-service access is
+released before the first scheduling point, so other nodes can use the service
+while conversion is pending. Dropping a conversion future releases its partial
+builder and input references; delivery cancellation remains the caller's
+responsibility and no acknowledgement is sent automatically.
+
+Larger batches retain more memory in existing count-bounded channels. Review
+channel capacities when raising batch targets; cooperative scheduling does not
+provide a queue-byte or process-memory budget.
+
+Arrow finalization, native batching, output encoding, and compression still
+contain synchronous work. Direct synchronous codec APIs also remain available;
+callers that require scheduling opportunities must use effect-handler
+materialization, views, output preparation, or batch-plan preparation/finishing.
+Batch-plan conversions also retain the original encoded input on cancellation.
+Cooperative decoding is not a hard scheduling deadline or support for codecs
+awaiting external I/O.

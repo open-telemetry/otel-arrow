@@ -212,7 +212,7 @@ impl PdataPayload {
         Self::from_storage(PayloadStorage::Encoded(encoded))
     }
 
-    /// Caches a count established by codec-owned counting or batching logic.
+    /// Caches a count established by codec-owned construction, counting, or batching.
     /// Incorrect counts can cause premature completion, so nodes cannot set this.
     #[must_use]
     pub(crate) fn with_item_count(mut self, item_count: usize) -> Self {
@@ -402,6 +402,77 @@ impl PdataPayload {
                     .map_err(|source| decode_error(source, payload))
             }
         }
+    }
+
+    /// Materializes native records, offering scheduling points for incremental codecs.
+    ///
+    /// The original envelope and its caches stay available until successful
+    /// completion. Failure returns the exact encoded input, not partial records.
+    pub async fn try_into_otap_cooperative<Y: Future<Output = ()>>(
+        self,
+        codecs: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
+        match &self.storage {
+            PayloadStorage::OtapRecords(_) => self.try_into_otap(codecs),
+            PayloadStorage::Encoded(encoded) => codecs
+                .decode_cooperative(encoded, yield_to_runtime)
+                .await
+                .map_err(|source| decode_error(source, self)),
+        }
+    }
+
+    /// Borrows accepted encodings, otherwise incrementally decodes temporary OTAP.
+    pub async fn view_cooperative<'a, Y: Future<Output = ()>>(
+        &'a self,
+        codecs: &CodecService,
+        accepted_encodings: &AcceptedEncodings,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<PdataView<'a>, CodecError> {
+        match &self.storage {
+            PayloadStorage::Encoded(encoded) if !accepted_encodings.accepts(encoded.codec()) => {
+                codecs
+                    .decode_cooperative(encoded, yield_to_runtime)
+                    .await
+                    .map(|records| PdataView::Native(Cow::Owned(records)))
+            }
+            _ => self.view(codecs, accepted_encodings),
+        }
+    }
+
+    /// Prepares output after cooperative cross-codec decoding when necessary.
+    /// No prepared-output borrow crosses a scheduling point.
+    pub async fn with_encoded_output_cooperative<R, Y: Future<Output = ()>>(
+        &mut self,
+        codecs: &CodecService,
+        plan: &EncodingPlan,
+        consume: impl FnOnce(EncodeOutput<'_>) -> R,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<R, CodecError> {
+        plan.codec().require_encoder(self.signal_type())?;
+        match &self.storage {
+            PayloadStorage::Encoded(encoded) if encoded.codec() != plan.codec() => {
+                let mut records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
+                codecs.with_encoded_output(&mut records, plan, consume)
+            }
+            _ => self.with_encoded_output(codecs, plan, consume),
+        }
+    }
+
+    /// Replaces encoded input only after cooperative materialization succeeds.
+    ///
+    /// Batching retains its borrowed input and caches on failure or cancellation;
+    /// native input stays untouched without cloning records or creating a codec.
+    pub(crate) async fn materialize_otap_cooperative<Y: Future<Output = ()>>(
+        &mut self,
+        codecs: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        if let PayloadStorage::Encoded(encoded) = &self.storage {
+            let records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
+            *self = records.into();
+        }
+        Ok(())
     }
 
     /// Returns a representation-independent read-only view.

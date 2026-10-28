@@ -6,7 +6,9 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+keywords = ["telemetry", "opentelemetry", "filelog", "checkpoint"]
+categories = ["encoding"]
 rust-version.workspace = true
 readme = "README.md"
 

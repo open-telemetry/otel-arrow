@@ -676,7 +676,9 @@ mod test {
     };
 
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+    use otel_arrow_dfe_config::context::transport_headers::{
+        TransportHeader, TransportHeaders, ValueKind,
+    };
     use otel_arrow_dfe_otap::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},

@@ -16,14 +16,12 @@ use serde::{Deserialize, Serialize, ser::Serializer};
 use std::borrow::Cow;
 use std::hash::Hash;
 
-pub mod authorized_identity_policy;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
-/// Context entry names.
+/// Context configuration: entry names, composite definitions, header
+/// capture and propagation policies, and authorized identity capture.
 pub mod context;
-/// Declarative context entry policies.
-pub mod context_policy;
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
@@ -45,10 +43,6 @@ pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;
-/// Transport header core types and capture/propagation engines.
-pub mod transport_headers;
-/// Transport header capture and propagation policy declarations.
-pub mod transport_headers_policy;
 /// Shared URN parsing primitives used by [`node_urn`] and [`extension_urn`].
 mod urn;
 pub use topic::{
