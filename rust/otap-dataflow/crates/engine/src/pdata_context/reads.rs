@@ -3,6 +3,7 @@
 
 //! Read adapters retain the existing lookup and materialization semantics.
 
+use super::metadata::{AuthorizedClaimValue, AuthorizedIdentityEntry};
 use super::{
     ContextDomain, ContextEntrySelector, ContextEntryTarget, ContextMaterializationPlan,
     ContextNameMatching, ContextProjection, ContextValueCardinality, ContextValueKind,
@@ -27,11 +28,20 @@ pub struct ValueRead {
 #[allow(variant_size_differences)]
 enum ValueReadBackend {
     TransportHeader(ContextNameMatching),
+    AuthorizedIdentity(ContextNameMatching),
     Composite {
         plan: ContextMaterializationPlan,
         projection: ContextProjection,
     },
-    Unsupported,
+}
+
+impl ContextNameMatching {
+    fn matches(self, stored: &str, configured: &str) -> bool {
+        match self {
+            Self::Exact => stored == configured,
+            Self::AsciiCaseInsensitive => stored.eq_ignore_ascii_case(configured),
+        }
+    }
 }
 
 impl ValueRead {
@@ -48,7 +58,9 @@ impl ValueRead {
                 name.clone().into(),
                 match domain {
                     ContextDomain::TransportHeader => ValueReadBackend::TransportHeader(*matching),
-                    ContextDomain::AuthorizedIdentity => ValueReadBackend::Unsupported,
+                    ContextDomain::AuthorizedIdentity => {
+                        ValueReadBackend::AuthorizedIdentity(*matching)
+                    }
                 },
             ),
             ContextEntryTarget::CompositeMember { composite, member } => (
@@ -87,8 +99,9 @@ impl ValueRead {
 
     /// Applies a compiled stored-name lookup or composite projection without allocating.
     ///
-    /// Missing values and unsupported primitive domains return `None`. A composite
-    /// read retains the whole entry's presence gate and source cardinalities.
+    /// Missing values return `None`. An identity claim read retains the claim's
+    /// cardinality, so an empty multi-valued claim is present. A composite read
+    /// retains the whole entry's presence gate and source cardinalities.
     #[must_use]
     pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Option<Read<'a>> {
         let backend = match &self.backend {
@@ -109,10 +122,18 @@ impl ValueRead {
                     remaining,
                 }
             }
+            ValueReadBackend::AuthorizedIdentity(matching) => {
+                let name = self.reference.name().as_str();
+                ReadBackend::AuthorizedIdentity(
+                    metadata
+                        .authorized_identity_entries()?
+                        .iter()
+                        .find(|entry| matching.matches(entry.name(), name))?,
+                )
+            }
             ValueReadBackend::Composite { plan, projection } => {
                 ReadBackend::Composite(metadata.resolve_materialized_context(plan, projection)?)
             }
-            ValueReadBackend::Unsupported => return None,
         };
         Some(Read { backend })
     }
@@ -128,6 +149,7 @@ enum ReadBackend<'a> {
         first: TransportHeaderRef<'a>,
         remaining: HeaderMatches<'a>,
     },
+    AuthorizedIdentity(AuthorizedIdentityEntry<'a>),
     Composite(MaterializedContextProjection<'a>),
 }
 
@@ -147,6 +169,7 @@ impl<'a> Read<'a> {
                     remaining,
                 },
             }),
+            ReadBackend::AuthorizedIdentity(entry) => visit(ReadMember::identity(entry)),
             ReadBackend::Composite(projection) => projection.visit_members(|member| {
                 visit(ReadMember {
                     name: member.name().as_str(),
@@ -171,6 +194,23 @@ pub struct ReadMember<'a> {
 }
 
 impl<'a> ReadMember<'a> {
+    fn identity(entry: AuthorizedIdentityEntry<'a>) -> Self {
+        let claim = entry.value();
+        Self {
+            name: entry.name(),
+            cardinality: if claim.is_many() {
+                ContextValueCardinality::Many
+            } else {
+                ContextValueCardinality::One
+            },
+            values: ReadValues::AuthorizedIdentity {
+                name: entry.name(),
+                claim,
+                next: 0,
+            },
+        }
+    }
+
     /// Iterates raw values without flattening, joining, or decoding them.
     pub fn values(self) -> impl Iterator<Item = ReadValue<'a>> {
         self.values
@@ -233,6 +273,11 @@ enum ReadValues<'a> {
         first: Option<TransportHeaderRef<'a>>,
         remaining: HeaderMatches<'a>,
     },
+    AuthorizedIdentity {
+        name: &'a str,
+        claim: AuthorizedClaimValue<'a>,
+        next: usize,
+    },
     Materialized {
         name: &'a str,
         values: std::slice::Iter<'a, MaterializedContextValue>,
@@ -247,6 +292,16 @@ impl<'a> Iterator for ReadValues<'a> {
             Self::Headers { first, remaining } => {
                 first.take().or_else(|| remaining.next()).map(Into::into)
             }
+            Self::AuthorizedIdentity { name, claim, next } => {
+                let value = claim.get(*next)?;
+                *next += 1;
+                Some(ReadValue {
+                    name,
+                    original_name: None,
+                    kind: ContextValueKind::Text,
+                    bytes: value.as_bytes(),
+                })
+            }
             Self::Materialized { name, values } => values.next().map(|value| ReadValue {
                 name,
                 original_name: value.original_name(),
@@ -259,25 +314,35 @@ impl<'a> Iterator for ReadValues<'a> {
 
 /// A declared all-stored read over existing transport-header storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeadersRead {
-    domain: ContextDomain,
-}
+pub struct HeadersRead;
 
 impl HeadersRead {
-    pub(super) fn new(domain: ContextDomain) -> Self {
-        Self { domain }
-    }
-
     /// Iterates stored headers in capture order, preserving duplicates and binary bytes.
-    ///
-    /// Unsupported domains remain empty rather than becoming new compilation errors.
     pub fn read<'a>(&self, metadata: &'a Metadata) -> impl Iterator<Item = HeaderValue<'a>> {
-        (self.domain == ContextDomain::TransportHeader)
-            .then(|| metadata.transport_headers())
-            .flatten()
+        metadata
+            .transport_headers()
             .into_iter()
             .flat_map(|headers| headers.iter())
             .map(Into::into)
+    }
+}
+
+/// A declared all-stored read over captured authorized-identity claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedIdentityRead;
+
+impl AuthorizedIdentityRead {
+    /// Visits captured claims in policy order, one member per claim.
+    ///
+    /// Each member retains its claim cardinality, including empty multi-valued claims.
+    pub fn visit_members<'a>(&self, metadata: &'a Metadata, mut visit: impl FnMut(ReadMember<'a>)) {
+        for entry in metadata
+            .authorized_identity_entries()
+            .into_iter()
+            .flat_map(|entries| entries.iter())
+        {
+            visit(ReadMember::identity(entry));
+        }
     }
 }
 
@@ -626,23 +691,35 @@ mod tests {
         }
     }
 
-    /// Scenario: declarations request primitive identity values and all-stored identity entries.
-    /// Guarantees: unsupported read backends remain absent without adding compilation failures.
+    /// Scenario: a node reads identity claims by name and lists all stored claims and headers.
+    /// Guarantees: identity reads return captured claim values with their cardinality, never
+    /// header values, and both all-stored reads stay available when declared together.
     #[test]
-    fn unsupported_domains_do_not_add_compile_failures() {
+    fn identity_reads_return_captured_claims() {
+        let identity_read = |value: &str, matching| ContextEntrySelector {
+            target: ContextEntryTarget::Primitive {
+                domain: ContextDomain::AuthorizedIdentity,
+                name: name(value),
+                matching,
+            },
+            form: ContextEntrySelectorForm::Value,
+        };
         let bindings = compile(
             [
-                consumes(vec![ContextEntrySelector {
-                    target: ContextEntryTarget::Primitive {
-                        domain: ContextDomain::AuthorizedIdentity,
-                        name: name("subject"),
-                        matching: ContextNameMatching::Exact,
-                    },
-                    form: ContextEntrySelectorForm::Value,
-                }]),
+                consumes(vec![
+                    identity_read("subject", ContextNameMatching::Exact),
+                    identity_read("Subject", ContextNameMatching::AsciiCaseInsensitive),
+                    identity_read("Subject", ContextNameMatching::Exact),
+                    identity_read("roles", ContextNameMatching::Exact),
+                ]),
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::AllStored {
                         domain: ContextDomain::AuthorizedIdentity,
+                    },
+                },
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::AllStored {
+                        domain: ContextDomain::TransportHeader,
                     },
                 },
             ]
@@ -652,24 +729,93 @@ mod tests {
         );
         let mut metadata = Metadata::default();
         let policy = serde_json::from_value(serde_json::json!([
-            {"claim": "sub", "store_as": "subject"}
+            {"claim": "sub", "store_as": "subject"},
+            {"claim": "roles", "store_as": "roles"},
+            {"claim": "groups", "store_as": "groups"}
         ]))
         .expect("identity policy");
         metadata.capture_authorized_identity(
             &policy,
-            &AuthorizedIdentity::new().with_subject("verified"),
+            &AuthorizedIdentity::new()
+                .with_subject("verified")
+                .with_claim("roles", ClaimValue::Many(vec![]))
+                .with_claim("groups", ClaimValue::Many(vec!["a".into(), "b".into()])),
         );
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(name("subject"), b"untrusted"));
         metadata.set_transport_headers(headers);
-        assert!(bindings.values()[0].read(&metadata).is_none());
+
+        type Member<'a> = (
+            &'a str,
+            ContextValueCardinality,
+            Vec<(ContextValueKind, &'a [u8])>,
+        );
+        fn members(read: Option<Read<'_>>) -> Vec<Member<'_>> {
+            let mut result = Vec::new();
+            if let Some(read) = read {
+                read.visit_members(|member| {
+                    result.push((
+                        member.name,
+                        member.cardinality,
+                        member
+                            .values()
+                            .map(|value| (value.kind, value.bytes))
+                            .collect::<Vec<_>>(),
+                    ));
+                });
+            }
+            result
+        }
+        let subject = vec![(
+            "subject",
+            ContextValueCardinality::One,
+            vec![(ContextValueKind::Text, b"verified".as_slice())],
+        )];
+        let reads = bindings.values();
+        assert_eq!(members(reads[0].read(&metadata)), subject);
+        assert_eq!(members(reads[1].read(&metadata)), subject);
+        assert!(reads[2].read(&metadata).is_none());
+        assert_eq!(
+            members(reads[3].read(&metadata)),
+            vec![("roles", ContextValueCardinality::Many, vec![])]
+        );
+        assert!(reads[0].read(&Metadata::default()).is_none());
+
+        let mut stored = Vec::new();
+        bindings
+            .authorized_identity()
+            .expect("all stored identity")
+            .visit_members(&metadata, |member| {
+                stored.push((
+                    member.name,
+                    member.cardinality,
+                    member.values().map(|value| value.bytes).collect::<Vec<_>>(),
+                ));
+            });
+        assert_eq!(
+            stored,
+            vec![
+                (
+                    "subject",
+                    ContextValueCardinality::One,
+                    vec![b"verified".as_slice()]
+                ),
+                ("roles", ContextValueCardinality::Many, vec![]),
+                (
+                    "groups",
+                    ContextValueCardinality::Many,
+                    vec![b"a".as_slice(), b"b".as_slice()]
+                ),
+            ]
+        );
         assert_eq!(
             bindings
                 .headers()
-                .expect("all stored")
+                .expect("all stored headers")
                 .read(&metadata)
-                .count(),
-            0
+                .map(|header| header.bytes)
+                .collect::<Vec<_>>(),
+            vec![b"untrusted".as_slice()]
         );
     }
 }

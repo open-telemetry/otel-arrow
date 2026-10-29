@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    CompiledHeaderPropagationPolicy, ContextMaterializationPlan, HeadersRead, Metadata, ValueRead,
+    AuthorizedIdentityRead, CompiledHeaderPropagationPolicy, ContextMaterializationPlan,
+    HeadersRead, Metadata, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -162,6 +163,7 @@ pub struct NodeBindings {
     pub(super) sink: Option<SinkBinding>,
     pub(super) values: Box<[ValueRead]>,
     pub(super) headers: Option<HeadersRead>,
+    pub(super) authorized_identity: Option<AuthorizedIdentityRead>,
 }
 
 impl NodeBindings {
@@ -187,6 +189,12 @@ impl NodeBindings {
     #[must_use]
     pub fn headers(&self) -> Option<&HeadersRead> {
         self.headers.as_ref()
+    }
+
+    /// Returns the all-stored authorized-identity read, if declared.
+    #[must_use]
+    pub fn authorized_identity(&self) -> Option<&AuthorizedIdentityRead> {
+        self.authorized_identity.as_ref()
     }
 
     pub(crate) fn header_capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {

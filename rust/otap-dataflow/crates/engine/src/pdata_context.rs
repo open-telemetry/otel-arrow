@@ -36,7 +36,9 @@ pub use metadata::{
 pub use propagation::CompiledHeaderPropagationPolicy;
 #[doc(hidden)]
 pub use propagation::PreparedHeaderPropagationPolicy;
-pub use reads::{HeaderValue, HeadersRead, Read, ReadMember, ReadValue, ValueRead};
+pub use reads::{
+    AuthorizedIdentityRead, HeaderValue, HeadersRead, Read, ReadMember, ReadValue, ValueRead,
+};
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -680,6 +682,7 @@ impl CompiledNodeState {
         let mut authorized_identity_capture = None;
         let mut values = Vec::new();
         let mut headers = None;
+        let mut authorized_identity = None;
         for declaration in prepared.declarations {
             match declaration {
                 ContextDeclaration::Consumes { selector } => {
@@ -689,11 +692,12 @@ impl CompiledNodeState {
                                 values.push(ValueRead::compile(entry, materialization_plan)?);
                             }
                         }
-                        ContextConsumerSelector::AllStored { domain } => {
-                            if headers.is_none() || *domain == ContextDomain::TransportHeader {
-                                headers = Some(HeadersRead::new(*domain));
+                        ContextConsumerSelector::AllStored { domain } => match domain {
+                            ContextDomain::TransportHeader => headers = Some(HeadersRead),
+                            ContextDomain::AuthorizedIdentity => {
+                                authorized_identity = Some(AuthorizedIdentityRead);
                             }
-                        }
+                        },
                     }
                     component_declarations.push(ContextDeclaration::Consumes { selector });
                 }
@@ -729,6 +733,7 @@ impl CompiledNodeState {
                 sink: header_propagation.map(|policy| SinkBinding { policy }),
                 values: values.into_boxed_slice(),
                 headers,
+                authorized_identity,
             }),
         })
     }

@@ -197,6 +197,11 @@ impl<'a> AuthorizedClaimValue<'a> {
             .map(move |offset| self.storage.decode_value(self.first_value + offset))
     }
 
+    /// Returns the value at `offset` in source order.
+    pub(super) fn get(&self, offset: usize) -> Option<&'a str> {
+        (offset < self.value_count).then(|| self.storage.decode_value(self.first_value + offset))
+    }
+
     /// Returns the number of values.
     #[must_use]
     pub const fn len(&self) -> usize {
