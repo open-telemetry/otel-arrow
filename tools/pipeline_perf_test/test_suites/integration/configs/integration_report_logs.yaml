@@ -102,6 +102,10 @@ queries:
             COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
+              -- Emitted directly by the Python load generator (syslog suites).
+              -- The df_engine traffic generator reports node.output items/size
+              -- instead, which are mapped to these names above.
+              'logs_produced',
               'logs_bytes_produced',
               'failed',
               'bytes_sent',

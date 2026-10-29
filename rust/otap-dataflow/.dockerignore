@@ -4,3 +4,4 @@ target/release/*
 !target/release/df_engine.exe
 docs
 configs
+vendor
