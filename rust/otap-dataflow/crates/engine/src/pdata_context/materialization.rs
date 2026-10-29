@@ -640,6 +640,7 @@ impl<'a> MaterializedContextProjection<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pdata_context::Metadata;
     use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use std::collections::BTreeMap;
@@ -717,8 +718,8 @@ mod tests {
         );
     }
 
-    /// Scenario: a detached context appends a partition header beside a materialized composite.
-    /// Guarantees: the original headers remain unchanged while both contexts share the
+    /// Scenario: detached metadata appends a partition header beside a materialized composite.
+    /// Guarantees: the original headers remain unchanged while both metadata values share the
     /// materialized entry backing and the detached context retains its snapshot.
     #[test]
     fn stores_transport_headers_with_materialized_entries() {
@@ -741,11 +742,16 @@ mod tests {
             ValueKind::Text,
             b"acme".as_slice(),
         ));
-        let mut context = MaterializedContext::default();
-        context.set_transport_headers(headers.clone());
-        context.materialize_with_stored_transport(&plan, &TestSource::default());
+        let mut metadata = Metadata::default();
+        metadata.set_transport_headers(headers.clone());
+        metadata.materialize_context(&plan);
 
-        let entry = context.entry(&name("request")).expect("entry is present");
+        let materialized = metadata
+            .materialized_context()
+            .expect("context is materialized");
+        let entry = materialized
+            .entry(&name("request"))
+            .expect("entry is present");
         assert_eq!(
             entry
                 .member(&name("workspace_id"))
@@ -755,18 +761,29 @@ mod tests {
                 .bytes(),
             b"acme"
         );
-        let original_entries =
-            Arc::clone(&context.storage.as_ref().expect("context storage").entries);
+        let original_entries = Arc::clone(
+            &materialized
+                .storage
+                .as_ref()
+                .expect("context storage")
+                .entries,
+        );
 
-        let mut detached = context.clone();
+        let mut detached = metadata.clone();
         let mut detached_headers = detached.take_transport_headers().expect("detached headers");
         assert_eq!(detached_headers, headers);
         detached_headers.push(TransportHeader::text(name("partition"), b"first"));
         detached.set_transport_headers(detached_headers);
 
-        let detached_storage = detached.storage.as_ref().expect("detached storage");
+        let detached_materialized = detached
+            .materialized_context()
+            .expect("detached context is materialized");
+        let detached_storage = detached_materialized
+            .storage
+            .as_ref()
+            .expect("detached storage");
         assert!(Arc::ptr_eq(&original_entries, &detached_storage.entries));
-        assert!(detached.entry(&name("request")).is_some());
+        assert!(detached_materialized.entry(&name("request")).is_some());
         assert_eq!(
             detached
                 .transport_headers()
@@ -775,7 +792,7 @@ mod tests {
             2
         );
         assert_eq!(
-            context.transport_headers().expect("original headers"),
+            metadata.transport_headers().expect("original headers"),
             &headers
         );
     }

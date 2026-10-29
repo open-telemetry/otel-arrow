@@ -524,22 +524,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // the lifecycle. The lifecycle records spawn/shutdown/
         // completion events and drives the monitor's `CollectTelemetry`
         // fan-out from its own tick cadence.
-        //
-        // Construction enters the runtime so `tokio::time::interval_at`
-        // can attach to the timer driver; the guard is dropped before
-        // `rt.block_on` so the runtime can be re-entered there.
         let ext_ctx = pipeline_context.extension_context();
-        let ext_monitor = {
-            let _enter = rt.enter();
-            if telemetry_policy.pipeline_metrics {
-                crate::extension_monitor::ExtensionMetricsMonitor::new(
-                    ext_ctx.clone(),
-                    EXTENSION_MONITOR_TICK_INTERVAL,
-                    EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL,
-                )
-            } else {
-                crate::extension_monitor::ExtensionMetricsMonitor::disabled(ext_ctx.clone())
-            }
+        let ext_monitor = if telemetry_policy.pipeline_metrics {
+            crate::extension_monitor::ExtensionMetricsMonitor::new(
+                ext_ctx.clone(),
+                EXTENSION_MONITOR_TICK_INTERVAL,
+                EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL,
+            )
+        } else {
+            crate::extension_monitor::ExtensionMetricsMonitor::disabled(ext_ctx.clone())
         };
 
         // Lifecycle invariant: extensions start first, shut down last.
