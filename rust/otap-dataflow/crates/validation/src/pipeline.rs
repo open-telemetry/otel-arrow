@@ -581,6 +581,7 @@ nodes:
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
+                    transform: Default::default(),
                 }],
             ),
             header_propagation: HeaderPropagationPolicy::new(
@@ -627,6 +628,7 @@ header_propagation:
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
+                    transform: Default::default(),
                 }],
             ),
             header_propagation: HeaderPropagationPolicy::new(
@@ -677,6 +679,7 @@ header_propagation:
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
+                    transform: Default::default(),
                 }],
             ),
             ..Default::default()

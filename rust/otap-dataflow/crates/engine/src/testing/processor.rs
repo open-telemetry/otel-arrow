@@ -387,6 +387,15 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
+        self.run_test_with_interests(Interests::empty(), f)
+    }
+
+    /// Runs a test with explicit node interests, including opt-in duration telemetry.
+    pub fn run_test_with_interests<F, Fut>(self, interests: Interests, f: F) -> ValidationPhase
+    where
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
         let metrics_reporter = self.metrics_system.reporter();
         // Spawn metrics collection loop
         let collector = self.metrics_system.collector();
@@ -398,7 +407,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 .processor
                 .prepare_runtime(
                     metrics_reporter,
-                    Interests::empty(),
+                    interests,
                     super::create_test_pipeline_runtime_services(),
                 )
                 .await
@@ -410,6 +419,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                     ref mut effect_handler,
                     ..
                 } => {
+                    effect_handler.core.set_node_interests(interests);
                     effect_handler
                         .core
                         .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
@@ -418,6 +428,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                     ref mut effect_handler,
                     ..
                 } => {
+                    effect_handler.core.set_node_interests(interests);
                     effect_handler
                         .core
                         .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);

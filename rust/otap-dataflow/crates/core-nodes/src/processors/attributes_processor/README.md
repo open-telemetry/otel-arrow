@@ -93,72 +93,38 @@ Unsupported action variants are accepted for forward compatibility and ignored.
 - `value`: a literal (string, boolean, signed integer, or double). Scalar syntax
   remains supported; explicit typed objects use `string`, `bool`, `int`, or
   `double`, for example `value: { string: prod }`.
-- a dynamic object nested under `value`, containing either `from_headers` (a
-  nonempty ordered list of captured/stored header names) or `from_context` (a
-  materialized context entry name or qualified `entry:member` reference).
-  A bare entry name requires exactly one member. Only existing snapshots are
-  read; the processor does not create context entries or change pdata storage.
+- a dynamic object nested under `value`, containing a shared `source` selector
+  with a `type` and a nonempty ordered `named` list:
+  - `transport_header`: captured/stored header names.
+  - `named`: materialized composite names or qualified `entry:member`
+    references. A bare composite name requires exactly one member.
+  Primitive selectors do not accept qualified references. `all_captured` and
+  `none` are not attribute value sources. The former `from_headers` and
+  `from_context` fields are not supported.
+
+The processor declares its selected context reads to the engine. Referenced
+composites and members must exist in the pipeline's context policy; the engine
+selects only the required composite snapshots for materialization. Unknown
+composites or members are configuration errors. Declarations do not broaden
+receiver capture or authorization policy, and the processor does not create
+context entries or change pdata storage.
+Only sources that survive last-action-wins precedence on at least one signal
+introduce context requirements. Fully overridden sources are not materialized
+and do not require composite definitions.
 
 Context values are text or binary in the shared context model. Scalar text
-defaults to a string attribute, including empty strings and numeric-looking text.
-Set `transform: string`, `bool`, `int`, or `double` alongside the source to
-explicitly choose the attribute type. Boolean conversion accepts `true`/`false`;
-integer conversion checks the signed 64-bit range. Invalid conversions, binary
-values, multi-valued members, and ambiguous multi-member entries permanently
-Nack the message. Missing entries or members cause no mutation.
+is projected unchanged as a string attribute, including empty strings and
+numeric-looking text. Binary values, multi-valued members, and ambiguous
+multi-member entries permanently Nack the message. Missing entries or members
+cause no mutation.
+For multiple `named` candidates, missing values fall
+through in configured order; present but invalid scalar values permanently Nack.
 
 Only headers already captured by receiver policy are accessible. This processor
 does not change capture policy. Selection follows configured source-name order,
 not request arrival order. For each name, the first usable captured text value
-wins. Missing, binary, empty, invalid UTF-8, or malformed transformed values fall
+wins. Missing, binary, empty, or invalid UTF-8 values fall
 through to later candidates. An unavailable source causes no attribute mutation.
-
-Both header and context sources accept a nested `transform: string` (default,
-preserving the text), `bool`, `int`, `double`, or `authority_host`.
-The scalar conversions share the same implementation for both sources.
-Invalid header conversions fall through to later captured candidates; invalid
-context conversions permanently Nack the message. `authority_host` takes the
-selected comma-separated value, trims it, parses an HTTP authority, and removes its port.
-DNS, IPv4, and bracketed IPv6 hosts are supported; IPv6 brackets are retained.
-Userinfo and invalid ports are rejected. Transforms on literals are invalid.
-
-#### Authority list selection
-
-With `transform: authority_host`, set `selection: first` (default) or
-`selection: last` beneath `value`. This applies to both header and context sources.
-For `first.example:80, last.example:443`, the results are `first.example` and
-`last.example`, respectively. A single authority produces the same result for
-either selection. Unknown or null selections, and selections with any other
-transform, are rejected.
-
-Selection applies **within one captured value**, not across header names or
-repeated header fields. The configured header-name order and first-usable
-captured-value behavior remain unchanged. An empty or invalid selected element
-does not fall back to another element in that comma-separated list. For headers,
-the processor tries the next captured value or source name instead; for context,
-it permanently Nacks the message.
-
-Choose based on your trusted proxy's behavior, not a universal proxy ordering:
-
-- Azure Front Door [overwrites `X-Forwarded-Host`](https://learn.microsoft.com/en-us/azure/frontdoor/front-door-http-headers-protocol)
-  with the original request host, so it normally supplies a single value.
-- Azure Application Gateway [adds `x-original-host`](https://learn.microsoft.com/en-us/azure/application-gateway/how-application-gateway-works#modifications-to-the-request).
-  Capture and select that name explicitly if needed; it is distinct from
-  `x-azure-originalhost`.
-- If a trusted proxy appends the authoritative host, use `last`. If it prepends
-  it, use `first`. Neither choice establishes trust: prevent clients from
-  bypassing that proxy and configure it to sanitize forwarded headers.
-  Cloudflare's documented append behavior for `X-Forwarded-For` concerns IP
-  addresses, not a general guarantee about `X-Forwarded-Host`.
-
-For a trusted proxy configured to append the authoritative host:
-
-```yaml
-value:
-  from_headers: [x-forwarded-host, host]
-  transform: authority_host
-  selection: last
-```
 
 Every action accepts an optional `signals: [logs, metrics, traces]` filter.
 Omission selects all signals; empty lists and unknown signals are rejected.
@@ -179,24 +145,29 @@ actions:
   - action: insert
     key: server.address
     value:
-      from_headers: [x-forwarded-host, x-azure-originalhost, host]
-      transform: authority_host
+      source:
+        type: transport_header
+        named: [x-forwarded-host, x-azure-originalhost, host]
   - action: insert
     key: request.sequence
     value:
-      from_context: request_sequence
-      transform: int
+      source:
+        type: named
+        named: [request_sequence]
 ```
 
 Dynamic values are resolved once per pdata message and reused across its records.
-Integer conversions outside the signed 64-bit range permanently Nack the
-message rather than wrapping, clamping, or silently skipping the value. Context sources are
+Context sources are
 read-only: entries must already exist in the pdata context. No fallback values
 are generated, and log event and observed timestamps are never modified.
 
 Live configuration updates replace the complete validated plan atomically.
 Invalid updates are logged and retain the previous configuration. Processor
-metrics and compute timing survive updates. Conversion and enrichment failures
+updates cannot introduce context reads outside the installed bindings; changes
+to context requirements must go through pipeline reconfiguration. Reordering
+fallback candidates or regrouping the same reads across actions preserves
+bindings and takes effect without pipeline reconfiguration. Processor
+metrics and compute timing survive updates. Materialization and enrichment failures
 permanently Nack the message with its context; successful outputs retain normal
 downstream Ack/Nack routing.
 
@@ -225,23 +196,30 @@ config:
     - action: insert
       key: server.address
       value:
-        from_headers: [x-forwarded-host, x-azure-originalhost, host]
-        transform: authority_host
+        source:
+          type: transport_header
+          named: [x-forwarded-host, x-azure-originalhost, host]
     - action: insert
       key: http.host
       value:
-        from_headers: [x-forwarded-host, x-azure-originalhost, host]
-        transform: authority_host
+        source:
+          type: transport_header
+          named: [x-forwarded-host, x-azure-originalhost, host]
     - action: insert
       key: request.sequence
       value:
-        from_context: request_sequence
-        transform: int
+        source:
+          type: named
+          named: [request_sequence]
       signals: [logs]
 ```
 
-The `request.sequence` action has no effect unless an upstream producer has
-materialized a single-member `request_sequence` entry in the shared context.
+Configure host normalization on the receiver before this processor; otherwise
+hosts are projected verbatim, including ports and comma-separated lists.
+Define `request_sequence` in `policies.context.entries` and configure capture
+for any primitive inputs it uses. The engine includes this selected composite
+in the receiver's materialization plan. The action has no effect when that
+composite is absent from a message, for example when a required input is missing.
 See the [complete HTTP enrichment pipeline](../../../../../configs/otlp-http-attributes.yaml)
 and [transport header capture policy](../../../../../docs/transport-headers.md).
 
