@@ -3,6 +3,7 @@
 
 //! Bounded in-memory replay. Filesystem recovery and source proof belong to callers.
 
+use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use crate::primitives::quarantine_reason_reserved;
@@ -120,7 +121,8 @@ pub struct ReplayState {
     config: ReplayConfig,
     generation: u64,
     last_sequence: u64,
-    records: HashMap<FileId, SnapshotRecord>,
+    // Dense positions allow bounded scans without copying IDs or walking empty buckets.
+    records: IndexMap<FileId, SnapshotRecord>,
     live_locators: HashMap<Locator, FileId>,
 }
 
@@ -171,7 +173,7 @@ impl ReplayState {
             config,
             generation: snapshot.generation,
             last_sequence: 0,
-            records: HashMap::new(),
+            records: IndexMap::new(),
             live_locators: HashMap::new(),
         };
         for record in snapshot.records {
@@ -223,6 +225,14 @@ impl ReplayState {
     #[must_use]
     pub fn records(&self) -> impl ExactSizeIterator<Item = &SnapshotRecord> {
         self.records.values()
+    }
+
+    /// Returns a record by dense position in O(1), without walking preceding records.
+    /// Positions are ephemeral: callers must invalidate cursors after structural
+    /// mutations or recovery. Ordinary non-finalizing progress preserves positions.
+    #[must_use]
+    pub fn record_at(&self, position: usize) -> Option<&SnapshotRecord> {
+        self.records.get_index(position).map(|(_, record)| record)
     }
 
     /// Whether a stored record matches the selected identity/framing profile.
@@ -379,7 +389,7 @@ impl ReplayState {
         // when a full table replaces several identities in the same transaction.
         for (id, record) in &staged {
             if record.is_none() {
-                let _ = self.records.remove(id);
+                let _ = self.records.swap_remove(id);
             }
         }
         for (id, record) in staged {

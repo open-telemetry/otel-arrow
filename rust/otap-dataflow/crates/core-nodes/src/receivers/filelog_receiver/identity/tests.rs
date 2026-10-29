@@ -6,6 +6,8 @@ use super::super::{
     source::SymlinkPolicy,
 };
 use super::*;
+#[path = "bounded_tests.rs"]
+mod bounded_tests;
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
@@ -91,7 +93,7 @@ pub(super) fn prepare(
     let ignored = owner.ignored_header as usize;
     let fingerprint = bytes.get(ignored..).unwrap_or_default();
     let fingerprint = &fingerprint[..fingerprint.len().min(owner.fingerprint_bytes)];
-    owner.prepare(
+    let mut admission = owner.prepare(
         Candidate {
             path,
             locator: FileLocator::from_metadata(&metadata),
@@ -103,7 +105,19 @@ pub(super) fn prepare(
         now(),
         || open(path),
         || false,
-    )
+    )?;
+    // Test driver deliberately drains steps. Production services other work between steps.
+    while let Admission::Scanning(mut scan) = admission {
+        while !owner.advance_association(&mut scan, || false)?.complete {}
+        admission = owner.finish_prepare(
+            scan,
+            &ProbeBudget::default(),
+            now(),
+            || open(path),
+            || false,
+        )?;
+    }
+    Ok(admission)
 }
 pub(super) fn ready(admission: Admission) -> PreparedAdmission {
     match admission {
@@ -2023,10 +2037,9 @@ fn growth_invariant_failure_stays_visible() {
     let inputs = f.inputs(|_| {});
     let mut owner = f.owner(&inputs);
     let reader = commit(&mut owner, &path, Context::Unrelated);
-    owner.growth.push(cp::UpdateFingerprint {
+    owner.growth.push(FingerprintGrowth {
         file_id: reader.file_id,
         expected_file_epoch: 1,
-        expected_fingerprint: Vec::new(),
         new_fingerprint: vec![b'x'; 17],
     });
     let synced = owner.sync_checkpoint().unwrap();

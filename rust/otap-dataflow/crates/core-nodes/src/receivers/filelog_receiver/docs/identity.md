@@ -66,10 +66,44 @@ with a proposed file ID and decision, without writing a checkpoint. Temporary
 file handles close before the probe reservation is released. Dropping an
 uncommitted plan releases its lease.
 
+### Association takes bounded worker turns
+
+For an unmatched candidate with retained history, `prepare` returns
+`Admission::Scanning`. Keep that scan on the worker. It owns a locator lease,
+a bounded path/prefix, and a cursor; it retains no source descriptor or shared
+probe reservation and does not borrow the checkpoint table.
+
+Call `advance_association` once per worker turn. Each call visits at most 64
+records and compares at most 64 KiB of prefix bytes. It can pause partway through
+one comparison. Service reads, checkpoint commands, cancellation and discovery
+between calls; do not loop to completion in a production turn. The returned
+`AssociationWork` reports actual charged work and completion. These are CPU work
+bounds, not filesystem or wall-clock latency guarantees.
+
+When complete, call `finish_prepare` with a fresh policy-aware opener. It checks
+the owner/revision, reopens the source under the shared probe budget and validates
+its locator, size and scanned prefix again. A changed prefix, including growth
+of a short prefix, returns `Deferred`; discard the result and prepare again.
+If the shared probes are busy, finishing returns the completed scan unchanged;
+retry finishing on a later turn without repeating association. The fresh handle
+supplies mtime and the final start anchor. No scan result alone permits a reader
+or a checkpoint write.
+
+Ordinary non-finalizing progress can run between steps without invalidation.
+Identity/metadata mutations, finalization, or pending-write recovery invalidate
+the cursor; discard it on `StalePlan`. Recovery may reorder the table even for a
+progress-only write, so it has a separate cursor revision. Cancellation also
+requires discarding the scan. A failed step never authorizes admission.
+
+Count waiting scans, prepared plans and pending outcomes together against the
+single `admission_limit()` group reserve. Drop them on the worker. Finish all
+members before selecting/preflighting the group; identity mutations while other
+scans wait require fresh preparation of those scans.
+
 ### 3. Select, check and commit a group
 
-Keep at most `admission_limit()` plans outstanding, including plans waiting for
-commit or pending-write resolution. Discovery may retain more offers; prepare
+Keep at most `admission_limit()` scans/plans outstanding, including plans waiting
+for commit or pending-write resolution. Discovery may retain more offers; prepare
 one group at a time. Ordinary progress on other files may continue.
 
 1. Call `select_batch` before discovery preflight. It counts the group's net
@@ -297,8 +331,11 @@ for a bounded health event. Ignored files create no checkpoint record.
 
 The seed keeps the freshly validated prefix. When a reader observes a valid
 extension, call `queue_fingerprint`, including after empty-file registration.
-The bounded queue combines updates per file. If it returns false, keep the bytes
-on the reader and retry after a flush.
+The bounded queue combines updates per file. It checks coverage and capacity
+before allocating, retains only the proposed prefix, and reuses its buffer for
+accepted extensions. The expected old prefix is obtained from authoritative
+state at flush. If it returns false, keep the bytes on the reader and retry
+after a flush.
 
 `flush_fingerprints` writes a separate bounded non-progress transaction. Growth
 and progress never share a WAL frame. Resume does not add one growth fsync per
@@ -321,9 +358,17 @@ require pending-write resolution or shutdown.
 ### Lookup and memory
 
 Exact-locator recovery uses `ReplayState`'s existing index. Only new unmatched
-candidates scan Active history, checking cancellation between records. Worst-case
-association work is O(tracked records * fingerprint width). Bounded storage does
-not guarantee finite latency; measure churn before adding indexes.
+candidates scan retained history, skipping inactive records and checking cancellation
+between bounded comparisons. Total worst-case association work remains
+O(tracked records * fingerprint width), but each worker turn has explicit record
+and byte limits. There is no secondary fingerprint/path index or copied ID list.
+The authoritative table uses `IndexMap` for constant-time positional traversal
+and hash-based keyed lookup. Removal swaps the last entry into the gap; revision
+checks reject old cursors before they can observe that change. Include the dense
+table and hash index capacity in integrated memory qualification.
+
+See [identity admission measurements](identity-performance.md) for the Linux
+bulk/churn fixture, work counts, timing limitations and separate heap results.
 
 There is one authoritative checkpoint table. The adapter maps lifetime-unique
 64-bit `TrackedId` values to 128-bit `FileId` values. Bound that map by tracked

@@ -98,36 +98,6 @@ pub(super) fn window(
     ))
 }
 
-pub(super) fn association(
-    state: &cp::ReplayState,
-    path: &cp::AdvisoryPath,
-    prefix: &[u8],
-    ignored_header: u32,
-    cancelled: &mut impl FnMut() -> bool,
-) -> Result<Context, FileAccessError> {
-    for record in state.records() {
-        check_cancelled(cancelled)?;
-        if record.lifecycle_state != cp::LifecycleState::Active {
-            continue;
-        }
-        let same_path = record.advisory_path.kind() == path.kind()
-            && record.advisory_path.full_path_len() == path.full_path_len()
-            && record.advisory_path.full_path_digest() == path.full_path_digest();
-        // Association is conservative, not continuity: compare the common
-        // nonempty raw prefix at the same source offset, including short files
-        // and older evidence that has grown. Framing settings do not re-interpret
-        // these raw bytes. No file ID, offset or epoch transfers across locators.
-        let common = prefix.len().min(record.fingerprint.len());
-        let same_prefix = record.ignored_header_bytes == ignored_header
-            && common != 0
-            && prefix[..common] == record.fingerprint[..common];
-        if same_path || same_prefix {
-            return Ok(Context::Associated);
-        }
-    }
-    Ok(Context::Unrelated)
-}
-
 pub(super) fn new_id(state: &cp::ReplayState) -> Result<cp::FileId, IdentityError> {
     // OS randomness, never a path/content hash or a placement-derived key.
     // Bounded attempts also make a broken random provider fail closed.

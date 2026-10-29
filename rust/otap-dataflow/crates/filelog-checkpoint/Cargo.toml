@@ -20,6 +20,7 @@ workspace = true
 test-utils = []
 
 [dependencies]
+indexmap.workspace = true
 crc.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

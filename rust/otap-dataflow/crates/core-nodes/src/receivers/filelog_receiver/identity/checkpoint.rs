@@ -138,6 +138,12 @@ impl IdentityOwner {
                 return Err(error.into());
             }
         }
+        // Recovery rebuilds the dense table, potentially changing cursor positions
+        // even when the retained transaction contains only ordinary progress.
+        self.recovery_revision = self.recovery_revision.checked_add(1).ok_or_else(|| {
+            self.stopped = true;
+            IdentityError::RevisionExhausted
+        })?;
         match self.store.resolve_pending() {
             Ok(receipt) => {
                 let pending = self.pending.take().expect("checked pending outcome");
@@ -343,12 +349,6 @@ impl IdentityOwner {
         if !prefix.starts_with(&record.fingerprint) {
             return Err(IdentityError::InvalidCandidate);
         }
-        let update = cp::UpdateFingerprint {
-            file_id: reader.file_id,
-            expected_file_epoch: reader.epoch,
-            expected_fingerprint: record.fingerprint.clone(),
-            new_fingerprint: prefix.to_vec(),
-        };
         if let Some(slot) = self
             .growth
             .iter_mut()
@@ -362,12 +362,18 @@ impl IdentityOwner {
                     return Err(IdentityError::InvalidCandidate);
                 }
             }
-            *slot = update;
+            slot.expected_file_epoch = reader.epoch;
+            slot.new_fingerprint.clear();
+            slot.new_fingerprint.extend_from_slice(prefix);
         } else {
             if self.growth.len() >= self.growth_limit {
                 return Ok(false);
             }
-            self.growth.push(update);
+            self.growth.push(FingerprintGrowth {
+                file_id: reader.file_id,
+                expected_file_epoch: reader.epoch,
+                new_fingerprint: prefix.to_vec(),
+            });
         }
         Ok(true)
     }

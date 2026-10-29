@@ -7,6 +7,8 @@
 //! transition, and commit establishes durability before publishing a reader.
 //! Both phases run on the read/checkpoint worker, never on the async pipeline core.
 
+mod association;
+pub use association::{AssociationScan, AssociationWork};
 mod checkpoint;
 pub mod decision;
 mod evidence;
@@ -16,7 +18,7 @@ mod tests;
 
 use super::{
     config::ValidatedInputs,
-    discovery::ProbeBudget,
+    discovery::{ProbeBudget, ProbeReservation},
     source::{FileAccessError, FileLocator, SourceFile},
 };
 use decision::{Anchor, Context, Decision, Existing, Policy, classify, source_age};
@@ -108,6 +110,8 @@ pub enum IdentityError {
 pub enum Admission {
     /// Fresh evidence and a held lease; discovery preflight must precede commit.
     Ready(PreparedAdmission),
+    /// Association needs bounded worker turns; owns no source descriptor or probe reservation.
+    Scanning(AssociationScan),
     /// Source changed since discovery or temporary probe capacity is busy.
     Deferred,
     /// Unrelated old file; no durable state or lease retained.
@@ -261,6 +265,12 @@ enum WritePurpose {
     Required,
     FingerprintGrowth,
 }
+struct FingerprintGrowth {
+    file_id: cp::FileId,
+    expected_file_epoch: u32,
+    new_fingerprint: Vec<u8>,
+}
+
 struct PendingWrite {
     next_revision: u64,
     admissions: Vec<Completion>,
@@ -282,12 +292,13 @@ pub struct IdentityOwner {
     scratch: Vec<u8>,
     stopped: bool,
     identity_revision: u64,
+    recovery_revision: u64,
     pending: Option<PendingWrite>,
     failures: u64,
     failure_limit: u64,
     admission_limit: usize,
     growth_limit: usize,
-    growth: Vec<cp::UpdateFingerprint>,
+    growth: Vec<FingerprintGrowth>,
 }
 impl IdentityOwner {
     fn batch_capacity(inputs: &ValidatedInputs) -> usize {
@@ -340,6 +351,7 @@ impl IdentityOwner {
             scratch: vec![0; config.identity.fingerprint_bytes as usize],
             stopped: false,
             identity_revision: 0,
+            recovery_revision: 0,
             pending: None,
             failures: 0,
             failure_limit: config.checkpoint.max_consecutive_failures,
@@ -403,7 +415,20 @@ impl IdentityOwner {
         budget: &ProbeBudget,
         now: SystemTime,
         open: impl FnOnce() -> Result<S, FileAccessError>,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Admission, IdentityError> {
+        self.prepare_impl(candidate, budget, now, open, cancelled, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_impl<'a, S: evidence::EvidenceSource>(
+        &mut self,
+        candidate: Candidate<'_>,
+        budget: &'a ProbeBudget,
+        now: SystemTime,
+        open: impl FnOnce() -> Result<S, FileAccessError>,
         mut cancelled: impl FnMut() -> bool,
+        resumed_source: Option<(LeaseGuard, ProbeReservation<'a>)>,
     ) -> Result<Admission, IdentityError> {
         self.running()?;
         if candidate.path.as_os_str().len() > 65536
@@ -418,7 +443,11 @@ impl IdentityOwner {
             return Err(IdentityError::InvalidCandidate);
         }
         evidence::check_cancelled(&mut cancelled)?;
-        let lease = self.leases.acquire(candidate.locator)?;
+        let resumed = resumed_source.is_some();
+        let (lease, reservation) = match resumed_source {
+            Some((lease, reservation)) => (lease, Some(reservation)),
+            None => (self.leases.acquire(candidate.locator)?, None),
+        };
         let locator = evidence::locator(candidate.locator);
         let state = self.store.state()?;
         let exact = state.get_by_locator(&locator);
@@ -441,7 +470,7 @@ impl IdentityOwner {
         {
             return Ok(Admission::NeedsCapacity);
         }
-        let Some(_reservation) = budget.try_reserve() else {
+        let Some(_reservation) = reservation.or_else(|| budget.try_reserve()) else {
             return Ok(Admission::Deferred);
         };
         let source = match open() {
@@ -472,6 +501,7 @@ impl IdentityOwner {
                 .saturating_sub(u64::from(self.ignored_header))
                 .min(self.fingerprint_bytes as u64) as usize
             || !prefix.starts_with(candidate.fingerprint)
+            || (resumed && prefix != candidate.fingerprint)
         {
             return Ok(Admission::Deferred);
         }
@@ -493,12 +523,28 @@ impl IdentityOwner {
         } else {
             false
         };
-        let path = cp::AdvisoryPath::from_unix_bytes(candidate.path.as_os_str().as_bytes())?;
-        let context = if exact.is_none() && candidate.context == Context::Unrelated {
-            evidence::association(state, &path, prefix, self.ignored_header, &mut cancelled)?
-        } else {
-            candidate.context
-        };
+        if !resumed
+            && exact.is_none()
+            && candidate.context == Context::Unrelated
+            && state.records().len() != 0
+        {
+            // Release the source and shared probe reservation on return. The scan
+            // retains only bounded evidence and its lease, never a borrowed table.
+            if source.metadata(&mut cancelled)?.len() < metadata.len() {
+                return Ok(Admission::Deferred);
+            }
+            evidence::check_cancelled(&mut cancelled)?;
+            return Ok(Admission::Scanning(AssociationScan::new(
+                candidate.path,
+                metadata.len(),
+                prefix,
+                lease,
+                state.generation(),
+                self.identity_revision,
+                self.recovery_revision,
+            )?));
+        }
+        let context = candidate.context;
         let modified = metadata.modified().ok();
         let age = modified.and_then(|mtime| source_age(now, mtime));
         let decision = classify(
@@ -573,7 +619,9 @@ impl IdentityOwner {
                     framing_profile_digest: self.profile,
                     framing_resume: cp::FramingResume::Clean,
                     last_seen_time_unix_nano: timestamp,
-                    advisory_path: path,
+                    advisory_path: cp::AdvisoryPath::from_unix_bytes(
+                        candidate.path.as_os_str().as_bytes(),
+                    )?,
                 }));
                 if anchor == Anchor::Quarantine {
                     operations.push(cp::Operation::QuarantineFile(cp::QuarantineFile {

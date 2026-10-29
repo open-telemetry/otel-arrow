@@ -254,3 +254,8 @@ harness = false
 name = "filelog_scan"
 harness = false
 path = "benches/filelog_scan/main.rs"
+
+[[bench]]
+name = "filelog_identity"
+harness = false
+path = "benches/filelog_identity/main.rs"

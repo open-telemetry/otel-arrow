@@ -134,6 +134,7 @@ http = "1.4"
 httpdate = "1"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
+indexmap = "2.14.2"
 iso8601 = "0.6.3"
 insta = { version = "1.44", features = ["redactions"] }
 itoa = "1"

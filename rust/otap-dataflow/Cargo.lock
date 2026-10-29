@@ -7924,6 +7924,7 @@ dependencies = [
  "crc",
  "dhat",
  "hex",
+ "indexmap 2.14.2",
  "nix 0.31.3",
  "rustix",
  "sha2 0.11.1",
