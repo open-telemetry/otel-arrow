@@ -1108,6 +1108,12 @@ impl MetricSetRegistry {
             if !grace.is_zero() {
                 // Without a grace period the export path completes the
                 // unregister; only grace deadlines need a timed sweep.
+                debug_assert!(
+                    self.pending_unregisters
+                        .back()
+                        .is_none_or(|(last, _)| *last <= deadline),
+                    "unregister deadlines must be queued in non-decreasing order"
+                );
                 self.pending_unregisters.push_back((deadline, metrics_key));
             }
             return Some(MetricSetUnregister::Deferred);
