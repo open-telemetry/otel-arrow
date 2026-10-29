@@ -3,6 +3,15 @@
 
 //! Create and run a multi-core pipeline
 
+#[cfg(all(
+    test,
+    feature = "azure-key-vault-user-pass-auth",
+    feature = "oracle",
+    feature = "postgresql",
+    feature = "sql-server"
+))]
+mod akv_database_bindings;
+
 use clap::Parser;
 use otel_arrow_dfe_config::config_provider::{ConfigFormat, resolve_config};
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;

@@ -3,6 +3,8 @@
 
 //! Offline integration of real AKV extension and database receiver factories.
 //! No vault access, database connection, or native Oracle initialization occurs.
+//! Keep these in the binary's test harness so all-feature test builds do not
+//! also compile a production binary with mutually exclusive feature selections.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

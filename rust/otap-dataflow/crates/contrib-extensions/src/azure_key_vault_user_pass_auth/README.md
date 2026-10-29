@@ -138,9 +138,9 @@ cargo build --no-default-features --features azure-key-vault-user-pass-auth,post
 
 Replace `postgresql` with `oracle` or `sql-server`. Complete pipelines:
 
-- [Oracle](../../../../../configs/oracle-akv-console.yaml)
-- [PostgreSQL](../../../../../configs/postgresql-akv-console.yaml)
-- [SQL Server](../../../../../configs/sql-server-akv-console.yaml)
+- [Oracle](../../../../configs/oracle-akv-console.yaml)
+- [PostgreSQL](../../../../configs/postgresql-akv-console.yaml)
+- [SQL Server](../../../../configs/sql-server-akv-console.yaml)
 
 Replace example endpoints, secret references, connection parameters, and state
 directories before running. Keep PostgreSQL and SQL Server TLS verification
@@ -173,7 +173,7 @@ database:
 
 ```sh
 cargo test -p otel-arrow-dfe-contrib-extensions --no-default-features --features azure-key-vault-user-pass-auth,crypto-ring --lib
-cargo test -p otel-arrow-dfe --no-default-features --features azure-key-vault-user-pass-auth,oracle,postgresql,sql-server,crypto-ring --test akv_database_bindings
+cargo test -p otel-arrow-dfe --no-default-features --features azure-key-vault-user-pass-auth,oracle,postgresql,sql-server,crypto-ring --bin df_engine akv_database_bindings
 ```
 
 Offline success is **not live qualification**. Live AKV/database qualification

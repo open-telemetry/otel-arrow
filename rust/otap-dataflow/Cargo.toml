@@ -60,10 +60,6 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 tempfile.workspace = true
 
-[[test]]
-name = "akv_database_bindings"
-required-features = ["azure-key-vault-user-pass-auth", "oracle", "postgresql", "sql-server"]
-
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { version = "0.62.0", path = "crates/admin-api" }
 otel-arrow-dfe-admin-types = { version = "0.62.0", path = "crates/admin-types" }
