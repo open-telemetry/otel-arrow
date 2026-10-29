@@ -517,7 +517,7 @@ pub(crate) fn redact_secret_headers(value: &mut Value) {
 }
 
 /// Entity configuration for a node, aligned with the semantic conventions model.
-/// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
+/// See <https://opentelemetry.io/docs/specs/otel/entities/data-model/>.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodeEntity {
@@ -527,7 +527,7 @@ pub struct NodeEntity {
 }
 
 /// Node entity extensions, including user-provided identifying attributes.
-/// See https://opentelemetry.io/docs/specs/otel/entities/data-model/.
+/// See <https://opentelemetry.io/docs/specs/otel/entities/data-model/>.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExtendedNodeEntity {

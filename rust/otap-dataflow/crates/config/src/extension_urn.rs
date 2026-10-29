@@ -11,7 +11,7 @@
 //! Extensions are intentionally NOT modeled as a node kind, and
 //! [`ExtensionUrn`] is a distinct type from [`crate::node_urn::NodeUrn`]
 //! so the two cannot be confused. The underlying parsing primitives are
-//! shared via the private [`crate::urn`] module.
+//! shared via the private `crate::urn` module.
 
 use crate::error::Error;
 use crate::urn::{build_canonical_urn, parse_kinded_urn};
