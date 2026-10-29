@@ -89,6 +89,7 @@ impl<
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
+        start_ticket: Option<StartGateTicket>,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
         let core_placement =
             deployment
@@ -182,6 +183,7 @@ impl<
                         tracing_setup,
                         internal_telemetry,
                         thread_startup_ready,
+                        start_ticket,
                     )
                 })) {
                     Ok(Ok(_)) => RuntimeInstanceExit::Success,
@@ -223,6 +225,18 @@ impl<
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<DeployedPipelineKey, Error> {
+        self.launch_gated_pipeline_instance(deployment, core_id, deployment_generation, None)
+    }
+
+    /// Launches one regular pipeline instance that, when `start_ticket` is set,
+    /// waits at its start gate between build and run.
+    pub(super) fn launch_gated_pipeline_instance(
+        self: &Arc<Self>,
+        deployment: &LogicalPipelineDeployment,
+        core_id: usize,
+        deployment_generation: u64,
+        start_ticket: Option<StartGateTicket>,
+    ) -> Result<DeployedPipelineKey, Error> {
         let thread_id = self.next_thread_id();
         let launched = self.launch_pipeline_thread(
             deployment,
@@ -231,6 +245,7 @@ impl<
             thread_id,
             self.engine_tracing_setup.clone(),
             None,
+            start_ticket,
         )?;
         let deployed_key = launched.pipeline_key.clone();
         self.register_launched_instance(launched);

@@ -39,8 +39,10 @@ use std::time::{Duration, Instant};
 mod execution;
 mod planning;
 mod runtime;
+mod start_gate;
 mod state;
 
+pub(crate) use self::start_gate::{StartGate, StartGateAbortOnDrop, StartGateTicket};
 #[cfg(test)]
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{

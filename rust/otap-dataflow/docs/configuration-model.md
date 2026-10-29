@@ -182,9 +182,11 @@ Standalone pipeline files are not a startup root format.
 
 Regular pipelines from the startup file are deployed through the same
 full-engine reconciliation and rollout machinery used by live control. The
-controller plans the complete placement before launching workers, starts topic
-consumer pipelines before topic producers, and waits up to the configured
-startup step timeout for every instance to become admitted and ready. Controller
+controller plans the complete placement before launching workers, builds every
+pipeline instance (which creates all topic subscriptions) before any of them
+starts, and waits up to the configured startup step timeout for every instance
+to become admitted and ready. If any instance fails to build, none of them
+start. Controller
 extension tasks and the admin server, including health endpoints, do not start
 until this reconciliation succeeds. A failed or timed-out rollout drains all
 pipelines through one global shutdown, including system observability and any

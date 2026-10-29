@@ -358,7 +358,6 @@ impl<
     ) -> Result<(), RolloutExecutionError> {
         let mut launched = Vec::new();
         let rollout_result = (|| {
-            let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             for core_id in &plan.target_assigned_cores {
                 self.update_rollout_core_state(
                     &plan.pipeline_key,
@@ -367,11 +366,19 @@ impl<
                     "starting",
                     None,
                 );
+                let start_ticket = plan.start_gate.as_ref().map(|gate| {
+                    gate.ticket(format!(
+                        "pipeline '{}:{}' core {core_id}",
+                        plan.pipeline_group_id.as_ref(),
+                        plan.pipeline_id.as_ref()
+                    ))
+                });
                 let deployed_key = self
-                    .launch_regular_pipeline_instance(
+                    .launch_gated_pipeline_instance(
                         &plan.target_deployment,
                         *core_id,
                         plan.target_deployment.baseline_generation,
+                        start_ticket,
                     )
                     .map_err(|err| {
                         let reason = err.to_string();
@@ -387,6 +394,12 @@ impl<
                 launched.push(deployed_key);
             }
 
+            if let Some(gate) = &plan.start_gate {
+                gate.wait_decision()
+                    .map_err(|reason| format!("pipeline start aborted: {reason}"))?;
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             for deployed_key in &launched {
                 self.wait_for_pipeline_ready(deployed_key, deadline)?;
                 self.update_rollout_core_state(

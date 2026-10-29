@@ -496,10 +496,6 @@ struct PipelineNodeKey {
 }
 
 impl PipelineNodeKey {
-    fn pipeline_key(&self) -> PipelineKey {
-        PipelineKey::new(self.pipeline_group_id.clone(), self.pipeline_id.clone())
-    }
-
     fn wiring_vertex(&self) -> TopicWiringVertex {
         TopicWiringVertex::PipelineNode(self.clone())
     }
@@ -2634,6 +2630,7 @@ impl<
             0,
             tracing_setup,
             Some((internal_telemetry_settings, startup_tx)),
+            None,
         )?;
 
         // Wait for the observability pipeline to signal successful startup.
@@ -2686,6 +2683,7 @@ impl<
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
         startup_ready: Arc<std::sync::atomic::AtomicBool>,
+        start_ticket: Option<live_control::StartGateTicket>,
     ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core. As much as possible, we pin
         // before allocating memory.
@@ -2722,34 +2720,39 @@ impl<
                 .as_ref()
                 .map(|(settings, _)| settings)
                 .cloned();
-            let mut runtime_pipeline = pipeline_factory
-                .build(
-                    pipeline_context.clone(),
-                    pipeline_config.clone(),
-                    channel_capacity_policy,
-                    telemetry_policy,
-                    rate_limiter_policies,
-                    rate_limiter_scope,
-                    internal_telemetry_settings,
-                )
-                .map_err(|e| {
-                    if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
-                        let _ = startup_tx.send(Err(EngineError::InternalError {
-                            message: e.to_string(),
-                        }));
-                    }
-                    otel_error!(
-                        "controller.pipeline_build_failed",
-                        pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
-                        pipeline_id = pipeline_key.pipeline_id.as_ref(),
-                        core_id = core_id.id,
-                        error = %e,
-                        message = "Failed to build runtime pipeline from configuration"
-                    );
-                    Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    }
-                })?;
+            let build_result = pipeline_factory.build(
+                pipeline_context.clone(),
+                pipeline_config.clone(),
+                channel_capacity_policy,
+                telemetry_policy,
+                rate_limiter_policies,
+                rate_limiter_scope,
+                internal_telemetry_settings,
+            );
+            let mut start_ticket = start_ticket;
+            if let Err(e) = &build_result
+                && let Some(ticket) = start_ticket.take()
+            {
+                ticket.fail(&e.to_string());
+            }
+            let mut runtime_pipeline = build_result.map_err(|e| {
+                if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
+                    let _ = startup_tx.send(Err(EngineError::InternalError {
+                        message: e.to_string(),
+                    }));
+                }
+                otel_error!(
+                    "controller.pipeline_build_failed",
+                    pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
+                    pipeline_id = pipeline_key.pipeline_id.as_ref(),
+                    core_id = core_id.id,
+                    error = %e,
+                    message = "Failed to build runtime pipeline from configuration"
+                );
+                Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                }
+            })?;
 
             let startup_event_reporter = obs_evt_reporter.clone();
             let startup_pipeline_key = pipeline_key.clone();
@@ -2766,6 +2769,22 @@ impl<
                     let _ = startup_tx.send(Ok(()));
                 }
             });
+
+            // Hold here until every instance created by the same reconcile is built, so all new
+            // topic subscriptions exist before any new pipeline accepts or emits data.
+            if let Some(ticket) = start_ticket
+                && let Err(reason) = ticket.built_and_wait()
+            {
+                otel_info!(
+                    "controller.pipeline_start_aborted",
+                    pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
+                    pipeline_id = pipeline_key.pipeline_id.as_ref(),
+                    core_id = core_id.id,
+                    reason = reason.as_str(),
+                    message = "Built pipeline was not started because its start gate was aborted"
+                );
+                return Ok(Vec::new());
+            }
 
             // Start the pipeline (this will use the current thread's Tokio runtime)
             runtime_pipeline
@@ -3842,6 +3861,37 @@ groups: {}
         })
     }
 
+    struct StartFailingTestReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for StartFailingTestReceiver {
+        async fn start(
+            self: Box<Self>,
+            _ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            Err(otel_arrow_dfe_engine::error::Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Connect,
+                error: "simulated startup pipeline start failure".to_owned(),
+                source_detail: String::new(),
+            })
+        }
+    }
+
+    fn create_start_failing_test_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(
+            ReceiverWrapper::local(StartFailingTestReceiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
+    }
+
     fn create_test_observability_processor(
         _pipeline_ctx: PipelineContext,
         node: otel_arrow_dfe_engine::node::NodeId,
@@ -3890,6 +3940,13 @@ groups: {}
         ReceiverFactory {
             name: "urn:test:receiver:build-fails",
             create: fail_test_receiver_creation,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:start-fails",
+            create: create_start_failing_test_receiver,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,

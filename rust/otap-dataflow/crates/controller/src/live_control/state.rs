@@ -697,6 +697,9 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) drain_timeout_secs: u64,
     /// Whether failure handling cleans up candidates and restores the previous deployment.
     pub(super) rollback_failed_candidate: bool,
+    /// Gate that holds new create instances between build and run until the
+    /// whole reconcile has built them. `None` runs each instance right after build.
+    pub(super) start_gate: Option<Arc<StartGate>>,
 }
 
 #[derive(Debug)]

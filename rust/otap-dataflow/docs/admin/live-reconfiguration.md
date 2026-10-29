@@ -483,8 +483,13 @@ Behavior:
 - Placement-sensitive rollouts are planned before they start. Desired
   `core_set` pipelines are considered before desired `core_count` pipelines so
   controller-selected `core_count` placements avoid explicit core requests.
-- Pipelines connected through topics are rolled out in consumer-first order so
-  topic receivers are ready before their producers begin sending.
+- New pipelines are built together and released together: every new instance
+  is built (creating its topic subscriptions) before any new instance starts,
+  so no new pipeline can send to a topic before the new pipelines that consume
+  it are subscribed. Any topic wiring between pipelines is supported, including
+  pipelines that send to each other. If one new instance fails to build, no new
+  instance starts. Pipelines that are already running are not paused.
+- Replace and resize rollouts run after the new pipelines, one at a time.
 - `core_count` placements avoid both committed `core_set` cores and other
   committed or in-flight `core_count` cores. Explicit `core_set` pipelines may
   still overlap other explicit `core_set` pipelines as operator intent.
