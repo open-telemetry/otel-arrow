@@ -1233,12 +1233,23 @@ fn record_completed_upload(
     >,
     first_error: &mut Option<GenevaUploadFailure>,
 ) {
-    if let Err((error_type, error)) = metrics.boundary.record(completed) {
-        metrics.record_failure(signal, error_type);
-        if let Some(first_error) = first_error {
-            first_error.merge(error);
-        } else {
-            *first_error = Some(error);
+    match metrics.boundary.record(completed) {
+        Ok(_) => metrics.record_upload(signal, Outcome::Success),
+        Err((error_type, error)) => {
+            metrics.record_upload(
+                signal,
+                if error_type.is_refusal() {
+                    Outcome::Refused
+                } else {
+                    Outcome::Failure
+                },
+            );
+            metrics.record_failure(signal, error_type);
+            if let Some(first_error) = first_error {
+                first_error.merge(error);
+            } else {
+                *first_error = Some(error);
+            }
         }
     }
 }
@@ -2170,7 +2181,7 @@ mod tests {
     }
 
     /// Scenario: The host adds a missing agent-fed account group after the first upload fails.
-    /// Guarantees: The first NACK remains retryable and the identical encoded batches succeed after rotation.
+    /// Guarantees: The first NACK remains retryable, and identical batches succeed and emit upload totals after rotation.
     #[tokio::test]
     async fn agent_fed_missing_account_group_recovers_after_rotation() {
         use wiremock::{
@@ -2223,6 +2234,22 @@ mod tests {
                 .expect("retry succeeds"),
             batches.len()
         );
+        let snapshots = exporter.metrics.terminal_snapshots();
+        for outcome in ["success", "failure"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.geneva.uploads"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "batches")
+                        .is_some_and(|index| {
+                            snapshot.get_metrics()[index].to_u64_lossy() == batches.len() as u64
+                        })
+            }));
+        }
         server.verify().await;
     }
 
@@ -2309,8 +2336,47 @@ mod tests {
         }
     }
 
+    /// Scenario: Optional message telemetry is disabled and uploads and empty inputs both succeed.
+    /// Guarantees: Upload totals remain available per signal without counting empty input acknowledgements.
+    #[tokio::test]
+    async fn upload_metrics_exclude_empty_inputs_without_optional_telemetry() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = GenevaExporterMetrics::register(&pipeline_ctx);
+        for signal in [SignalType::Logs, SignalType::Traces] {
+            let completed = metrics
+                .boundary
+                .attempt(signal)
+                .run(async |_| Ok::<_, otel_arrow_dfe_otap::metrics::ErrorWithOutcome<_>>(1_u64))
+                .await;
+            record_completed_upload(&mut metrics, signal, completed, &mut None);
+            let empty_attempt = metrics.boundary.attempt(signal);
+            metrics
+                .record_unsubmitted_attempt(empty_attempt, Outcome::Success)
+                .await;
+        }
+        let snapshots = metrics.terminal_snapshots();
+        for signal in ["logs", "traces"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.geneva.uploads"
+                    && snapshot.measurement_attribute_value("signal") == Some(signal)
+                    && snapshot.measurement_attribute_value("outcome") == Some("success")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "batches")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
+        }
+        assert!(
+            snapshots
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "exporter.attempted")
+        );
+    }
+
     /// Scenario: Concurrent Geneva batch submissions complete with mixed terminal outcomes.
-    /// Guarantees: Every completed batch is recorded once and the first error remains the outer NACK reason.
+    /// Guarantees: Shared attempts and actual uploads count each outcome once, retaining the first error for NACK.
     #[tokio::test]
     async fn completed_batch_attempts_record_mixed_outcomes() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
@@ -2366,6 +2432,17 @@ mod tests {
         assert_eq!(first_error.cause, NackCause::Unspecified);
         let snapshots = metrics.terminal_snapshots();
         for outcome in ["success", "refused", "failure"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.geneva.uploads"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "batches")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
             assert!(snapshots.iter().any(|snapshot| {
                 snapshot.descriptor().name == "exporter.attempted"
                     && snapshot.measurement_attribute_value("signal") == Some("logs")

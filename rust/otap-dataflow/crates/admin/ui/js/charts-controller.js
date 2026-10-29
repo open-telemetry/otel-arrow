@@ -59,11 +59,13 @@ export function updateNodeSeries({
 }) {
   const perfMs = typeof perfStart === "function" ? perfStart() : null;
   try {
-    if (!Number.isFinite(sampleSeconds) || sampleSeconds <= 0) return;
     if (!ts || typeof ts.getTime !== "function") return;
+    const hasInterval = Number.isFinite(sampleSeconds) && sampleSeconds > 0;
     const nowMs = ts.getTime();
     const cutoff = nowMs - maxWindowMs;
     const scopeByPipeline = dagScope?.scopeByPipeline === true;
+    const receiverRequests = new Map();
+    const exporterUploads = new Map();
 
     (metricSets || []).forEach((set) => {
       if (
@@ -74,11 +76,52 @@ export function updateNodeSeries({
       ) {
         return;
       }
+      if (!hasInterval && set.name !== "receiver.otlp.requests" &&
+        set.name !== "exporter.geneva.uploads") return;
       const attrs = normalizeAttributes(set.attributes || {});
       const nodeId = resolveScopedNodeId(attrs, scopeByPipeline);
       if (!nodeId) return;
       const entry = nodeSeries.get(nodeId) || { metrics: new Map() };
       (set.metrics || []).forEach((metric) => {
+        if (set.name === "exporter.geneva.uploads" && metric.name === "batches") {
+          const outcome = normalizeDataPointAttributes(metric.attributes).outcome;
+          if (!["success", "failure", "refused"].includes(outcome)) return;
+          if (!Number.isFinite(metric.value) || metric.value < 0) return;
+          const counts = exporterUploads.get(nodeId) || {
+            success: 0, failure: 0, refused: 0,
+            successDelta: 0, totalDelta: 0, hasDelta: true,
+          };
+          counts[outcome] += metric.value;
+          if (Number.isFinite(metric.deltaValue) && metric.deltaValue >= 0) {
+            counts.totalDelta += metric.deltaValue;
+            if (outcome === "success") counts.successDelta += metric.deltaValue;
+          } else {
+            counts.hasDelta = false;
+          }
+          exporterUploads.set(nodeId, counts);
+          return;
+        }
+        if (
+          set.name === "receiver.otlp.requests" &&
+          (metric.name === "accepted" || metric.name === "rejected")
+        ) {
+          if (!Number.isFinite(metric.value) || metric.value < 0) return;
+          const counts = receiverRequests.get(nodeId) || {
+            accepted: 0,
+            rejected: 0,
+            delta: 0,
+            hasDelta: true,
+          };
+          counts[metric.name] += metric.value;
+          if (Number.isFinite(metric.deltaValue) && metric.deltaValue >= 0) {
+            counts.delta += metric.deltaValue;
+          } else {
+            counts.hasDelta = false;
+          }
+          receiverRequests.set(nodeId, counts);
+          return;
+        }
+        if (!hasInterval) return;
         if (!shouldShowNodeRate(metric)) return;
         if (!Number.isFinite(metric.value)) return;
         const rate = metric.value / sampleSeconds;
@@ -89,6 +132,37 @@ export function updateNodeSeries({
         entry.metrics.set(metricKey, series);
       });
       nodeSeries.set(nodeId, entry);
+    });
+    receiverRequests.forEach((counts, nodeId) => {
+      const entry = nodeSeries.get(nodeId);
+      const metricKey = buildNodeMetricKey("receiver.otlp.requests", "received");
+      const series = entry.metrics.get(metricKey) || { points: [] };
+      series.points.push({
+        ts: nowMs,
+        value: hasInterval && counts.hasDelta ? counts.delta / sampleSeconds : null,
+        total: counts.accepted + counts.rejected,
+        accepted: counts.accepted,
+        rejected: counts.rejected,
+      });
+      series.points = series.points.filter((point) => point.ts >= cutoff);
+      entry.metrics.set(metricKey, series);
+    });
+    exporterUploads.forEach((counts, nodeId) => {
+      const entry = nodeSeries.get(nodeId);
+      const metricKey = buildNodeMetricKey("exporter.geneva.uploads", "success");
+      const series = entry.metrics.get(metricKey) || { points: [] };
+      const hasRate = hasInterval && counts.hasDelta;
+      series.points.push({
+        ts: nowMs,
+        value: hasRate ? counts.successDelta / sampleSeconds : null,
+        successPercent: hasRate && counts.totalDelta > 0
+          ? 100 * counts.successDelta / counts.totalDelta : null,
+        success: counts.success,
+        failure: counts.failure,
+        refused: counts.refused,
+      });
+      series.points = series.points.filter((point) => point.ts >= cutoff);
+      entry.metrics.set(metricKey, series);
     });
   } finally {
     if (typeof perfEnd === "function") {

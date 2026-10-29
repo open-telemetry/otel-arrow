@@ -51,6 +51,18 @@ function buildMetricSeriesKey(setName, attrs, metricName, dataPointAttrs) {
   return `${String(setName || "")}::${metricName}::${JSON.stringify(attrEntries)}`;
 }
 
+function isOtlpRequestCounter(setName, metricName) {
+  return (
+    setName === "receiver.otlp.requests" &&
+    (metricName === "accepted" || metricName === "rejected")
+  );
+}
+
+function preservesCumulativeCounter(setName, metricName) {
+  return isOtlpRequestCounter(setName, metricName) ||
+    (setName === "exporter.geneva.uploads" && metricName === "batches");
+}
+
 function shouldDeriveClientDelta(setName, metricName, metric) {
   if (!metric || !Number.isFinite(metric.value)) return false;
   const name = String(metricName || "");
@@ -61,6 +73,7 @@ function shouldDeriveClientDelta(setName, metricName, metric) {
   if (name === "cpu.time" || name.endsWith(".delta")) return true;
   if (setName === "channel.sender" && CHANNEL_SENDER_DELTA_METRICS.has(name)) return true;
   if (setName === "channel.receiver" && CHANNEL_RECEIVER_DELTA_METRICS.has(name)) return true;
+  if (preservesCumulativeCounter(setName, name)) return true;
   return false;
 }
 
@@ -101,6 +114,14 @@ export function deriveClientDeltas(metricSets, state, nowTsMs) {
         }
       }
       prevBySeries.set(key, { value: current, tsMs: nowTsMs });
+      if (preservesCumulativeCounter(setName, metricName)) {
+        // Keep cumulative totals for node labels alongside reset-safe rate deltas.
+        const hasBaseline = prev && Number.isFinite(prev.value) && current >= prev.value;
+        return {
+          ...metric,
+          deltaValue: setName === "exporter.geneva.uploads" && !hasBaseline ? null : delta,
+        };
+      }
       return { ...metric, value: delta };
     });
     return { ...set, metrics };

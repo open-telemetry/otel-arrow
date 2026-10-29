@@ -55,6 +55,8 @@ export function createSelectionDetailsController({
   renderNodeMetricTable,
   calcRate,
   buildNodeSummary,
+  getOtlpReceiverRequestPoint = () => null,
+  getGenevaUploadPoint = () => null,
   escapeHtml,
   setGlobalHover,
   destroyNodeCharts,
@@ -494,8 +496,50 @@ export function createSelectionDetailsController({
     const safeInRate = escapeHtml(formatRateWithUnit(summary.inRate, "msg"));
     const safeOutRate = escapeHtml(formatRateWithUnit(summary.outRate, "msg"));
     const safeErrorRate = escapeHtml(formatRateWithUnit(summary.errorRate, "error"));
+    const isOtlpReceiver = node.attrs["node.urn"] === "urn:otel:receiver:otlp";
+    const requestPoint = isOtlpReceiver ? getOtlpReceiverRequestPoint(node.id) : null;
+    const requestSummaryHtml = isOtlpReceiver ? `
+        <div class="card rounded-xl p-3">
+          <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">External requests received</div>
+          <div class="text-lg font-semibold text-slate-200">${escapeHtml(
+            requestPoint ? formatValueWithUnit(requestPoint.total, "request") : "n/a"
+          )}</div>
+          <div class="text-xs text-slate-400">${escapeHtml(
+            formatRateWithUnit(requestPoint?.value, "req")
+          )}</div>
+          <div class="mt-1 text-xs text-slate-400">Accepted: ${escapeHtml(
+            requestPoint ? formatValueWithUnit(requestPoint.accepted, "request") : "n/a"
+          )}; rejected: ${escapeHtml(
+            requestPoint ? formatValueWithUnit(requestPoint.rejected, "request") : "n/a"
+          )}</div>
+        </div>
+    ` : "";
+    const isGenevaExporter = node.attrs["node.urn"] === "urn:microsoft:exporter:geneva";
+    const uploadPoint = isGenevaExporter ? getGenevaUploadPoint(node.id) : null;
+    const uploadSummaryHtml = isGenevaExporter ? `
+        <div class="card rounded-xl p-3" title="Completed Geneva batch uploads. Success percentage covers the displayed sampling interval and includes failures and refusals in its denominator. Empty and preparation-only inputs are excluded.">
+          <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">Successful uploads</div>
+          <div class="text-lg font-semibold text-slate-200">${escapeHtml(
+            uploadPoint ? formatValueWithUnit(uploadPoint.success, "batch") : "n/a"
+          )}</div>
+          <div class="text-xs text-slate-400">${escapeHtml(
+            formatRateWithUnit(uploadPoint?.value, "upload")
+          )}</div>
+          <div class="mt-1 text-xs text-slate-400">Success: ${escapeHtml(
+            Number.isFinite(uploadPoint?.successPercent)
+              ? `${uploadPoint.successPercent.toFixed(1)}%` : "n/a"
+          )} (interval)</div>
+          <div class="mt-1 text-xs text-slate-400">Failed: ${escapeHtml(
+            uploadPoint ? formatValueWithUnit(uploadPoint.failure, "batch") : "n/a"
+          )}; refused: ${escapeHtml(
+            uploadPoint ? formatValueWithUnit(uploadPoint.refused, "batch") : "n/a"
+          )}</div>
+        </div>
+    ` : "";
     const summaryHtml = `
-      <div class="mt-4 grid gap-3 sm:grid-cols-3">
+      <div class="mt-4 grid gap-3 sm:grid-cols-3 ${isOtlpReceiver || isGenevaExporter ? "lg:grid-cols-4" : ""}">
+        ${requestSummaryHtml}
+        ${uploadSummaryHtml}
         <div class="card rounded-xl p-3">
           <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">In rate</div>
           <div class="text-lg font-semibold text-slate-200">${safeInRate}</div>

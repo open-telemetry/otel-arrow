@@ -1567,6 +1567,8 @@
       nodes.forEach((node) => {
         const nodeEl = dagNodeElements.get(node.id);
         if (!nodeEl) return;
+        updateOtlpReceiverRequestLabel(nodeEl, node.id, displayTimeMs);
+        updateGenevaUploadLabel(nodeEl, node.id, displayTimeMs);
         const hasError = (nodeErrors.get(node.id) || 0) > 0;
         const hasTraffic = (nodeTraffic.get(node.id) || 0) > 0;
         const isActive = metricMode === "errors" ? hasError : hasTraffic;
@@ -3020,6 +3022,44 @@
     return series.points;
   }
 
+  function getOtlpReceiverRequestPoint(nodeId, ts = getDisplayTimeMs()) {
+    const endMs = getWindowEndMs();
+    const points = getNodeMetricPoints(
+      nodeId,
+      buildNodeMetricKey("receiver.otlp.requests", "received"),
+      endMs - getWindowMs(),
+      endMs
+    );
+    return getPointAtTime(points, ts);
+  }
+
+  function updateOtlpReceiverRequestLabel(nodeEl, nodeId, ts) {
+    const label = nodeEl.querySelector(".dag-receiver-requests");
+    if (!label) return;
+    const point = getOtlpReceiverRequestPoint(nodeId, ts);
+    const count = point ? formatValue(point.total) : "n/a";
+    label.textContent = `Received: ${count} (${formatRateWithUnit(point?.value, "req")})`;
+  }
+
+  function getGenevaUploadPoint(nodeId, ts = getDisplayTimeMs()) {
+    const endMs = getWindowEndMs();
+    const points = getNodeMetricPoints(
+      nodeId,
+      buildNodeMetricKey("exporter.geneva.uploads", "success"),
+      endMs - getWindowMs(),
+      endMs
+    );
+    return getPointAtTime(points, ts);
+  }
+
+  function updateGenevaUploadLabel(nodeEl, nodeId, ts) {
+    const label = nodeEl.querySelector(".dag-exporter-uploads");
+    if (!label) return;
+    const point = getGenevaUploadPoint(nodeId, ts);
+    const count = point ? formatValue(point.success) : "n/a";
+    label.textContent = `Uploaded: ${count} (${formatRateWithUnit(point?.value, "upload")})`;
+  }
+
   function destroyNodeCharts() {
     nodeCharts.forEach((chart) => {
       if (chart._nodeHoverHandlers) {
@@ -3278,6 +3318,8 @@
     renderNodeMetricTable,
     calcRate,
     buildNodeSummary,
+    getOtlpReceiverRequestPoint,
+    getGenevaUploadPoint,
     escapeHtml,
     setGlobalHover,
     destroyNodeCharts,
@@ -3880,7 +3922,8 @@
 
     const visiblePorts = node.displayPorts || node.outPorts || [];
     const controlEdgeId = showControlChannels ? controlInfo?.primary?.id || "" : "";
-    const renderKey = `${node.displayId || node.id}|${visiblePorts.join(",")}|${controlEdgeId}`;
+    const nodeUrn = node.attrs["node.urn"] || "";
+    const renderKey = `${node.displayId || node.id}|${nodeUrn}|${visiblePorts.join(",")}|${controlEdgeId}`;
     if (nodeEl.dataset.renderKey !== renderKey) {
       const safeNodeIdAttr = escapeAttr(node.id);
       const portRows = visiblePorts.length
@@ -3914,11 +3957,19 @@
         ${controlHtml}
         <div class="dag-node-header">
           <div class="dag-node-id">${safeNodeDisplayId}</div>
+          ${nodeUrn === "urn:otel:receiver:otlp"
+            ? '<div class="dag-receiver-requests text-[0.65rem] leading-tight text-slate-400" title="External OTLP requests admitted or rejected, not individual events or internal batches."></div>'
+            : ""}
+          ${nodeUrn === "urn:microsoft:exporter:geneva"
+            ? '<div class="dag-exporter-uploads text-[0.65rem] leading-tight text-slate-400" title="Successful Geneva batch upload completions, excluding empty inputs. Not a guarantee of query visibility."></div>'
+            : ""}
         </div>
         ${portRows}
       `;
       nodeEl.dataset.renderKey = renderKey;
     }
+    updateOtlpReceiverRequestLabel(nodeEl, node.id, getDisplayTimeMs());
+    updateGenevaUploadLabel(nodeEl, node.id, getDisplayTimeMs());
 
     const portDots = new Map();
     nodeEl.querySelectorAll(".dag-port-dot").forEach((dot) => {

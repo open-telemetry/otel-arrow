@@ -3,6 +3,32 @@ import assert from "node:assert/strict";
 
 import { deriveClientDeltas } from "../polling-controller.js";
 
+// Scenario: OTLP request counters carry distinct cumulative admission and rejection buckets.
+// Guarantees: Rate deltas preserve the original totals and keep protocols and outcomes independent.
+test("deriveClientDeltas preserves OTLP request totals alongside interval deltas", () => {
+  const state = {};
+  const snapshot = (accepted, rejected, httpAccepted) => [{
+    name: "receiver.otlp.requests",
+    attributes: { "node.id": "receiver" },
+    metrics: [
+      { name: "accepted", value: accepted, attributes: { protocol: "grpc", signal: "logs" } },
+      { name: "rejected", value: rejected, attributes: { protocol: "grpc", "error.type": "authentication" } },
+      { name: "accepted", value: httpAccepted, attributes: { protocol: "http", signal: "logs" } },
+    ],
+  }];
+  const first = deriveClientDeltas(snapshot(10, 2, 20), state, 1000)[0].metrics;
+  assert.equal(first[0].value, 10);
+  assert.equal(first[0].deltaValue, 0);
+
+  const next = deriveClientDeltas(snapshot(15, 3, 24), state, 2000)[0].metrics;
+  assert.equal(next[0].value, 15);
+  assert.equal(next[0].deltaValue, 5);
+  assert.equal(next[1].value, 3);
+  assert.equal(next[1].deltaValue, 1);
+  assert.equal(next[2].value, 24);
+  assert.equal(next[2].deltaValue, 4);
+});
+
 // Scenario: A cumulative channel outcome bucket is observed across two admin polls.
 // Guarantees: The first sample establishes a baseline and the second exposes only its delta.
 test("deriveClientDeltas computes per-series deltas and initializes baseline", () => {

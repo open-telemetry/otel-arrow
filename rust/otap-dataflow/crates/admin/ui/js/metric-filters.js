@@ -55,10 +55,15 @@ export function aggregateMetricSets(metricSets) {
     (set.metrics || []).forEach((metric) => {
       const metricName = metric.name;
       if (!metricName) return;
-      const existing = group.metrics.get(metricName);
+      const measurementAttrs = set.name === "exporter.geneva.uploads"
+        ? Object.entries(normalizeAttributes(metric.attributes || {}))
+          .sort(([a], [b]) => a.localeCompare(b))
+        : [];
+      const metricKey = JSON.stringify([metricName, measurementAttrs]);
+      const existing = group.metrics.get(metricKey);
       if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
         if (!existing) {
-          group.metrics.set(metricName, {
+          group.metrics.set(metricKey, {
             metric: { ...metric },
             sum: 0,
             count: 0,
@@ -82,7 +87,13 @@ export function aggregateMetricSets(metricSets) {
       entry.count += 1;
       entry.mode = mode;
       entry.hasNumeric = true;
-      group.metrics.set(metricName, entry);
+      if ("deltaValue" in metric) {
+        entry.hasDelta = (entry.hasDelta ?? true) && Number.isFinite(metric.deltaValue);
+      }
+      if (Number.isFinite(metric.deltaValue)) {
+        entry.deltaValue = (entry.deltaValue ?? 0) + metric.deltaValue;
+      }
+      group.metrics.set(metricKey, entry);
     });
   });
 
@@ -95,7 +106,13 @@ export function aggregateMetricSets(metricSets) {
         return;
       }
       const value = entry.mode === "avg" ? entry.sum / (entry.count || 1) : entry.sum;
-      metrics.push({ ...entry.metric, value });
+      metrics.push({
+        ...entry.metric,
+        value,
+        ...(entry.hasDelta === false
+          ? { deltaValue: null }
+          : entry.deltaValue != null ? { deltaValue: entry.deltaValue } : {}),
+      });
     });
     aggregated.push({
       name: group.name,
