@@ -500,6 +500,7 @@ significant added complexity.
 
 - Configuring individual lints or packs, e.g. by lint name or pack URN, as
   a more specific key alongside categories.
+- Loading lints via a declarative policy language such as rego
 - Configuring lint levels at node scope.
 - Reducing repeated deserialization of node configs across lints.
 - Resolving the full configuration for lints, including defaults, before
@@ -516,3 +517,4 @@ significant added complexity.
 - Lints across pipelines connected by topics.
 - Documentation generated from `LintInfo`.
 - A connection location for rules about individual edges.
+
