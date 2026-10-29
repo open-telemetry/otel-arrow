@@ -50,7 +50,7 @@ pub const API_KEY_USABLE_MARGIN: Duration = Duration::from_secs(30);
 ///
 /// The item is a plain [`ApiKey`], not a `Result`: a refresh failure does not
 /// terminate the subscription. The stream simply does not emit until the next
-/// successful refresh, and failures surface via [`ApiKeyProvider::get_api_key`]
+/// successful refresh, and failures surface via `ApiKeyProvider::get_api_key`
 /// and telemetry instead. Because the item is [`Clone`], a provider can fan one
 /// refreshed API Key out to all subscribers via a `watch`/`broadcast` channel.
 ///
