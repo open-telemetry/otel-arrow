@@ -274,7 +274,7 @@ sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 globset = "0.4.20"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=9.1.2"
+zip = "=9.1.3"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 clickhouse = { version = "0.15.3", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
 clickhouse-ext-arrow = "0.2.0"
