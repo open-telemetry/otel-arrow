@@ -335,22 +335,34 @@ impl TelemetryRegistryHandle {
     /// Unregisters a metric set by key.
     #[must_use]
     pub fn unregister_metric_set(&self, metrics_key: MetricSetKey) -> bool {
-        self.unregister_metric_set_at(metrics_key, Instant::now())
+        self.unregister_metric_set_with(metrics_key, Instant::now)
     }
 
     /// Unregisters a metric set using an explicit unregistration time.
     ///
-    /// Most callers should go through [`Self::unregister_metric_set`], but
-    /// tests may wish to call into this function with a particular time for
-    /// determinism.
+    /// Test-only: production callers use [`Self::unregister_metric_set`],
+    /// which samples the time under the registry lock. Tests pass a fixed
+    /// time for determinism.
+    #[cfg(test)]
     pub(crate) fn unregister_metric_set_at(&self, metrics_key: MetricSetKey, now: Instant) -> bool {
+        self.unregister_metric_set_with(metrics_key, || now)
+    }
+
+    /// Unregisters a metric set, reading the unregistration time from `now`
+    /// while holding the registry lock. Sampling under the lock keeps grace
+    /// deadlines queued in order when several threads unregister concurrently.
+    fn unregister_metric_set_with(
+        &self,
+        metrics_key: MetricSetKey,
+        now: impl FnOnce() -> Instant,
+    ) -> bool {
         let (found, first_deadline_queued) = {
             let mut reg = self.registry.lock();
             let TelemetryRegistry {
                 entities, metrics, ..
             } = &mut *reg;
             let had_deadline = metrics.next_unregister_deadline().is_some();
-            let found = match metrics.unregister(metrics_key, now) {
+            let found = match metrics.unregister(metrics_key, now()) {
                 Some(MetricSetUnregister::Removed(entity_key)) => {
                     let _ = entities.unregister(entity_key);
                     true
