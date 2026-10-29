@@ -220,6 +220,15 @@ levels and 65536 visited values per source message. Nesting-depth and
 traversal-work refusals report their own actual and configured limits rather
 than using row-byte errors.
 
+Encoded OTLP is decoded completely using the existing generated Prost
+messages before any rows are transformed. This reuses schema definitions and
+protobuf decoding semantics, including unknown groups, merged message fields,
+and last-oneof-value selection. The decoder's recursion limit remains enabled.
+The transformer uses the generated messages' existing signal views directly,
+without an Arrow conversion. This allocates an owned message tree, in contrast
+to raw byte views, but prevents malformed nested content from being silently
+omitted and ACKed as an empty or partial export.
+
 `max_pending_messages` bounds retained source messages across accumulators,
 in-flight requests, retained authentication retries, and completion routes for
 one exporter instance. Once the limit is reached, partial batches are flushed
@@ -231,11 +240,15 @@ admission gate. The exporter parks at most one such source, flushes its
 internal batches immediately, and waits for capacity before consuming more
 input. The normal admitted-message bound plus this single parked source
 limits exporter-owned retention; upstream backlog is not copied into a queue.
-The exporter uses the inbox's optional, read-only `shutdown_deadline()`
-accessor to observe the already-latched deadline. It arms an independent
-timer so parked input cannot prevent cancellation of stalled requests or
-completion routes at that deadline. The accessor does not change admission
-or shutdown delivery for other inbox users.
+The exporter opts into `recv_when_or_shutdown_started()`, which returns a
+one-time notification when shutdown is latched, even if an empty upstream
+remains open. This lets the exporter immediately flush partial batches.
+The receive future stays registered while pending, so late shared-channel
+input and channel closure can wake it. The optional, read-only
+`shutdown_deadline()` accessor exposes the latched deadline so the exporter
+can arm an independent timer. Parked input therefore cannot prevent
+cancellation of stalled requests or completion routes at that deadline.
+Existing inbox receive methods retain their admission and shutdown behavior.
 
 All bounds are per exporter instance. Process-wide capacity scales with the
 number of pipeline instances.

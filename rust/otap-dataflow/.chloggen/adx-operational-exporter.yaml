@@ -18,4 +18,4 @@ issues: [4159]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Optional request coalescing preserves source acknowledgements and retries retained requests after token replacement. Oversized inputs report specific diagnostics and permanent refusals.
+subtext: Optional request coalescing preserves source acknowledgements and retries retained requests after token replacement. Oversized or malformed inputs are permanently refused. Shutdown flushes pending coalesced requests promptly.
