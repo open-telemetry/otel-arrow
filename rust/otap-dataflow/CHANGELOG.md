@@ -71,7 +71,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 - `pipeline`: Reduce CPU usage when receiving syslog messages and converting RFC 3164 timestamps, including wrapped CEF. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
   Use fixed-format timestamp parsing and avoid unnecessary local-time conversion when capturing receipt years, without timestamp caching. Existing timestamp, receipt-year, timezone, and DST behavior is preserved.
 - `pipeline`: Syslog receiver preserves original messages in encoded pdata until native processing is required. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
-  RFC 3164 retains its receipt year. Syslog batches are capped at 256 messages/256 KiB. With format: preserve, move downstream batching limits from otap to config.codecs.syslog-batch (items only). See the syslog receiver README for migration examples.
+  RFC 3164 retains its receipt year. Syslog batches are capped at 8,192 messages/2 MiB. With format: preserve, move downstream batching limits from otap to config.codecs.syslog-batch (items only). See the syslog receiver README for migration examples.
 - `query-engine`: OTAP query-engine now supports metric data point fields as target (LHS) of assignment operations. ([#4070](https://github.com/open-telemetry/otel-arrow/issues/4070))
 - `query-engine`: OTAP query-engine now supports if/else conditional branches inside `apply data_points` pipelines. ([#3722](https://github.com/open-telemetry/otel-arrow/issues/3722))
 
