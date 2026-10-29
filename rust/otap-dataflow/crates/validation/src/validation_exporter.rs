@@ -418,9 +418,15 @@ mod tests {
             if let Some(headers) = &stored {
                 metadata.set_transport_headers(headers.clone());
             }
-            for read in bindings.values() {
-                let name = read.reference().name().clone();
-                let selected = read.read(&metadata);
+            for (name, selector) in ["Tenant", "tenant", "missing"]
+                .into_iter()
+                .zip(entries(&["Tenant", "tenant", "missing"]))
+            {
+                let name = context_name(name);
+                let selected = bindings
+                    .value(&selector)
+                    .expect("declared read")
+                    .read(&metadata);
                 let present = selected.is_some();
                 let mut matches_value = false;
                 if let Some(selected) = selected {

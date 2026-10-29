@@ -213,7 +213,10 @@ mod tests {
         use otel_arrow_dfe_config::PipelineKey;
         use otel_arrow_dfe_config::engine::OtelDataflowSpec;
         use otel_arrow_dfe_engine::PipelineFactory;
-        use otel_arrow_dfe_engine::pdata_context::ReadValue;
+        use otel_arrow_dfe_engine::pdata_context::{
+            ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTarget,
+            ContextNameMatching, ReadValue,
+        };
 
         let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
             "version": "otel_dataflow/v1",
@@ -253,9 +256,14 @@ mod tests {
             )
             .expect("Kafka bindings");
         let read = bindings
-            .values()
-            .iter()
-            .find(|read| read.reference().name().as_str() == "Topic")
+            .value(&ContextEntrySelector {
+                target: ContextEntryTarget::Primitive {
+                    domain: ContextDomain::TransportHeader,
+                    name: "Topic".try_into().expect("context name"),
+                    matching: ContextNameMatching::AsciiCaseInsensitive,
+                },
+                form: ContextEntrySelectorForm::Value,
+            })
             .expect("topic read");
         let signal = make_signal_config("fallback", Some("Topic"));
         for context in [

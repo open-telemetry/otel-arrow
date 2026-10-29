@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    AuthorizedIdentityRead, CompiledHeaderPropagationPolicy, ContextMaterializationPlan,
-    HeadersRead, Metadata, ValueRead,
+    AuthorizedIdentityRead, CompiledHeaderPropagationPolicy, ContextEntrySelector,
+    ContextMaterializationPlan, HeadersRead, Metadata, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -161,6 +161,7 @@ impl SinkBinding {
 pub struct NodeBindings {
     pub(super) arrival: Option<ArrivalBinding>,
     pub(super) sink: Option<SinkBinding>,
+    /// Sorted by selector and unique, as produced by sorted declarations.
     pub(super) values: Box<[ValueRead]>,
     pub(super) headers: Option<HeadersRead>,
     pub(super) authorized_identity: Option<AuthorizedIdentityRead>,
@@ -179,10 +180,21 @@ impl NodeBindings {
         self.sink.as_ref()
     }
 
-    /// Returns declared named reads for selection once during node construction.
-    #[must_use]
-    pub fn values(&self) -> &[ValueRead] {
-        &self.values
+    /// Returns the read compiled for a selector this node declared.
+    ///
+    /// Call once during node construction with the same selector the node
+    /// returned from its context declarations. A selector the node did not
+    /// declare is a configuration error.
+    pub fn value(
+        &self,
+        selector: &ContextEntrySelector,
+    ) -> Result<&ValueRead, otel_arrow_dfe_config::error::Error> {
+        self.values
+            .binary_search_by(|read| read.selector().cmp(selector))
+            .map(|index| &self.values[index])
+            .map_err(|_| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!("context read {selector:?} was not declared by this node"),
+            })
     }
 
     /// Returns the all-stored header read, if declared.

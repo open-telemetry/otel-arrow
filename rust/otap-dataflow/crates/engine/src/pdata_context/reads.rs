@@ -9,7 +9,7 @@ use super::{
     ContextNameMatching, ContextProjection, ContextValueCardinality, ContextValueKind,
     MaterializedContextProjection, MaterializedContextValue, Metadata,
 };
-use otel_arrow_dfe_config::context::ContextEntryRef;
+use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{
     TransportHeaderRef, TransportHeadersFindIter, TransportHeadersIter, ValueKind,
 };
@@ -18,7 +18,6 @@ use otel_arrow_dfe_config::error::Error;
 /// One declared named read, resolved once by the context compiler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueRead {
-    reference: ContextEntryRef,
     selector: ContextEntrySelector,
     backend: ValueReadBackend,
 }
@@ -27,8 +26,14 @@ pub struct ValueRead {
 // Composite reads retain a shared plan and projection without another heap allocation.
 #[allow(variant_size_differences)]
 enum ValueReadBackend {
-    TransportHeader(ContextNameMatching),
-    AuthorizedIdentity(ContextNameMatching),
+    TransportHeader {
+        name: ContextEntryName,
+        matching: ContextNameMatching,
+    },
+    AuthorizedIdentity {
+        name: ContextEntryName,
+        matching: ContextNameMatching,
+    },
     Composite {
         plan: ContextMaterializationPlan,
         projection: ContextProjection,
@@ -49,49 +54,40 @@ impl ValueRead {
         selector: &ContextEntrySelector,
         plan: &ContextMaterializationPlan,
     ) -> Result<Self, Error> {
-        let (reference, backend) = match &selector.target {
+        let backend = match &selector.target {
             ContextEntryTarget::Primitive {
                 domain,
                 name,
                 matching,
-            } => (
-                name.clone().into(),
+            } => {
+                let (name, matching) = (name.clone(), *matching);
                 match domain {
-                    ContextDomain::TransportHeader => ValueReadBackend::TransportHeader(*matching),
-                    ContextDomain::AuthorizedIdentity => {
-                        ValueReadBackend::AuthorizedIdentity(*matching)
+                    ContextDomain::TransportHeader => {
+                        ValueReadBackend::TransportHeader { name, matching }
                     }
-                },
-            ),
-            ContextEntryTarget::CompositeMember { composite, member } => (
-                format!("{composite}:{member}").try_into()?,
+                    ContextDomain::AuthorizedIdentity => {
+                        ValueReadBackend::AuthorizedIdentity { name, matching }
+                    }
+                }
+            }
+            ContextEntryTarget::CompositeMember { composite, member } => {
                 ValueReadBackend::Composite {
                     plan: plan.clone(),
                     projection: plan.layout().resolve_member(composite, member)?,
-                },
-            ),
-            ContextEntryTarget::Composite { name } => (
-                name.clone().into(),
-                ValueReadBackend::Composite {
-                    plan: plan.clone(),
-                    projection: plan.layout().resolve_composite(name)?,
-                },
-            ),
+                }
+            }
+            ContextEntryTarget::Composite { name } => ValueReadBackend::Composite {
+                plan: plan.clone(),
+                projection: plan.layout().resolve_composite(name)?,
+            },
         };
         Ok(Self {
-            reference,
             selector: selector.clone(),
             backend,
         })
     }
 
-    /// Returns the configured reference for construction-time selection.
-    #[must_use]
-    pub fn reference(&self) -> &ContextEntryRef {
-        &self.reference
-    }
-
-    /// Disambiguates reads with the same reference but different targets, forms, or matching.
+    /// Returns the declared selector this read was compiled from.
     #[must_use]
     pub fn selector(&self) -> &ContextEntrySelector {
         &self.selector
@@ -105,9 +101,9 @@ impl ValueRead {
     #[must_use]
     pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Option<Read<'a>> {
         let backend = match &self.backend {
-            ValueReadBackend::TransportHeader(matching) => {
+            ValueReadBackend::TransportHeader { name, matching } => {
                 let headers = metadata.transport_headers()?;
-                let name = self.reference.name().as_str();
+                let name = name.as_str();
                 let mut remaining = match matching {
                     ContextNameMatching::Exact => HeaderMatches::Exact(headers.find_by_name(name)),
                     ContextNameMatching::AsciiCaseInsensitive => {
@@ -122,8 +118,8 @@ impl ValueRead {
                     remaining,
                 }
             }
-            ValueReadBackend::AuthorizedIdentity(matching) => {
-                let name = self.reference.name().as_str();
+            ValueReadBackend::AuthorizedIdentity { name, matching } => {
+                let name = name.as_str();
                 ReadBackend::AuthorizedIdentity(
                     metadata
                         .authorized_identity_entries()?
@@ -420,12 +416,18 @@ mod tests {
     /// Guarantees: compiled reads match legacy lookup order, spelling, kinds, bytes, and absence.
     #[test]
     fn primitive_reads_preserve_matching_and_values() {
+        let declared = [
+            ("Topic", ContextNameMatching::Exact),
+            ("Topic", ContextNameMatching::AsciiCaseInsensitive),
+            ("missing", ContextNameMatching::Exact),
+        ];
         let bindings = compile(
-            [consumes(vec![
-                primitive("Topic", ContextNameMatching::Exact),
-                primitive("Topic", ContextNameMatching::AsciiCaseInsensitive),
-                primitive("missing", ContextNameMatching::Exact),
-            ])]
+            [consumes(
+                declared
+                    .iter()
+                    .map(|(entry, matching)| primitive(entry, *matching))
+                    .collect(),
+            )]
             .into_iter()
             .collect(),
             &[],
@@ -448,16 +450,12 @@ mod tests {
         let mut metadata = Metadata::default();
         metadata.set_transport_headers(headers);
         let headers = metadata.transport_headers().expect("headers");
-        assert_eq!(bindings.values().len(), 3);
-        for read in bindings.values() {
-            let ContextEntryTarget::Primitive { matching, .. } = read.selector().target else {
-                panic!("primitive read");
-            };
+        for (entry, matching) in declared {
+            let read = bindings
+                .value(&primitive(entry, matching))
+                .expect("declared read");
             let expected: Vec<ReadValue<'_>> = match matching {
-                ContextNameMatching::Exact => headers
-                    .find_by_name(read.reference().name().as_str())
-                    .map(Into::into)
-                    .collect(),
+                ContextNameMatching::Exact => headers.find_by_name(entry).map(Into::into).collect(),
                 ContextNameMatching::AsciiCaseInsensitive => headers
                     .iter()
                     .filter(|header| header.name.as_str().eq_ignore_ascii_case("Topic"))
@@ -567,7 +565,7 @@ mod tests {
         ];
         let bindings = compile(
             [
-                consumes(selectors),
+                consumes(selectors.clone()),
                 ContextDeclaration::HeaderCapture {
                     policy: serde_json::from_value(serde_json::json!({
                         "headers": [
@@ -599,8 +597,9 @@ mod tests {
         };
         let binding = bindings.arrival().expect("arrival");
         let (metadata, _) = binding.form(&arrival);
-        for read in bindings.values() {
-            let projection = match &read.selector().target {
+        for selector in &selectors {
+            let read = bindings.value(selector).expect("declared read");
+            let projection = match &selector.target {
                 ContextEntryTarget::Composite { name } => {
                     binding.materialization.layout().resolve_composite(name)
                 }
@@ -643,14 +642,17 @@ mod tests {
                     ));
                 });
             assert_eq!(actual, expected);
-            if read.reference().scope().is_none() {
+            if matches!(selector.target, ContextEntryTarget::Composite { .. }) {
                 assert!(actual.iter().any(|(name, cardinality, values)| {
                     *name == "roles"
                         && *cardinality == ContextValueCardinality::Many
                         && values.is_empty()
                 }));
             } else {
-                assert_eq!(read.reference().to_string(), "request:customer");
+                assert_eq!(
+                    actual.iter().map(|(name, ..)| *name).collect::<Vec<_>>(),
+                    ["customer"]
+                );
             }
 
             let (missing, _) = binding.form(&Arrival {
@@ -771,15 +773,27 @@ mod tests {
             ContextValueCardinality::One,
             vec![(ContextValueKind::Text, b"verified".as_slice())],
         )];
-        let reads = bindings.values();
-        assert_eq!(members(reads[0].read(&metadata)), subject);
-        assert_eq!(members(reads[1].read(&metadata)), subject);
-        assert!(reads[2].read(&metadata).is_none());
+        let read = |value, matching| {
+            bindings
+                .value(&identity_read(value, matching))
+                .expect("declared read")
+        };
+        let exact = read("subject", ContextNameMatching::Exact);
+        assert_eq!(members(exact.read(&metadata)), subject);
         assert_eq!(
-            members(reads[3].read(&metadata)),
+            members(read("Subject", ContextNameMatching::AsciiCaseInsensitive).read(&metadata)),
+            subject
+        );
+        assert!(
+            read("Subject", ContextNameMatching::Exact)
+                .read(&metadata)
+                .is_none()
+        );
+        assert_eq!(
+            members(read("roles", ContextNameMatching::Exact).read(&metadata)),
             vec![("roles", ContextValueCardinality::Many, vec![])]
         );
-        assert!(reads[0].read(&Metadata::default()).is_none());
+        assert!(exact.read(&Metadata::default()).is_none());
 
         let mut stored = Vec::new();
         bindings
@@ -817,5 +831,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![b"untrusted".as_slice()]
         );
+    }
+
+    /// Scenario: a node asks its bindings for a read it never declared.
+    /// Guarantees: selection fails loudly at construction instead of returning an absent read.
+    #[test]
+    fn undeclared_read_is_a_construction_error() {
+        let bindings = compile(
+            [consumes(vec![primitive(
+                "tenant",
+                ContextNameMatching::Exact,
+            )])]
+            .into_iter()
+            .collect(),
+            &[],
+        );
+        assert!(
+            bindings
+                .value(&primitive("tenant", ContextNameMatching::Exact))
+                .is_ok()
+        );
+        for undeclared in [
+            primitive("other", ContextNameMatching::Exact),
+            primitive("tenant", ContextNameMatching::AsciiCaseInsensitive),
+        ] {
+            assert!(bindings.value(&undeclared).is_err());
+        }
     }
 }

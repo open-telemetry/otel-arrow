@@ -731,7 +731,11 @@ impl CompiledNodeState {
                     materialization: materialization_plan.clone(),
                 }),
                 sink: header_propagation.map(|policy| SinkBinding { policy }),
-                values: values.into_boxed_slice(),
+                values: {
+                    values.sort_by(|left: &ValueRead, right| left.selector().cmp(right.selector()));
+                    values.dedup_by(|left, right| left.selector() == right.selector());
+                    values.into_boxed_slice()
+                },
                 headers,
                 authorized_identity,
             }),
