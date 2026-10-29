@@ -333,12 +333,18 @@ async fn assert_pipeline_executor_progresses(auth: Auth, gate: Arc<BlockingGate>
     let fetch = tokio::spawn(async move { auth.fetch().await });
 
     gate.wait_until_started().await;
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::time::sleep(Duration::from_millis(1)),
-    )
-    .await
-    .expect("an unrelated timer must progress while managed identity work is blocked");
+    let (progressed_tx, progressed) = tokio::sync::oneshot::channel();
+    let _unrelated = tokio::spawn(async move {
+        let _ = progressed_tx.send(());
+    });
+    tokio::time::timeout(Duration::from_secs(10), progressed)
+        .await
+        .expect("an unrelated task must run while managed identity work is blocked")
+        .expect("unrelated task signal");
+    assert!(
+        !fetch.is_finished(),
+        "managed identity work must still be blocked while the executor progresses"
+    );
 
     gate.release();
     let _ = tokio::time::timeout(Duration::from_secs(10), fetch)
