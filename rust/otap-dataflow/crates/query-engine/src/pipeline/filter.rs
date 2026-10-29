@@ -989,10 +989,35 @@ mod test {
             None,
         ])));
         let selection = RowSelection::from_aligned_values(values, 3).unwrap();
-        let RowSelection::Rows(selection_vec) = selection else {
-            panic!("expected a selection vector, found {selection:?}");
-        };
-        assert_eq!(selection_vec, BooleanArray::from(vec![true, false, false]));
+        let expected = BooleanArray::from(vec![true, false, false]);
+        assert!(
+            matches!(&selection, RowSelection::Rows(selection_vec) if *selection_vec == expected),
+            "{selection:?}"
+        );
+    }
+
+    /// Scenario: `scoped_value_to_boolean_array` receives a boolean, typed null, or untyped null
+    /// scalar, as it does for scalar predicate results on the attribute and data point paths.
+    /// Guarantees: `true` produces an all-true selection vector and `false` or null produces an
+    /// all-false one, each with one entry per row and no null buffer.
+    #[test]
+    fn test_scoped_value_to_boolean_array_from_scalar() {
+        let cases = [
+            (ScalarValue::Boolean(Some(true)), true),
+            (ScalarValue::Boolean(Some(false)), false),
+            (ScalarValue::Boolean(None), false),
+            (ScalarValue::Null, false),
+        ];
+        for (scalar, passes) in cases {
+            let selection_vec =
+                scoped_value_to_boolean_array(ColumnarValue::Scalar(scalar.clone()), 3).unwrap();
+            assert_eq!(
+                selection_vec,
+                BooleanArray::from(vec![passes; 3]),
+                "{scalar:?}"
+            );
+            assert!(selection_vec.nulls().is_none(), "{scalar:?}");
+        }
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
