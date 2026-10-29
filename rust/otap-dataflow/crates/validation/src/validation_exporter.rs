@@ -23,7 +23,7 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
     ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
+    ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
@@ -168,6 +168,7 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name,
+                                matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::Value,
                         })
@@ -342,6 +343,7 @@ mod tests {
                 target: ContextEntryTarget::Primitive {
                     domain: ContextDomain::TransportHeader,
                     name: context_name(name),
+                    matching: ContextNameMatching::Exact,
                 },
                 form: ContextEntrySelectorForm::Value,
             })
@@ -353,6 +355,101 @@ mod tests {
             selector: ContextConsumerSelector::Entries {
                 entries: entries(names),
             },
+        }
+    }
+
+    /// Scenario: validation config declares required keys, matching values, and forbidden headers.
+    /// Guarantees: compiled reads preserve exact-case lookup, duplicate-value matching, and missing-header results.
+    #[test]
+    fn compiled_reads_match_validation_header_checks() {
+        use crate::validation_types::transport_headers::{
+            TransportHeaderKeyValue, validate_transport_header_deny_keys,
+            validate_transport_header_require_key_values, validate_transport_header_require_keys,
+        };
+        use otel_arrow_dfe_config::PipelineKey;
+        use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
+        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+        use otel_arrow_dfe_engine::PipelineFactory;
+        use otel_arrow_dfe_engine::pdata_context::Metadata;
+
+        let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "engine": {},
+            "groups": {"group": {"pipelines": {"pipeline": {
+                "nodes": {"exporter": {
+                    "type": "urn:otel:exporter:validation",
+                    "config": {
+                        "suv_input": "suv",
+                        "validations": [
+                            {"type": "transport_header_require_key", "keys": ["Tenant", "tenant"]},
+                            {"type": "transport_header_require_key_value", "pairs": [{"key": "Tenant", "value": "acme"}]},
+                            {"type": "transport_header_deny", "keys": ["missing"]}
+                        ]
+                    }
+                }},
+                "connections": []
+            }}}}
+        })).expect("pipeline config");
+        let mut resolved = spec.resolve();
+        // This fixture does not register the implicit telemetry pipeline's nodes.
+        resolved
+            .pipelines
+            .retain(|pipeline| pipeline.pipeline_group_id.as_ref() == "group");
+        let prepared = PipelineFactory::new(
+            &[],
+            &[],
+            std::slice::from_ref(&VALIDATION_EXPORTER_FACTORY),
+            &[],
+        )
+        .compile_initial_context(&resolved)
+        .expect("compiled validation config");
+        let bindings = prepared
+            .bindings
+            .node_bindings(
+                &PipelineKey::new("group".into(), "pipeline".into()),
+                &"exporter".into(),
+            )
+            .expect("validation bindings");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(context_name("Tenant"), b"other"));
+        headers.push(TransportHeader::text(context_name("Tenant"), b"acme"));
+        for stored in [None, Some(headers)] {
+            let mut metadata = Metadata::default();
+            if let Some(headers) = &stored {
+                metadata.set_transport_headers(headers.clone());
+            }
+            for read in bindings.values() {
+                let name = read.reference().name().clone();
+                let selected = read.read(&metadata);
+                let present = selected.is_some();
+                let mut matches_value = false;
+                if let Some(selected) = selected {
+                    selected.visit_members(|member| {
+                        matches_value |= member.values().any(|value| value.bytes == b"acme");
+                    });
+                }
+                assert_eq!(
+                    present,
+                    validate_transport_header_require_keys(
+                        std::slice::from_ref(&stored),
+                        std::slice::from_ref(&name)
+                    ),
+                );
+                assert_eq!(
+                    !present,
+                    validate_transport_header_deny_keys(
+                        std::slice::from_ref(&stored),
+                        std::slice::from_ref(&name)
+                    ),
+                );
+                assert_eq!(
+                    matches_value,
+                    validate_transport_header_require_key_values(
+                        std::slice::from_ref(&stored),
+                        &[TransportHeaderKeyValue::new(name, "acme")],
+                    ),
+                );
+            }
         }
     }
 

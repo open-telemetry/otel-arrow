@@ -205,6 +205,92 @@ mod tests {
         }
     }
 
+    /// Scenario: Kafka declares topic routing and partitioning reads over mixed-case, repeated headers.
+    /// Guarantees: compiled adapters match the router's first match and the partitioner's stored iteration.
+    #[test]
+    fn compiled_reads_match_kafka_header_consumers() {
+        use super::super::exporter::KAFKA_EXPORTER_FACTORY;
+        use otel_arrow_dfe_config::PipelineKey;
+        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+        use otel_arrow_dfe_engine::PipelineFactory;
+        use otel_arrow_dfe_engine::pdata_context::ReadValue;
+
+        let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "engine": {},
+            "groups": {"group": {"pipelines": {"pipeline": {
+                "nodes": {"exporter": {
+                    "type": "urn:otel:exporter:kafka",
+                    "config": {
+                        "brokers": "localhost:9092",
+                        "client_id": "read-adapter-test",
+                        "logs": {
+                            "topic": "fallback",
+                            "topic_from_transport_header": "Topic",
+                            "partition_by_transport_headers": true,
+                            "encoding": "otlp_proto"
+                        }
+                    }
+                }},
+                "connections": []
+            }}}}
+        }))
+        .expect("pipeline config");
+        let mut resolved = spec.resolve();
+        // This fixture does not register the implicit telemetry pipeline's nodes.
+        resolved
+            .pipelines
+            .retain(|pipeline| pipeline.pipeline_group_id.as_ref() == "group");
+        let prepared =
+            PipelineFactory::new(&[], &[], std::slice::from_ref(&KAFKA_EXPORTER_FACTORY), &[])
+                .compile_initial_context(&resolved)
+                .expect("compiled Kafka config");
+        let bindings = prepared
+            .bindings
+            .node_bindings(
+                &PipelineKey::new("group".into(), "pipeline".into()),
+                &"exporter".into(),
+            )
+            .expect("Kafka bindings");
+        let read = bindings
+            .values()
+            .iter()
+            .find(|read| read.reference().name().as_str() == "Topic")
+            .expect("topic read");
+        let signal = make_signal_config("fallback", Some("Topic"));
+        for context in [
+            Context::default(),
+            context_with_headers(vec![
+                make_transport_header("topic", "first"),
+                make_transport_header("Topic", "second"),
+                TransportHeader::binary("other".try_into().expect("header name"), b"\xff\0"),
+            ]),
+        ] {
+            let mut values = Vec::new();
+            if let Some(selected) = read.read(context.metadata()) {
+                selected.visit_members(|member| values.extend(member.values()));
+            }
+            assert_eq!(
+                values.first().copied(),
+                TopicRouter::header_topic(&signal, &context).map(ReadValue::from),
+            );
+            let legacy = context
+                .transport_headers()
+                .into_iter()
+                .flat_map(|headers| headers.iter())
+                .map(ReadValue::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                bindings
+                    .headers()
+                    .expect("partition read")
+                    .read(context.metadata())
+                    .collect::<Vec<_>>(),
+                legacy,
+            );
+        }
+    }
+
     fn routing_count(
         metrics: &KafkaExporterMetrics,
         signal: SignalType,

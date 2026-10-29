@@ -53,7 +53,7 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
     ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
+    ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
@@ -374,6 +374,7 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                                     target: ContextEntryTarget::Primitive {
                                         domain: ContextDomain::TransportHeader,
                                         name: name.clone(),
+                                        matching: ContextNameMatching::AsciiCaseInsensitive,
                                     },
                                     form: ContextEntrySelectorForm::Value,
                                 }]
@@ -1838,6 +1839,7 @@ pub mod test_support {
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: context_name("x-traces-topic"),
+                                matching: ContextNameMatching::AsciiCaseInsensitive,
                             },
                             form: ContextEntrySelectorForm::Value,
                         }]

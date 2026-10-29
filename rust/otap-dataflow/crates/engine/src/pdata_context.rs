@@ -19,6 +19,8 @@ mod materialization;
 mod metadata;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
+/// Node-facing reads over existing header storage and composite projections.
+mod reads;
 
 use PreparedHeaderPropagationPolicy as HeaderPropagationPolicy;
 pub use bindings::{
@@ -34,6 +36,7 @@ pub use metadata::{
 pub use propagation::CompiledHeaderPropagationPolicy;
 #[doc(hidden)]
 pub use propagation::PreparedHeaderPropagationPolicy;
+pub use reads::{HeaderValue, HeadersRead, Read, ReadMember, ReadValue, ValueRead};
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -60,6 +63,8 @@ pub enum ContextEntryTarget {
         domain: ContextDomain,
         /// Stored primitive name.
         name: ContextEntryName,
+        /// Matching semantics used by the existing consumer.
+        matching: ContextNameMatching,
     },
     /// A member whose source domain is specified by its composite definition.
     CompositeMember {
@@ -73,6 +78,15 @@ pub enum ContextEntryTarget {
         /// Composite entry name.
         name: ContextEntryName,
     },
+}
+
+/// Matching semantics for a declared primitive name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ContextNameMatching {
+    /// Match the configured stored spelling exactly.
+    Exact,
+    /// Match ASCII case-insensitively, as Kafka topic routing does.
+    AsciiCaseInsensitive,
 }
 
 /// One selected value source after resolving a primitive or composite target.
@@ -120,7 +134,7 @@ impl ContextEntryTarget {
         mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
+            Self::Primitive { domain, name, .. } => visit(SelectedSource::Field(*domain, name)),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -664,10 +678,26 @@ impl CompiledNodeState {
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
+        let mut values = Vec::new();
+        let mut headers = None;
         for declaration in prepared.declarations {
             match declaration {
-                declaration @ (ContextDeclaration::Produces { .. }
-                | ContextDeclaration::Consumes { .. }) => {
+                ContextDeclaration::Consumes { selector } => {
+                    match &selector {
+                        ContextConsumerSelector::Entries { entries } => {
+                            for entry in entries {
+                                values.push(ValueRead::compile(entry, materialization_plan)?);
+                            }
+                        }
+                        ContextConsumerSelector::AllStored { domain } => {
+                            if headers.is_none() || *domain == ContextDomain::TransportHeader {
+                                headers = Some(HeadersRead::new(*domain));
+                            }
+                        }
+                    }
+                    component_declarations.push(ContextDeclaration::Consumes { selector });
+                }
+                declaration @ ContextDeclaration::Produces { .. } => {
                     component_declarations.push(declaration);
                 }
                 ContextDeclaration::HeaderCapture { policy } => {
@@ -697,6 +727,8 @@ impl CompiledNodeState {
                     materialization: materialization_plan.clone(),
                 }),
                 sink: header_propagation.map(|policy| SinkBinding { policy }),
+                values: values.into_boxed_slice(),
+                headers,
             }),
         })
     }
@@ -774,9 +806,8 @@ impl CompiledContextBindings {
 
     /// Returns the pipeline's selected composite materialization plan.
     ///
-    /// Consumers may resolve existing [`ContextProjection`] values against this
-    /// plan. General consumer bindings and optimized lookup structures are
-    /// intentionally outside this API.
+    /// Legacy consumers may resolve existing [`ContextProjection`] values against
+    /// this plan. New consumers obtain compiled reads from [`NodeBindings`].
     #[must_use]
     pub fn context_materialization_plan(
         &self,
@@ -1102,6 +1133,7 @@ mod tests {
                             None => ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: self.entry.clone(),
+                                matching: ContextNameMatching::Exact,
                             },
                         },
                         form: if self.original {
@@ -1377,6 +1409,45 @@ groups:
         ));
     }
 
+    /// Scenario: read adapters are derived from declarations that specify primitive matching semantics.
+    /// Guarantees: live updates compare declarations, not derived adapters, and detect matching changes.
+    #[test]
+    fn read_adapters_preserve_live_update_inputs() {
+        let compile = |matching| {
+            compiled_bindings(
+                [ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries {
+                        entries: Box::new([ContextEntrySelector {
+                            target: ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name: context_name("tenant"),
+                                matching,
+                            },
+                            form: ContextEntrySelectorForm::Value,
+                        }]),
+                    },
+                }]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let current = compile(ContextNameMatching::Exact);
+        let mut without_adapter = current.clone();
+        let key = pipeline("group", "pipeline");
+        let node = without_adapter
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .get_mut(&ConfigNodeId::from("node"))
+            .expect("node");
+        Arc::make_mut(&mut node.bindings).values = Box::new([]);
+        assert!(current.pipeline_bindings_match(&without_adapter, &key));
+        assert!(without_adapter.pipeline_bindings_match(&current, &key));
+        let different_matching = compile(ContextNameMatching::AsciiCaseInsensitive);
+        assert!(!current.pipeline_bindings_match(&different_matching, &key));
+        assert!(!different_matching.pipeline_bindings_match(&current, &key));
+    }
+
     /// Scenario: arrival adapters add pipeline materialization without changing legacy declarations or policies.
     /// Guarantees: live-update comparison still ignores policy-free receivers and adapter-derived plans.
     #[test]
@@ -1508,6 +1579,7 @@ groups:
         ContextEntryTarget::Primitive {
             domain,
             name: context_name(name),
+            matching: ContextNameMatching::Exact,
         }
     }
 
@@ -2047,6 +2119,7 @@ groups:
                                 target: ContextEntryTarget::Primitive {
                                     domain: ContextDomain::TransportHeader,
                                     name: context_name(name),
+                                    matching: ContextNameMatching::Exact,
                                 },
                                 form: ContextEntrySelectorForm::OriginalKeyValue,
                             })
@@ -2100,6 +2173,7 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("original"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
@@ -2112,6 +2186,7 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("value"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::Value,
                     }]
@@ -2176,6 +2251,7 @@ groups:
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: context_name("x-tenant"),
+                                matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::OriginalKeyValue,
                         }]
@@ -2188,6 +2264,7 @@ groups:
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: context_name("authorization"),
+                                matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::Value,
                         }]
@@ -2206,6 +2283,7 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("X-Tenant"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
@@ -2222,6 +2300,7 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("x-request-id"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
