@@ -12,6 +12,90 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.63.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `observability`: `receiver.processing.duration` no longer includes the `signal` dimension. ([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Remove signal filters and grouping from receiver.processing.duration queries. Use receiver.received counters for signal-specific counts; duration now measures each local operation once.
+
+- `pipeline`: Migrated ETW receiver telemetry from flat counters to dimensioned metric populations with enum attributes. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Update dashboards to use the restructured metrics: receiver.etw.events (received, forwarded), receiver.etw.drops (events, by reason), receiver.etw.decode (errors), and receiver.etw.session (events.lost, buffers.written, buffers.lost by delivery).
+- `query-engine`: OTAP query-engine now validates fields in expressions are valid for signal type ([#4070](https://github.com/open-telemetry/otel-arrow/issues/4070))
+  Transform/partition OPL/KQL now rejects fields invalid for the signal type. Partition processor
+  accepts `signal_type` for validation and batch selection.
+  Migration: Fix invalid field references and set `signal_type` for signal-specific partitions.
+
+### :rocket: New components :rocket:
+
+- `pipeline`: Add an opt-in SQL Server query-polling receiver with verified native TLS by default and acknowledged file checkpoints. ([#3918](https://github.com/open-telemetry/otel-arrow/issues/3918), [#4361](https://github.com/open-telemetry/otel-arrow/issues/4361))
+  Enable sql-server and bind basic_auth_provider. Linux needs OpenSSL libraries
+  and roots; Windows uses Schannel. Run one poller per range. Unconfirmed cleanup
+  can quarantine the source. Driver allocation bounds and deployment
+  qualification remain outstanding.
+
+- `pipeline`: Add an Azure Key Vault SASL credential extension that retrieves both username and password at startup. ([#4336](https://github.com/open-telemetry/otel-arrow/issues/4336))
+  Enable azure-key-vault-sasl-auth and grant the selected Azure identity secret-read access. Optional version pins select a coordinated pair. Credentials are fixed after startup; restart to adopt changed secrets. Kafka receiver binding is separate.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4444](https://github.com/open-telemetry/otel-arrow/issues/4444), [#4529](https://github.com/open-telemetry/otel-arrow/issues/4529), [#4531](https://github.com/open-telemetry/otel-arrow/issues/4531))
+- `dependencies`: Upgrade weaver to v0.28.0. This allows the traffic generator to parse semantic conventions registries that use `unref`. ([#4405](https://github.com/open-telemetry/otel-arrow/issues/4405))
+  Weaver v0.28.0 adds support for the `unref` signal refinement now used by the
+  upstream semantic-conventions registry. Weaver's git transport no longer picks
+  a rustls crypto provider, so one must be installed before loading a remote
+  registry.
+
+- `engine`: Windows engine memory telemetry now reports private committed memory as memory.commit alongside the existing memory.rss metric. ([#4540](https://github.com/open-telemetry/otel-arrow/issues/4540))
+  Use memory.commit to monitor private committed bytes, including paged-out private memory. Resident memory reporting and existing memory.rss dashboards remain unchanged on every platform.
+- `engine`: The admin dashboard displays Windows private committed memory alongside RSS, with a separate MiB value and history chart. ([#4572](https://github.com/open-telemetry/otel-arrow/issues/4572))
+  The Private Commit card is shown only when the engine reports memory.commit. RSS reporting remains unchanged.
+- `engine`: Propagate materialized constant and UUID v7 context members as outbound transport headers. ([#3919](https://github.com/open-telemetry/otel-arrow/issues/3919), [#4202](https://github.com/open-telemetry/otel-arrow/issues/4202))
+  Qualified selectors use receiver-materialized composite snapshots, preserving presence conditions, header names, value kinds, duplicates, and ordering.
+- `observability`: `receiver.processing.duration` now includes receiver-local processing failures before signal classification. ([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  When receiver-local timing is enabled, failures before a signal is known contribute duration without adding receiver.received counters.
+
+- `pdata`: Support encoded telemetry through pluggable codecs, preserving OTLP pass-through and lazy conversion to OTAP. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  OTLP/OTAP exporters and record-mutating processors retain original input for permanent Nacks when decoding fails, instead of stopping the pipeline.
+- `pdata`: Decode large syslog batches cooperatively and support up to 8,192 messages or 2 MiB per batch while keeping small batches synchronous. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  The receiver still defaults to 100 messages. Large batches yield during decoding; Arrow finalization remains synchronous. Batch buffers retain less excess memory; TCP ingestion and Arrow conversion use less CPU. Review queue capacities when increasing batch sizes.
+- `pipeline`: Enable verified TLS by default for the PostgreSQL receiver, with optional private CA files and an explicit plaintext opt-out. ([#4166](https://github.com/open-telemetry/otel-arrow/issues/4166))
+  Build with one crypto-* feature. Platform roots and connection.tls.ca_file are verified; transient TLS I/O retries without advancing checkpoints.
+  Set connection.tls.enabled=false only for isolated development databases that do not support TLS.
+
+- `pipeline`: Add scalar and snapshot watermark modes to the PostgreSQL receiver. ([#4166](https://github.com/open-telemetry/otel-arrow/issues/4166))
+  Scalar mode resumes from one unique integer or timestamp key. Snapshot mode emits each complete query result on every polling interval.
+
+- `pipeline`: Add an experimental Rust SDK for authoring WASM processor plugins with typed configuration, host services, and existing data kernels. ([#4454](https://github.com/open-telemetry/otel-arrow/issues/4454))
+  The SDK is available in the repository and is not published to crates.io. The existing reference and test plugins now use it.
+- `pipeline`: Reduce CPU usage when receiving syslog messages and converting RFC 3164 timestamps, including wrapped CEF. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  Use fixed-format timestamp parsing and avoid unnecessary local-time conversion when capturing receipt years, without timestamp caching. Existing timestamp, receipt-year, timezone, and DST behavior is preserved.
+- `pipeline`: Syslog receiver preserves original messages in encoded pdata until native processing is required. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  RFC 3164 retains its receipt year. Syslog batches are capped at 256 messages/256 KiB. With format: preserve, move downstream batching limits from otap to config.codecs.syslog-batch (items only). See the syslog receiver README for migration examples.
+- `query-engine`: OTAP query-engine now supports metric data point fields as target (LHS) of assignment operations. ([#4070](https://github.com/open-telemetry/otel-arrow/issues/4070))
+- `query-engine`: OTAP query-engine now supports if/else conditional branches inside `apply data_points` pipelines. ([#3722](https://github.com/open-telemetry/otel-arrow/issues/3722))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `dependencies`: Fix a potential cryptographic timing side channel by updating ctutils to 0.4.4 (RUSTSEC-2026-0385). ([#4517](https://github.com/open-telemetry/otel-arrow/issues/4517))
+- `engine`: Reject full-config reconciliation while any pipeline has an in-flight rollout. ([#3865](https://github.com/open-telemetry/otel-arrow/issues/3865))
+  Previously a full-config reconcile that omitted a pipeline with an active rollout (delete_missing false) could overwrite the recorded config with a stale snapshot once the rollout completed. Such requests now fail with a rollout-conflict error instead.
+- `engine`: Reject full-config changes that cannot be applied to the running process. ([#3847](https://github.com/open-telemetry/otel-arrow/issues/3847))
+  Mixed requests are rejected before planning. Error messages distinguish restart-required settings from mutations that callers must move to pipeline scope.
+- `engine`: Prevent senders of local MSPC channel becoming blocked under condition of channel at capacity and multiple senders. ([#4568](https://github.com/open-telemetry/otel-arrow/issues/4568))
+- `pipeline`: SQL Server polling recovers from transient connection deadlines, unreachable networks, and DNS failures without restarting the receiver. ([#4460](https://github.com/open-telemetry/otel-arrow/issues/4460))
+  Recovery uses bounded backoff and resumes from acknowledged progress. Invalid credentials, configuration, and certificate failures remain terminal. Unconfirmed connection cleanup still prevents retries.
+- `pipeline`: Backpressure admission policy now pauses pdata intake as soon as any route is blocked, preventing unexpected NACKs. ([#4535](https://github.com/open-telemetry/otel-arrow/issues/4535))
+  Routers with on_full: backpressure previously waited until every
+  selectable route was blocked before pausing intake, so a second message
+  to an already-parked port could still be NACKed. The router now pauses
+  as soon as any route parks a message, eliminating those NACKs.
+
+- `query-engine`: `coalesce` now falls back to later arguments when an earlier argument is absent from every record in a batch, instead of returning null for every record. ([#4300](https://github.com/open-telemetry/otel-arrow/issues/4300))
+  This includes `coalesce(attributes["x"], "default")` and `coalesce(body, "default")` when no record has `x` or a body. Equality comparisons (`==`, `!=`) between two values that are both absent from a batch no longer fail with a join error.
+
+<!-- previous-version -->
+
 ## v0.62.0
 
 ### :stop_sign: Breaking changes :stop_sign:
