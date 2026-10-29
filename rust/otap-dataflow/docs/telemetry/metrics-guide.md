@@ -483,6 +483,11 @@ cancellation.cancel(); // This attempt only; late completion cannot recount.
 self.cancel_and_join_source_work().await?; // Discard abandoned output; retain capacity until joined.
 ```
 
+The handle ends metric accounting; it is not a cancellation token and does not
+expose `is_cancelled()`. Use receiver-owned cancellation state to skip expensive
+validation/encoding and suppress abandoned output. Metric accounting state is
+absent when instrumentation is disabled, so it must not drive receiver behavior.
+
 For externally driven work, retain the guard from `processing()` and call `success()`
 before handoff instead of using `run()`.
 

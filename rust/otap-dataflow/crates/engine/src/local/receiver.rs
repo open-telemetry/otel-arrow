@@ -408,6 +408,11 @@ impl<PData> EffectHandler<PData> {
     /// handoff uses the supplied absolute deadline; the runtime flushes accepted
     /// snapshots after the receiver returns. An unavailable or full standalone
     /// reporter is reported as an error, never as a successful handoff.
+    ///
+    /// Handoff is not transactional: if a later snapshot fails or reaches the
+    /// deadline, earlier accepted snapshots remain available to the collector.
+    /// The failing snapshot and any remaining snapshots are dropped; do not
+    /// retry the whole batch, which could duplicate the accepted prefix.
     pub async fn report_terminal_metrics(
         &self,
         terminal: TerminalState,
@@ -500,6 +505,39 @@ mod tests {
                 .await,
             Err(TelemetryError::MetricsChannelClosed)
         ));
+    }
+
+    /// Scenario: A multi-snapshot fatal-exit handoff fills a standalone channel after its first snapshot.
+    /// Guarantees: Handoff returns an error without rolling back or duplicating the accepted prefix.
+    #[tokio::test]
+    async fn terminal_metrics_handoff_preserves_accepted_prefix() {
+        let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
+        let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
+        let snapshots = [0.25, 0.5, 0.75].map(|value| {
+            metrics.cpu_utilization.set(value);
+            metrics.snapshot()
+        });
+        let expected = snapshots[0].get_metrics().to_vec();
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler = EffectHandler::<u64>::new(
+            test_node("recv"),
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, snapshots))
+                .await,
+            Err(TelemetryError::InternalBufferFull)
+        ));
+        let accepted = reports.try_recv().expect("first snapshot remains accepted");
+        assert_eq!(accepted.get_metrics(), &expected);
+        assert!(reports.is_empty(), "remaining snapshots were not accepted");
     }
 
     #[tokio::test]

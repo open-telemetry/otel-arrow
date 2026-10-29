@@ -203,6 +203,10 @@ impl Drop for ReceiverPullAttempt {
 ///
 /// Dropping the handle does not finish the attempt. Cancellation records failure
 /// immediately, but does not stop source work, release capacity, or join workers.
+///
+/// This is an accounting handle, not a cancellation token. Receivers must use
+/// their own cancellation state to skip preparation or suppress abandoned output.
+/// Accounting state is absent when metrics are disabled and cannot drive behavior.
 #[derive(Clone)]
 pub struct ReceiverPullCancellation(Option<Rc<PullAttemptState>>);
 
