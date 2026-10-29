@@ -454,6 +454,48 @@ mod tests {
         handle.await.unwrap().unwrap();
     }
 
+    /// Scenario: the collector consumes the first-deadline notification, is cancelled while that
+    /// deadline is still pending, and is then restarted.
+    /// Guarantees: the restarted collector resumes sweeping from the pending deadline, so both the
+    /// earlier and any later unregistered metric sets are removed after their grace periods.
+    #[tokio::test(start_paused = true)]
+    async fn test_restarted_collector_resumes_unregister_sweeps() {
+        let config = create_test_config(100);
+        let telemetry_registry = create_test_registry();
+        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(30));
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let collector = Arc::new(collector);
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(collector.clone().run(cancel.clone()));
+        let first: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("first"));
+        assert!(telemetry_registry.unregister_metric_set(first.key));
+        // Let the running collector consume the notification for the first deadline.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        cancel.cancel();
+        handle.await.unwrap().unwrap();
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(collector.run(cancel.clone()));
+        // The queue is not empty, so this unregister does not notify the collector.
+        let second: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("second"));
+        assert!(telemetry_registry.unregister_metric_set(second.key));
+        assert_eq!(telemetry_registry.metric_set_count(), 2);
+
+        tokio::time::sleep(Duration::from_secs(32)).await;
+        assert_eq!(
+            telemetry_registry.metric_set_count(),
+            0,
+            "the restarted collector must sweep pending grace deadlines"
+        );
+        assert_eq!(telemetry_registry.entity_count(), 0);
+
+        cancel.cancel();
+        handle.await.unwrap().unwrap();
+    }
+
     #[tokio::test]
     async fn test_accumulates_snapshots_into_registry() {
         let config = create_test_config(10);

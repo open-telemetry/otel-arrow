@@ -1098,6 +1098,50 @@ mod tests {
         assert_eq!(telemetry_registry.entity_count(), 0);
     }
 
+    /// Scenario: without an ITS collector, a direct export is in flight when the metric set is
+    /// unregistered, and a newer snapshot arrives before the export commits.
+    /// Guarantees: the commit keeps the metric set so the newer snapshot is exported by the next
+    /// export, which then completes the unregister.
+    #[test]
+    fn test_direct_export_commit_keeps_snapshot_reported_during_export() {
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("direct".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(1), MetricValue::U64(2)],
+        );
+        let export = telemetry_registry.begin_metric_export_batch_at(u64::MAX);
+        assert!(telemetry_registry.unregister_metric_set(metrics_key));
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(10), MetricValue::U64(20)],
+        );
+        let first_batch = export.commit();
+        assert_eq!(
+            first_batch.metric_sets[0].values,
+            vec![MetricValue::U64(1), MetricValue::U64(2)]
+        );
+        assert_eq!(
+            telemetry_registry.metric_set_count(),
+            1,
+            "the snapshot reported during the export must not be dropped"
+        );
+
+        let final_batch = telemetry_registry.drain_metric_export_batch_at(u64::MAX);
+        assert_eq!(final_batch.metric_sets.len(), 1);
+        assert_eq!(
+            final_batch.metric_sets[0].values,
+            vec![MetricValue::U64(10), MetricValue::U64(20)]
+        );
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
+    }
+
     #[test]
     fn test_registration_attribute_metric_set_routes() {
         let registry = TelemetryRegistryHandle::new();
