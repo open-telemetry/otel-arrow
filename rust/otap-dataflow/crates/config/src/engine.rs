@@ -3533,6 +3533,15 @@ groups: {}
         );
     }
 
+    /// Scenario: header capture transforms have variant-specific selection configuration.
+    /// Guarantees: CRD generation preserves the authority-only selection rule without conflicting discriminator schemas.
+    #[test]
+    fn capture_transform_validation_survives_crd_generation() {
+        let rendered =
+            serde_json::to_string(&OtelDataflow::crd()).expect("CRD should serialize to JSON");
+        assert!(rendered.contains("self.type == 'authority_host' || !has(self.selection)"));
+    }
+
     /// Scenario: the generated CRD includes named context entry selectors.
     /// Guarantees: Kubernetes admission accepts the string references consumed by serde.
     #[test]

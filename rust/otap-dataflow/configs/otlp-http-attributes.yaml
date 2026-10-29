@@ -10,6 +10,10 @@ groups:
             header_capture:
               headers:
                 - match_names: [x-forwarded-host, x-azure-originalhost, host]
+                  transform:
+                    type: authority_host
+                    # First is the default; select last only for a trusted appending proxy.
+                    selection: first
             config:
               protocols:
                 http:
@@ -22,16 +26,15 @@ groups:
                 - action: insert
                   key: server.address
                   value:
-                    from_headers: [x-forwarded-host, x-azure-originalhost, host]
-                    transform: authority_host
-                    # First is the default; select last only for a trusted appending proxy.
-                    selection: first
+                    source:
+                      type: transport_header
+                      named: [x-forwarded-host, x-azure-originalhost, host]
                 - action: insert
                   key: http.host
                   value:
-                    from_headers: [x-forwarded-host, x-azure-originalhost, host]
-                    transform: authority_host
-                    selection: first
+                    source:
+                      type: transport_header
+                      named: [x-forwarded-host, x-azure-originalhost, host]
           debug:
             type: processor:debug
             config:
