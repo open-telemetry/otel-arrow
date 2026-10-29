@@ -38,7 +38,7 @@ systems. This is a proposal for a similar system for Dataflow Engine pipelines.
 
 ### What is a lint?
 
-A lint is a special diagnostic indicating one opinion about how pipelines or 
+A lint is a special diagnostic indicating one opinion about how pipelines or
 nodes should generally be configured. A lint is distinct from a validation or
 type-checking error which are hard errors for configurations that don't describe
 a valid pipeline at all.
@@ -57,15 +57,16 @@ Lints therefore are checked after validation:
 
 ### Where lints come from
 
-All lints are provided in packs via a new `lints` component type. See 
-[Authoring lints](#authoring-lints). Every lint pack compiled into the engine 
-runs by default (subject to its interests and enforcement level) and is controlled
+All lints are provided in packs via a new `lints` component type. See
+[Authoring lints](#authoring-lints). Every lint pack compiled into the engine
+runs by default (subject to its interests and level) and is controlled
 through [levels](#configuring-lints).
 
-The engine additionally may define some special lints, such as `engine:unconnected_node`,
-for nodes that are not connected to the rest of the pipeline. These would not be defined
-in a pack per se, but still belong to a reserved `urn:otel:lints:engine` pack/namespace
-and are configured like any other lint.
+The engine additionally may define some special lints, such as
+`lints:engine:unconnected_node`, for nodes that are not connected to the rest
+of the pipeline. These would not be defined in a pack per se, but still belong
+to a reserved `urn:otel:lints:engine` pack/namespace and are configured like
+any other lint.
 
 ### Lint names
 
@@ -91,12 +92,13 @@ Every lint belongs to one of a predefined set of categories based on type of con
 |---------------|----------------------------------------------------------------------------------------------------------|
 | `security`    | A security concern, e.g. the pipeline exposes data or endpoints to unauthorized access or interception.  |
 | `correctness` | The pipeline almost certainly does not do what its author intended (data dropped, misrouted, corrupted). |
-| `suspicious`  | A general category for things are probably a mistake, but there are legitimate uses.                      |
+| `suspicious`  | A general category for things that are probably a mistake, but have legitimate uses.                     |
 | `perf`        | Correct, but probably negatively impacts CPU, memory, or throughput.                                     |
 | `style`       | Correct and efficient, but redundant, deprecated, or unidiomatic.                                        |
 
-Each category of lint also has a level that determines the engine's behavior when the lint is
-detected. The default level of all categories is `warn`.
+Each category resolves to a level that determines the engine's behavior when
+a lint in that category is detected. The default level of all categories is
+`warn`.
 
 | Level   | Effect                |
 |---------|-----------------------|
@@ -104,9 +106,9 @@ detected. The default level of all categories is `warn`.
 | `warn`  | Reported as a warning |
 | `deny`  | Reported as an error  |
 
-Errors generally stop whatever process is happening when detected. For example if an
-engine detects a linting error in a pipeline at startup, the engine will stop and exit 1,
-but warnings are simply logged.
+Errors generally stop whatever process is happening when detected. For example
+if an engine detects a linting error in a pipeline at startup, the engine will
+stop and exit 1, but warnings are simply logged.
 
 ### Configuring lints
 
@@ -176,10 +178,11 @@ linted like any other pipeline and reported under the group `system`.
 
 ### Authoring lints
 
-Lints are registered into the engine in packs via a `lints` component type. Lints 
-have a urn like any other component. For example `urn:otel:lints:engine` is a group
-of lints called `engine` in the `otel` namespace. A specific lint in this pack would
-be `urn:otel:lints:engine:unconnected_nodes`.
+Lints are registered into the engine in packs via a `lints` component type.
+Lint packs have a URN like any other component. For example
+`urn:otel:lints:engine` is a pack of lints called `engine` in the `otel`
+namespace. A specific lint in this pack would be
+`urn:otel:lints:engine:unconnected_node`.
 
 Code in this section is illustrative only, but here's an example of how lints
 will roughly be declared:
@@ -281,7 +284,7 @@ static REDUNDANT_BATCH: Lint = Lint {
 
 #[distributed_slice(LINT_PACKS)]
 pub static CORE_NODES_LINTS: LintPack = LintPack {
-    name: "urn:otel:lints:core-nodes",
+    urn: "urn:otel:lints:core-nodes",
     lints: &[&FORWARDS_EVERYTHING, &REDUNDANT_BATCH],
 };
 
@@ -304,17 +307,18 @@ A few notes:
 
 Checks can be expensive, so the engine can skip a check whose category
 resolves to `allow` for the pipeline, and at pipelines or nodes that do not
-match a lints interests. Each invocation gets a sink bound to exactly one lint
+match a lint's interests. Each invocation gets a sink bound to exactly one lint
 and location, so a check cannot emit any other lint.
 
 Lints see node configs only as `serde_json::Value` which means that lints have
 to be written against the generic value api and also that defaults are not applied
 or visible to the lint. A lint could deserialize a `Value` into a type it
-has access to, though there are implications. See 
-[Typed configuration](#typed-configuration) for some tradeoffs.
+has access to, though there are implications. See
+[Using strongly typed configs during linting](#using-strongly-typed-configs-during-linting)
+for some tradeoffs.
 
-Where exactly the initial lints live and how we should organize them built-in packs
-live is an [unresolved question](#unresolved-questions).
+Where the built-in packs live and how they are organized is an
+[unresolved question](#unresolved-questions).
 
 ### Linting entry points and reporting
 
@@ -345,6 +349,7 @@ attributes:
   pipeline.id: main
   node.id: passthrough
   node.urn: urn:otel:processor:batch
+  lint.config.path: groups.dev.pipelines.main.nodes.passthrough
 ```
 
 | Attribute               | Present                          | Description                                         |
@@ -358,32 +363,56 @@ attributes:
 | `node.id`, `node.urn`   | Location is node                 | Node and its type                                   |
 | `lint.related.node.ids` | Pipeline lint with related nodes | Comma-separated ids of the related nodes            |
 | `lint.level.scope`      | Level set by a `lints` policy    | `engine`, `group`, or `pipeline`                    |
+| `lint.config.path`      | Always                           | Config path of the location (see below)             |
 
-Diagnostics locate problems by config path (e.g. `groups.dev.pipelines.main.nodes.debug`).
+`lint.config.path` locates the diagnostic in the configuration as a
+dot-separated path to the pipeline or node, e.g.
+`groups.dev.pipelines.main` for a pipeline lint or
+`groups.dev.pipelines.main.nodes.debug` for a node lint. For the
+observability pipeline the path is rooted at `engine.observability.pipeline`.
 
 ### Live changes to lint configuration
 
 `lints` follows the rules live reconfiguration already applies to shared
 policies:
 
-| Lint configuration                          | Changed live?                               |
-|---------------------------------------------|---------------------------------------------|
-| Engine `policies.lints`                     | No; restart required                        |
-| Group `policies.lints`, group has pipelines | No; restart required                        |
-| Group `policies.lints` on group creation    | Yes (new groups are empty)                  |
-| Pipeline `policies.lints`                   | Yes, through pipeline updates and reconcile |
+| Lint configuration                             | Changed live?                               |
+|------------------------------------------------|---------------------------------------------|
+| Engine `policies.lints`                        | No; restart required                        |
+| Group `policies.lints`, group has pipelines    | No; restart required                        |
+| Group `policies.lints`, group has no pipelines | Yes, through reconcile                      |
+| Pipeline `policies.lints`                      | Yes, through pipeline updates and reconcile |
 
-Every pipeline update or reconcile that creates or replaces a pipeline runs
-the lint stage on the whole submitted pipeline, under the levels resolved
-from the candidate configuration, and rejects the change if any diagnostic
-is an error. This applies equally when only the pipeline's `lints` policy
-changed: tightening a level to `deny` is rejected if the running pipeline
-violates it.
+A group's `policies.lints` can change live only when the group has no
+pipelines in either the current or the desired configuration, matching the
+existing shared-policy rule. Per-pipeline update requests cannot change group
+policies.
 
-Lints do not affect a running pipeline, so `ResolvedPolicies` comparison in
-`ResolvedPipelineConfig::runtime_matches` ignores `lints`. A change that
+Every pipeline update, and every pipeline whose configuration differs in a
+reconcile (including changes that are planned as a `noop` rollout), runs the
+lint stage on the whole submitted pipeline, under the levels resolved from
+the candidate configuration, and rejects the change if any diagnostic is an
+error. This applies equally when only the pipeline's `lints` policy changed:
+tightening a level to `deny` is rejected if the running pipeline violates it.
+
+Lints do not affect a running pipeline, so `ResolvedPolicies` comparisons
+ignore `lints` in the same way they ignore `context`: both
+`ResolvedPolicies::eq` and `ResolvedPolicies::eq_ignoring_resources` (and
+therefore `ResolvedPipelineConfig::runtime_matches`) skip it. A change that
 only touches `lints` and passes the lint stage is planned as a `noop`
 rollout: the configuration is committed and no nodes are rolled.
+
+## Drawbacks
+
+- A new component type, crate, and admission stage add surface area to the
+  engine and to live reconfiguration.
+- Lints read raw `serde_json::Value` configs, so a lint that depends on
+  defaults or on derived settings must reimplement that logic and can drift
+  from the node it checks.
+- Category-only levels are coarse. Silencing one intentional finding means
+  lowering the whole category for the pipeline.
+- Lints add work to every admission. Interests and `allow` skipping bound the
+  cost, but expensive pipeline lints still run on every candidate config.
 
 ## Rationale and alternatives
 
@@ -394,9 +423,9 @@ or a pack and category would allow fine-grained control. They require every
 lint to have a stable, unique name that is part of the configuration
 contract; aliases for renamed lints; rules for which selector wins when
 several match; meta lints for unknown or renamed selectors; and a registry
-to resolve them. Category-only configuration is significantly simpler. Finer 
-selectors may be added later on top ofcategories, but there should be a demonstrated
-need for them first (see [Future possibilities](#future-possibilities)).
+to resolve them. Category-only configuration is significantly simpler. Finer
+selectors may be added later on top of categories, but there should be a
+demonstrated need for them first (see [Future possibilities](#future-possibilities)).
 
 ### Node-scope levels
 
@@ -405,14 +434,14 @@ intentional `0.0.0.0` receiver maybe should not silence every other security
 finding in its pipeline. In the current proposal the only options are to lower the
 category for the whole pipeline or to accept the expected warning.
 
-Additionally, node-scope levels require a `lints` block on nodes (where 
-`policies` does not exist), a location model that distinguishes node and 
-pipeline lints in resolution, and validation that node blocks do not name 
+Additionally, node-scope levels require a `lints` block on nodes (where
+`policies` does not exist), a location model that distinguishes node and
+pipeline lints in resolution, and validation that node blocks do not name
 pipeline lints.
 
 ### Using strongly typed configs during linting
 
-Baking lints into a lighter tool like `dfctl` that lints a must then link every
+Running lints in a lighter tool like `dfctl` means it must link every
 config type its lints use. Today those types live in the node crates, alongside
 their runtime implementations, `PData` types, and dependencies. To lint without
 them, each node family would need to move its config structs into a separate crate,
@@ -423,10 +452,10 @@ dependencies as well.
 
 Running lints during validation could share work with validators and also make
 use of strongly typed config, but ties the lints to a node type, requires changes
-to the node factory APIs and other code additions. 
+to the node factory APIs and other code additions.
 
-This would be effectively an entire second special linting system for baked in
-node-scoped lints and does carry a lot of complexity with it. 
+This would effectively be a second linting system for node-scoped lints, with
+significant added complexity.
 
 ### Other alternatives
 
@@ -442,14 +471,25 @@ node-scoped lints and does carry a lot of complexity with it.
   add resolution rules and edge cases. They can be added later without
   changing the design.
 
+## Prior art
+
+- **rustc and Clippy.** Lints grouped into categories (`correctness`,
+  `suspicious`, `perf`, `style`, ...) with `allow`/`warn`/`deny` levels
+  resolved from the innermost scope outwards. This RFC borrows the
+  categories, levels, and secondary-span style of related locations.
+- **ESLint and Ruff.** Rule sets distributed as plugins, enabled and leveled
+  through configuration, with rules grouped by concern.
+- **OPA / conftest.** Policy checks over structured configuration, written
+  in a dedicated language (rego) rather than compiled into the tool.
+
 ## Unresolved questions
 
 - **Upgrades.** No lint denies by default, but a config that sets a
   category to `deny` would start failing when a release adds a lint to it.
   Category-only configuration makes this more likely, as there is no way to
-  deny only known lints. An option here could be to include special `nursery` category
-  for new lints that can only warn and the engine can make some noise if a nursery
-  lint would have raised an error.
+  deny only known lints. An option here could be to include a special
+  `nursery` category for new lints that can only warn, and the engine can
+  make some noise if a nursery lint would have raised an error.
 - **Where built-in packs live.** Packs could live next to the nodes they
   lint (`core-nodes`, `contrib-nodes`), close to the code and its URN
   constants. Or they could live in separate crates (e.g. `core-lints`)
