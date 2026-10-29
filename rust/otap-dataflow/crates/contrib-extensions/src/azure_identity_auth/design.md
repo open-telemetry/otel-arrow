@@ -187,7 +187,7 @@ flowchart LR
 1. **Construction.** At factory time, `create()` deserializes and validates the
    config and builds an `Auth` for the configured method and scope. Development
    and workload-identity credentials are constructed immediately. Managed
-   identity construction is deferred to the first bounded worker acquisition so
+   identity construction is deferred to the first bounded blocking acquisition so
    synchronous environment detection cannot block the pipeline executor. The
    factory then registers the metric set and constructs the extension with an
    empty `watch` channel (`Option<BearerToken> = None`).
@@ -206,27 +206,25 @@ flowchart LR
 5. **Stream.** `token_stream()` subscribes to the `watch` channel and yields each
    subsequent published token. The initial `None` is filtered out.
 
-For managed identity, the credential call runs on a dedicated worker thread
-with its own current-thread Tokio runtime, started lazily by the extension
-instance. One async mutex stores the worker handle and serves as the admission
-gate. Its owned guard is acquired before a request is submitted and moves into
-the request, so it remains held until the worker finishes, even if the awaiting
-task is cancelled. The worker constructs the credential once, reuses it for
+For managed identity, credential construction and acquisition run via
+`spawn_blocking` on the existing pipeline runtime. Its handle drives the async
+SDK call. One async mutex stores the cached credential and serves as the admission
+gate. Its owned guard is acquired before a task is submitted and moves into
+the blocking task, so it remains held until that task finishes, even if the awaiting
+task is cancelled. The blocking task constructs the credential once, reuses it for
 later refreshes, and polls the SDK token future away from the thread-per-core
 executor. This is required for Azure Arc credentials, whose SDK path includes
 synchronous agent detection and challenge-file reads.
 
-The worker is deliberately outside the pipeline runtime's blocking pool:
-dropping a Tokio runtime waits for its running `spawn_blocking` tasks, so a
-worker stuck in Arc filesystem I/O would otherwise delay pipeline teardown
-indefinitely. The worker thread is detached and exits after its current
-request once the extension drops the worker handle. If the worker panics, the
-next acquisition starts a replacement.
+Dropping a Tokio runtime waits for its running `spawn_blocking` tasks, so an
+acquisition stuck in Arc filesystem I/O can delay pipeline teardown, as with
+other blocking I/O. Task panics are reported as acquisition errors and release
+the admission guard.
 
 Cancellation stops waiting for a managed identity result but cannot terminate
-the worker's in-progress call. The worker deliberately retains admission until
+the blocking task's in-progress call. The task deliberately retains admission until
 it finishes so cancellation and refresh retries cannot create an unbounded work
-queue. `startup_timeout` bounds readiness waiting, not worker lifetime. The
+queue. `startup_timeout` bounds readiness waiting, not blocking-task lifetime. The
 current Azure SDK configures Arc acquisition with six retries and a 72-second
 retry budget; its default HTTP transport applies a 20-second connection timeout
 and a 60-second read timeout per attempt. Because retry expiry is evaluated
@@ -492,9 +490,9 @@ Metrics are recorded in both the background refresh loop and the slow-path
    its terminal state and drops the credential and `watch` sender. Async
    credential futures are cancelled when the refresh task is dropped. An
    in-flight managed identity acquisition cannot be forcibly cancelled; the
-   refresh task stops awaiting it, while the dedicated worker retains admission
+   refresh task stops awaiting it, while the blocking task retains admission
    and continues until the Azure SDK call returns. Pipeline runtime teardown
-   does not wait for that worker.
+   waits for running blocking tasks, so a stuck acquisition can delay shutdown.
 
 ### Live reconfiguration
 

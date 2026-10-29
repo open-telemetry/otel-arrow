@@ -24,10 +24,10 @@ pub enum Error {
         source: azure_core::Error,
     },
 
-    /// The bounded managed-identity worker could not run or return its result.
-    #[error("managed identity worker failed: {message}")]
-    ManagedIdentityWorker {
-        /// Description of the worker or state failure.
-        message: String,
+    /// The managed-identity blocking task failed to complete.
+    #[error("managed identity task failed: {source}")]
+    ManagedIdentityTask {
+        /// Underlying task panic or cancellation.
+        source: tokio::task::JoinError,
     },
 }

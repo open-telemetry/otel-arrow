@@ -114,11 +114,10 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 
 ### Managed identity execution bounds
 
-Managed identity credential construction and acquisition run on one dedicated
-worker thread per extension instance. The worker has its own Tokio runtime, so
-dropping the pipeline runtime does not wait for an in-progress acquisition.
-One lock stores the worker handle and admits requests. It is acquired before a
-request is submitted and held until the worker finishes that request, even if
+Managed identity credential construction and acquisition run via `spawn_blocking`
+on the pipeline runtime, using its handle to drive the async SDK call.
+One lock stores the cached credential and admits requests. It is acquired before a
+task is submitted and held until the blocking task finishes, even if
 the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
 detection and challenge-file access off the thread-per-core executor without
 allowing cancellation or repeated refresh attempts to create unbounded work.
@@ -133,11 +132,11 @@ the budget is not a hard wall-clock deadline for the complete operation.
 Synchronous operating-system filesystem calls also have no user-space
 cancellation mechanism.
 
-If startup or shutdown cancels an acquisition, the worker continues until the
+If startup or shutdown cancels an acquisition, the blocking task continues until the
 SDK call returns and retains admission in the meantime. Subsequent attempts
-wait for that worker instead of starting another one. Pipeline teardown does
-not wait for it; the detached worker exits after its current call once the
-extension is dropped.
+wait for that task instead of starting another one. As with other blocking I/O,
+pipeline runtime teardown waits for running blocking tasks, so a stuck SDK call
+can delay shutdown.
 
 ## Authentication methods
 
