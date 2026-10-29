@@ -297,13 +297,22 @@ queries:
       WITH t AS (
         SELECT
           COALESCE((SELECT SUM(total) FROM scraped_totals WHERE metric_name = 'logs_produced'), 0) AS produced,
+          -- Failed sends are counted separately by the Python load generator
+          -- and are part of what was attempted. A send reported as failed may
+          -- still have been received (e.g. client-side timeout), so leaving it
+          -- out could make loss negative. Absent for the df_engine generator.
+          COALESCE((SELECT SUM(total) FROM scraped_totals WHERE metric_name = 'failed'), 0) AS failed,
           COALESCE((SELECT SUM(total) FROM scraped_totals WHERE metric_name = 'logs'), 0) AS received
       )
       SELECT
         produced AS logs_produced,
+        failed AS logs_failed,
         received AS logs_received,
-        produced - received AS logs_lost,
-        CASE WHEN produced > 0 THEN (produced - received) * 1.0 / produced ELSE NULL END AS logs_lost_pct
+        produced + failed - received AS logs_lost,
+        CASE
+          WHEN produced + failed > 0 THEN (produced + failed - received) * 1.0 / (produced + failed)
+          ELSE NULL
+        END AS logs_lost_pct
       FROM t;
 
   - name: Calculate log throughput rates
@@ -442,7 +451,7 @@ result_tables:
   - name: scraped_totals
     description: Whole-run totals of scraped send/receive counters (final cumulative value, including post-drain counts).
   - name: log_loss
-    description: Lost logs computed from whole-run scraped totals (produced - received).
+    description: Lost logs (failed, or sent but not received) computed from whole-run scraped totals.
   - name: log_throughput_rates
     description: Log throughput rates (logs/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
