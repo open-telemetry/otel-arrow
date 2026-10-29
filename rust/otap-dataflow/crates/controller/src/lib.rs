@@ -3487,10 +3487,12 @@ groups:
         std::process::exit(0);
     }
 
-    /// Scenario: during startup reconciliation pipeline `a` becomes ready and then fails with
-    /// runtime recovery disabled, while pipeline `b` is still waiting for readiness.
-    /// Guarantees: the fatal failure's engine-wide shutdown is not mistaken for an operator
-    /// shutdown; the controller returns the original pipeline error instead of success.
+    /// Scenario: during startup reconciliation pipeline `a` starts and then fails with runtime
+    /// recovery disabled, while pipeline `b` never becomes ready.
+    /// Guarantees: the failure stops startup without waiting for `b`'s step timeout, and its
+    /// engine-wide shutdown is not mistaken for an operator shutdown; the controller returns the
+    /// original pipeline error instead of success. The step timeout is far above the child
+    /// process deadline, so waiting for it fails the test.
     #[test]
     fn fatal_pipeline_failure_during_startup_reconciliation_returns_error() {
         if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
@@ -3516,7 +3518,7 @@ engine:
         admin: noop
         internal: noop
   controller:
-    startup_step_timeout_secs: 10
+    startup_step_timeout_secs: 120
 groups:
   g:
     pipelines:
@@ -3556,20 +3558,14 @@ groups:
         )
         .expect("fatal startup failure config should parse");
 
-        let started = Instant::now();
         let result = Controller::new(test_pipeline_factory())
             .run_forever_with_options(config, ControllerRunOptions::default());
-        let elapsed = started.elapsed();
         let error = result.expect_err("a fatal pipeline failure during startup must be an error");
         assert!(
             error
                 .to_string()
                 .contains("simulated failure after readiness"),
             "the original pipeline failure must reach the caller: {error}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(8),
-            "the fatal failure should stop startup before the step timeout: {elapsed:?}"
         );
         std::process::exit(0);
     }
@@ -4032,6 +4028,8 @@ groups:
             _ctrl_chan: receiver::ControlChannel<()>,
             effect_handler: receiver::EffectHandler<()>,
         ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            // Makes failing after the create rollout commits the likely order. Failing earlier
+            // must lead to the same result, so the delay does not decide the outcome.
             tokio::time::sleep(Duration::from_millis(300)).await;
             Err(otel_arrow_dfe_engine::error::Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),

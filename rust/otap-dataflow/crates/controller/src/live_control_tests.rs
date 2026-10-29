@@ -625,8 +625,29 @@ static RECOVERY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::ne
 /// `(pipeline group id, pipeline id, local topic name)`.
 static TOPIC_FLOW_RECEIVED: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
 
+/// Topic-flow test exporters that started running, recorded as `(pipeline group id, pipeline id)`
+/// before they publish anything.
+static TOPIC_FLOW_EXPORTERS_STARTED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
 /// Messages each topic-flow test exporter publishes as soon as its pipeline runs.
 const TOPIC_FLOW_PUBLISH_COUNT: usize = 8;
+
+/// Serializes tests that use the `block_build` topic-flow receiver hook.
+static TOPIC_FLOW_BUILD_BLOCK_LOCK: Mutex<()> = Mutex::new(());
+/// Set by a topic-flow receiver build configured with `block_build` once it starts blocking.
+static TOPIC_FLOW_BUILD_BLOCK_STARTED: AtomicBool = AtomicBool::new(false);
+/// Releases topic-flow receiver builds configured with `block_build`.
+static TOPIC_FLOW_BUILD_BLOCK_RELEASED: AtomicBool = AtomicBool::new(false);
+
+/// Releases blocked topic-flow receiver builds when dropped, so a failing test never leaves a
+/// pipeline thread blocked.
+struct TopicFlowBuildBlockRelease;
+
+impl Drop for TopicFlowBuildBlockRelease {
+    fn drop(&mut self) {
+        TOPIC_FLOW_BUILD_BLOCK_RELEASED.store(true, Ordering::SeqCst);
+    }
+}
 
 /// Topic receiver whose subscription is created at build time, like the real topic receiver, and
 /// which records the first message it receives while running.
@@ -681,6 +702,7 @@ impl receiver::Receiver<()> for TopicFlowReceiver {
 /// standing in for ingress that arrives the moment a pipeline starts.
 struct TopicFlowExporter {
     handle: otel_arrow_dfe_engine::topic::TopicHandle<()>,
+    record_key: (String, String),
 }
 
 #[async_trait(?Send)]
@@ -690,6 +712,10 @@ impl exporter::Exporter<()> for TopicFlowExporter {
         mut inbox: ExporterInbox<()>,
         _effect_handler: exporter::EffectHandler<()>,
     ) -> Result<TerminalState, EngineError> {
+        TOPIC_FLOW_EXPORTERS_STARTED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(self.record_key.clone());
         for _ in 0..TOPIC_FLOW_PUBLISH_COUNT {
             let _ = self
                 .handle
@@ -708,7 +734,8 @@ impl exporter::Exporter<()> for TopicFlowExporter {
 
 /// Builds a [`TopicFlowReceiver`]. An optional integer `build_delay_ms` in the node config delays
 /// the build before subscribing, simulating a pipeline that is slow to build, and a `fail_build`
-/// key makes the build fail after that delay.
+/// key makes the build fail after that delay. A `block_build` key blocks the build until
+/// `TOPIC_FLOW_BUILD_BLOCK_RELEASED` is set, after setting `TOPIC_FLOW_BUILD_BLOCK_STARTED`.
 fn topic_flow_receiver_create(
     pipeline_ctx: PipelineContext,
     node: otel_arrow_dfe_engine::node::NodeId,
@@ -724,6 +751,12 @@ fn topic_flow_receiver_create(
         .and_then(|value| value.as_u64())
     {
         thread::sleep(Duration::from_millis(delay_ms));
+    }
+    if node_config.config.get("block_build").is_some() {
+        TOPIC_FLOW_BUILD_BLOCK_STARTED.store(true, Ordering::SeqCst);
+        while !TOPIC_FLOW_BUILD_BLOCK_RELEASED.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
     if node_config.config.get("fail_build").is_some() {
         return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -774,8 +807,12 @@ fn topic_flow_exporter_create(
         .get_required(topic.as_ref())
         .expect("topic-flow exporter topic should be declared")
         .into_handle();
+    let record_key = (
+        pipeline_ctx.pipeline_group_id().as_ref().to_owned(),
+        pipeline_ctx.pipeline_id().as_ref().to_owned(),
+    );
     Ok(ExporterWrapper::local(
-        TopicFlowExporter { handle },
+        TopicFlowExporter { handle, record_key },
         node,
         node_config,
         exporter_config,
@@ -7126,8 +7163,8 @@ fn startup_reconciliation_delivers_crossing_ingress_between_pipelines() {
 /// Scenario: live full-config reconciliation creates a producer `ok`, a consumer `watch` of its
 /// topic, and a pipeline `bad` whose build fails after the others are already built.
 /// Guarantees: the build failure aborts the whole batch before any new pipeline runs, so the
-/// producer never publishes, the reconcile fails with the build error, and every new instance
-/// exits.
+/// producer's exporter never starts, the reconcile fails with the build error, and every new
+/// instance exits.
 #[test]
 fn reconcile_engine_config_build_failure_runs_no_new_pipeline() {
     let desired = OtelDataflowSpec::from_yaml(
@@ -7218,21 +7255,24 @@ groups:
         "{reason}"
     );
     assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(5)));
+    let started: Vec<_> = TOPIC_FLOW_EXPORTERS_STARTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|(group, _)| group == "build_failure")
+        .cloned()
+        .collect();
     assert!(
-        wait_for_topic_flow_within(
-            "build_failure",
-            &[("watch", "topic_1")],
-            Duration::from_millis(300)
-        )
-        .is_empty(),
-        "no new pipeline should have run"
+        started.is_empty(),
+        "no new pipeline should have run: {started:?}"
     );
 }
 
-/// Scenario: startup reconciliation holds a built pipeline `fast` at the start gate while pipeline
-/// `slow` is still building, and an engine-wide shutdown is requested during that wait.
-/// Guarantees: the shutdown releases the gate right away, so startup reconciliation returns a
-/// failed status promptly instead of waiting for the slow build, and every instance exits.
+/// Scenario: startup reconciliation waits at the start gate while pipeline `slow` is blocked in
+/// its build, and an engine-wide shutdown is requested during that wait.
+/// Guarantees: the shutdown interrupts the gate wait, so startup reconciliation returns a failed
+/// status while the slow build is still blocked, instead of waiting for the build or the step
+/// timeout, and every instance exits once the build is released.
 #[test]
 fn startup_shutdown_during_start_gate_wait_returns_promptly() {
     let desired = OtelDataflowSpec::from_yaml(
@@ -7270,7 +7310,7 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_1
-              build_delay_ms: 3000
+              block_build: true
               subscription:
                 mode: balanced
                 group: slow
@@ -7283,31 +7323,50 @@ groups:
 "#,
     )
     .expect("gate shutdown config should parse");
+    let _block_lock = TOPIC_FLOW_BUILD_BLOCK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    TOPIC_FLOW_BUILD_BLOCK_STARTED.store(false, Ordering::SeqCst);
+    TOPIC_FLOW_BUILD_BLOCK_RELEASED.store(false, Ordering::SeqCst);
+    let release = TopicFlowBuildBlockRelease;
     let runtime = test_runtime_with_factory(&desired, &TOPIC_FLOW_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
 
-    let shutdown_runtime = Arc::clone(&runtime);
-    let shutdown = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(500));
-        shutdown_runtime
-            .request_shutdown_all(5)
-            .expect("shutdown should be accepted");
+    // The step timeout is far above the receive guard below, so a reconcile that waits for the
+    // blocked build or the step timeout fails the guard instead of passing.
+    let (status_tx, status_rx) = std::sync::mpsc::channel();
+    let reconcile_runtime = Arc::clone(&runtime);
+    let reconcile = thread::spawn(move || {
+        let status = reconcile_runtime.reconcile_engine_config_startup(desired, 120);
+        let _ = status_tx.send(status);
     });
-    let started = Instant::now();
-    let status = runtime
-        .reconcile_engine_config_startup(desired, 30)
+    let guard = Instant::now() + Duration::from_secs(20);
+    while !TOPIC_FLOW_BUILD_BLOCK_STARTED.load(Ordering::SeqCst) {
+        assert!(Instant::now() < guard, "slow build should start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let shutdown_runtime = Arc::clone(&runtime);
+    let shutdown = thread::spawn(move || shutdown_runtime.request_shutdown_all(5));
+
+    let status = status_rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("startup reconciliation should return while the slow build is blocked")
         .expect("startup reconciliation should report a status");
-    let elapsed = started.elapsed();
-    shutdown.join().expect("shutdown thread should not panic");
+    assert!(
+        !TOPIC_FLOW_BUILD_BLOCK_RELEASED.load(Ordering::SeqCst),
+        "the slow build should still be blocked"
+    );
+    drop(release);
+    reconcile.join().expect("reconcile thread should not panic");
+    shutdown
+        .join()
+        .expect("shutdown thread should not panic")
+        .expect("shutdown should be accepted");
 
     assert_eq!(
         status.state,
         EngineConfigReconcileState::Failed,
         "{status:?}"
-    );
-    assert!(
-        elapsed < Duration::from_millis(2000),
-        "startup reconciliation waited {elapsed:?} for the slow build after shutdown"
     );
     assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(10)));
 }
