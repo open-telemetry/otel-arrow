@@ -47,6 +47,10 @@ use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::control::NackMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::local::processor as local;
@@ -85,7 +89,7 @@ mod enrichment_tests;
 mod metrics;
 mod plan;
 
-pub use enrichment::{AuthorityHostSelection, ConfiguredValue, ValueSource, ValueTransform};
+pub use enrichment::ConfiguredValue;
 pub use plan::{ActionSignal, ScopedAction};
 use plan::{CompiledTransform, signal_index};
 
@@ -191,6 +195,30 @@ pub struct Config {
     pub apply_to: Option<Vec<String>>,
 }
 
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        let entries = [SignalType::Logs, SignalType::Metrics, SignalType::Traces]
+            .into_iter()
+            .flat_map(|signal| plan::effective_value_actions(&self.actions, signal))
+            .filter_map(|(_, _, value)| match value {
+                ConfiguredValue::Dynamic { source } => Some(source),
+                _ => None,
+            })
+            .flat_map(enrichment::context_entries)
+            .collect::<BTreeSet<_>>();
+        if entries.is_empty() {
+            return NodeContextDeclarations::default();
+        }
+        [ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: entries.into_iter().collect(),
+            },
+        }]
+        .into_iter()
+        .collect()
+    }
+}
+
 /// Processor that applies attribute transformations to OTAP attribute batches.
 ///
 /// Implements the OpenTelemetry Collector's attributes processor functionality using
@@ -207,6 +235,7 @@ pub struct AttributesProcessor {
     metrics: metrics::AttributesProcessorMetrics,
     // Opt-in compute-duration timing
     compute_duration: ComputeDuration,
+    pipeline_ctx: PipelineContext,
 }
 
 impl AttributesProcessor {
@@ -232,6 +261,9 @@ impl AttributesProcessor {
         config: Config,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let plans = compile_config(&config)?;
+        if !config.context_declarations().is_empty() {
+            config.validate_context_declarations(&pipeline_ctx)?;
+        }
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
@@ -247,6 +279,7 @@ impl AttributesProcessor {
             has_signal_domain,
             metrics: metrics::AttributesProcessorMetrics::new(&pipeline_ctx),
             compute_duration: ComputeDuration::new(&pipeline_ctx),
+            pipeline_ctx,
         })
     }
 
@@ -347,7 +380,13 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         .map_err(|error| ConfigError::InvalidUserConfig {
                             error: error.to_string(),
                         })
-                        .and_then(|config| compile_config(&config).map(|plans| (config, plans)));
+                        .and_then(|config| {
+                            let plans = compile_config(&config)?;
+                            if !config.context_declarations().is_empty() {
+                                config.validate_context_declarations(&self.pipeline_ctx)?;
+                            }
+                            Ok((config, plans))
+                        });
                     match replacement {
                         Ok((config, plans)) => {
                             self.plans = plans;
@@ -375,12 +414,28 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
             },
             Message::PData(mut pdata) => {
                 let signal = pdata.signal_type();
-                let resolved = effect_handler.timed(&self.compute_duration, || {
-                    self.plans[signal_index(signal)].resolve(pdata.context_mut())
-                });
+                if self.plans[signal_index(signal)].is_noop() {
+                    return effect_handler
+                        .send_message_with_source_node(pdata)
+                        .await
+                        .map_err(Into::into);
+                }
+                let interests = effect_handler.node_interests();
+                let started = interests
+                    .contains(otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION)
+                    .then(std::time::Instant::now);
+                let resolved = self.plans[signal_index(signal)].resolve(pdata.context_mut());
+                let resolution_elapsed = started.map(|start| start.elapsed());
                 let dynamic = match resolved {
                     Ok(dynamic) => dynamic,
                     Err(error) => {
+                        if let Some(elapsed) = resolution_elapsed {
+                            self.compute_duration.record_elapsed(
+                                interests,
+                                elapsed,
+                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                            );
+                        }
                         self.metrics.record_transform_outcome(
                             otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
                         );
@@ -399,9 +454,16 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     return res;
                 }
 
-                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
-                    Ok(arrow_pdata) => arrow_pdata,
+                let (delivery, mut records) = match effect_handler.prepare_otap_work(pdata).await {
+                    Ok(work) => work,
                     Err(error) => {
+                        if let Some(elapsed) = resolution_elapsed {
+                            self.compute_duration.record_elapsed(
+                                interests,
+                                elapsed,
+                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                            );
+                        }
                         let (error, pdata) = error.into_parts();
                         effect_handler
                             .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
@@ -409,14 +471,20 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         return Ok(());
                     }
                 };
-                let signal = arrow_pdata.signal_type();
-                let (context, mut records) = arrow_pdata.into_parts();
-                let recovery = records.clone();
-
                 // Apply transform across selected domains and record per-(action, domain) stats.
-                let result = effect_handler.timed(&self.compute_duration, || {
-                    self.apply_transform_with_stats(&mut records, signal, &dynamic)
-                });
+                let started = resolution_elapsed.map(|_| std::time::Instant::now());
+                let result = self.apply_transform_with_stats(&mut records, signal, &dynamic);
+                if let (Some(elapsed), Some(start)) = (resolution_elapsed, started) {
+                    self.compute_duration.record_elapsed(
+                        interests,
+                        elapsed + start.elapsed(),
+                        if result.is_ok() {
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Success
+                        } else {
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure
+                        },
+                    );
+                }
                 match result {
                     Ok(domain_stats) => {
                         for (domain, deleted, renamed, inserted, upserted, updated, hashed) in
@@ -470,14 +538,14 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         return effect_handler
                             .notify_nack(NackMsg::new_permanent(
                                 e.to_string(),
-                                OtapPdata::new(context, recovery.into()),
+                                delivery.into_pdata(),
                             ))
                             .await;
                     }
                 }
 
                 effect_handler
-                    .send_message_with_source_node(OtapPdata::new(context, records.into()))
+                    .send_message_with_source_node(delivery.with_payload(records.into()))
                     .await
                     .map_err(|e| e.into())
             }
@@ -557,7 +625,7 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        context_declarations: None,
+        context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config,
     };
