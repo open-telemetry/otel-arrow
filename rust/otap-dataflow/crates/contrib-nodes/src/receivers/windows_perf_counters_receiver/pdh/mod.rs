@@ -1,94 +1,81 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Native PDH access, query-owned sampling state, discovery, and worker-thread lifecycle.
+//! PDH collection on a dedicated worker thread.
 //!
-//! Windows handles remain on the synchronous worker thread that owns them.
+//! Each query and its counter handles stay on the thread that opened them.
 
-use super::model::{InstanceIdentity, Number};
-pub(super) use expansion::DiscoveryBudget;
-mod counter_type;
-mod diagnostics;
-mod error;
-mod expansion;
 mod native;
 mod query;
-mod timing;
 mod worker;
 
-pub(super) use error::{Error, PdhOperation};
-pub(super) use worker::{QueryCadence, Worker};
+pub(super) use native::NativePdh;
+pub(super) use worker::{Stopped, Worker};
 
-#[cfg(test)]
-static QUERY_OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
-static QUERY_CLOSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// The numeric representation requested from PDH.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ValueFormat {
-    Integer,
-    Double,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CounterLanguage {
-    English,
-    Localized,
-}
-
-/// Checked native fields used to validate receiver-side sampling state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RawSample {
-    pub(super) second_value: i64,
-    pub(super) multi_count: u32,
-}
-
-/// Owns an open query and its counters; raw handles and unchecked statuses stay native.
-pub(super) trait PdhApi {
+/// The PDH operations one query needs. Native statuses are returned unchanged.
+pub(super) trait Pdh {
     type Counter;
 
-    /// Observe stop between native operations without attempting native cancellation.
-    fn check_running(&self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn add(&mut self, path: &str, language: CounterLanguage) -> Result<Self::Counter, Error>;
-    fn remove(&mut self, counter: &Self::Counter, path: &str) -> Result<(), Error>;
-    fn counter_type(&mut self, counter: &Self::Counter, path: &str) -> Result<u32, Error>;
-    /// Reads the native display-language path without changing the configured path.
-    fn full_path(&mut self, counter: &Self::Counter, path: &str) -> Result<String, Error>;
-    /// Parses a comparison-only local path with canonical instance suffix spelling.
-    fn comparison_path(&mut self, path: &str) -> Result<String, Error>;
-    /// Returns whether collection has data; an expected omission returns false.
-    fn collect(&mut self) -> Result<bool, Error>;
-    /// Returns checked raw sampling fields, an expected omission, or a validated failure.
-    fn raw(&mut self, counter: &Self::Counter, path: &str) -> Result<Option<RawSample>, Error>;
-    /// Returns an unscaled value, an expected omission, or a validated failure.
-    fn formatted(
+    /// Adds an English counter path, which may wildcard its instance.
+    fn add(&mut self, path: &str) -> Result<Self::Counter, u32>;
+    /// Collects one sample for every counter in the query.
+    fn collect(&mut self) -> Result<(), u32>;
+    /// Replaces `items` with every instance in returned order, or returns the call status.
+    /// A non-instanced counter returns one item with an empty name.
+    fn array(
         &mut self,
         counter: &Self::Counter,
-        path: &str,
-        format: ValueFormat,
-    ) -> Result<Option<Number>, Error>;
-    fn timestamp(&mut self) -> Result<i64, Error> {
-        Self::current_timestamp()
-    }
-    /// Reads the same wall clock even when no query could be opened.
-    fn current_timestamp() -> Result<i64, Error> {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| Error::Timestamp("system clock precedes Unix epoch"))?
-            .as_nanos();
-        i64::try_from(timestamp).map_err(|_| Error::Timestamp("timestamp exceeds i64 nanoseconds"))
-    }
-    /// Resolves an English template and returns concrete host-language paths.
-    /// Check peak raw capacity and retain actual decoded payload charges.
-    fn expand(&mut self, path: &str, budget: &mut DiscoveryBudget) -> Result<Vec<String>, Error>;
-    /// Refreshes the local object list and returns its object count.
-    fn refresh_objects(&mut self) -> Result<usize, Error>;
-    /// Parses the instance identity from one concrete path.
-    fn parse_instance(&mut self, path: &str) -> Result<InstanceIdentity, Error>;
+        items: &mut Vec<(String, Value)>,
+    ) -> Result<(), u32>;
+}
+
+/// A formatted double and its PDH data status.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Value {
+    pub(super) status: u32,
+    pub(super) value: f64,
+}
+
+/// One accepted, scaled value.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Point {
+    /// Index of the configured counter.
+    pub(super) counter: usize,
+    /// Instance name after duplicate suffixing; `None` when empty or a lone aggregate that was not
+    /// opted in.
+    pub(super) instance: Option<String>,
+    pub(super) value: f64,
+    /// When the query was collected.
+    pub(super) time_unix_nano: i64,
+    /// When the receiver started collecting; never after `time_unix_nano`.
+    pub(super) start_time_unix_nano: i64,
+}
+
+/// The outcome of query start or one scrape, reported to the receiver.
+#[derive(Debug, Default)]
+pub(super) struct Report {
+    /// Accepted values from this scrape's collections.
+    pub(super) points: Vec<Point>,
+    /// Counter indexes whose query collected in this scrape; priming is not counted.
+    pub(super) collected: Vec<usize>,
+    /// Counter indexes whose query failed to open or collect, with the status; each is reopened
+    /// on the next scrape.
+    pub(super) collect_failures: Vec<(usize, u32)>,
+    /// `recreate_query` counters whose replacement failed, with the status; the old query is kept.
+    pub(super) recreate_failures: Vec<(usize, u32)>,
+    /// `recreate_query` counters whose replacement was swapped in.
+    pub(super) recreated: Vec<usize>,
+    /// Counter indexes whose add failed, with the status.
+    pub(super) add_failures: Vec<(usize, u32)>,
+    /// Counter indexes added in this report: at startup, or by a retry at the start of a scrape.
+    pub(super) added: Vec<usize>,
+    /// Counter indexes whose array read failed with a non-ignorable status, or whose array would
+    /// exceed the scrape's instance budget.
+    pub(super) read_failures: Vec<(usize, u32)>,
+    /// Counter indexes whose array read returned data or an ignorable status.
+    pub(super) read: Vec<usize>,
+    /// Counters currently in a query.
+    pub(super) active_counters: usize,
 }
 
 #[cfg(test)]

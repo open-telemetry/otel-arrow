@@ -164,23 +164,15 @@ instance; it does not implement tenant or group-wide fairness.
 
 ## Telemetry
 
-These tables list telemetry emitted directly by this node. Common engine
-runtime metric sets may also be attached by the pipeline telemetry policy.
+This receiver opts into the shared `receiver.received` and
+`receiver.processing` metric sets. See the
+[shared receiver contract](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for their definitions and telemetry policy.
+
+The tables below list node-specific diagnostics. Common engine runtime metric
+sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
-
-#### `receiver.received`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.received.messages` | `{message}` | `signal`, `outcome` | Number of classified OTLP messages whose receiver-local handling terminated. |
-| `receiver.received.payload.size` | `By` | `signal`, `outcome` | Encoded application payload bytes observed at the receiver boundary. |
-
-#### `receiver.processing`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.processing.duration` | `s` | `signal` | Receiver-local processing time before downstream handoff. Emitted when component duration is enabled. |
 
 #### `receiver.otlp.requests`
 
@@ -188,9 +180,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.otlp.requests.accepted` | `{request}` | `signal`, `protocol` | Number of OTLP requests admitted to the pipeline send path. |
 | `receiver.otlp.requests.rejected` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
-
-The shared `receiver.received` metrics report terminal outcome and payload size
-for classified requests.
 
 #### `receiver.otlp.transport`
 
