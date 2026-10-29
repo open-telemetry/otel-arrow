@@ -7624,6 +7624,7 @@ dependencies = [
  "criterion",
  "eventheader_dynamic",
  "flate2",
+ "flume",
  "futures",
  "futures-channel",
  "futures-util",

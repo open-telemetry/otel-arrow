@@ -23,14 +23,16 @@ use otel_arrow_dfe_otap::http_client_auth::{
 };
 use otel_arrow_dfe_otap::metrics::ExporterAttempt;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
-use otel_arrow_dfe_pdata::views::otlp::bytes::{
-    logs::RawLogsData, metrics::RawMetricsData, traces::RawTraceData,
-};
 use otel_arrow_dfe_pdata_codec::{
-    AcceptedEncodings, CodecService, PdataView, builtins::resolve_otlp,
+    AcceptedEncodings, CodecError, CodecOperation, CodecService, PdataView,
+    builtins::{OTLP_ENCODING, resolve_otlp},
 };
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use prost::Message as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::poll_fn;
@@ -192,26 +194,35 @@ impl AzureDataExplorerExporter {
                     bytes,
                 ),
             },
-            PdataView::Encoded(encoded) => match encoded.signal_type() {
-                SignalType::Logs => self.transformer.convert_logs(
-                    &RawLogsData::try_new(encoded.bytes()).map_err(view_error)?,
-                    rows,
-                    row_bytes,
-                    bytes,
-                ),
-                SignalType::Metrics => self.transformer.convert_metrics(
-                    &RawMetricsData::try_new(encoded.bytes()).map_err(view_error)?,
-                    rows,
-                    row_bytes,
-                    bytes,
-                ),
-                SignalType::Traces => self.transformer.convert_traces(
-                    &RawTraceData::try_new(encoded.bytes()).map_err(view_error)?,
-                    rows,
-                    row_bytes,
-                    bytes,
-                ),
-            },
+            PdataView::Encoded(encoded) => {
+                let decode_error = |error| {
+                    Error::Decode(Box::new(CodecError::operation(
+                        &OTLP_ENCODING,
+                        CodecOperation::Decode,
+                        error,
+                    )))
+                };
+                match encoded.signal_type() {
+                    SignalType::Logs => self.transformer.convert_logs(
+                        &LogsData::decode(encoded.bytes()).map_err(decode_error)?,
+                        rows,
+                        row_bytes,
+                        bytes,
+                    ),
+                    SignalType::Metrics => self.transformer.convert_metrics(
+                        &MetricsData::decode(encoded.bytes()).map_err(decode_error)?,
+                        rows,
+                        row_bytes,
+                        bytes,
+                    ),
+                    SignalType::Traces => self.transformer.convert_traces(
+                        &TracesData::decode(encoded.bytes()).map_err(decode_error)?,
+                        rows,
+                        row_bytes,
+                        bytes,
+                    ),
+                }
+            }
         }
     }
 
@@ -774,8 +785,10 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                 completed = Self::next_export(&mut exports), if !exports.is_empty() => {
                     self.complete_export(completed.0, completed.1, &effect_handler, &resolutions, &mut batches);
                 }
-                message = inbox.recv_when(accepting), if parked.is_none() => match message? {
-                    Message::PData(pdata) => {
+                message = inbox.recv_when_or_shutdown_started(accepting),
+                    if parked.is_none() => match message? {
+                    None => {}
+                    Some(Message::PData(pdata)) => {
                         if !accepting {
                             // Only shutdown draining can bypass recv_when(false).
                             // Park one source rather than moving upstream backlog
@@ -792,15 +805,15 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                         }
                     }
 
-                    Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                    Some(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
                         if let Err(error) = self.metrics.borrow_mut().report(&mut metrics_reporter) {
                             otel_warn!("azure_data_explorer_exporter.telemetry.failed", error = %error);
                         }
                     }
-                    Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    Some(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
                         break deadline;
                     }
-                    Message::Control(_) => {}
+                    Some(Message::Control(_)) => {}
                 }
             }
         };
@@ -850,6 +863,7 @@ mod tests {
     use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
     use otel_arrow_dfe_engine::message::{Receiver, Sender};
     use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::shared::message::{SharedReceiver, SharedSender};
     use otel_arrow_dfe_engine::testing::{
         create_not_send_channel, test_node, test_pipeline_ctx_with_interests,
         test_pipeline_runtime_services,
@@ -871,12 +885,15 @@ mod tests {
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    use otel_arrow_dfe_pdata::views::otlp::bytes::{
+        logs::RawLogsData, metrics::RawMetricsData, traces::RawTraceData,
+    };
     use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-    use prost::Message as _;
     use std::io::Read;
     use std::sync::Arc;
-    use std::task::Poll;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context as TaskContext, Poll, Wake, Waker};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, oneshot};
@@ -963,6 +980,22 @@ mod tests {
         impl Future<Output = Result<TerminalState, EngineError>>,
         Driver,
     ) {
+        let (data_tx, data_rx) = create_not_send_channel(input_capacity);
+        runtime_with_input(
+            exporter,
+            Sender::Local(LocalSender::mpsc(data_tx)),
+            Receiver::Local(LocalReceiver::mpsc(data_rx)),
+        )
+    }
+
+    fn runtime_with_input(
+        exporter: AzureDataExplorerExporter,
+        data: Sender<OtapPdata>,
+        receiver: Receiver<OtapPdata>,
+    ) -> (
+        impl Future<Output = Result<TerminalState, EngineError>>,
+        Driver,
+    ) {
         let node = test_node("adx-test");
         let mut wrapper = ExporterWrapper::local(
             exporter,
@@ -973,9 +1006,8 @@ mod tests {
             &ExporterConfig::new("adx-test"),
         );
         let control = wrapper.control_sender();
-        let (data_tx, data_rx) = create_not_send_channel(input_capacity);
         wrapper
-            .set_pdata_receiver(node, Receiver::Local(LocalReceiver::mpsc(data_rx)))
+            .set_pdata_receiver(node, receiver)
             .expect("pdata receiver");
         let (runtime_tx, runtime_rx) = runtime_ctrl_msg_channel(8);
         let (completion_tx, completions) = pipeline_completion_msg_channel(8);
@@ -996,7 +1028,7 @@ mod tests {
             work,
             Driver {
                 control,
-                data: Sender::Local(LocalSender::mpsc(data_tx)),
+                data,
                 completions,
             },
         )
@@ -1060,6 +1092,7 @@ mod tests {
                                 name: "temperature".to_string(),
                                 data: Some(metric::Data::Gauge(Gauge {
                                     data_points: vec![NumberDataPoint {
+                                        time_unix_nano: 1,
                                         value: Some(number_data_point::Value::AsDouble(42.0)),
                                         ..Default::default()
                                     }],
@@ -1078,6 +1111,8 @@ mod tests {
                     resource_spans: vec![ResourceSpans {
                         scope_spans: vec![ScopeSpans {
                             spans: vec![Span {
+                                start_time_unix_nano: 1,
+                                end_time_unix_nano: 2,
                                 trace_id: vec![1; 16],
                                 span_id: vec![2; 8],
                                 name: "test-span".to_string(),
@@ -1301,6 +1336,254 @@ mod tests {
                 ),
                 1
             );
+        }
+    }
+
+    fn nested_message(path: &[u32], content: &[u8]) -> Vec<u8> {
+        let mut bytes = content.to_vec();
+        for &field in path.iter().rev() {
+            let mut parent = Vec::new();
+            prost::encoding::encode_key(
+                field,
+                prost::encoding::WireType::LengthDelimited,
+                &mut parent,
+            );
+            prost::encoding::encode_varint(bytes.len() as u64, &mut parent);
+            parent.extend_from_slice(&bytes);
+            bytes = parent;
+        }
+        bytes
+    }
+
+    async fn assert_nested_payloads_refused(signal: SignalType, paths: &[&[u32]]) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (exporter, tokens) = exporter(config(&server.uri()));
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let terminal = run(exporter, async move |mut driver| {
+            for path in paths {
+                for valid_prefix in [false, true] {
+                    let mut bytes = if valid_prefix {
+                        signal_pdata(signal, false)
+                            .payload_ref()
+                            .encoded_view()
+                            .expect("OTLP source")
+                            .bytes()
+                            .to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    bytes.extend_from_slice(&nested_message(path, b"\x1a\x05\x00"));
+                    driver
+                        .data
+                        .send(pdata(OtlpProtoBytes::new_from_bytes(signal, bytes)))
+                        .await
+                        .expect("malformed source");
+                    let PipelineCompletionMsg::DeliverNack { nack } = driver.completion().await
+                    else {
+                        panic!("corrupt {signal:?} source must not be ACKed");
+                    };
+                    assert!(nack.permanent);
+                    assert_eq!(nack.cause, NackCause::Refused);
+                }
+            }
+            driver.shutdown().await;
+        })
+        .await;
+        let signal_name = match signal {
+            SignalType::Logs => "logs",
+            SignalType::Metrics => "metrics",
+            SignalType::Traces => "traces",
+        };
+        assert_eq!(
+            measurement(
+                terminal.metrics(),
+                "exporter.attempted",
+                signal_name,
+                "refused",
+                "messages",
+            ),
+            (paths.len() * 2) as u64,
+        );
+    }
+
+    /// Scenario: nested logs framing is corrupt, with or without preceding valid records.
+    /// Guarantees: the entire source is permanently refused without exporting a partial request.
+    #[tokio::test]
+    async fn nested_malformed_logs_are_permanently_refused() {
+        assert_nested_payloads_refused(
+            SignalType::Logs,
+            &[
+                &[1],
+                &[1, 1],
+                &[1, 2],
+                &[1, 2, 1],
+                &[1, 2, 2],
+                &[1, 2, 2, 5],
+                &[1, 2, 2, 6],
+            ],
+        )
+        .await;
+    }
+
+    /// Scenario: nested metrics framing is corrupt, with or without preceding valid points.
+    /// Guarantees: the entire source is permanently refused, including corrupt data types and exemplars.
+    #[tokio::test]
+    async fn nested_malformed_metrics_are_permanently_refused() {
+        assert_nested_payloads_refused(
+            SignalType::Metrics,
+            &[
+                &[1],
+                &[1, 1],
+                &[1, 2],
+                &[1, 2, 1],
+                &[1, 2, 2],
+                &[1, 2, 2, 5],
+                &[1, 2, 2, 5, 1],
+                &[1, 2, 2, 5, 1, 5],
+                &[1, 2, 2, 7],
+                &[1, 2, 2, 9],
+                &[1, 2, 2, 10],
+                &[1, 2, 2, 10, 1, 8],
+                &[1, 2, 2, 11],
+                &[1, 2, 2, 11, 1, 6],
+            ],
+        )
+        .await;
+    }
+
+    /// Scenario: nested traces framing is corrupt, with or without preceding valid spans.
+    /// Guarantees: the entire source is permanently refused, including corrupt events, links, and status.
+    #[tokio::test]
+    async fn nested_malformed_traces_are_permanently_refused() {
+        assert_nested_payloads_refused(
+            SignalType::Traces,
+            &[
+                &[1],
+                &[1, 1],
+                &[1, 2],
+                &[1, 2, 1],
+                &[1, 2, 2],
+                &[1, 2, 2, 9],
+                &[1, 2, 2, 11],
+                &[1, 2, 2, 13],
+                &[1, 2, 2, 15],
+            ],
+        )
+        .await;
+    }
+
+    /// Scenario: valid OTLP contains unknown groups at the root, resource, scope, and resource metadata.
+    /// Guarantees: all signals retain their valid rows instead of being refused or silently truncated.
+    #[tokio::test]
+    async fn protobuf_unknown_groups_preserve_all_signal_rows() {
+        let (exporter, _tokens) = exporter(config("http://localhost:4319"));
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
+        let handler = EffectHandler::<OtapPdata>::new(
+            test_node("adx"),
+            reporter,
+            test_pipeline_runtime_services(),
+        );
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            let source = signal_pdata(signal, false);
+            let valid = source.payload_ref().encoded_view().expect("OTLP source");
+            let expected = exporter
+                .extract_records(&source, handler.codec_service())
+                .expect("valid rows");
+            for path in [&[][..], &[1][..], &[1, 2][..], &[1, 1, 3][..]] {
+                let mut bytes = nested_message(path, b"\xa3\x06\xa4\x06");
+                bytes.extend_from_slice(valid.bytes());
+                let input = pdata(OtlpProtoBytes::new_from_bytes(signal, bytes));
+                assert_eq!(
+                    exporter
+                        .extract_records(&input, handler.codec_service())
+                        .expect("unknown protobuf groups must be accepted"),
+                    expected,
+                );
+            }
+        }
+    }
+
+    /// Scenario: a log body repeats oneof alternatives in one message or across merged body messages.
+    /// Guarantees: transformation uses protobuf's final oneof value rather than the first raw-view field.
+    #[tokio::test]
+    async fn protobuf_oneof_and_message_merge_use_the_final_value() {
+        let (exporter, _tokens) = exporter(config("http://localhost:4319"));
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
+        let handler = EffectHandler::<OtapPdata>::new(
+            test_node("adx"),
+            reporter,
+            test_pipeline_runtime_services(),
+        );
+        for record in [
+            &b"\x2a\x05\x0a\x01x\x18\x07"[..],
+            &b"\x2a\x03\x0a\x01x\x2a\x02\x18\x07"[..],
+        ] {
+            let input = pdata(OtlpProtoBytes::ExportLogsRequest(Bytes::from(
+                nested_message(&[1, 2, 2], record),
+            )));
+            let rows = exporter
+                .extract_records(&input, handler.codec_service())
+                .expect("valid repeated body");
+            assert_eq!(rows.len(), 1);
+            let row: serde_json::Value = serde_json::from_slice(&rows[0]).expect("row");
+            assert_eq!(row["Body"], serde_json::json!(7));
+        }
+    }
+
+    /// Scenario: valid records precede corrupt known scalars, packed numbers, groups, or excessive nesting.
+    /// Guarantees: decoding refuses the complete source instead of returning rows from its valid prefix.
+    #[tokio::test]
+    async fn protobuf_scalar_corruption_is_permanently_refused() {
+        let (exporter, _tokens) = exporter(config("http://localhost:4319"));
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
+        let handler = EffectHandler::<OtapPdata>::new(
+            test_node("adx"),
+            reporter,
+            test_pipeline_runtime_services(),
+        );
+        let mut recursive_body = nested_message(&[1], b"leaf");
+        for _ in 0..128 {
+            recursive_body = nested_message(&[5, 1], &recursive_body);
+        }
+        for (signal, corrupt) in [
+            (SignalType::Logs, nested_message(&[1, 2, 2, 5, 1], b"\xff")),
+            (SignalType::Logs, nested_message(&[1, 2, 2], b"\x28\x00")),
+            (
+                SignalType::Metrics,
+                nested_message(&[1, 2, 2, 9, 1, 6], &[0; 7]),
+            ),
+            (
+                SignalType::Metrics,
+                nested_message(&[1, 2, 2, 10, 1, 8, 2], b"\x80"),
+            ),
+            (SignalType::Traces, b"\xa3\x06".to_vec()),
+            (SignalType::Traces, b"\xa3\x06\xac\x06".to_vec()),
+            (
+                SignalType::Logs,
+                nested_message(&[1, 2, 2, 5], &recursive_body),
+            ),
+        ] {
+            let source = signal_pdata(signal, false);
+            let mut bytes = source
+                .payload_ref()
+                .encoded_view()
+                .expect("OTLP source")
+                .bytes()
+                .to_vec();
+            bytes.extend(corrupt);
+            let input = pdata(OtlpProtoBytes::new_from_bytes(signal, bytes));
+            let error = exporter
+                .extract_records(&input, handler.codec_service())
+                .expect_err("corrupt source must not yield partial rows");
+            assert!(error.is_permanent_refusal(), "{error}");
         }
     }
 
@@ -1782,6 +2065,146 @@ mod tests {
             ));
         })
         .await;
+    }
+
+    /// Scenario: shutdown is latched with a partial batch and an empty upstream channel whose sender stays open.
+    /// Guarantees: the batch is exported and ACKed before upstream closes, and late input still drains successfully.
+    #[tokio::test]
+    async fn shutdown_flushes_partial_batch_while_upstream_remains_open() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let mut cfg = config(&server.uri());
+        cfg.network_requests.coalesce = true;
+        cfg.network_requests.flush_interval = Duration::from_secs(7200);
+        let (exporter, tokens) = exporter(cfg);
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let (runtime, mut driver) = runtime(exporter, 1);
+        tokio::pin!(runtime);
+        driver.data.send(logs("partial")).await.expect("input");
+        assert!(futures::poll!(&mut runtime).is_pending());
+        driver
+            .control
+            .send(NodeControlMsg::Shutdown {
+                deadline: std::time::Instant::now() + Duration::from_secs(3600),
+                reason: "flush while upstream drains".to_string(),
+            })
+            .await
+            .expect("shutdown");
+        let scenario = async move {
+            assert!(matches!(
+                driver.completion().await,
+                PipelineCompletionMsg::DeliverAck { .. }
+            ));
+            driver
+                .data
+                .send(logs("late input"))
+                .await
+                .expect("late input");
+            assert!(matches!(
+                driver.completion().await,
+                PipelineCompletionMsg::DeliverAck { .. }
+            ));
+            drop(driver.data);
+        };
+        // The socket exchange uses real I/O; this timeout is only a failure guard.
+        let (terminal, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(&mut runtime, scenario)
+        })
+        .await
+        .expect("partial batch must flush while the upstream sender is open");
+        assert_eq!(
+            measurement(
+                terminal.expect("shutdown result").metrics(),
+                "exporter.attempted",
+                "logs",
+                "success",
+                "messages",
+            ),
+            2,
+        );
+    }
+
+    // Wakers require Send + Sync even though this test polls a core-local
+    // exporter. This per-test counter observes registration, not timing.
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let _ = self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Scenario: shutdown is latched on empty shared-MPMC input before upstream sends its final source.
+    /// Guarantees: late input wakes the pending exporter without auxiliary events and is ACKed before closure.
+    #[tokio::test]
+    async fn shutdown_shared_input_wakes_for_late_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (exporter, tokens) = exporter(config(&server.uri()));
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let (data_tx, data_rx) = flume::bounded(1);
+        let (runtime, mut driver) = runtime_with_input(
+            exporter,
+            Sender::Shared(SharedSender::mpmc(data_tx)),
+            Receiver::Shared(SharedReceiver::mpmc(data_rx)),
+        );
+        tokio::pin!(runtime);
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(counter.clone());
+        let mut cx = TaskContext::from_waker(&waker);
+        assert!(runtime.as_mut().poll(&mut cx).is_pending());
+        driver.shutdown().await;
+        assert!(runtime.as_mut().poll(&mut cx).is_pending());
+        counter.0.store(0, Ordering::SeqCst);
+        driver
+            .data
+            .try_send(logs("late shared input"))
+            .expect("input");
+        assert!(
+            counter.0.load(Ordering::SeqCst) > 0,
+            "late shared input must wake the exporter receive waiter",
+        );
+        let scenario = async move {
+            assert!(matches!(
+                driver.completion().await,
+                PipelineCompletionMsg::DeliverAck { .. }
+            ));
+            drop(driver.data);
+        };
+        let (terminal, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(&mut runtime, scenario)
+        })
+        .await
+        .expect("late shared input must export and drain");
+        assert_eq!(
+            measurement(
+                terminal.expect("shutdown result").metrics(),
+                "exporter.attempted",
+                "logs",
+                "success",
+                "messages",
+            ),
+            1,
+        );
     }
 
     /// Scenario: shutdown has admitted source contexts but no usable authentication token.
