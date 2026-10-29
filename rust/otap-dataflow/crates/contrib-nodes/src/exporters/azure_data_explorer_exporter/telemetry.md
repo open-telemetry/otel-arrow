@@ -73,8 +73,8 @@ continues to rename its `auth.failures` instrument to
 | `azure_data_explorer_exporter.shutdown.draining` | `debug` | Forced input past the admission gate signals shutdown draining; partial batches flush immediately and at most one overflow source is parked. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.failed` | `warn` | Export failed for a batch and messages are nacked; sensitive payload and response content is never included. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.retained_after_unauthorized` | `warn` | A coalesced request is retained until a replacement token is available, within the authentication retry bound. | `exporter.rs` |
-| `azure_data_explorer_exporter.extraction_failed` | `warn` | The exporter could not construct a signal view from the input payload. | `metrics.rs` |
-| `azure_data_explorer_exporter.payload_refused` | `warn` | A malformed signal payload was permanently refused. | `metrics.rs` |
+| `azure_data_explorer_exporter.extraction_failed` | `warn` | An input failed native signal-view construction. | `metrics.rs` |
+| `azure_data_explorer_exporter.payload_refused` | `warn` | An input could not be decoded, including malformed nested protobuf or a decoder recursion-limit violation; payload content is never included. | `metrics.rs` |
 | `azure_data_explorer_exporter.invalid_metric_data` | `warn` | Invalid numeric or histogram metric data was permanently refused. | `metrics.rs` |
 | `azure_data_explorer_exporter.row_too_large` | `warn` | A serialized row exceeded `max_row_bytes`; records `actual_row_bytes` and `max_row_bytes`. | `metrics.rs` |
 | `azure_data_explorer_exporter.request_too_large` | `warn` | A source exceeded its row or byte budget; records the corresponding actual and maximum fields. | `metrics.rs` |
