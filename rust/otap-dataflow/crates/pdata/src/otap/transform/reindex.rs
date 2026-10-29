@@ -41,7 +41,7 @@ materialized in source order as `IdRemap::Replace`.
 The second major problem with naive offsets is the potential for integrity
 violations. Suppose we have corresponding `id` and `parent_id` columns like this:
 
-id: [1, 2]  parent_id: [1, 3]
+`id: [1, 2]  parent_id: [1, 3]`
 
 `parent_id` has a referential integrity violation. We compute the mappings and
 the next offset from the `id` column only, so 3 dangles into the range that
@@ -51,7 +51,7 @@ the next OTAP batch will use. We could accidentally associate the row that has
 If the violation is in the middle of the range, however, it is not a problem.
 Take this example:
 
-id: [1, 3] parent_id: [2]
+`id: [1, 3] parent_id: [2]`
 
 In this case the dangling `parent_id` is inside the ID range reserved for this
 OTAP batch, so it cannot attach to any other input's data.
