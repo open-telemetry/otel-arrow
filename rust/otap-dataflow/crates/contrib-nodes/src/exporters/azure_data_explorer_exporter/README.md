@@ -197,10 +197,12 @@ gate. The exporter treats this as a shutdown signal, flushes partial requests
 without waiting for their timers, and parks at most one extra source until
 admitted work releases capacity. It does not accumulate the upstream backlog.
 Sources that cannot be dispatched without credentials receive `node_shutdown`
-NACKs. The exporter observes the inbox's latched shutdown deadline even while
-an overflow source is parked. That deadline bounds requests, completion
-routing, and the wait for capacity without requiring further inbox polling;
-unresolved work is canceled and recorded when it expires.
+NACKs. The exporter observes shutdown latching even when the receive remains
+pending because upstream is empty but still open, so partial requests flush
+without waiting for another input or their timers. It also observes the
+latched deadline while an overflow source is parked. That deadline bounds
+requests, completion routing, and the wait for capacity without requiring
+further inbox polling; unresolved work is canceled and recorded when it expires.
 
 If the bearer-token provider closes its stream while no usable token is
 cached, no replacement can arrive. The exporter retryably NACKs retained
@@ -244,8 +246,14 @@ senders waiting for downstream results receive `INVALID_ARGUMENT` over gRPC or
 HTTP 400 with the actual and allowed byte counts. The original input is not
 split because that could change its acknowledgement semantics.
 
-Raw OTLP protobuf framing is validated before transformation. Malformed logs,
-metrics, or traces are permanently refused rather than treated as empty input.
+OTLP protobuf is fully decoded with the existing generated Prost messages
+before transformation. This checks nested framing, UTF-8 strings, packed
+numeric fields, and the decoder's recursion limit while preserving protobuf
+semantics such as unknown fields and merged messages. Decoding allocates an
+owned message tree; the transformer reads its existing views directly,
+without an intermediate Arrow conversion. Malformed logs, metrics, and
+traces receive a permanent refusal for the complete source; no empty or
+partial export can ACK a corrupt source.
 
 Log schema compatibility can be controlled independently. Setting
 `tables.logs.legacy_body_string` converts non-string log bodies to their JSON
