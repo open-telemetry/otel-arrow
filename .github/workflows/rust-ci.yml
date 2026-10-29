@@ -470,6 +470,11 @@ jobs:
   # Linux test partitions depend only on this job, not the Windows build.
   build_required_linux:
     runs-on: ubuntu-latest
+    env:
+      # Match ARM's smaller test artifacts and the post-merge Linux cache warmer.
+      # Set these at job scope so rust-cache includes them in its environment hash.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     outputs:
       cache-hit: ${{ steps.rust-cache.outputs.cache-hit }}
     steps:
