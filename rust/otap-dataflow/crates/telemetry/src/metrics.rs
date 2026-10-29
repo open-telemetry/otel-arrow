@@ -1269,6 +1269,9 @@ impl MetricSetRegistry {
         entities: &EntityRegistry,
         requested_time_unix_nano: u64,
     ) -> (MetricExportBatch, Vec<MetricExportCheckpoint>) {
+        // An exporter now drains this registry, so unregistered metric sets
+        // must wait for values reported during or after this export.
+        self.set_has_metric_exporter();
         let time_unix_nano = self
             .metrics
             .values()

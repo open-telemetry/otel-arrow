@@ -162,8 +162,13 @@ impl InternalCollector {
     /// passes.
     async fn collection_loop(&self) -> Result<(), Error> {
         let unregister_notify = self.registry.unregister_notify();
-        let mut next_deadline = None;
-        let sweep_timer = tokio::time::sleep(Duration::ZERO);
+        // Resume from deadlines queued before this loop started: a previous
+        // loop may have consumed their notification before being cancelled.
+        let mut next_deadline = self.registry.next_metric_unregister_deadline();
+        let sweep_timer = match next_deadline {
+            Some(deadline) => tokio::time::sleep_until(sweep_instant(deadline)),
+            None => tokio::time::sleep(Duration::ZERO),
+        };
         tokio::pin!(sweep_timer);
         loop {
             tokio::select! {
@@ -730,6 +735,15 @@ mod tests {
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let collector = Arc::new(collector);
 
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
+        // The collector reads the registry when its loop starts. Wait until it is
+        // idle on the channel before blocking the registry.
+        reporter
+            .flush()
+            .await
+            .expect("collector should acknowledge the startup flush");
+
         // Block aggregation after the collector dequeues the first snapshot so
         // the second snapshot deterministically fills the one-slot channel.
         let locked_registry = telemetry_registry.clone();
@@ -742,8 +756,6 @@ mod tests {
         });
         locked_rx.recv().expect("registry lock thread should start");
 
-        let cancel = CancellationToken::new();
-        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
         reporter
             .try_report_snapshot(create_test_snapshot(
                 key,
@@ -859,6 +871,15 @@ mod tests {
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let collector = Arc::new(collector);
 
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
+        // The collector reads the registry when its loop starts. Wait until it is
+        // idle on the channel before blocking the registry.
+        reporter
+            .flush()
+            .await
+            .expect("collector should acknowledge the startup flush");
+
         // Hold the registry lock after the collector dequeues the first
         // snapshot. The second snapshot then fills the channel and the third,
         // reliable send holds the shutdown read gate while waiting for room.
@@ -872,8 +893,6 @@ mod tests {
         });
         locked_rx.recv().expect("registry lock thread should start");
 
-        let cancel = CancellationToken::new();
-        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
         reporter
             .try_report_snapshot(create_test_snapshot(
                 key,
