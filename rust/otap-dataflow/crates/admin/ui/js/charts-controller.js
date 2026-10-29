@@ -65,7 +65,7 @@ export function updateNodeSeries({
     const cutoff = nowMs - maxWindowMs;
     const scopeByPipeline = dagScope?.scopeByPipeline === true;
     const receiverRequests = new Map();
-    const exporterUploads = new Map();
+    const exporterAttempts = new Map();
 
     (metricSets || []).forEach((set) => {
       if (
@@ -77,17 +77,17 @@ export function updateNodeSeries({
         return;
       }
       if (!hasInterval && set.name !== "receiver.otlp.requests" &&
-        set.name !== "exporter.geneva.uploads") return;
+        set.name !== "exporter.attempted") return;
       const attrs = normalizeAttributes(set.attributes || {});
       const nodeId = resolveScopedNodeId(attrs, scopeByPipeline);
       if (!nodeId) return;
       const entry = nodeSeries.get(nodeId) || { metrics: new Map() };
       (set.metrics || []).forEach((metric) => {
-        if (set.name === "exporter.geneva.uploads" && metric.name === "batches") {
+        if (set.name === "exporter.attempted" && metric.name === "messages") {
           const outcome = normalizeDataPointAttributes(metric.attributes).outcome;
           if (!["success", "failure", "refused"].includes(outcome)) return;
           if (!Number.isFinite(metric.value) || metric.value < 0) return;
-          const counts = exporterUploads.get(nodeId) || {
+          const counts = exporterAttempts.get(nodeId) || {
             success: 0, failure: 0, refused: 0,
             successDelta: 0, totalDelta: 0, hasDelta: true,
           };
@@ -98,7 +98,7 @@ export function updateNodeSeries({
           } else {
             counts.hasDelta = false;
           }
-          exporterUploads.set(nodeId, counts);
+          exporterAttempts.set(nodeId, counts);
           return;
         }
         if (
@@ -147,9 +147,9 @@ export function updateNodeSeries({
       series.points = series.points.filter((point) => point.ts >= cutoff);
       entry.metrics.set(metricKey, series);
     });
-    exporterUploads.forEach((counts, nodeId) => {
+    exporterAttempts.forEach((counts, nodeId) => {
       const entry = nodeSeries.get(nodeId);
-      const metricKey = buildNodeMetricKey("exporter.geneva.uploads", "success");
+      const metricKey = buildNodeMetricKey("exporter.attempted", "success");
       const series = entry.metrics.get(metricKey) || { points: [] };
       const hasRate = hasInterval && counts.hasDelta;
       series.points.push({

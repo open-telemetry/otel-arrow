@@ -128,18 +128,6 @@ struct GenevaSkippedMetrics {
     messages: Counter<u64>,
 }
 
-/// Completed Geneva batch uploads, excluding preparation-only processing.
-#[metric_set(
-    name = "exporter.geneva.uploads",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct GenevaUploadMetrics {
-    /// Number of batch uploads completed with a terminal uploader result.
-    #[metric(unit = "{batch}")]
-    batches: Counter<u64>,
-}
-
 /// Composite metrics emitted by a Geneva exporter.
 #[derive(Debug)]
 pub(super) struct GenevaExporterMetrics {
@@ -148,7 +136,6 @@ pub(super) struct GenevaExporterMetrics {
     encoding: MeasurementMetricSet<GenevaEncodingMetrics>,
     failures: MeasurementMetricSet<GenevaFailureMetrics>,
     skipped: MeasurementMetricSet<GenevaSkippedMetrics>,
-    uploads: MeasurementMetricSet<GenevaUploadMetrics>,
     measure_duration: bool,
 }
 
@@ -161,7 +148,6 @@ impl GenevaExporterMetrics {
             encoding: GenevaEncodingMetrics::register(pipeline_ctx),
             failures: GenevaFailureMetrics::register(pipeline_ctx),
             skipped: GenevaSkippedMetrics::register(pipeline_ctx),
-            uploads: GenevaUploadMetrics::register(pipeline_ctx),
             measure_duration: pipeline_ctx
                 .node_interests()
                 .contains(Interests::NODE_LOCAL_DURATION),
@@ -213,14 +199,6 @@ impl GenevaExporterMetrics {
             .inc();
     }
 
-    /// Records a terminal result from an actual batch upload.
-    pub(super) fn record_upload(&mut self, signal: SignalType, outcome: Outcome) {
-        self.uploads
-            .with(SignalOutcomeAttributes { signal, outcome })
-            .batches
-            .inc();
-    }
-
     /// Records an attempt that terminated before producing an uploadable batch.
     pub(super) async fn record_unsubmitted_attempt(
         &mut self,
@@ -243,8 +221,7 @@ impl GenevaExporterMetrics {
         self.boundary.report(reporter)?;
         reporter.report_measurement(&mut self.encoding)?;
         reporter.report_measurement(&mut self.failures)?;
-        reporter.report_measurement(&mut self.skipped)?;
-        reporter.report_measurement(&mut self.uploads)
+        reporter.report_measurement(&mut self.skipped)
     }
 
     /// Takes every touched Geneva exporter metric bucket for terminal handoff.
@@ -254,7 +231,6 @@ impl GenevaExporterMetrics {
         snapshots.extend(self.encoding.terminal_snapshots());
         snapshots.extend(self.failures.terminal_snapshots());
         snapshots.extend(self.skipped.terminal_snapshots());
-        snapshots.extend(self.uploads.terminal_snapshots());
         snapshots
     }
 }
@@ -394,7 +370,7 @@ mod tests {
     }
 
     /// Scenario: Geneva processing terminates before producing an uploadable batch.
-    /// Guarantees: Each outcome emits a shared attempt but never counts as a completed batch upload.
+    /// Guarantees: Success, failure, and refusal still emit one shared attempted message with the matching outcome.
     #[tokio::test]
     async fn unsubmitted_attempts_record_their_terminal_outcome() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
@@ -406,11 +382,6 @@ mod tests {
         }
 
         let snapshots = metrics.terminal_snapshots();
-        assert!(
-            snapshots
-                .iter()
-                .all(|snapshot| snapshot.descriptor().name != "exporter.geneva.uploads")
-        );
         for outcome in ["success", "failure", "refused"] {
             assert_eq!(
                 metric_value(

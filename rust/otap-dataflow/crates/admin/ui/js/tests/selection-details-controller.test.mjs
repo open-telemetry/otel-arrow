@@ -153,21 +153,21 @@ test('renderNodeDetails displays external requests only for OTLP receivers', () 
   }
 });
 
-// Scenario: A Geneva exporter is selected with measured, idle, or unavailable completed-upload counters.
-// Guarantees: The details show successful upload rates and interval percentages separately from internal batch traffic.
-test('renderNodeDetails displays upload success only for Geneva exporters', () => {
+// Scenario: Exporters from different backends have measured, idle, or unavailable shared attempt counters.
+// Guarantees: Details use shared attempt semantics, show an opt-in hint when missing, and exclude non-exporter nodes.
+test('renderNodeDetails displays shared attempts for exporters from different backends', () => {
   const previousDocument = globalThis.document;
   globalThis.document = { getElementById: () => null };
   try {
     const body = { innerHTML: '' };
-    let uploadPoint = {
+    let attemptPoint = {
       success: 12, failure: 2, refused: 1, value: 3, successPercent: 75,
     };
     const controller = createSelectionDetailsController({
       edgeDetailMeta: { textContent: '' },
       edgeDetailBody: body,
       buildNodeSummary: () => ({ inRate: 10, outRate: 0, errorRate: 0 }),
-      getGenevaUploadPoint: () => uploadPoint,
+      getExporterAttemptPoint: () => attemptPoint,
       formatRateWithUnit: (value, unit) => Number.isFinite(value) ? `${value} ${unit}/s` : 'n/a',
       formatValueWithUnit: (value, unit) => `${value} ${unit}`,
       escapeHtml: value => String(value),
@@ -176,30 +176,37 @@ test('renderNodeDetails displays upload success only for Geneva exporters', () =
       initNodeRateCharts: () => {},
     });
     const node = {
-      id: 'exporter', attrs: { 'node.urn': 'urn:microsoft:exporter:geneva' }, metricSets: [],
+      id: 'exporter', attrs: { 'node.type': 'exporter' }, metricSets: [],
     };
-    controller.renderNodeDetails(node);
-    assert.match(body.innerHTML, /Successful uploads/);
-    assert.match(body.innerHTML, /12 batch/);
-    assert.match(body.innerHTML, /3 upload\/s/);
-    assert.match(body.innerHTML, /Success: 75\.0% \(interval\)/);
-    assert.match(body.innerHTML, /Failed: 2 batch; refused: 1 batch/);
-    assert.match(body.innerHTML, /10 msg\/s/);
+    for (const urn of ['urn:microsoft:exporter:geneva', 'urn:otel:exporter:otlp_grpc']) {
+      controller.renderNodeDetails({
+        ...node, attrs: { 'node.urn': urn, 'node.type': 'Exporter' },
+      });
+      assert.match(body.innerHTML, /Successful export attempts/);
+      assert.match(body.innerHTML, /12 attempt/);
+      assert.match(body.innerHTML, /3 attempt\/s/);
+      assert.match(body.innerHTML, /Success: 75\.0% \(interval\)/);
+      assert.match(body.innerHTML, /Failed: 2 attempt; refused: 1 attempt/);
+      assert.match(body.innerHTML, /10 msg\/s/);
+      assert.match(body.innerHTML, /preparation-only outcomes/);
+      assert.doesNotMatch(body.innerHTML, /Successful uploads/);
+    }
 
-    uploadPoint = { ...uploadPoint, value: 0, successPercent: null };
+    attemptPoint = { ...attemptPoint, value: 0, successPercent: null };
     controller.renderNodeDetails(node);
-    assert.match(body.innerHTML, /0 upload\/s/);
+    assert.match(body.innerHTML, /0 attempt\/s/);
     assert.match(body.innerHTML, /Success: n\/a \(interval\)/);
 
-    uploadPoint = null;
+    attemptPoint = null;
     controller.renderNodeDetails(node);
-    assert.match(body.innerHTML, /Successful uploads/);
-    assert.doesNotMatch(body.innerHTML, /0 batch|0 upload\/s/);
+    assert.match(body.innerHTML, /Successful export attempts/);
+    assert.match(body.innerHTML, /policies\.telemetry\.messages: true/);
+    assert.doesNotMatch(body.innerHTML, /0 attempt|0 attempt\/s/);
 
     controller.renderNodeDetails({
-      ...node, attrs: { 'node.urn': 'urn:otel:receiver:otlp' },
+      ...node, attrs: { 'node.urn': 'urn:otel:receiver:otlp', 'node.type': 'receiver' },
     });
-    assert.doesNotMatch(body.innerHTML, /Successful uploads/);
+    assert.doesNotMatch(body.innerHTML, /Successful export attempts/);
   } finally {
     globalThis.document = previousDocument;
   }

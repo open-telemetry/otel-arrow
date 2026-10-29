@@ -249,9 +249,9 @@ test('receiver ingress distinguishes missing telemetry from measured zero activi
   assert.equal(point.value, 0);
 });
 
-function uploadSet(outcome, value, coreId = '0', signal = 'logs', pipelineId = 'p1') {
+function attemptSet(outcome, value, coreId = '0', signal = 'logs', pipelineId = 'p1') {
   return {
-    name: 'exporter.geneva.uploads',
+    name: 'exporter.attempted',
     attributes: {
       'pipeline.group.id': 'default',
       'pipeline.id': pipelineId,
@@ -259,43 +259,43 @@ function uploadSet(outcome, value, coreId = '0', signal = 'logs', pipelineId = '
       'core.id': coreId,
     },
     metrics: [{
-      name: 'batches', value, instrument: 'counter', temporality: 'cumulative',
+      name: 'messages', value, instrument: 'counter', temporality: 'cumulative',
       attributes: { signal, outcome },
     }],
   };
 }
 
-// Scenario: Upload counters cover multiple cores, signals, and outcomes before a single bucket resets.
+// Scenario: Shared exporter attempt counters cover multiple cores, signals, and outcomes before one bucket resets.
 // Guarantees: Cumulative success totals and interval rates preserve outcome dimensions and never produce negative deltas.
-test('Geneva uploads preserve outcome buckets through polling and core aggregation', () => {
+test('shared exporter attempts preserve outcomes through polling and core aggregation', () => {
   const state = {};
   const nodeSeries = new Map();
   const record = (sets, ts, seconds) => recordRequestSnapshot(
     nodeSeries, aggregateMetricSets(deriveClientDeltas(sets, state, ts)), ts, seconds,
   );
   const points = () => nodeSeries.get('exporter').metrics
-    .get('exporter.geneva.uploads::success').points;
+    .get('exporter.attempted::success').points;
   record([
-    uploadSet('success', 10), uploadSet('success', 4, '1'),
-    uploadSet('success', 6, '0', 'traces'), uploadSet('failure', 2),
-    uploadSet('refused', 3),
+    attemptSet('success', 10), attemptSet('success', 4, '1'),
+    attemptSet('success', 6, '0', 'traces'), attemptSet('failure', 2),
+    attemptSet('refused', 3),
   ], 1000, null);
   assert.deepEqual(points()[0], {
     ts: 1000, success: 20, failure: 2, refused: 3, value: null, successPercent: null,
   });
   record([
-    uploadSet('success', 14), uploadSet('success', 7, '1'),
-    uploadSet('success', 9, '0', 'traces'), uploadSet('failure', 3),
-    uploadSet('refused', 4),
+    attemptSet('success', 14), attemptSet('success', 7, '1'),
+    attemptSet('success', 9, '0', 'traces'), attemptSet('failure', 3),
+    attemptSet('refused', 4),
   ], 3000, 2);
   assert.deepEqual(points()[1], {
     ts: 3000, success: 30, failure: 3, refused: 4, value: 5,
     successPercent: 100 * 10 / 12,
   });
   record([
-    uploadSet('success', 1), uploadSet('success', 9, '1'),
-    uploadSet('success', 11, '0', 'traces'), uploadSet('failure', 4),
-    uploadSet('refused', 5),
+    attemptSet('success', 1), attemptSet('success', 9, '1'),
+    attemptSet('success', 11, '0', 'traces'), attemptSet('failure', 4),
+    attemptSet('refused', 5),
   ], 5000, 2);
   assert.deepEqual(points().at(-1), {
     ts: 5000, success: 21, failure: 4, refused: 5, value: null,
@@ -303,18 +303,18 @@ test('Geneva uploads preserve outcome buckets through polling and core aggregati
   });
   assert.deepEqual(points().map(point => point.ts), [3000, 5000]);
   record([
-    uploadSet('success', 4), uploadSet('success', 10, '1'),
-    uploadSet('success', 13, '0', 'traces'), uploadSet('failure', 5),
-    uploadSet('refused', 6),
+    attemptSet('success', 4), attemptSet('success', 10, '1'),
+    attemptSet('success', 13, '0', 'traces'), attemptSet('failure', 5),
+    attemptSet('refused', 6),
   ], 7000, 2);
   assert.deepEqual(points().at(-1), {
     ts: 7000, success: 27, failure: 5, refused: 6, value: 3, successPercent: 75,
   });
 });
 
-// Scenario: Upload attempts are missing, idle, failed-only, or accompanied by successful preparation and channel traffic.
-// Guarantees: Only completed uploads count, idle percentages remain unavailable, and same-named exporters stay pipeline-scoped.
-test('Geneva uploads distinguish unavailable, idle, and failed-only exporters', () => {
+// Scenario: Shared attempt counters are missing, idle, failed-only, or mixed with other exporter and channel metrics.
+// Guarantees: Only shared message outcomes count, idle percentages stay unavailable, and exporters remain pipeline-scoped.
+test('shared exporter attempts distinguish unavailable, idle, and failed-only exporters', () => {
   const state = {};
   const nodeSeries = new Map();
   const record = (sets, ts, seconds) => recordRequestSnapshot(
@@ -323,18 +323,26 @@ test('Geneva uploads distinguish unavailable, idle, and failed-only exporters', 
   record([], 1000, null);
   assert.equal(nodeSeries.size, 0);
   const sets = [
-    uploadSet('success', 0), uploadSet('failure', 2, '0', 'logs', 'p2'),
-    uploadSet('unknown', 99), uploadSet('refused', NaN),
-    { ...uploadSet('success', 50), name: 'exporter.attempted' },
-    { ...uploadSet('success', 50), name: 'channel.receiver' },
+    attemptSet('success', 0), attemptSet('failure', 2, '0', 'logs', 'p2'),
+    attemptSet('unknown', 99), attemptSet('refused', NaN),
+    { ...attemptSet('success', 50), name: 'exporter.geneva.uploads' },
+    { ...attemptSet('success', 50), name: 'channel.receiver' },
+    {
+      ...attemptSet('success', 50),
+      metrics: [
+        { name: 'items', value: 500, attributes: { outcome: 'success' } },
+        { name: 'payload.size', value: 1000, attributes: { outcome: 'success' } },
+        { name: 'duration', value: { count: 10, sum: 20 }, attributes: { outcome: 'success' } },
+      ],
+    },
   ];
   record(sets, 2000, null);
   record([
     ...sets.filter(set => set.attributes['pipeline.id'] !== 'p2'),
-    uploadSet('failure', 4, '0', 'logs', 'p2'),
+    attemptSet('failure', 4, '0', 'logs', 'p2'),
   ], 4000, 2);
   const point = id => nodeSeries.get(`default|${id}@@exporter`).metrics
-    .get('exporter.geneva.uploads::success').points.at(-1);
+    .get('exporter.attempted::success').points.at(-1);
   assert.deepEqual(point('p1'), {
     ts: 4000, success: 0, failure: 0, refused: 0, value: 0, successPercent: null,
   });
@@ -343,25 +351,25 @@ test('Geneva uploads distinguish unavailable, idle, and failed-only exporters', 
   });
 
   const withoutDeltas = new Map();
-  recordRequestSnapshot(withoutDeltas, [uploadSet('success', 1)], 5000, 1);
+  recordRequestSnapshot(withoutDeltas, [attemptSet('success', 1)], 5000, 1);
   assert.equal(withoutDeltas.get('exporter').metrics
-    .get('exporter.geneva.uploads::success').points[0].value, null);
+    .get('exporter.attempted::success').points[0].value, null);
 });
 
-// Scenario: A previously unseen failure bucket appears while successful uploads continue.
+// Scenario: A previously unseen failure bucket appears while successful export attempts continue.
 // Guarantees: Unknown failure baselines do not produce a misleading 100 percent success interval.
-test('Geneva upload percentages wait for new outcome bucket baselines', () => {
+test('shared exporter percentages wait for new outcome bucket baselines', () => {
   const state = {};
   const nodeSeries = new Map();
-  deriveClientDeltas([uploadSet('success', 10)], state, 1000);
+  deriveClientDeltas([attemptSet('success', 10)], state, 1000);
   recordRequestSnapshot(nodeSeries, aggregateMetricSets(deriveClientDeltas([
-    uploadSet('success', 12), uploadSet('failure', 1),
+    attemptSet('success', 12), attemptSet('failure', 1),
   ], state, 3000)), 3000, 2);
   const points = nodeSeries.get('exporter').metrics
-    .get('exporter.geneva.uploads::success').points;
+    .get('exporter.attempted::success').points;
   assert.equal(points[0].successPercent, null);
   recordRequestSnapshot(nodeSeries, aggregateMetricSets(deriveClientDeltas([
-    uploadSet('success', 14), uploadSet('failure', 2),
+    attemptSet('success', 14), attemptSet('failure', 2),
   ], state, 5000)), 5000, 2);
   assert.equal(points.at(-1).successPercent, 100 * 2 / 3);
 });

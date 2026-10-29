@@ -167,6 +167,12 @@ The default `runtime_metrics: basic` omits these metrics. Set
 measurements. To opt in only this exporter, set the corresponding
 `policies.telemetry` fields: `messages`, `duration`, `item_counts`, and `size`.
 
+The dashboard uses shared attempted-message counters to show successful export
+attempt totals, attempts per second, and interval success percentage. Retries
+and preparation-only outcomes, including empty inputs, may count as attempts.
+These measurements describe node-local delivery outcomes, not confirmed backend
+ingestion. Enable exporter message telemetry to populate these dashboard fields.
+
 Geneva LZ4 chunking is part of the backend's application payload format, so
 `payload.size` measures the encoded batch after LZ4 encoding. It excludes HTTP
 headers, framing, TLS overhead, and any other transport-layer amplification.
@@ -178,14 +184,6 @@ Geneva-specific metrics retain details that are outside the shared contract:
 | `exporter.geneva.encoding.duration` | `signal`, `outcome` | Geneva encoding duration in seconds. |
 | `exporter.geneva.failures.messages` | `signal`, `error.type` | Bounded conversion, decoding, encoding, upload, and unsupported-signal failures. |
 | `exporter.geneva.skipped.messages` | `signal`, `reason` | Messages skipped because the payload is empty. |
-| `exporter.geneva.uploads.batches` | `signal`, `outcome` | Completed batch upload calls, excluding empty inputs and preparation-only outcomes. Unit: `{batch}`. |
-
-Upload outcomes are `success`, `failure`, and `refused`. These counters are
-available at the default telemetry level. The dashboard shows cumulative
-successful uploads, successful uploads per second, and the interval success
-percentage: successful completions divided by all completed uploads, including
-failures and refusals. An idle interval has no success percentage. A successful
-uploader result does not guarantee that the data is already queryable in Geneva.
 
 ## Configuration
 

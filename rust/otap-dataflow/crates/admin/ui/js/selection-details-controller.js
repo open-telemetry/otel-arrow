@@ -56,7 +56,7 @@ export function createSelectionDetailsController({
   calcRate,
   buildNodeSummary,
   getOtlpReceiverRequestPoint = () => null,
-  getGenevaUploadPoint = () => null,
+  getExporterAttemptPoint = () => null,
   escapeHtml,
   setGlobalHover,
   destroyNodeCharts,
@@ -514,32 +514,33 @@ export function createSelectionDetailsController({
           )}</div>
         </div>
     ` : "";
-    const isGenevaExporter = node.attrs["node.urn"] === "urn:microsoft:exporter:geneva";
-    const uploadPoint = isGenevaExporter ? getGenevaUploadPoint(node.id) : null;
-    const uploadSummaryHtml = isGenevaExporter ? `
-        <div class="card rounded-xl p-3" title="Completed Geneva batch uploads. Success percentage covers the displayed sampling interval and includes failures and refusals in its denominator. Empty and preparation-only inputs are excluded.">
-          <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">Successful uploads</div>
+    const isExporter = type.toLowerCase() === "exporter";
+    const attemptPoint = isExporter ? getExporterAttemptPoint(node.id) : null;
+    const attemptSummaryHtml = isExporter ? `
+        <div class="card rounded-xl p-3" title="Shared node-local export attempts. Retries and preparation-only outcomes may count; not proof of backend ingestion. Interval success percentage includes failures and refusals in its denominator.">
+          <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">Successful export attempts</div>
           <div class="text-lg font-semibold text-slate-200">${escapeHtml(
-            uploadPoint ? formatValueWithUnit(uploadPoint.success, "batch") : "n/a"
+            attemptPoint ? formatValueWithUnit(attemptPoint.success, "attempt") : "n/a"
           )}</div>
           <div class="text-xs text-slate-400">${escapeHtml(
-            formatRateWithUnit(uploadPoint?.value, "upload")
+            formatRateWithUnit(attemptPoint?.value, "attempt")
           )}</div>
           <div class="mt-1 text-xs text-slate-400">Success: ${escapeHtml(
-            Number.isFinite(uploadPoint?.successPercent)
-              ? `${uploadPoint.successPercent.toFixed(1)}%` : "n/a"
+            Number.isFinite(attemptPoint?.successPercent)
+              ? `${attemptPoint.successPercent.toFixed(1)}%` : "n/a"
           )} (interval)</div>
           <div class="mt-1 text-xs text-slate-400">Failed: ${escapeHtml(
-            uploadPoint ? formatValueWithUnit(uploadPoint.failure, "batch") : "n/a"
+            attemptPoint ? formatValueWithUnit(attemptPoint.failure, "attempt") : "n/a"
           )}; refused: ${escapeHtml(
-            uploadPoint ? formatValueWithUnit(uploadPoint.refused, "batch") : "n/a"
+            attemptPoint ? formatValueWithUnit(attemptPoint.refused, "attempt") : "n/a"
           )}</div>
+          ${!attemptPoint ? '<div class="mt-1 text-xs text-slate-400">Requires shared exporter metrics; enable policies.telemetry.messages: true if disabled.</div>' : ""}
         </div>
     ` : "";
     const summaryHtml = `
-      <div class="mt-4 grid gap-3 sm:grid-cols-3 ${isOtlpReceiver || isGenevaExporter ? "lg:grid-cols-4" : ""}">
+      <div class="mt-4 grid gap-3 sm:grid-cols-3 ${isOtlpReceiver || isExporter ? "lg:grid-cols-4" : ""}">
         ${requestSummaryHtml}
-        ${uploadSummaryHtml}
+        ${attemptSummaryHtml}
         <div class="card rounded-xl p-3">
           <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">In rate</div>
           <div class="text-lg font-semibold text-slate-200">${safeInRate}</div>

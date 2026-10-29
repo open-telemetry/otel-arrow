@@ -60,7 +60,7 @@ function isOtlpRequestCounter(setName, metricName) {
 
 function preservesCumulativeCounter(setName, metricName) {
   return isOtlpRequestCounter(setName, metricName) ||
-    (setName === "exporter.geneva.uploads" && metricName === "batches");
+    (setName === "exporter.attempted" && metricName === "messages");
 }
 
 function shouldDeriveClientDelta(setName, metricName, metric) {
@@ -119,7 +119,7 @@ export function deriveClientDeltas(metricSets, state, nowTsMs) {
         const hasBaseline = prev && Number.isFinite(prev.value) && current >= prev.value;
         return {
           ...metric,
-          deltaValue: setName === "exporter.geneva.uploads" && !hasBaseline ? null : delta,
+          deltaValue: setName === "exporter.attempted" && !hasBaseline ? null : delta,
         };
       }
       return { ...metric, value: delta };

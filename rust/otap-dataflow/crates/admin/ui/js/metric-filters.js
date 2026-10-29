@@ -55,7 +55,7 @@ export function aggregateMetricSets(metricSets) {
     (set.metrics || []).forEach((metric) => {
       const metricName = metric.name;
       if (!metricName) return;
-      const measurementAttrs = set.name === "exporter.geneva.uploads"
+      const measurementAttrs = set.name === "exporter.attempted"
         ? Object.entries(normalizeAttributes(metric.attributes || {}))
           .sort(([a], [b]) => a.localeCompare(b))
         : [];
