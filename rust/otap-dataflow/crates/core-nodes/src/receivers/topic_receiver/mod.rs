@@ -135,6 +135,8 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                     group: group.clone(),
                 },
             };
+            // Subscribe at build time, not in `start`: the controller's start gate relies on
+            // every new subscription existing before any new pipeline starts publishing.
             let subscription = topic_binding
                 .subscribe(mode, SubscriberOptions::default())
                 .map_err(|e| ConfigError::InvalidUserConfig {

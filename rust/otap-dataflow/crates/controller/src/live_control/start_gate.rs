@@ -8,9 +8,14 @@
 //! and run until all of them are built guarantees that no new pipeline can
 //! accept or emit data before every new subscription exists, regardless of
 //! topic wiring between pipelines. Instances already running are never held.
+//!
+//! This relies on two invariants: topic receivers subscribe while being built,
+//! and no node publishes to a topic while being built (only once running).
 
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 enum GateDecision {
@@ -70,19 +75,32 @@ impl StartGate {
         }
     }
 
-    /// Waits until `expected` instances are built, the gate is aborted, or the deadline passes.
+    /// Waits until `expected` instances are built, the gate is aborted, the deadline passes, or
+    /// `interrupted` returns a reason (polled every 50ms), for example an engine shutdown.
     pub(crate) fn wait_until_built(
         &self,
         expected: usize,
         deadline: Instant,
+        interrupted: impl Fn() -> Option<String>,
     ) -> Result<(), String> {
         let mut state = self.lock();
         loop {
             match &state.decision {
                 GateDecision::Aborted(reason) => return Err(reason.clone()),
                 GateDecision::Open => return Ok(()),
-                GateDecision::Closed if state.built >= expected => return Ok(()),
                 GateDecision::Closed => {}
+            }
+            // Poll without the gate lock: the callback may take other locks.
+            drop(state);
+            if let Some(reason) = interrupted() {
+                return Err(reason);
+            }
+            state = self.lock();
+            if !matches!(state.decision, GateDecision::Closed) {
+                continue;
+            }
+            if state.built >= expected {
+                return Ok(());
             }
             let now = Instant::now();
             if now >= deadline {
@@ -91,9 +109,10 @@ impl StartGate {
                     state.built
                 ));
             }
+            let wait = (deadline - now).min(INTERRUPT_POLL_INTERVAL);
             state = self
                 .changed
-                .wait_timeout(state, deadline - now)
+                .wait_timeout(state, wait)
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
@@ -185,7 +204,6 @@ impl Drop for StartGateTicket {
 mod tests {
     use super::*;
     use std::thread;
-    use std::time::Duration;
 
     // Scenario: two tickets on one gate; the first reports built and waits
     // while the second has not built yet.
@@ -198,11 +216,11 @@ mod tests {
         let second = gate.ticket("b".to_owned());
         let waiter = thread::spawn(move || first.built_and_wait());
         let deadline = Instant::now() + Duration::from_millis(100);
-        assert!(gate.wait_until_built(2, deadline).is_err());
+        assert!(gate.wait_until_built(2, deadline, || None).is_err());
         assert!(!waiter.is_finished());
 
         let second_waiter = thread::spawn(move || second.built_and_wait());
-        gate.wait_until_built(2, Instant::now() + Duration::from_secs(5))
+        gate.wait_until_built(2, Instant::now() + Duration::from_secs(5), || None)
             .expect("both tickets should report built");
         assert!(!waiter.is_finished());
         gate.open();
@@ -222,9 +240,30 @@ mod tests {
         let waiter = thread::spawn(move || built.built_and_wait());
         failing.fail("boom");
         let err = gate
-            .wait_until_built(2, Instant::now() + Duration::from_secs(5))
+            .wait_until_built(2, Instant::now() + Duration::from_secs(5), || None)
             .expect_err("gate should be aborted");
         assert_eq!(err, "b failed to build: boom");
+        assert_eq!(waiter.join().expect("waiter"), Err(err));
+    }
+
+    // Scenario: every expected instance has built, but an interruption such as
+    // an engine shutdown is already pending when the reconcile checks the gate.
+    // Guarantees: the interruption wins, so built instances are not released to
+    // run during shutdown.
+    #[test]
+    fn interruption_wins_over_all_built() {
+        let gate = StartGate::new();
+        let ticket = gate.ticket("a".to_owned());
+        let waiter = thread::spawn(move || ticket.built_and_wait());
+        gate.wait_until_built(1, Instant::now() + Duration::from_secs(5), || None)
+            .expect("ticket should report built");
+        let err = gate
+            .wait_until_built(1, Instant::now() + Duration::from_secs(5), || {
+                Some("shutdown".to_owned())
+            })
+            .expect_err("a pending interruption must not report the gate as built");
+        assert_eq!(err, "shutdown");
+        gate.abort(err.clone());
         assert_eq!(waiter.join().expect("waiter"), Err(err));
     }
 

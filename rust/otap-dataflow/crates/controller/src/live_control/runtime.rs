@@ -1704,6 +1704,9 @@ impl<
 
             let coordinator_reserved = !coordinator_active
                 && (!producer_keys.is_empty() || !observability_senders.is_empty());
+            if !state.global_shutdown_requested {
+                state.shutdown_followed_error = state.first_error.is_some();
+            }
             state.global_shutdown_requested = true;
             if state.global_shutdown_deadline.is_none() {
                 state.global_shutdown_deadline = Some(deadline);
@@ -2005,6 +2008,24 @@ impl<
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         state.global_shutdown_requested
+    }
+
+    /// Returns whether an engine-wide shutdown has been requested.
+    pub(crate) fn global_shutdown_requested(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_requested
+    }
+
+    /// Returns whether global shutdown was requested without a prior runtime error, as for an
+    /// operator signal, rather than as the consequence of a fatal pipeline failure.
+    pub(crate) fn shutdown_requested_without_error(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.global_shutdown_requested && !state.shutdown_followed_error
     }
 
     /// Returns whether every registered runtime instance has exited.

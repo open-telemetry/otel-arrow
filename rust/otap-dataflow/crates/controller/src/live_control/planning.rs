@@ -43,6 +43,7 @@ impl<
                 .is_some_and(|operation_id| operation_id == self.operation_id)
             {
                 state.active_engine_operation = None;
+                state.startup_reconcile_active = false;
                 true
             } else {
                 false
@@ -133,6 +134,7 @@ impl<
 
     fn begin_reconcile_operation(
         self: &Arc<Self>,
+        startup: bool,
     ) -> Result<(String, EngineOperationGuard<PData>), ControlPlaneError> {
         let reconcile_id = {
             let mut state = self
@@ -148,6 +150,7 @@ impl<
             let reconcile_id = format!("reconcile-{}", state.next_reconcile_id);
             state.next_reconcile_id += 1;
             state.active_engine_operation = Some(reconcile_id.clone());
+            state.startup_reconcile_active = startup;
             reconcile_id
         };
         Ok((
@@ -2266,7 +2269,7 @@ impl<
             request.drain_timeout_secs,
             request.delete_timeout_secs,
             request.delete_missing,
-            true,
+            false,
         )
     }
 
@@ -2276,7 +2279,7 @@ impl<
         config: OtelDataflowSpec,
         step_timeout_secs: u64,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
-        self.reconcile_engine_config_core(config, step_timeout_secs, 0, 0, true, false)
+        self.reconcile_engine_config_core(config, step_timeout_secs, 0, 0, true, true)
     }
 
     fn reconcile_engine_config_core(
@@ -2286,9 +2289,10 @@ impl<
         drain_timeout_secs: u64,
         delete_timeout_secs: u64,
         delete_missing: bool,
-        rollback_failed_candidate: bool,
+        startup: bool,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
-        let (reconcile_id, guard) = self.begin_reconcile_operation()?;
+        let rollback_failed_candidate = !startup;
+        let (reconcile_id, guard) = self.begin_reconcile_operation(startup)?;
         let started_at = timestamp_now();
         let mut status = EngineConfigReconcileStatus::new(
             reconcile_id,
@@ -2514,7 +2518,11 @@ impl<
                 }
             }
             let build_deadline = Instant::now() + Duration::from_secs(step_timeout_secs);
-            match gate.wait_until_built(expected_built, build_deadline) {
+            let interrupted = || {
+                self.global_shutdown_requested()
+                    .then(|| "engine shutdown requested before new pipelines started".to_owned())
+            };
+            match gate.wait_until_built(expected_built, build_deadline, interrupted) {
                 Ok(()) => gate.open(),
                 Err(reason) => gate.abort(reason),
             }

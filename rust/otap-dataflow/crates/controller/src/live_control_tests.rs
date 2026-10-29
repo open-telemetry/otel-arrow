@@ -6588,10 +6588,18 @@ fn startup_reconciliation_failure_stops_controller_startup() {
 /// Scenario: startup builds two regular pipelines and releases them together; one runs while the
 /// other fails when its receiver starts.
 /// Guarantees: startup failure stops both the running regular pipeline and system observability
-/// before returning the pipeline-specific error.
+/// before returning the pipeline-specific error. Runs in a child process so the process-global
+/// shutdown counters cannot be advanced by concurrently running tests.
 #[test]
 fn startup_reconciliation_failure_cleans_up_launched_pipelines() {
     const UNREACHED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:unreached_cleanup_startup";
+
+    if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+        crate::tests::run_console_reporting_child(
+            "live_control::tests::startup_reconciliation_failure_cleans_up_launched_pipelines",
+        );
+        return;
+    }
 
     let config = OtelDataflowSpec::from_yaml(&format!(
         r#"
@@ -6675,14 +6683,17 @@ groups:
         }
         other => panic!("unexpected error: {other:?}"),
     }
-    assert!(
-        after.0 > before.0,
-        "system observability receiver did not stop"
+    assert_eq!(
+        before,
+        (0, 0),
+        "child process should start with clean counters"
     );
-    assert!(
-        after.1 > before.1,
-        "successfully committed regular pipeline receiver did not stop"
+    assert!(after.0 > 0, "system observability receiver did not stop");
+    assert_eq!(
+        after.1, 1,
+        "successfully committed regular pipeline receiver did not stop exactly once"
     );
+    std::process::exit(0);
 }
 
 /// Scenario: a desired engine config contains an invalid core assignment after an otherwise valid
@@ -7216,6 +7227,89 @@ groups:
         .is_empty(),
         "no new pipeline should have run"
     );
+}
+
+/// Scenario: startup reconciliation holds a built pipeline `fast` at the start gate while pipeline
+/// `slow` is still building, and an engine-wide shutdown is requested during that wait.
+/// Guarantees: the shutdown releases the gate right away, so startup reconciliation returns a
+/// failed status promptly instead of waiting for the slow build, and every instance exits.
+#[test]
+fn startup_shutdown_during_start_gate_wait_returns_promptly() {
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+topics:
+  topic_1: {}
+groups:
+  gate_shutdown:
+    pipelines:
+      fast:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      slow:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          from_topic:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: topic_1
+              build_delay_ms: 3000
+              subscription:
+                mode: balanced
+                group: slow
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: from_topic
+            to: exporter
+"#,
+    )
+    .expect("gate shutdown config should parse");
+    let runtime = test_runtime_with_factory(&desired, &TOPIC_FLOW_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+
+    let shutdown_runtime = Arc::clone(&runtime);
+    let shutdown = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(500));
+        shutdown_runtime
+            .request_shutdown_all(5)
+            .expect("shutdown should be accepted");
+    });
+    let started = Instant::now();
+    let status = runtime
+        .reconcile_engine_config_startup(desired, 30)
+        .expect("startup reconciliation should report a status");
+    let elapsed = started.elapsed();
+    shutdown.join().expect("shutdown thread should not panic");
+
+    assert_eq!(
+        status.state,
+        EngineConfigReconcileState::Failed,
+        "{status:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(2000),
+        "startup reconciliation waited {elapsed:?} for the slow build after shutdown"
+    );
+    assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(10)));
 }
 
 /// Scenario: two all-remaining-core pipelines follow an explicit core reservation.

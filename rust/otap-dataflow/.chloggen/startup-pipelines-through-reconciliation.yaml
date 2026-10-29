@@ -1,5 +1,8 @@
-change_type: enhancement
+change_type: breaking
 component: engine
-note: df_engine now waits for every configured pipeline instance to become ready before completing startup.
+note: df_engine startup now fails if any configured pipeline does not build and become ready within the startup step timeout.
 issues: [4302]
-subtext: Placement is validated as one request, and all pipelines are built before any starts, so topic subscriptions exist before data flows. Startup readiness and failure-drain timeouts are configurable. Failure globally drains all pipelines before extensions and admin start.
+subtext: >-
+  All pipelines are built before any starts, so topic subscriptions exist before data flows.
+  A failure drains every pipeline before extensions start.
+  Migration: For slow-starting pipelines, raise engine.controller.startup_step_timeout_secs (default 30).

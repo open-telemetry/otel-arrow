@@ -241,7 +241,9 @@ pub(super) struct RolloutRecord {
     pub(super) previous_generation: Option<u64>,
     /// Drain timeout requested with the rollout, reused for panic cleanup.
     pub(super) drain_timeout_secs: u64,
-    /// Whether failure handling cleans up candidates and restores the previous deployment.
+    /// Whether a failed create rollout cleans up its candidates. False only for startup, which
+    /// only creates pipelines and leaves cleanup to global shutdown; resize and replace always
+    /// roll back.
     pub(super) rollback_failed_candidate: bool,
     /// Target core-allocation strategy, used to mirror startup reservation semantics.
     pub(super) target_core_allocation_strategy: CoreAllocationStrategy,
@@ -593,6 +595,9 @@ pub(super) struct ControllerRuntimeState {
     pub(super) controller_telemetry_pending: bool,
     /// Active engine-scoped live operation, if any.
     pub(super) active_engine_operation: Option<String>,
+    /// Whether the active engine operation is the startup reconciliation. Startup only creates
+    /// pipelines, so it never touches a pipeline again after that pipeline's rollout finishes.
+    pub(super) startup_reconcile_active: bool,
     /// Monotonic full-config reconciliation id suffix.
     pub(super) next_reconcile_id: u64,
     /// Monotonic rollout id suffix.
@@ -609,6 +614,9 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_pipeline_operation_reservation_id: u64,
     /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
+    /// Whether a runtime error was already recorded when global shutdown was first requested,
+    /// meaning the shutdown was caused by a pipeline failure rather than an operator request.
+    pub(super) shutdown_followed_error: bool,
     /// One-way latch that releases `wait_until_all_instances_exit` even while
     /// runtime instances are still active. Set when the engine must tear down
     /// regardless of whether the graceful drain completes -- e.g. a controller
@@ -626,7 +634,7 @@ impl ControllerRuntimeState {
             || self
                 .pipeline_operation_reservations
                 .contains_key(pipeline_key)
-            || self.active_engine_operation.is_some()
+            || (self.active_engine_operation.is_some() && !self.startup_reconcile_active)
     }
 
     /// Returns whether shutdown owns failures instead of deferring recovery.
@@ -695,7 +703,9 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) step_timeout_secs: u64,
     /// Drain timeout in seconds for old instances.
     pub(super) drain_timeout_secs: u64,
-    /// Whether failure handling cleans up candidates and restores the previous deployment.
+    /// Whether a failed create rollout cleans up its candidates. False only for startup, which
+    /// only creates pipelines and leaves cleanup to global shutdown; resize and replace always
+    /// roll back.
     pub(super) rollback_failed_candidate: bool,
     /// Gate that holds new create instances between build and run until the
     /// whole reconcile has built them. `None` runs each instance right after build.

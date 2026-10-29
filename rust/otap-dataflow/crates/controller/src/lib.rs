@@ -1907,36 +1907,51 @@ impl<
         let step_timeout_secs = cap_timeout_secs(config.startup_step_timeout_secs);
         let drain_timeout_secs = cap_timeout_secs(config.startup_failure_drain_timeout_secs);
 
-        match runtime.reconcile_engine_config_startup(engine_config.clone(), step_timeout_secs) {
-            Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {}
-            Ok(status) => {
-                let message = status
+        let startup_failure = match runtime
+            .reconcile_engine_config_startup(engine_config.clone(), step_timeout_secs)
+        {
+            Ok(status) if status.state == EngineConfigReconcileState::Succeeded => None,
+            Ok(status) => Some(
+                status
                     .failure_reason
-                    .unwrap_or_else(|| "pipeline rollout did not succeed".to_owned());
-                Self::cleanup_failed_startup(
-                    &runtime,
-                    control_plane.as_ref(),
-                    memory_limiter_handle,
-                    engine_metrics_handle,
-                    controller_telemetry_guard,
-                    drain_timeout_secs,
-                    final_console_report,
-                );
-                return Err(Error::StartupReconciliationFailed { message });
+                    .unwrap_or_else(|| "pipeline rollout did not succeed".to_owned()),
+            ),
+            Err(source) => Some(source.to_string()),
+        };
+        if let Some(message) = startup_failure {
+            // A termination signal during startup stops the pipelines being launched, which
+            // makes reconciliation fail; that is the requested shutdown, not a startup error.
+            // A fatal pipeline failure also requests shutdown, but after recording its error.
+            let shutdown_requested = runtime.global_shutdown_requested();
+            let operator_shutdown = runtime.shutdown_requested_without_error();
+            Self::cleanup_failed_startup(
+                &runtime,
+                control_plane.as_ref(),
+                memory_limiter_handle,
+                engine_metrics_handle,
+                controller_telemetry_guard,
+                drain_timeout_secs,
+                final_console_report,
+            );
+            if shutdown_requested
+                && !operator_shutdown
+                && let Some(error) = runtime.take_runtime_error()
+            {
+                return Err(error);
             }
-            Err(source) => {
-                let message = source.to_string();
-                Self::cleanup_failed_startup(
-                    &runtime,
-                    control_plane.as_ref(),
-                    memory_limiter_handle,
-                    engine_metrics_handle,
-                    controller_telemetry_guard,
-                    drain_timeout_secs,
-                    final_console_report,
+            if operator_shutdown {
+                otel_info!(
+                    "controller.startup_interrupted_by_shutdown",
+                    message =
+                        "Shutdown was requested during startup reconciliation; exiting gracefully",
+                    reason = message
                 );
-                return Err(Error::StartupReconciliationFailed { message });
+                return match shutdown_signal_listener {
+                    Some(listener) => listener.shutdown_and_join(),
+                    None => Ok(()),
+                };
             }
+            return Err(Error::StartupReconciliationFailed { message });
         }
 
         drop(metrics_reporter);
@@ -2953,7 +2968,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use otel_arrow_dfe_config::node::NodeUserConfig;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// Scenario: a configured timeout exceeds the portable `Instant` arithmetic range.
     /// Guarantees: controller startup caps the effective timeout at 100 years while preserving
@@ -2964,7 +2979,8 @@ mod tests {
         assert_eq!(cap_timeout_secs(30), 30);
     }
 
-    fn run_console_reporting_child(test_name: &str) {
+    /// Re-runs one test in a fresh child process so process-global state starts clean.
+    pub(super) fn run_console_reporting_child(test_name: &str) {
         use std::process::{Command, Stdio};
 
         let mut child = Command::new(std::env::current_exe().expect("test binary path"))
@@ -3387,6 +3403,177 @@ groups: {}
         std::process::exit(0);
     }
 
+    /// Scenario: the process receives SIGTERM while startup reconciliation is waiting for a
+    /// regular pipeline to become ready.
+    /// Guarantees: the controller treats the signal as a graceful shutdown and returns success
+    /// instead of reporting a startup reconciliation failure.
+    #[cfg(unix)]
+    #[test]
+    fn termination_signal_during_startup_reconciliation_exits_gracefully() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::termination_signal_during_startup_reconciliation_exits_gracefully",
+            );
+            return;
+        }
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    startup_step_timeout_secs: 60
+groups:
+  g:
+    pipelines:
+      p:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:never-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("startup signal config should parse");
+
+        // The signal listener is registered before reconciliation launches the pipeline, so
+        // signalling once the receiver has started cannot hit the default SIGTERM disposition.
+        let signaller = thread::spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !NEVER_READY_RECEIVER_STARTED.load(Ordering::SeqCst) {
+                assert!(
+                    Instant::now() < deadline,
+                    "never-ready receiver did not start"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            let status = std::process::Command::new("kill")
+                .args(["-TERM", &std::process::id().to_string()])
+                .status()
+                .expect("kill command should run");
+            assert!(status.success(), "kill -TERM failed: {status}");
+        });
+
+        let result = Controller::new(test_pipeline_factory()).run_forever_with_options(
+            config,
+            ControllerRunOptions {
+                handle_os_signals: true,
+                ..Default::default()
+            },
+        );
+        signaller.join().expect("signaller thread should not panic");
+        assert!(
+            result.is_ok(),
+            "SIGTERM during startup should shut down gracefully: {result:?}"
+        );
+        std::process::exit(0);
+    }
+
+    /// Scenario: during startup reconciliation pipeline `a` becomes ready and then fails with
+    /// runtime recovery disabled, while pipeline `b` is still waiting for readiness.
+    /// Guarantees: the fatal failure's engine-wide shutdown is not mistaken for an operator
+    /// shutdown; the controller returns the original pipeline error instead of success.
+    #[test]
+    fn fatal_pipeline_failure_during_startup_reconciliation_returns_error() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::fatal_pipeline_failure_during_startup_reconciliation_returns_error",
+            );
+            return;
+        }
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+policies:
+  runtime_recovery:
+    enabled: false
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    startup_step_timeout_secs: 10
+groups:
+  g:
+    pipelines:
+      a:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:fails-after-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      b:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:never-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("fatal startup failure config should parse");
+
+        let started = Instant::now();
+        let result = Controller::new(test_pipeline_factory())
+            .run_forever_with_options(config, ControllerRunOptions::default());
+        let elapsed = started.elapsed();
+        let error = result.expect_err("a fatal pipeline failure during startup must be an error");
+        assert!(
+            error
+                .to_string()
+                .contains("simulated failure after readiness"),
+            "the original pipeline failure must reach the caller: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "the fatal failure should stop startup before the step timeout: {elapsed:?}"
+        );
+        std::process::exit(0);
+    }
+
     /// Scenario: the metrics collector is not running during the final console handoff.
     /// Guarantees: the reporting task returns an error instead of claiming a confirmed
     /// final sample.
@@ -3794,6 +3981,82 @@ groups: {}
         }
     }
 
+    static NEVER_READY_RECEIVER_STARTED: AtomicBool = AtomicBool::new(false);
+
+    /// Receiver that requires startup readiness but never signals it, while still honoring
+    /// shutdown so a global drain can stop it before readiness.
+    struct NeverReadyReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for NeverReadyReceiver {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            NEVER_READY_RECEIVER_STARTED.store(true, Ordering::SeqCst);
+            loop {
+                match ctrl_chan.recv().await? {
+                    NodeControlMsg::DrainIngress { deadline, .. } => {
+                        effect_handler.notify_receiver_drained().await?;
+                        return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                    }
+                    NodeControlMsg::Shutdown { deadline, .. } => {
+                        return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn create_never_ready_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(
+            ReceiverWrapper::local(NeverReadyReceiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
+    }
+
+    struct FailsAfterReadyReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for FailsAfterReadyReceiver {
+        async fn start(
+            self: Box<Self>,
+            _ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Err(otel_arrow_dfe_engine::error::Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Other,
+                error: "simulated failure after readiness".to_owned(),
+                source_detail: String::new(),
+            })
+        }
+    }
+
+    fn create_fails_after_ready_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(ReceiverWrapper::local(
+            FailsAfterReadyReceiver,
+            node,
+            node_config,
+            receiver_config,
+        ))
+    }
+
     struct TestObservabilityProcessor;
 
     #[async_trait(?Send)]
@@ -3947,6 +4210,20 @@ groups: {}
         ReceiverFactory {
             name: "urn:test:receiver:start-fails",
             create: create_start_failing_test_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:never-ready",
+            create: create_never_ready_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:fails-after-ready",
+            create: create_fails_after_ready_receiver,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,

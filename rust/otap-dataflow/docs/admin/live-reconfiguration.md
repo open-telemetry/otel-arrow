@@ -282,6 +282,10 @@ flowchart TD
     owns -->|"No: rollout or engine operation"| defer
 ```
 
+The startup reconciliation is an exception: it only creates pipelines, so a
+pipeline that fails after its own startup rollout finished is recovered (or
+fails the engine) immediately instead of waiting for the remaining pipelines.
+
 Reconfigure and pipeline-shutdown requests synchronously wait for a preempted
 recovery worker to release its candidate. If a replacement is already in
 flight, candidate cleanup may delay the control-plane response for as long as
