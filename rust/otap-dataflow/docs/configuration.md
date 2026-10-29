@@ -611,6 +611,10 @@ engine:
                   to: otlp
 ```
 
+On Windows, the engine also reports `memory.commit` for private committed memory,
+including paged-out private memory. Select it separately from `memory.rss`, which
+continues to report resident memory on every platform.
+
 Apply these mappings when migrating:
 
 - Remove `metrics.provider`; ITS is now the only internal metrics path.

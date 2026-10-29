@@ -15,9 +15,9 @@ kubernetes==36.0.3
 # Other dependencies
 duckdb==1.5.6
 jinja2==3.1.6
-opentelemetry-exporter-otlp==1.45.0
-opentelemetry-sdk==1.45.0
-opentelemetry-proto==1.45.0
+opentelemetry-exporter-otlp==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-proto==1.45.1
 prometheus_client==0.26.0
 pandas==3.0.6
 pyarrow==24.0.0
