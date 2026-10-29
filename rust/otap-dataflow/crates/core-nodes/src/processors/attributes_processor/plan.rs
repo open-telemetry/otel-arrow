@@ -66,17 +66,38 @@ pub(super) fn signal_index(signal: SignalType) -> usize {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Operation {
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Operation {
     Insert,
     Upsert,
     Update,
 }
 
+pub(super) fn effective_value_actions(
+    actions: &[ScopedAction],
+    signal: SignalType,
+) -> impl Iterator<Item = (Operation, &str, &ConfiguredValue)> {
+    let mut seen = BTreeSet::new();
+    actions
+        .iter()
+        .rev()
+        .filter(move |action| action.applies(signal))
+        .filter_map(move |scoped| {
+            let (operation, key, value) = match &scoped.action {
+                Action::Insert { key, value } => (Operation::Insert, key, value),
+                Action::Upsert { key, value } => (Operation::Upsert, key, value),
+                Action::Update { key, value } => (Operation::Update, key, value),
+                _ => return None,
+            };
+            seen.insert((operation, key.as_str()))
+                .then_some((operation, key.as_str(), value))
+        })
+}
+
 struct DynamicAction {
     operation: Operation,
     key: String,
-    value: ConfiguredValue,
+    source: otel_arrow_dfe_config::transport_headers_policy::PropagationSelector,
 }
 
 pub(super) struct CompiledTransform {
@@ -107,6 +128,10 @@ fn values_transform(
 }
 
 impl CompiledTransform {
+    pub(super) fn is_noop(&self) -> bool {
+        is_noop(&self.transform) && self.dynamic.is_empty()
+    }
+
     pub(super) fn new(actions: &[ScopedAction], signal: SignalType) -> Result<Self, ConfigError> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
@@ -114,6 +139,14 @@ impl CompiledTransform {
         let mut upserts = BTreeMap::new();
         let mut updates = BTreeMap::new();
         let mut hashes = BTreeMap::new();
+        for (operation, key, value) in effective_value_actions(actions, signal) {
+            let destination = match operation {
+                Operation::Insert => &mut inserts,
+                Operation::Upsert => &mut upserts,
+                Operation::Update => &mut updates,
+            };
+            _ = destination.insert(key.to_string(), value.clone());
+        }
         for scoped in actions.iter().filter(|action| action.applies(signal)) {
             match &scoped.action {
                 Action::Rename {
@@ -125,15 +158,7 @@ impl CompiledTransform {
                 Action::Delete { key } => {
                     _ = deletes.insert(key.clone());
                 }
-                Action::Insert { key, value } => {
-                    _ = inserts.insert(key.clone(), value.clone());
-                }
-                Action::Upsert { key, value } => {
-                    _ = upserts.insert(key.clone(), value.clone());
-                }
-                Action::Update { key, value } => {
-                    _ = updates.insert(key.clone(), value.clone());
-                }
+                Action::Insert { .. } | Action::Upsert { .. } | Action::Update { .. } => {}
                 Action::Hash {
                     key,
                     algorithm: HashAlgorithm::Sha256,
@@ -169,14 +194,15 @@ impl CompiledTransform {
         let mut split = |sources: BTreeMap<String, ConfiguredValue>, operation| {
             sources
                 .into_iter()
-                .filter_map(|(key, value)| {
-                    if let Some(value) = value.literal() {
+                .filter_map(|(key, value)| match value {
+                    ConfiguredValue::Literal(value) | ConfiguredValue::Typed(value) => {
                         Some((key, value))
-                    } else {
+                    }
+                    ConfiguredValue::Dynamic { source } => {
                         dynamic.push(DynamicAction {
                             operation,
                             key,
-                            value,
+                            source,
                         });
                         None
                     }
@@ -199,7 +225,7 @@ impl CompiledTransform {
         let mut upserts = BTreeMap::new();
         let mut updates = BTreeMap::new();
         for action in &self.dynamic {
-            if let Some(value) = action.value.resolve(context)? {
+            if let Some(value) = enrichment::resolve_source(&action.source, context)? {
                 let destination = match action.operation {
                     Operation::Insert => &mut inserts,
                     Operation::Upsert => &mut upserts,

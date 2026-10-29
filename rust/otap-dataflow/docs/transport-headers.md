@@ -19,7 +19,9 @@ runtime overhead.
 
 Captured headers can be projected into telemetry by
 [`processor:attribute`](../crates/core-nodes/src/processors/attributes_processor/README.md)
-using ordered `from_headers` sources and an optional `authority_host` transform.
+using `source: {type: transport_header, named: [...]}` selectors.
+Configure optional `authority_host` normalization at capture time, not in the
+attribute processor.
 These actions read stored context names, including any `store_as` aliases;
 they do not capture additional headers or change outbound propagation policy.
 See the [HTTP enrichment pipeline](../configs/otlp-http-attributes.yaml) for an
@@ -161,10 +163,71 @@ rules when names need different options, such as `sensitive`, `value_kind`, or
 - `value_kind` (optional): override auto-detected value kind
   (`text` or `binary`). When omitted, headers ending in `-bin`
   are treated as binary; all others as text.
+- `transform` (optional): normalization applied before storing the captured
+  value. See [Capture transforms](#capture-transforms).
 
 Configured spelling remains part of the stored context-entry identity. Policy
 matching is case-insensitive where documented, but exact stored-name operations
 such as Kafka partition-key hashing observe that spelling.
+
+### Capture transforms
+
+Transforms are optional. Omit `transform` (or set it to `null`) to capture
+headers without normalization; absent transforms are omitted when serialized.
+Configured transforms run once per captured value at the receiver boundary,
+before context materialization. Omission, or `transform: {type: string}`,
+preserves the original
+bytes and text/binary kind. Context remains text or binary as described in
+[RFC 0004](../rfcs/0004-pdata-context.md); transforms do not introduce typed
+integer, boolean, or floating-point context values.
+
+```yaml
+header_capture:
+  headers:
+    - match_names: [x-forwarded-host, x-azure-originalhost, host]
+      transform:
+        type: authority_host
+        selection: first
+```
+
+`authority_host` selects the first (default) or last comma-separated authority,
+trims whitespace, parses the authority, and stores its host without its port.
+DNS, IPv4, and bracketed IPv6 hosts are supported; IPv6 brackets are retained.
+Userinfo, invalid ports, empty selected elements, invalid UTF-8, and binary
+values are rejected. Unknown transform types, unknown/null selection values,
+and selection on `type: string` are configuration errors.
+
+Selection applies within each value, not across repeated headers or header
+names. An invalid selected element does not fall back to another list element.
+That captured value is dropped and counted in `skipped_invalid_value`; other
+values continue through capture. Receivers report these statistics using their
+existing capture-error reporting. Raw name/value limits apply before the
+transform, and only accepted values consume entry capacity.
+
+Without a transform, existing capture behavior is unchanged. With a transform,
+the normalized value is the stored context value used by all consumers,
+including composite context materialization and outbound propagation. Original
+wire-name retention does not retain the original value. To forward raw headers,
+do not normalize those captured entries.
+
+Choose first/last based on your trusted proxy's behavior, not a universal proxy
+ordering. If the proxy appends the authoritative host, use `last`; if it prepends
+it, use `first`. Neither option establishes trust: prevent clients from bypassing
+the proxy and configure it to sanitize forwarded headers.
+
+- Azure Front Door [overwrites `X-Forwarded-Host`](https://learn.microsoft.com/en-us/azure/frontdoor/front-door-http-headers-protocol)
+  with the original request host, normally providing one value.
+- Azure Application Gateway [adds `x-original-host`](https://learn.microsoft.com/en-us/azure/application-gateway/how-application-gateway-works#modifications-to-the-request).
+  Capture that name explicitly if needed; it is distinct from
+  `x-azure-originalhost`.
+- Cloudflare [preserves the client's `Host` header by default](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/reference/connection-details/#host-header).
+  Capture `host` for the original request host when no override is configured.
+  [Origin Rules can rewrite `Host`](https://developers.cloudflare.com/rules/origin-rules/features/#host-header);
+  if you override it, explicitly preserve the original host in a trusted header
+  such as `x-forwarded-host` before rewriting, and capture that header instead.
+  Do not assume Cloudflare automatically supplies `x-forwarded-host`.
+- Append behavior for `X-Forwarded-For` is not a guarantee about
+  `X-Forwarded-Host`.
 
 ### Defaults
 
@@ -230,6 +293,11 @@ header_propagation:
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
 | `named` | Select stored headers or qualified composite members. |
+| `transport_header` | Select explicitly named primitive captured headers only. |
+
+The shared selector also supports `authorized_identity` for context consumers
+such as the attribute processor. Header propagation rejects this domain;
+verified claims are not implicitly exposed as outbound headers.
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.

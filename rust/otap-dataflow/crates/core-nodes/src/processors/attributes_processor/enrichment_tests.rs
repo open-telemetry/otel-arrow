@@ -1,12 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::enrichment::{context_entries, resolve_source, validate_source};
 use super::*;
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::context_policy::{
     ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
 };
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+use otel_arrow_dfe_config::transport_headers_policy::PropagationSelector;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan;
@@ -39,6 +41,85 @@ fn pipeline_context() -> PipelineContext {
         1,
         0,
     )
+}
+
+fn declared_pipeline_context(config: &Value) -> PipelineContext {
+    use otel_arrow_dfe_engine::context_declaration::{
+        ContextConsumerSelector, ContextDeclaration, ContextEntryTarget,
+    };
+    let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+    let mut entries = BTreeMap::<String, BTreeSet<String>>::new();
+    for declaration in parsed.context_declarations() {
+        let ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries { entries: selected },
+        } = declaration
+        else {
+            continue;
+        };
+        for selected in selected {
+            match selected.target {
+                ContextEntryTarget::Composite { name } => {
+                    _ = entries
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert("value".into());
+                }
+                ContextEntryTarget::CompositeMember { composite, member } => {
+                    _ = entries
+                        .entry(composite.to_string())
+                        .or_default()
+                        .insert(member.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    let entries: BTreeMap<_, _> = entries
+        .into_iter()
+        .map(|(name, members)| {
+            (
+                name,
+                members
+                    .into_iter()
+                    .map(|member| json!({"type":"constant","name":member,"value":"test"}))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let prepared = prepare_context(config, json!(entries)).unwrap();
+    let mut ctx = pipeline_context().with_node_context(
+        "attributes".into(),
+        ATTRIBUTES_PROCESSOR_URN.into(),
+        otel_arrow_dfe_config::node::NodeKind::Processor,
+        Default::default(),
+    );
+    ctx.set_compiled_context_bindings(prepared.bindings);
+    ctx
+}
+
+fn prepare_context(
+    config: &Value,
+    entries: Value,
+) -> Result<otel_arrow_dfe_engine::context_declaration::PreparedContext, EngineError> {
+    let spec: otel_arrow_dfe_config::engine::OtelDataflowSpec = serde_json::from_value(json!({
+        "version":"otel_dataflow/v1", "engine":{},
+        "policies":{"context":{"entries":entries}},
+        "groups":{"test":{"pipelines":{"attribute":{
+            "nodes":{
+                "receiver":{"type":"receiver:otlp","config":{"protocols":{"http":{"listening_addr":"127.0.0.1:0"}}}},
+                "attributes":{"type":"processor:attribute","config":config},
+                "exporter":{"type":"exporter:noop","config":{}}
+            },
+            "connections":[{"from":"receiver","to":"attributes"},{"from":"attributes","to":"exporter"}]
+        }}}}
+    })).unwrap();
+    let factory = otel_arrow_dfe_engine::PipelineFactory::new(
+        &otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES,
+        &OTAP_PROCESSOR_FACTORIES,
+        &otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES,
+        &[],
+    );
+    factory.compile_initial_context(&spec.resolve())
 }
 
 fn header_context(headers: &[(&str, ValueKind, &[u8])]) -> Context {
@@ -77,7 +158,7 @@ fn run(
     let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
     node_config.config = config;
     let processor = create_attributes_processor(
-        pipeline_context(),
+        declared_pipeline_context(&node_config.config),
         test_node("attribute-enrichment"),
         Arc::new(node_config),
         rt.config(),
@@ -238,18 +319,21 @@ fn rejects_invalid_enrichment_configuration() {
         json!({"action":"insert","key":"x","value":{"literal":1}}),
         json!({"action":"insert","key":"x","value":null}),
         json!({"action":"update","key":"x","value":{"from_context":"x","from_headers":["host"]}}),
-        json!({"action":"upsert","key":"x","value":{"from_headers":[]}}),
-        json!({"action":"insert","key":"x","value":{"from_headers":[""]}}),
-        json!({"action":"insert","key":"x","value":{"from_context":" "}}),
-        json!({"action":"insert","key":"x","value":{"from_context":"x","transform":"unknown"}}),
-        json!({"action":"insert","key":"x","value":{"from_context":"x","value_type":"int"}}),
-        json!({"action":"insert","key":"x","value":{"from_context":"x","transform":null}}),
-        json!({"action":"insert","key":"x","value":{"from_headers":["host"],"transform":"authority_host","selection":"middle"}}),
-        json!({"action":"insert","key":"x","value":{"from_headers":["host"],"transform":"authority_host","selection":null}}),
-        json!({"action":"insert","key":"x","value":{"from_headers":["host"],"selection":"first"}}),
-        json!({"action":"insert","key":"x","value":{"from_context":"x","transform":"int","selection":"last"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"none"}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"all_captured"}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["entry:member"]}}}),
+        json!({"action":"upsert","key":"x","value":{"source":{"type":"transport_header","named":[]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":[""]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":[" "]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"transform":"unknown"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"value_type":"int"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"transform":null}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"transform":"authority_host","selection":"middle"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"transform":"authority_host","selection":null}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"selection":"first"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"transform":"int","selection":"last"}}),
         json!({"action":"insert","key":"x","value":{"string":"host","selection":"last"}}),
-        json!({"action":"insert","key":"x","value":{"from_headers":["host"],"transform":"unknown"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"transform":"unknown"}}),
         json!({"action":"insert","key":"x","value":1,"signals":[]}),
         json!({"action":"delete","key":"x","signals":["unknown"]}),
         json!({"action":"insert","key":"x","signals":null}),
@@ -314,11 +398,12 @@ fn documented_typed_literals_preserve_scalar_behavior() {
                 validate_config(&config).unwrap();
                 let parsed: ConfiguredValue = serde_json::from_value(value.clone()).unwrap();
                 assert_eq!(serde_json::to_value(&parsed).unwrap(), *value);
-                assert_eq!(parsed.literal(), Some(expected.clone()));
-                assert_eq!(
-                    parsed.resolve(&Context::default()).unwrap(),
-                    Some(expected.clone())
-                );
+                match parsed {
+                    ConfiguredValue::Literal(value) | ConfiguredValue::Typed(value) => {
+                        assert_eq!(value, expected);
+                    }
+                    ConfiguredValue::Dynamic { .. } => panic!("expected literal"),
+                }
             }
         }
         let expected = match expected {
@@ -373,7 +458,7 @@ fn documented_typed_literals_preserve_scalar_behavior() {
         }
     }
     for value in [
-        json!({"string":"prod","from_headers":["host"]}),
+        json!({"string":"prod","source":{"type":"transport_header","named":["host"]}}),
         json!({"string":"prod","transform":"authority_host"}),
         json!({"string":"prod","int":1}),
         json!({"int":"1"}),
@@ -390,216 +475,46 @@ fn documented_typed_literals_preserve_scalar_behavior() {
 }
 
 /// Scenario: Captured headers arrive out of preference order and include unusable repeated values.
-/// Guarantees: Stored-name priority wins and binary, empty, malformed, and invalid UTF-8 values fall through.
+/// Guarantees: Stored-name priority wins and binary, empty, and invalid UTF-8 values fall through without normalizing text.
 #[test]
 fn ordered_headers_skip_unusable_candidates() {
     let context = header_context(&[
         ("host", ValueKind::Text, b"last.example:80"),
-        ("preferred", ValueKind::Text, b"not an authority"),
         ("preferred", ValueKind::Binary, b"binary.example"),
         ("preferred", ValueKind::Text, &[0xff]),
         ("preferred", ValueKind::Text, b""),
         ("preferred", ValueKind::Text, b"first.example:443"),
         ("preferred", ValueKind::Text, b"second.example:443"),
     ]);
-    let source: ValueSource = serde_json::from_value(json!({
-        "from_headers":["absent", "preferred", "host"], "transform":"authority_host"
+    let source: PropagationSelector = serde_json::from_value(json!({
+        "type":"transport_header","named":["absent", "preferred", "host"]
     }))
     .unwrap();
     assert_eq!(
-        source.resolve(&context).unwrap(),
-        Some(LiteralValue::Str("first.example".into()))
+        resolve_source(&source, &context).unwrap(),
+        Some(LiteralValue::Str("first.example:443".into()))
     );
-    let fallback: ValueSource = serde_json::from_value(json!({
-        "from_headers":["missing", "host"], "transform":"authority_host"
+    let fallback: PropagationSelector = serde_json::from_value(json!({
+        "type":"transport_header","named":["missing", "host"]
     }))
     .unwrap();
     assert_eq!(
-        fallback.resolve(&context).unwrap(),
-        Some(LiteralValue::Str("last.example".into()))
+        resolve_source(&fallback, &context).unwrap(),
+        Some(LiteralValue::Str("last.example:80".into()))
     );
-    let text: ValueSource = serde_json::from_value(json!({"from_headers":["host"]})).unwrap();
+    let text: PropagationSelector =
+        serde_json::from_value(json!({"type":"transport_header","named":["host"]})).unwrap();
     assert_eq!(
-        text.resolve(&context).unwrap(),
+        resolve_source(&text, &context).unwrap(),
         Some(LiteralValue::Str("last.example:80".into()))
     );
 }
 
-/// Scenario: Header and context text use every shared transform with valid and invalid inputs.
-/// Guarantees: Both sources produce identical scalar types; invalid headers fall through and invalid context errors.
+/// Scenario: Stored header text enriches every signal and attribute domain in both encodings.
+/// Guarantees: Insert/upsert/update project text verbatim, including ports and lists, without changing context snapshots.
 #[test]
-fn shared_source_transforms() {
-    for (transform, text, invalid, expected) in [
-        ("string", "123", "", LiteralValue::Str("123".into())),
-        ("bool", "false", "not-bool", LiteralValue::Bool(false)),
-        ("int", "-42", "18446744073709551615", LiteralValue::Int(-42)),
-        ("double", "1.25", "not-double", LiteralValue::Double(1.25)),
-        (
-            "authority_host",
-            "[::1]:443",
-            "not a host",
-            LiteralValue::Str("[::1]".into()),
-        ),
-    ] {
-        let header: ValueSource = serde_json::from_value(json!({
-            "from_headers":["preferred","fallback"],"transform":transform
-        }))
-        .unwrap();
-        let context_source: ValueSource = serde_json::from_value(json!({
-            "from_context":"request:value","transform":transform
-        }))
-        .unwrap();
-        header.validate().unwrap();
-        context_source.validate().unwrap();
-        let headers = header_context(&[
-            ("preferred", ValueKind::Text, invalid.as_bytes()),
-            ("fallback", ValueKind::Text, text.as_bytes()),
-        ]);
-        assert_eq!(header.resolve(&headers).unwrap(), Some(expected.clone()));
-        let mut context = Context::default();
-        store_context_text(&mut context, "request", text.into());
-        assert_eq!(context_source.resolve(&context).unwrap(), Some(expected));
-        store_context_text(&mut context, "request", invalid.into());
-        if transform == "string" {
-            assert_eq!(
-                context_source.resolve(&context).unwrap(),
-                Some(LiteralValue::Str(String::new()))
-            );
-        } else {
-            assert!(context_source.resolve(&context).is_err());
-        }
-    }
-}
-
-/// Scenario: Host projection encounters DNS, IPv4, IPv6, forwarding lists, and malformed authorities.
-/// Guarantees: The first authority loses only its port, while invalid authorities remain unusable.
-#[test]
-fn authority_host_parsing() {
-    for (input, expected) in [
-        ("example.com:443", Some("example.com")),
-        ("127.0.0.1:8080", Some("127.0.0.1")),
-        ("[2001:db8::1]:443", Some("[2001:db8::1]")),
-        ("[::1]", Some("[::1]")),
-        (
-            " first.example:80, second.example:90 ",
-            Some("first.example"),
-        ),
-        ("https://example.com", None),
-        ("not a host", None),
-        ("", None),
-        (",example.com", None),
-        ("user@example.com", None),
-        ("example.com:99999", None),
-        ("example.com:abc", None),
-    ] {
-        let context = header_context(&[("host", ValueKind::Text, input.as_bytes())]);
-        let source: ValueSource = serde_json::from_value(json!({
-            "from_headers":["host"],"transform":"authority_host"
-        }))
-        .unwrap();
-        assert_eq!(
-            source.resolve(&context).unwrap(),
-            expected.map(|host| LiteralValue::Str(host.into())),
-            "{input}"
-        );
-    }
-}
-
-/// Scenario: Authority lists select the configured endpoint for headers and context text.
-/// Guarantees: First remains the default, whitespace and IPv6 work, and invalid selected elements never select another list element.
-#[test]
-fn authority_host_selection() {
-    for selection in [None, Some("first"), Some("last")] {
-        let last = selection == Some("last");
-        for (text, first, final_host) in [
-            (
-                " first.example:80, middle.example:90, [::1]:443 ",
-                Some("first.example"),
-                Some("[::1]"),
-            ),
-            ("127.0.0.1:80", Some("127.0.0.1"), Some("127.0.0.1")),
-            (
-                "[2001:db8::1]",
-                Some("[2001:db8::1]"),
-                Some("[2001:db8::1]"),
-            ),
-            ("", None, None),
-            ("  ", None, None),
-            (",last.example", None, Some("last.example")),
-            ("first.example,", Some("first.example"), None),
-            ("bad host,last.example", None, Some("last.example")),
-            ("first.example,bad host", Some("first.example"), None),
-            ("user@first.example,last.example:99999", None, None),
-            ("first.example:abc,https://last.example", None, None),
-        ] {
-            let expected =
-                if last { final_host } else { first }.map(|host| LiteralValue::Str(host.into()));
-            let mut header_config = json!({"from_headers":["host"],"transform":"authority_host"});
-            let mut context_config =
-                json!({"from_context":"request:value","transform":"authority_host"});
-            if let Some(selection) = selection {
-                header_config["selection"] = json!(selection);
-                context_config["selection"] = json!(selection);
-            }
-            for config in [header_config, context_config] {
-                let source: ValueSource = serde_json::from_value(config.clone()).unwrap();
-                source.validate().unwrap();
-                assert_eq!(serde_json::to_value(&source).unwrap(), config);
-                let mut context = header_context(&[("host", ValueKind::Text, text.as_bytes())]);
-                store_context_text(&mut context, "request", text.into());
-                let actual = source.resolve(&context);
-                if source.from_context.is_some() && expected.is_none() {
-                    assert!(actual.is_err(), "{config} {text}");
-                } else {
-                    assert_eq!(actual.unwrap(), expected, "{config} {text}");
-                }
-            }
-        }
-    }
-}
-
-/// Scenario: Last-value selection meets invalid repeated headers and competing source names.
-/// Guarantees: Selection only affects comma-list endpoints; repeated-value and source-name priority remain unchanged.
-#[test]
-fn authority_selection_preserves_header_fallback() {
-    let context = header_context(&[
-        ("fallback", ValueKind::Text, b"fallback.example"),
-        ("preferred", ValueKind::Text, b"valid.example,"),
-        (
-            "preferred",
-            ValueKind::Text,
-            b"ignored.example, chosen.example:443",
-        ),
-        (
-            "preferred",
-            ValueKind::Text,
-            b"ignored.example, later.example:80",
-        ),
-    ]);
-    let source: ValueSource = serde_json::from_value(json!({
-        "from_headers":["missing","preferred","fallback"],
-        "transform":"authority_host","selection":"last"
-    }))
-    .unwrap();
-    assert_eq!(
-        source.resolve(&context).unwrap(),
-        Some(LiteralValue::Str("chosen.example".into()))
-    );
-    let context = header_context(&[
-        ("preferred", ValueKind::Text, b"valid.example,"),
-        ("fallback", ValueKind::Text, b"fallback.example:80"),
-    ]);
-    assert_eq!(
-        source.resolve(&context).unwrap(),
-        Some(LiteralValue::Str("fallback.example".into()))
-    );
-}
-
-/// Scenario: First and last authority selection enrich every signal and attribute domain in both encodings.
-/// Guarantees: Insert/upsert/update use the selected host without changing existing action behavior or context.
-#[test]
-fn authority_selection_otlp_otap_parity() {
-    for selection in ["first", "last"] {
+fn stored_header_text_otlp_otap_parity() {
+    for text in ["first.example", "[::1]", "first.example:80, [::1]:443"] {
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             for native in [false, true] {
                 let mut payload = fixture(signal, &[0]);
@@ -609,23 +524,27 @@ fn authority_selection_otlp_otap_parity() {
                         .unwrap()
                         .into();
                 }
-                let mut context =
-                    header_context(&[("host", ValueKind::Text, b"first.example:80, [::1]:443")]);
-                store_context_text(
-                    &mut context,
-                    "request",
-                    "first.example:80, [::1]:443".into(),
-                );
+                let mut context = header_context(&[("host", ValueKind::Text, text.as_bytes())]);
+                let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
+                    scope: ContextScope::Engine,
+                    name: ContextEntryName::try_from("request").unwrap(),
+                    definition: ContextEntryDefinition(vec![ContextEntryPart::TransportHeader {
+                        name: ContextEntryName::try_from("host").unwrap(),
+                        store_as: Some(ContextEntryName::try_from("value").unwrap()),
+                    }]),
+                }])
+                .unwrap();
+                context.materialize_context(&plan);
                 let original_context = context.clone();
                 run(
                     json!({
                         "apply_to":["resource","scope","signal"],
                         "actions":[
-                            {"action":"insert","key":"insert_new","value":{"from_headers":["host"],"transform":"authority_host","selection":selection}},
-                            {"action":"insert","key":"insert_existing","value":{"from_headers":["host"],"transform":"authority_host","selection":selection}},
-                            {"action":"upsert","key":"upsert_existing","value":{"from_context":"request:value","transform":"authority_host","selection":selection}},
-                            {"action":"update","key":"update_existing","value":{"from_headers":["host"],"transform":"authority_host","selection":selection}},
-                            {"action":"update","key":"update_missing","value":{"from_context":"request:value","transform":"authority_host","selection":selection}}
+                            {"action":"insert","key":"insert_new","value":{"source":{"type":"transport_header","named":["host"]}}},
+                            {"action":"insert","key":"insert_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
+                            {"action":"upsert","key":"upsert_existing","value":{"source":{"type":"named","named":["request:value"]}}},
+                            {"action":"update","key":"update_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
+                            {"action":"update","key":"update_missing","value":{"source":{"type":"named","named":["request:value"]}}}
                         ]
                     }),
                     vec![Message::PData(OtapPdata::new(context, payload))],
@@ -633,11 +552,7 @@ fn authority_selection_otlp_otap_parity() {
                         assert_eq!(output.len(), 1);
                         let (context, payload) = output.remove(0).into_parts();
                         assert_eq!(context.clone_detached(), original_context);
-                        let expected = AnyValue::new_string(if selection == "first" {
-                            "first.example"
-                        } else {
-                            "[::1]"
-                        });
+                        let expected = AnyValue::new_string(text);
                         for attributes in domains(payload) {
                             for key in ["insert_new", "upsert_existing", "update_existing"] {
                                 assert_eq!(
@@ -758,19 +673,19 @@ fn static_dynamic_composition() {
     ] {
         assert!(
             validate_config(&json!({"actions":[
-                {"action":"insert","key":"x","value":{"from_headers":["missing"]}}, other
+                {"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["missing"]}}}, other
             ]}))
             .is_err()
         );
     }
     validate_config(&json!({"actions":[
-        {"action":"insert","key":"x","value":{"from_context":"x"},"signals":["logs"]},
+        {"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]}},"signals":["logs"]},
         {"action":"upsert","key":"x","value":1,"signals":["metrics","traces"]}
     ]}))
     .unwrap();
     let config: Config = serde_json::from_value(json!({"actions":[
         {"action":"insert","key":"x","value":1},
-        {"action":"insert","key":"x","value":{"from_headers":["missing"]}}
+        {"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["missing"]}}}
     ]}))
     .unwrap();
     let plans = compile_config(&config).unwrap();
@@ -779,7 +694,7 @@ fn static_dynamic_composition() {
         &plans[0].resolve(&Context::default()).unwrap()
     ));
     let reversed: Config = serde_json::from_value(json!({"actions":[
-        {"action":"insert","key":"x","value":{"from_headers":["missing"]}},
+        {"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["missing"]}}},
         {"action":"insert","key":"x","value":1}
     ]}))
     .unwrap();
@@ -788,28 +703,26 @@ fn static_dynamic_composition() {
     ));
 }
 
-/// Scenario: Request integers reach the boundaries of signed OTAP attributes.
-/// Guarantees: Zero and i64::MAX are exact; larger values error without wrapping or saturation.
+/// Scenario: Numeric-looking context strings include values outside signed OTAP integer range.
+/// Guarantees: Projection preserves the original text without interpreting, wrapping, or rejecting it.
 #[test]
 fn checked_context_attribute_range() {
-    let source: ValueSource =
-        serde_json::from_value(json!({"from_context":"received:value","transform":"int"})).unwrap();
+    let source: PropagationSelector =
+        serde_json::from_value(json!({"type":"named","named":["received:value"]})).unwrap();
     for integer in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
         let mut context = Context::default();
         store_context_text(&mut context, "received", integer.to_string());
-        let attr = source.resolve(&context);
-        if let Ok(expected) = i64::try_from(integer) {
-            assert_eq!(attr.unwrap(), Some(LiteralValue::Int(expected)));
-        } else {
-            assert!(attr.is_err());
-        }
+        assert_eq!(
+            resolve_source(&source, &context).unwrap(),
+            Some(LiteralValue::Str(integer.to_string()))
+        );
     }
     let context = Context::default();
-    assert_eq!(source.resolve(&context).unwrap(), None);
+    assert_eq!(resolve_source(&source, &context).unwrap(), None);
 }
 
-/// Scenario: Explicit context conversions drive insert, upsert, and update for all signals and encodings.
-/// Guarantees: All attribute domains receive requested scalar types, including empty strings, false, and signed limits.
+/// Scenario: Context text drives insert, upsert, and update for all signals and encodings.
+/// Guarantees: All attribute domains retain strings, including empty, numeric, and boolean-looking values.
 #[test]
 fn typed_context_actions_otlp_otap_parity() {
     for scalar in [
@@ -822,18 +735,13 @@ fn typed_context_actions_otlp_otap_parity() {
         LiteralValue::Double(-1.25),
         LiteralValue::Double(0.0),
     ] {
-        let expected = match &scalar {
-            LiteralValue::Str(value) => AnyValue::new_string(value),
-            LiteralValue::Bool(value) => AnyValue::new_bool(*value),
-            LiteralValue::Int(value) => AnyValue::new_int(*value),
-            LiteralValue::Double(value) => AnyValue::new_double(*value),
+        let text = match &scalar {
+            LiteralValue::Str(value) => value.clone(),
+            LiteralValue::Bool(value) => value.to_string(),
+            LiteralValue::Int(value) => value.to_string(),
+            LiteralValue::Double(value) => value.to_string(),
         };
-        let (text, transform) = match &scalar {
-            LiteralValue::Str(value) => (value.clone(), "string"),
-            LiteralValue::Bool(value) => (value.to_string(), "bool"),
-            LiteralValue::Int(value) => (value.to_string(), "int"),
-            LiteralValue::Double(value) => (value.to_string(), "double"),
-        };
+        let expected = AnyValue::new_string(&text);
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             for native in [false, true] {
                 let mut payload = fixture(signal, &[0]);
@@ -851,11 +759,11 @@ fn typed_context_actions_otlp_otap_parity() {
                     json!({
                         "apply_to":["resource","scope","signal"],
                         "actions":[
-                            {"action":"insert","key":"insert_new","value":{"from_context":"scalar:value","transform":transform}},
-                            {"action":"insert","key":"insert_existing","value":{"from_context":"scalar","transform":transform}},
-                            {"action":"upsert","key":"upsert_existing","value":{"from_context":"scalar","transform":transform}},
-                            {"action":"update","key":"update_existing","value":{"from_context":"scalar","transform":transform}},
-                            {"action":"update","key":"update_missing","value":{"from_context":"scalar","transform":transform}}
+                            {"action":"insert","key":"insert_new","value":{"source":{"type":"named","named":["scalar:value"]}}},
+                            {"action":"insert","key":"insert_existing","value":{"source":{"type":"named","named":["scalar"]}}},
+                            {"action":"upsert","key":"upsert_existing","value":{"source":{"type":"named","named":["scalar"]}}},
+                            {"action":"update","key":"update_existing","value":{"source":{"type":"named","named":["scalar"]}}},
+                            {"action":"update","key":"update_missing","value":{"source":{"type":"named","named":["scalar"]}}}
                         ]
                     }),
                     vec![Message::PData(OtapPdata::new(context, payload))],
@@ -904,13 +812,13 @@ fn dynamic_actions_otlp_otap_signal_domain_parity() {
                     "apply_to":[selected_domain],
                     "actions":[
                         {"action":"insert","key":"literal","value":true},
-                        {"action":"insert","key":"insert_existing","value":{"from_headers":["host"]}},
-                        {"action":"insert","key":"insert_new","value":{"from_headers":["host"],"transform":"authority_host"}},
-                        {"action":"upsert","key":"upsert_existing","value":{"from_headers":["host"]}},
-                        {"action":"update","key":"update_existing","value":{"from_context":"received","transform":"int"}},
-                        {"action":"update","key":"update_missing","value":{"from_context":"received","transform":"int"}},
-                        {"action":"insert","key":"missing","value":{"from_headers":["uncaptured"]}},
-                        {"action":"insert","key":"logs_only","value":{"from_context":"received"},"signals":["logs"]},
+                        {"action":"insert","key":"insert_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
+                        {"action":"insert","key":"insert_new","value":{"source":{"type":"transport_header","named":["host"]}}},
+                        {"action":"upsert","key":"upsert_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
+                        {"action":"update","key":"update_existing","value":{"source":{"type":"named","named":["received"]}}},
+                        {"action":"update","key":"update_missing","value":{"source":{"type":"named","named":["received"]}}},
+                        {"action":"insert","key":"missing","value":{"source":{"type":"transport_header","named":["uncaptured"]}}},
+                        {"action":"insert","key":"logs_only","value":{"source":{"type":"named","named":["received"]}},"signals":["logs"]},
                         {"action":"insert","key":"traces_only","value":true,"signals":["traces"]}
                     ]
                 });
@@ -936,7 +844,7 @@ fn dynamic_actions_otlp_otap_signal_domain_parity() {
                             );
                             assert_eq!(
                                 value(&attributes, "insert_new"),
-                                Some(&AnyValue::new_string("new.example"))
+                                Some(&AnyValue::new_string("new.example:443"))
                             );
                             assert_eq!(
                                 value(&attributes, "upsert_existing"),
@@ -944,7 +852,7 @@ fn dynamic_actions_otlp_otap_signal_domain_parity() {
                             );
                             assert_eq!(
                                 value(&attributes, "update_existing"),
-                                Some(&AnyValue::new_int(456))
+                                Some(&AnyValue::new_string("456"))
                             );
                             assert_eq!(value(&attributes, "update_missing"), None);
                             assert_eq!(value(&attributes, "missing"), None);
@@ -980,8 +888,8 @@ fn attribute_actions_preserve_log_timestamps_and_context() {
         let original_context = context.clone();
         run(
             json!({"apply_to":["resource"],"actions":[
-                {"action":"insert","key":"server.address","value":{"from_headers":["host"]}},
-                {"action":"insert","key":"missing","value":{"from_context":"missing"}}
+                {"action":"insert","key":"server.address","value":{"source":{"type":"transport_header","named":["host"]}}},
+                {"action":"insert","key":"missing","value":{"source":{"type":"named","named":["missing"]}}}
             ]}),
             vec![Message::PData(OtapPdata::new(context, payload))],
             move |mut output| {
@@ -1021,8 +929,8 @@ fn attribute_actions_preserve_log_timestamps_and_context() {
 fn noop_retains_unconverted_payload() {
     for config in [
         json!({}),
-        json!({"actions":[{"action":"insert","key":"x","value":{"from_context":"absent"}}]}),
-        json!({"actions":[{"action":"insert","key":"x","value":{"from_headers":["host"]}}]}),
+        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"type":"named","named":["absent"]}}}]}),
+        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]}}}]}),
         json!({"actions":[{"action":"insert","key":"x","value":1,"signals":["metrics"]}]}),
     ] {
         let bytes = bytes::Bytes::from_static(b"not valid protobuf");
@@ -1057,7 +965,7 @@ fn configuration_update_preserves_last_valid_plan() {
             }),
             Message::Control(NodeControlMsg::Config {
                 config: json!({"actions":[
-                    {"action":"insert","key":"invalid","value":{"from_headers":[]}}
+                    {"action":"insert","key":"invalid","value":{"source":{"type":"transport_header","named":[]}}}
                 ]}),
             }),
             Message::PData(OtapPdata::new(
@@ -1076,14 +984,14 @@ fn configuration_update_preserves_last_valid_plan() {
     );
 }
 
-/// Scenario: Live updates switch authority selection and then supply an invalid selection.
-/// Guarantees: Default first selection changes to last atomically and an invalid update preserves last.
+/// Scenario: A live update attempts to configure authority normalization in the attribute processor.
+/// Guarantees: Removed transform options are rejected and the installed raw-text projection remains active.
 #[test]
-fn authority_selection_configuration_updates() {
-    let config = |selection: &str| {
+fn removed_source_transform_updates_are_rejected() {
+    let config = |transform: &str| {
         json!({"actions":[
             {"action":"insert","key":"selected","value":{
-                "from_headers":["host"],"transform":"authority_host","selection":selection
+                "source":{"type":"transport_header","named":["host"]},"transform":transform
             }}
         ]})
     };
@@ -1095,30 +1003,30 @@ fn authority_selection_configuration_updates() {
     };
     run(
         json!({"actions":[{"action":"insert","key":"selected","value":{
-            "from_headers":["host"],"transform":"authority_host"
+            "source":{"type":"transport_header","named":["host"]}
         }}]}),
         vec![
             pdata(),
             Message::Control(NodeControlMsg::Config {
-                config: config("last"),
+                config: config("authority_host"),
             }),
             pdata(),
             Message::Control(NodeControlMsg::Config {
-                config: config("middle"),
+                config: config("int"),
             }),
             pdata(),
             Message::Control(NodeControlMsg::Config {
-                config: config("first"),
+                config: config("string"),
             }),
             pdata(),
         ],
         |output| {
             assert_eq!(output.len(), 4);
             for (payload, expected) in output.into_iter().zip([
-                "first.example",
-                "last.example",
-                "last.example",
-                "first.example",
+                "first.example, last.example",
+                "first.example, last.example",
+                "first.example, last.example",
+                "first.example, last.example",
             ]) {
                 assert_eq!(
                     value(&domains(payload.payload())[2], "selected"),
@@ -1134,20 +1042,29 @@ fn authority_selection_configuration_updates() {
 #[test]
 fn context_lookup_shape_validation() {
     let source = |name: &str| {
-        serde_json::from_value::<ValueSource>(json!({
-            "from_context":name,"transform":"authority_host","selection":"last"
+        serde_json::from_value::<PropagationSelector>(json!({
+            "type":"named","named":[name]
         }))
         .unwrap()
     };
     let mut context = Context::default();
-    assert_eq!(source("request:value").resolve(&context).unwrap(), None);
-    store_context_text(&mut context, "request", "first.example,last.example".into());
-    assert_eq!(source("absent").resolve(&context).unwrap(), None);
-    assert_eq!(source("absent:value").resolve(&context).unwrap(), None);
-    assert_eq!(source("request:absent").resolve(&context).unwrap(), None);
     assert_eq!(
-        source("request").resolve(&context).unwrap(),
-        Some(LiteralValue::Str("last.example".into()))
+        resolve_source(&source("request:value"), &context).unwrap(),
+        None
+    );
+    store_context_text(&mut context, "request", "first.example,last.example".into());
+    assert_eq!(resolve_source(&source("absent"), &context).unwrap(), None);
+    assert_eq!(
+        resolve_source(&source("absent:value"), &context).unwrap(),
+        None
+    );
+    assert_eq!(
+        resolve_source(&source("request:absent"), &context).unwrap(),
+        None
+    );
+    assert_eq!(
+        resolve_source(&source("request"), &context).unwrap(),
+        Some(LiteralValue::Str("first.example,last.example".into()))
     );
     let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
         scope: ContextScope::Engine,
@@ -1167,14 +1084,13 @@ fn context_lookup_shape_validation() {
     let mut context = Context::default();
     context.materialize_context(&plan);
     assert!(
-        source("request")
-            .resolve(&context)
+        resolve_source(&source("request"), &context)
             .unwrap_err()
             .to_string()
             .contains("entry:member")
     );
     assert_eq!(
-        source("request:last").resolve(&context).unwrap(),
+        resolve_source(&source("request:last"), &context).unwrap(),
         Some(LiteralValue::Str("last.example".into()))
     );
     let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
@@ -1192,8 +1108,7 @@ fn context_lookup_shape_validation() {
     ]);
     context.materialize_context(&plan);
     assert!(
-        source("request:host")
-            .resolve(&context)
+        resolve_source(&source("request:host"), &context)
             .unwrap_err()
             .to_string()
             .contains("scalar")
@@ -1205,8 +1120,7 @@ fn context_lookup_shape_validation() {
         let mut context = header_context(&[("host", kind, bytes)]);
         context.materialize_context(&plan);
         assert!(
-            source("request:host")
-                .resolve(&context)
+            resolve_source(&source("request:host"), &context)
                 .unwrap_err()
                 .to_string()
                 .contains(reason)
@@ -1214,22 +1128,37 @@ fn context_lookup_shape_validation() {
     }
 }
 
-/// Scenario: Dynamic request metadata exceeds the representable range in an otherwise valid message.
+/// Scenario: Dynamic request metadata has nonscalar context in an otherwise valid message.
 /// Guarantees: The processor sends a permanent Nack with the original payload and request context.
 #[test]
-fn context_range_error_permanently_nacks_original_message() {
+fn context_shape_error_permanently_nacks_original_message() {
     let rt = TestRuntime::new();
     let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-    config.config = json!({"actions":[{"action":"insert","key":"received","value":{"from_context":"received","transform":"int"}}]});
+    config.config = json!({"actions":[{"action":"insert","key":"received","value":{"source":{"type":"named","named":["received"]}}}]});
     let processor = create_attributes_processor(
-        pipeline_context(),
+        declared_pipeline_context(&config.config),
         test_node("range-nack"),
         Arc::new(config),
         rt.config(),
     )
     .unwrap();
     let mut context = Context::default();
-    store_context_text(&mut context, "received", u64::MAX.to_string());
+    let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
+        scope: ContextScope::Engine,
+        name: ContextEntryName::try_from("received").unwrap(),
+        definition: ContextEntryDefinition(vec![
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("first").unwrap(),
+                value: "one".into(),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("second").unwrap(),
+                value: "two".into(),
+            },
+        ]),
+    }])
+    .unwrap();
+    context.materialize_context(&plan);
     let original_context = context.clone();
     let input = OtapPdata::new(context, fixture(SignalType::Logs, &[0])).test_subscribe_to(
         Interests::NACKS | Interests::RETURN_DATA,
@@ -1247,7 +1176,7 @@ fn context_range_error_permanently_nacks_original_message() {
                 panic!("expected Nack");
             };
             assert!(nack.permanent);
-            assert!(nack.reason.contains("transform"));
+            assert!(nack.reason.contains("entry:member"));
             assert_eq!(
                 nack.refused.payload_ref().encoded_bytes().unwrap(),
                 &original
@@ -1256,4 +1185,479 @@ fn context_range_error_permanently_nacks_original_message() {
             assert_eq!(context.clone_detached(), original_context);
         })
         .validate(|_| async {});
+}
+
+/// Scenario: encoded input resolves successfully but a fault-injected transform fails after decoding.
+/// Guarantees: RETURN_DATA recovers the original encoded payload and context, with one failure duration.
+#[test]
+fn encoded_transform_failure_returns_original_and_records_one_failure() {
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+    let rt = TestRuntime::new();
+    let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+    config.config = json!({"actions":[{"action":"insert","key":"added","value":"literal"}]});
+    let mut processor =
+        AttributesProcessor::from_config(pipeline_context(), &config.config).unwrap();
+    // Inject a post-compilation collision to exercise mutation failure independently of decoding.
+    processor.plans[0].transform.delete =
+        Some(DeleteTransform::new(BTreeSet::from(["added".to_string()])));
+    let payload = fixture(SignalType::Logs, &[0]);
+    let mut decoded = payload
+        .clone()
+        .try_into_otap(&CodecService::new().unwrap())
+        .unwrap();
+    let expected_error = processor
+        .apply_transform_with_stats(
+            &mut decoded,
+            SignalType::Logs,
+            &AttributesTransform::default(),
+        )
+        .unwrap_err()
+        .to_string();
+    let context = header_context(&[("host", ValueKind::Text, b"example.test")]);
+    let original_context = context.clone();
+    let input = OtapPdata::new(context, payload).test_subscribe_to(
+        Interests::NACKS | Interests::RETURN_DATA,
+        CallData::new(),
+        11,
+    );
+    let original = input.payload_ref().encoded_bytes().unwrap().clone();
+    let processor = ProcessorWrapper::local(
+        processor,
+        test_node("transform-failure"),
+        Arc::new(config),
+        rt.config(),
+    );
+    rt.set_processor(processor)
+        .run_test_with_interests(Interests::NODE_LOCAL_DURATION, |mut ctx| async move {
+            let (sender, mut receiver) = pipeline_completion_msg_channel(1);
+            ctx.set_pipeline_completion_sender(sender);
+            ctx.process(Message::PData(input)).await.unwrap();
+            assert!(ctx.drain_pdata().await.is_empty());
+            let PipelineCompletionMsg::DeliverNack { nack } = receiver.try_recv().unwrap() else {
+                panic!("expected Nack");
+            };
+            assert!(nack.permanent);
+            assert_eq!(nack.reason, expected_error);
+            assert_eq!(
+                nack.refused.payload_ref().encoded_bytes().unwrap(),
+                &original
+            );
+            let (context, _) = nack.refused.into_parts();
+            assert_eq!(context.clone_detached(), original_context);
+            let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter,
+            }))
+            .await
+            .unwrap();
+            let snapshots: Vec<_> = receiver
+                .try_iter()
+                .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
+                .collect();
+            assert_eq!(snapshots.len(), 1);
+            assert_eq!(
+                snapshots[0].measurement_attribute_value("outcome"),
+                Some("failure")
+            );
+            let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
+                panic!("expected duration distribution");
+            };
+            assert_eq!(duration.count(), 1);
+        })
+        .validate(|_| async {});
+}
+
+/// Scenario: literal, dynamic, and no-op messages run with duration telemetry enabled.
+/// Guarantees: successful mutations record one sample, while no-op messages record none and stay encoded.
+#[test]
+fn compute_duration_records_once_or_skips_noop() {
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+    for (config_value, expected_count) in [
+        (json!({"actions":[]}), 0),
+        (
+            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"type":"transport_header","named":["missing"]}}}]}),
+            0,
+        ),
+        (
+            json!({"actions":[{"action":"insert","key":"added","value":"literal"}]}),
+            1,
+        ),
+        (
+            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"type":"transport_header","named":["host"]}}}]}),
+            1,
+        ),
+    ] {
+        let rt = TestRuntime::new();
+        let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        config.config = config_value;
+        let processor = create_attributes_processor(
+            declared_pipeline_context(&config.config),
+            test_node("duration"),
+            Arc::new(config),
+            rt.config(),
+        )
+        .unwrap();
+        let input = OtapPdata::new(
+            header_context(&[("host", ValueKind::Text, b"example.test")]),
+            fixture(SignalType::Logs, &[0]),
+        );
+        rt.set_processor(processor)
+            .run_test_with_interests(Interests::NODE_LOCAL_DURATION, move |mut ctx| async move {
+                ctx.process(Message::PData(input)).await.unwrap();
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1);
+                assert_eq!(
+                    output[0].payload_ref().encoded_bytes().is_some(),
+                    expected_count == 0
+                );
+                let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .unwrap();
+                let snapshots: Vec<_> = receiver
+                    .try_iter()
+                    .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
+                    .collect();
+                assert_eq!(snapshots.len(), expected_count);
+                if expected_count == 1 {
+                    assert_eq!(
+                        snapshots[0].measurement_attribute_value("outcome"),
+                        Some("success")
+                    );
+                    let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
+                        panic!("expected duration distribution");
+                    };
+                    assert_eq!(duration.count(), 1);
+                }
+            })
+            .validate(|_| async {});
+    }
+}
+
+/// Scenario: a named selector references conditional and qualified composites in a pipeline policy.
+/// Guarantees: declarations materialize only selected composites, preserve fallback order, and reject unknown references.
+#[test]
+fn named_selector_declares_and_materializes_required_composites() {
+    let source = json!({"source":{"type":"named","named":["absent","request:number"]}});
+    let config = json!({"actions":[{"action":"insert","key":"sequence","value":source}]});
+    let entries = json!({
+        "absent":[{"type":"transport_header","name":"missing"}],
+        "request":[
+            {"type":"constant","name":"number","value":"42"},
+            {"type":"constant","name":"other","value":"unused"}
+        ],
+        "unselected":[{"type":"constant","name":"value","value":"not materialized"}]
+    });
+    let prepared = prepare_context(&config, entries.clone()).unwrap();
+    let pipeline = pipeline_context().pipeline_key();
+    let plan = prepared
+        .bindings
+        .context_materialization_plan(&pipeline)
+        .unwrap();
+    let mut context = Context::default();
+    context.materialize_context(plan);
+    let materialized = context.materialized_context().unwrap();
+    assert!(
+        materialized
+            .entry(&ContextEntryName::try_from("request").unwrap())
+            .is_some()
+    );
+    assert!(
+        materialized
+            .entry(&ContextEntryName::try_from("absent").unwrap())
+            .is_none()
+    );
+    assert!(
+        materialized
+            .entry(&ContextEntryName::try_from("unselected").unwrap())
+            .is_none()
+    );
+    let selected: PropagationSelector = serde_json::from_value(source["source"].clone()).unwrap();
+    assert_eq!(
+        resolve_source(&selected, &context).unwrap(),
+        Some(LiteralValue::Str("42".into()))
+    );
+    run(
+        config,
+        vec![Message::PData(OtapPdata::new(
+            context,
+            fixture(SignalType::Logs, &[0]),
+        ))],
+        |mut output| {
+            assert_eq!(
+                value(&domains(output.remove(0).payload())[2], "sequence"),
+                Some(&AnyValue::new_string("42"))
+            );
+        },
+    );
+    for reference in ["unknown", "request:unknown"] {
+        let config = json!({"actions":[{"action":"insert","key":"x","value":{"source":{"type":"named","named":[reference]}}}]});
+        assert!(prepare_context(&config, entries.clone()).is_err());
+    }
+}
+
+/// Scenario: primitive identity selectors read verified claims captured under stored aliases.
+/// Guarantees: aliases are case-sensitive, missing names fall through, scalar text is unchanged, and lists are rejected.
+#[test]
+fn authorized_identity_selector_reads_only_captured_scalar_claims() {
+    use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
+    let identity = AuthorizedIdentity::new()
+        .with_subject("42")
+        .with_claim_str("uncaptured", "secret")
+        .with_claim_values("groups", ["one"]);
+    let policy = serde_json::from_value(json!([
+        {"claim":"sub","store_as":"UserId"},
+        {"claim":"groups","store_as":"groups"}
+    ]))
+    .unwrap();
+    let input = otel_arrow_dfe_otap::testing::with_authorized_identity(
+        OtapPdata::new_default(fixture(SignalType::Logs, &[0])),
+        &policy,
+        &identity,
+    );
+    let (context, payload) = input.into_parts();
+    for (names, expected) in [
+        (vec!["userid", "uncaptured"], None),
+        (
+            vec!["missing", "UserId"],
+            Some(LiteralValue::Str("42".into())),
+        ),
+    ] {
+        let source: PropagationSelector = serde_json::from_value(json!({
+            "type":"authorized_identity","named":names
+        }))
+        .unwrap();
+        validate_source(&source).unwrap();
+        assert_eq!(resolve_source(&source, &context).unwrap(), expected);
+    }
+    let groups: PropagationSelector = serde_json::from_value(json!({
+        "type":"authorized_identity","named":["groups","UserId"]
+    }))
+    .unwrap();
+    assert!(
+        resolve_source(&groups, &context)
+            .unwrap_err()
+            .to_string()
+            .contains("scalar")
+    );
+    let config = json!({"actions":[{"action":"insert","key":"user.id","value":{
+        "source":{"type":"authorized_identity","named":["missing","UserId"]}
+    }}]});
+    run(
+        config,
+        vec![Message::PData(OtapPdata::new(context, payload))],
+        |mut output| {
+            assert_eq!(
+                value(&domains(output.remove(0).payload())[2], "user.id"),
+                Some(&AnyValue::new_string("42"))
+            );
+        },
+    );
+}
+
+/// Scenario: every source domain declares its reads and a live update requests a new primitive.
+/// Guarantees: declarations use value-only domain-scoped targets and an unbound update retains the installed plan.
+#[test]
+fn selector_declarations_and_live_update_binding_validation() {
+    use otel_arrow_dfe_engine::context_declaration::{
+        ContextDomain, ContextEntrySelectorForm, ContextEntryTarget,
+    };
+    for (kind, expected) in [
+        (
+            "transport_header",
+            ContextEntryTarget::Primitive {
+                domain: ContextDomain::TransportHeader,
+                name: ContextEntryName::try_from("x").unwrap(),
+            },
+        ),
+        (
+            "authorized_identity",
+            ContextEntryTarget::Primitive {
+                domain: ContextDomain::AuthorizedIdentity,
+                name: ContextEntryName::try_from("x").unwrap(),
+            },
+        ),
+        (
+            "named",
+            ContextEntryTarget::Composite {
+                name: ContextEntryName::try_from("x").unwrap(),
+            },
+        ),
+    ] {
+        let source: PropagationSelector =
+            serde_json::from_value(json!({"type":kind,"named":["x"]})).unwrap();
+        let entries: Vec<_> = context_entries(&source).collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].target, expected);
+        assert_eq!(entries[0].form, ContextEntrySelectorForm::Value);
+    }
+    let config = |name| {
+        json!({"actions":[{"action":"insert","key":"selected","value":{
+            "source":{"type":"transport_header","named":[name]}
+        }}]})
+    };
+    assert!(AttributesProcessor::from_config(pipeline_context(), &config("host")).is_err());
+    run(
+        config("host"),
+        vec![
+            Message::Control(NodeControlMsg::Config {
+                config: config("other"),
+            }),
+            Message::PData(OtapPdata::new(
+                header_context(&[
+                    ("host", ValueKind::Text, b"original"),
+                    ("other", ValueKind::Text, b"unbound"),
+                ]),
+                fixture(SignalType::Logs, &[0]),
+            )),
+        ],
+        |mut output| {
+            assert_eq!(
+                value(&domains(output.remove(0).payload())[2], "selected"),
+                Some(&AnyValue::new_string("original"))
+            );
+        },
+    );
+}
+
+/// Scenario: each value operation has a context source overridden on all or only some signals.
+/// Guarantees: fully discarded sources need no definitions or materialization; sources still used by any signal remain required.
+#[test]
+fn context_declarations_follow_effective_value_actions() {
+    for (operation, key) in [
+        ("insert", "added"),
+        ("upsert", "upsert_existing"),
+        ("update", "update_existing"),
+    ] {
+        let source = json!({"source":{"type":"named","named":["request"]}});
+        let config = json!({"actions":[
+            {"action":operation,"key":key,"value":source},
+            {"action":operation,"key":key,"value":"literal"}
+        ]});
+        let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+        assert!(parsed.context_declarations().is_empty());
+        for entries in [
+            json!({}),
+            json!({"request":[{"type":"constant","name":"value","value":"unused"}]}),
+        ] {
+            let prepared = prepare_context(&config, entries).unwrap();
+            assert!(
+                prepared
+                    .bindings
+                    .context_materialization_plan(&pipeline_context().pipeline_key())
+                    .is_none()
+            );
+        }
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            run(
+                config.clone(),
+                vec![Message::PData(OtapPdata::new_default(fixture(
+                    signal,
+                    &[0],
+                )))],
+                move |mut output| {
+                    assert_eq!(
+                        value(&domains(output.remove(0).payload())[2], key),
+                        Some(&AnyValue::new_string("literal"))
+                    );
+                },
+            );
+        }
+
+        let partial = json!({"actions":[
+            {"action":operation,"key":key,"value":source},
+            {"action":operation,"key":key,"value":"literal","signals":["logs"]}
+        ]});
+        assert!(prepare_context(&partial, json!({})).is_err());
+        let prepared = prepare_context(
+            &partial,
+            json!({"request":[{"type":"constant","name":"value","value":"context"}]}),
+        )
+        .unwrap();
+        let pipeline = pipeline_context().pipeline_key();
+        let plan = prepared
+            .bindings
+            .context_materialization_plan(&pipeline)
+            .unwrap();
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            let mut context = Context::default();
+            context.materialize_context(plan);
+            run(
+                partial.clone(),
+                vec![Message::PData(OtapPdata::new(
+                    context,
+                    fixture(signal, &[0]),
+                ))],
+                move |mut output| {
+                    let expected = if matches!(signal, SignalType::Logs) {
+                        "literal"
+                    } else {
+                        "context"
+                    };
+                    assert_eq!(
+                        value(&domains(output.remove(0).payload())[2], key),
+                        Some(&AnyValue::new_string(expected))
+                    );
+                },
+            );
+        }
+    }
+}
+
+/// Scenario: a live update reorders, repeats, and regroups already declared header candidates.
+/// Guarantees: equivalent read requirements retain valid bindings while the new per-action fallback order takes effect.
+#[test]
+fn live_update_preserves_bindings_when_candidate_order_and_grouping_change() {
+    let initial = json!({"actions":[
+        {"action":"insert","key":"first","value":{
+            "source":{"type":"transport_header","named":["forwarded","host"]}}},
+        {"action":"insert","key":"second","value":{
+            "source":{"type":"transport_header","named":["host"]}}}
+    ]});
+    let updated = json!({"actions":[
+        {"action":"insert","key":"first","value":{
+            "source":{"type":"transport_header","named":["host","forwarded","host"]}}},
+        {"action":"insert","key":"second","value":{
+            "source":{"type":"transport_header","named":["forwarded","host"]}}}
+    ]});
+    let parsed_initial: Config = serde_json::from_value(initial.clone()).unwrap();
+    let parsed_updated: Config = serde_json::from_value(updated.clone()).unwrap();
+    assert_eq!(
+        parsed_initial.context_declarations(),
+        parsed_updated.context_declarations()
+    );
+    for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+        run(
+            initial.clone(),
+            vec![
+                Message::Control(NodeControlMsg::Config {
+                    config: updated.clone(),
+                }),
+                Message::PData(OtapPdata::new(
+                    header_context(&[
+                        ("forwarded", ValueKind::Text, b"proxy.example"),
+                        ("host", ValueKind::Text, b"direct.example"),
+                    ]),
+                    fixture(signal, &[0]),
+                )),
+            ],
+            |mut output| {
+                let attrs = domains(output.remove(0).payload());
+                assert_eq!(
+                    value(&attrs[2], "first"),
+                    Some(&AnyValue::new_string("direct.example"))
+                );
+                assert_eq!(
+                    value(&attrs[2], "second"),
+                    Some(&AnyValue::new_string("proxy.example"))
+                );
+            },
+        );
+    }
 }

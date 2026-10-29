@@ -24,10 +24,10 @@ use std::hash::{Hash, Hasher};
 
 // -- Stats types --------------------------------------------------------------
 
-/// Counts matching headers skipped by capture limits.
+/// Counts matching headers skipped by capture limits or normalization.
 ///
 /// Returned by the generic and native HTTP capture paths. Capture continues
-/// after a limit violation so callers can retain accepted headers and decide
+/// after a limit violation or invalid value so callers can retain accepted headers and decide
 /// separately how to observe the skipped entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureStats {
@@ -37,14 +37,19 @@ pub struct CaptureStats {
     pub skipped_name_too_long: usize,
     /// Matching headers skipped because the value exceeded `max_value_bytes`.
     pub skipped_value_too_long: usize,
+    /// Matching headers skipped because their configured transform could not be applied.
+    pub skipped_invalid_value: usize,
 }
 
 impl fmt::Display for CaptureStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "capture limits exceeded: {} skipped (max_entries), {} skipped (name too long), {} skipped (value too long)",
-            self.skipped_max_entries, self.skipped_name_too_long, self.skipped_value_too_long
+            "capture limits exceeded: {} skipped (max_entries), {} skipped (name too long), {} skipped (value too long), {} skipped (invalid transform value)",
+            self.skipped_max_entries,
+            self.skipped_name_too_long,
+            self.skipped_value_too_long,
+            self.skipped_invalid_value
         )
     }
 }
@@ -106,6 +111,7 @@ struct CompiledCapture {
     stored_name: ContextEntryName,
     value_kind: Option<ValueKindConfig>,
     preserve_original_name: bool,
+    transform: CaptureTransform,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +191,7 @@ impl HeaderCapturePolicy {
                     preserve_original_name: consumes_original_name(&stored_name),
                     stored_name,
                     value_kind: rule.value_kind,
+                    transform: rule.transform.unwrap_or_default(),
                 };
                 if let Ok(http_name) = HeaderName::from_bytes(match_name.as_str().as_bytes()) {
                     _ = http_captures
@@ -212,7 +219,7 @@ impl CompiledHeaderCapturePolicy {
     ///
     /// Returns `None` when all matching headers were captured successfully,
     /// or `Some(CaptureStats)` when one or more matching headers had to be
-    /// skipped due to policy limits.
+    /// skipped due to policy limits or unusable transform input.
     pub fn capture_from_pairs<'a, V>(
         &self,
         pairs: impl Iterator<Item = (&'a str, V)>,
@@ -278,6 +285,7 @@ impl CompiledHeaderCapturePolicy {
         let mut skipped_max_entries: usize = 0;
         let mut skipped_name_too_long: usize = 0;
         let mut skipped_value_too_long: usize = 0;
+        let mut skipped_invalid_value: usize = 0;
 
         for (wire_name, capture, value) in matches {
             let value: Cow<'name, [u8]> = value.into();
@@ -311,6 +319,10 @@ impl CompiledHeaderCapturePolicy {
                 }
             };
 
+            let Some(value) = capture.transform.apply(value, value_kind) else {
+                skipped_invalid_value += 1;
+                continue;
+            };
             let original_name = (capture.preserve_original_name
                 && capture.stored_name.as_str() != wire_name)
                 .then_some(wire_name);
@@ -323,11 +335,16 @@ impl CompiledHeaderCapturePolicy {
         }
         result.replace_captured(&captured);
 
-        if skipped_max_entries > 0 || skipped_name_too_long > 0 || skipped_value_too_long > 0 {
+        if skipped_max_entries > 0
+            || skipped_name_too_long > 0
+            || skipped_value_too_long > 0
+            || skipped_invalid_value > 0
+        {
             Some(CaptureStats {
                 skipped_max_entries,
                 skipped_name_too_long,
                 skipped_value_too_long,
+                skipped_invalid_value,
             })
         } else {
             None
@@ -423,6 +440,103 @@ pub struct CaptureRule {
     /// is assumed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_kind: Option<ValueKindConfig>,
+    /// Optional text normalization applied before storing the captured value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<CaptureTransform>,
+}
+
+/// Text normalization performed once at the receiver capture boundary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CaptureTransform {
+    /// Preserve the original value and kind without conversion.
+    String {},
+    /// Select a comma-separated authority and retain only its host.
+    AuthorityHost {
+        /// Endpoint within one captured value, not across repeated headers.
+        #[serde(default)]
+        selection: AuthorityHostSelection,
+    },
+}
+
+impl JsonSchema for CaptureTransform {
+    fn schema_name() -> Cow<'static, str> {
+        "CaptureTransform".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // A shared discriminator schema keeps kube-rs structural schema merging valid.
+        schemars::json_schema!({
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": ["string", "authority_host"]},
+                "selection": generator.subschema_for::<AuthorityHostSelection>()
+            },
+            "required": ["type"],
+            "additionalProperties": false,
+            "x-kubernetes-validations": [{
+                "rule": "self.type == 'authority_host' || !has(self.selection)",
+                "message": "`selection` is allowed only for authority_host"
+            }]
+        })
+    }
+}
+
+impl Default for CaptureTransform {
+    fn default() -> Self {
+        Self::String {}
+    }
+}
+
+/// Endpoint selected from a comma-separated authority list.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityHostSelection {
+    /// Select the first authority.
+    #[default]
+    First,
+    /// Select the last authority.
+    Last,
+}
+
+impl CaptureTransform {
+    fn apply<'a>(self, value: Cow<'a, [u8]>, kind: ValueKind) -> Option<Cow<'a, [u8]>> {
+        let Self::AuthorityHost { selection } = self else {
+            return Some(value);
+        };
+        if kind != ValueKind::Text {
+            return None;
+        }
+        let text = std::str::from_utf8(&value).ok()?;
+        let selected = match selection {
+            AuthorityHostSelection::First => text.split_once(',').map_or(text, |(first, _)| first),
+            AuthorityHostSelection::Last => text.rsplit_once(',').map_or(text, |(_, last)| last),
+        }
+        .trim();
+        let authority = selected.parse::<http::uri::Authority>().ok()?;
+        let host = authority.host();
+        if selected.contains('@') || host.is_empty() {
+            return None;
+        }
+        let suffix = selected.strip_prefix(host)?;
+        if !suffix.is_empty() {
+            let _ = suffix.strip_prefix(':')?.parse::<u16>().ok()?;
+        }
+        Some(Cow::Owned(host.as_bytes().to_vec()))
+    }
 }
 
 /// Configured value kind for a capture rule.
@@ -471,7 +585,11 @@ impl HeaderPropagationPolicy {
     /// that invalid selectors cannot be silently accepted in one path while
     /// being rejected in another.
     pub fn validate(&self) -> Result<(), String> {
-        self.default.selector.validate()
+        self.default.selector.validate()?;
+        if self.default.selector.selector_type == PropagationSelectorType::AuthorizedIdentity {
+            return Err("authorized_identity cannot be propagated as transport headers".into());
+        }
+        Ok(())
     }
 }
 
@@ -509,12 +627,17 @@ pub enum PropagationSelectorType {
     None,
     /// Propagate only headers whose stored names appear in the `named` list.
     Named,
+    /// Select named primitives from captured transport headers.
+    TransportHeader,
+    /// Select named primitives from captured authorized identity claims.
+    AuthorizedIdentity,
 }
 
 /// Selects which captured headers are candidates for propagation.
 ///
-/// The `type` field selects the strategy. When `type` is `named`,
-/// the `named` field must contain the list of header names to propagate.
+/// The `type` field selects the strategy or primitive source domain. Named
+/// selections require a nonempty `named` list. Consumers determine whether
+/// unqualified `named` references identify primitives or composites.
 #[derive(
     Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -524,8 +647,8 @@ pub struct PropagationSelector {
     #[serde(rename = "type", default)]
     pub selector_type: PropagationSelectorType,
 
-    /// Required names for `named` selectors.
-    /// Must be absent for other selector types.
+    /// Required references for `named`, `transport_header`, and `authorized_identity`.
+    /// Must be absent for `all_captured` and `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named: Option<Vec<ContextEntryRef>>,
 }
@@ -534,12 +657,27 @@ impl PropagationSelector {
     /// Validate the supplied configuration.
     pub fn validate(&self) -> Result<(), String> {
         match (&self.selector_type, &self.named) {
-            (PropagationSelectorType::Named, None) => {
-                Err("'named' list is required when type is 'named'".into())
+            (
+                PropagationSelectorType::Named
+                | PropagationSelectorType::TransportHeader
+                | PropagationSelectorType::AuthorizedIdentity,
+                None,
+            ) => Err("'named' list is required for named context selections".into()),
+            (
+                PropagationSelectorType::Named
+                | PropagationSelectorType::TransportHeader
+                | PropagationSelectorType::AuthorizedIdentity,
+                Some(names),
+            ) if names.is_empty() => {
+                Err("'named' list must not be empty for named context selections".into())
             }
-            (PropagationSelectorType::Named, Some(names)) if names.is_empty() => {
-                Err("'named' list must not be empty when type is 'named'".into())
-            }
+            (
+                PropagationSelectorType::TransportHeader
+                | PropagationSelectorType::AuthorizedIdentity,
+                Some(names),
+            ) if names.iter().any(|name| name.scope().is_some()) => Err(
+                "primitive context selections cannot contain composite:member references".into(),
+            ),
             (PropagationSelectorType::AllCaptured | PropagationSelectorType::None, Some(_)) => {
                 Err("'named' must not be set when type is not 'named'".into())
             }
@@ -553,8 +691,8 @@ impl PropagationSelector {
     pub fn selects_primitive_header(&self, header_name: &str) -> bool {
         match &self.selector_type {
             PropagationSelectorType::AllCaptured => true,
-            PropagationSelectorType::None => false,
-            PropagationSelectorType::Named => self
+            PropagationSelectorType::None | PropagationSelectorType::AuthorizedIdentity => false,
+            PropagationSelectorType::Named | PropagationSelectorType::TransportHeader => self
                 .named
                 .as_ref()
                 .map(|names| {
@@ -672,6 +810,39 @@ pub struct PropagationMatch {
 mod tests {
     use super::*;
 
+    /// Scenario: explicit domain selectors contain primitive names or invalid qualified references.
+    /// Guarantees: nonempty primitive lists round-trip and identity selectors cannot propagate headers.
+    #[test]
+    fn explicit_domain_selectors_validate_and_preserve_propagation_boundaries() {
+        for domain in ["transport_header", "authorized_identity"] {
+            let config = serde_json::json!({"type":domain,"named":["tenant","fallback"]});
+            let selector: PropagationSelector = serde_json::from_value(config.clone()).unwrap();
+            selector.validate().unwrap();
+            assert_eq!(serde_json::to_value(&selector).unwrap(), config);
+            assert_eq!(
+                selector.selects_primitive_header("TENANT"),
+                domain == "transport_header"
+            );
+            let policy = HeaderPropagationPolicy::new(
+                PropagationDefault {
+                    selector,
+                    ..Default::default()
+                },
+                vec![],
+            );
+            assert_eq!(policy.validate().is_ok(), domain == "transport_header");
+            for invalid in [
+                serde_json::json!({"type":domain}),
+                serde_json::json!({"type":domain,"named":[]}),
+                serde_json::json!({"type":domain,"named":null}),
+                serde_json::json!({"type":domain,"named":["entry:member"]}),
+            ] {
+                let selector: PropagationSelector = serde_json::from_value(invalid).unwrap();
+                assert!(selector.validate().is_err());
+            }
+        }
+    }
+
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
@@ -700,12 +871,14 @@ mod tests {
                     store_as: Some(context_name("first")),
                     sensitive: false,
                     value_kind: None,
+                    transform: Default::default(),
                 },
                 CaptureRule {
                     match_names: vec![context_name("X-Tenant")],
                     store_as: Some(context_name("second")),
                     sensitive: false,
                     value_kind: None,
+                    transform: Default::default(),
                 },
             ],
         )
@@ -749,6 +922,7 @@ mod tests {
                 store_as: Some(context_name("Tenant")),
                 sensitive: false,
                 value_kind: None,
+                transform: Default::default(),
             }],
         )
         .compile(|_| false);
@@ -775,6 +949,7 @@ mod tests {
                 store_as: Some(context_name("TenantID")),
                 sensitive: false,
                 value_kind: None,
+                transform: Default::default(),
             }],
         )
         .compile(|_| true);
@@ -813,6 +988,7 @@ mod tests {
                 store_as: Some(context_name("TenantID")),
                 sensitive: false,
                 value_kind: None,
+                transform: Default::default(),
             }],
         )
         .compile(|_| true);
@@ -873,6 +1049,7 @@ mod tests {
                 store_as: None,
                 sensitive: false,
                 value_kind: None,
+                transform: Default::default(),
             }],
         )
         .compile(|_| false);
@@ -907,6 +1084,7 @@ mod tests {
                 store_as: None,
                 sensitive: false,
                 value_kind: None,
+                transform: Default::default(),
             }],
         )
         .compile(|_| false);
@@ -1185,5 +1363,228 @@ named:
             vec![],
         );
         assert!(policy.validate().is_ok());
+    }
+}
+#[cfg(test)]
+mod capture_transform_tests {
+    use super::*;
+
+    /// Scenario: capture normalizes authority lists through generic and native HTTP paths.
+    /// Guarantees: default/first/last select only one endpoint, preserve DNS/IP hosts, and report invalid inputs without storing them.
+    #[test]
+    fn capture_authority_host_parsing_and_selection() {
+        for selection in [None, Some("first"), Some("last")] {
+            for (text, first, last) in [
+                ("example.com:443", Some("example.com"), Some("example.com")),
+                ("127.0.0.1:8080", Some("127.0.0.1"), Some("127.0.0.1")),
+                (
+                    "[2001:db8::1]:443",
+                    Some("[2001:db8::1]"),
+                    Some("[2001:db8::1]"),
+                ),
+                ("[::1]", Some("[::1]"), Some("[::1]")),
+                (
+                    " first.example:80, middle.example:90, [::1]:443 ",
+                    Some("first.example"),
+                    Some("[::1]"),
+                ),
+                (",last.example", None, Some("last.example")),
+                ("first.example,", Some("first.example"), None),
+                ("bad host,last.example", None, Some("last.example")),
+                ("first.example,bad host", Some("first.example"), None),
+                ("user@first.example,last.example:99999", None, None),
+                ("first.example:abc,https://last.example", None, None),
+                ("https://example.com", None, None),
+                ("example.com:", None, None),
+                ("", None, None),
+                ("  ", None, None),
+            ] {
+                let expected = if selection == Some("last") {
+                    last
+                } else {
+                    first
+                };
+                let mut transform = serde_json::json!({"type":"authority_host"});
+                if let Some(selection) = selection {
+                    transform["selection"] = serde_json::json!(selection);
+                }
+                let policy: HeaderCapturePolicy = serde_json::from_value(serde_json::json!({
+                    "headers":[{"match_names":["host"],"store_as":"Host","transform":transform}]
+                }))
+                .unwrap();
+                let policy = policy.compile(|_| true);
+                let mut headers = HeaderMap::new();
+                _ = headers.insert("host", http::HeaderValue::from_str(text).unwrap());
+                for native in [false, true] {
+                    let mut captured = TransportHeaders::new();
+                    let stats = if native {
+                        policy.capture_from_http_headers(&headers, &mut captured)
+                    } else {
+                        policy.capture_from_pairs(
+                            [("host", text.as_bytes())].into_iter(),
+                            &mut captured,
+                        )
+                    };
+                    assert_eq!(
+                        stats.as_ref().map(|stats| stats.skipped_invalid_value),
+                        expected.is_none().then_some(1),
+                        "{selection:?} {text}"
+                    );
+                    assert_eq!(captured.len(), usize::from(expected.is_some()));
+                    if let Some(expected) = expected {
+                        let header = captured.get(0).unwrap();
+                        assert_eq!(header.name, "Host");
+                        assert_eq!(header.wire_name(), "host");
+                        assert_eq!(header.value.value_kind, ValueKind::Text);
+                        assert_eq!(header.value.bytes, expected.as_bytes());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scenario: repeated authorities include invalid text, binary values, oversized values, and competing rules.
+    /// Guarantees: transforms run after raw-size checks, invalid values do not consume entry capacity, and first-rule/order semantics remain intact.
+    #[test]
+    fn capture_transforms_preserve_limits_order_and_default_behavior() {
+        let policy: HeaderCapturePolicy = serde_json::from_value(serde_json::json!({
+            "defaults":{"max_entries":2,"max_value_bytes":32},
+            "headers":[
+                {"match_names":["host"],"transform":{"type":"authority_host","selection":"last"}},
+                {"match_names":["HOST"],"store_as":"ignored"},
+                {"match_names":["raw"]},
+                {"match_names":["raw-bin"]},
+                {"match_names":["binary-bin"],"transform":{"type":"authority_host"}}
+            ]
+        }))
+        .unwrap();
+        let policy = policy.compile(|_| false);
+        let mut captured = TransportHeaders::new();
+        let stats = policy
+            .capture_from_pairs(
+                [
+                    ("host", b"first.example,".as_slice()),
+                    ("host", b"\xff".as_slice()),
+                    ("binary-bin", b"example.com:80".as_slice()),
+                    ("host", b"oversized.example.com:80, short.io".as_slice()),
+                    ("host", b"first.example, selected.io:80".as_slice()),
+                    ("host", b"first.example, later.io:443".as_slice()),
+                    ("raw", b"unchanged".as_slice()),
+                ]
+                .into_iter(),
+                &mut captured,
+            )
+            .unwrap();
+        assert_eq!(stats.skipped_invalid_value, 3);
+        assert_eq!(stats.skipped_value_too_long, 1);
+        assert_eq!(stats.skipped_max_entries, 1);
+        assert_eq!(
+            stats.to_string(),
+            "capture limits exceeded: 1 skipped (max_entries), 0 skipped (name too long), 1 skipped (value too long), 3 skipped (invalid transform value)"
+        );
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured.get(0).unwrap().value.bytes, b"selected.io");
+        assert_eq!(captured.get(1).unwrap().value.bytes, b"later.io");
+        assert_eq!(captured.get(0).unwrap().name, "host");
+        assert!(
+            policy
+                .capture_from_pairs(
+                    [
+                        ("raw", b" [::1]:443, example.com ".as_slice()),
+                        ("raw-bin", b"\xff".as_slice()),
+                    ]
+                    .into_iter(),
+                    &mut captured
+                )
+                .is_none()
+        );
+        assert_eq!(
+            captured.get(0).unwrap().value.bytes,
+            b" [::1]:443, example.com "
+        );
+        assert_eq!(captured.get(1).unwrap().value.bytes, b"\xff");
+        assert_eq!(captured.get(1).unwrap().value.value_kind, ValueKind::Binary);
+    }
+
+    /// Scenario: a capture rule omits its transform or explicitly sets it to null.
+    /// Guarantees: no transform is stored or serialized, and capture preserves original text and binary bytes.
+    #[test]
+    fn capture_transform_is_optional() {
+        for rule in [
+            serde_json::json!({"match_names":["host","raw-bin"]}),
+            serde_json::json!({"match_names":["host","raw-bin"],"transform":null}),
+        ] {
+            let policy: HeaderCapturePolicy =
+                serde_json::from_value(serde_json::json!({"headers":[rule]})).unwrap();
+            assert!(policy.headers[0].transform.is_none());
+            assert!(
+                serde_json::to_value(&policy).unwrap()["headers"][0]
+                    .get("transform")
+                    .is_none()
+            );
+            let mut captured = TransportHeaders::new();
+            assert!(
+                policy
+                    .compile(|_| false)
+                    .capture_from_pairs(
+                        [
+                            ("host", b" first.example:80, last.example:443 ".as_slice()),
+                            ("raw-bin", b"\xff".as_slice()),
+                        ]
+                        .into_iter(),
+                        &mut captured,
+                    )
+                    .is_none()
+            );
+            assert_eq!(captured.len(), 2);
+            assert_eq!(
+                captured.get(0).unwrap().value.bytes,
+                b" first.example:80, last.example:443 "
+            );
+            assert_eq!(captured.get(1).unwrap().value.bytes, b"\xff");
+            assert_eq!(captured.get(1).unwrap().value.value_kind, ValueKind::Binary);
+            let schema = serde_json::to_value(schemars::schema_for!(CaptureRule)).unwrap();
+            assert!(
+                !schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|field| field == "transform")
+            );
+        }
+    }
+
+    /// Scenario: capture transform configuration contains unsupported types or misplaced selection options.
+    /// Guarantees: invalid and incompatible transform shapes fail deserialization instead of silently defaulting.
+    #[test]
+    fn capture_rejects_invalid_transform_configuration() {
+        for transform in [
+            serde_json::json!("authority_host"),
+            serde_json::json!({}),
+            serde_json::json!({"type":"unknown"}),
+            serde_json::json!({"type":"int"}),
+            serde_json::json!({"type":"authority_host","selection":null}),
+            serde_json::json!({"type":"authority_host","selection":"middle"}),
+            serde_json::json!({"type":"string","selection":"last"}),
+        ] {
+            assert!(
+                serde_json::from_value::<HeaderCapturePolicy>(serde_json::json!({
+                    "headers":[{"match_names":["host"],"transform":transform}]
+                }))
+                .is_err(),
+                "{transform}"
+            );
+        }
+        let transform: CaptureTransform =
+            serde_json::from_value(serde_json::json!({"type":"string"})).unwrap();
+        assert_eq!(transform, CaptureTransform::String {});
+        let policy: HeaderCapturePolicy = serde_json::from_value(serde_json::json!({
+            "headers":[{"match_names":["host"],"transform":{"type":"authority_host","selection":"last"}}]
+        })).unwrap();
+        let serialized = serde_json::to_value(&policy).unwrap();
+        assert_eq!(
+            serde_json::from_value::<HeaderCapturePolicy>(serialized).unwrap(),
+            policy
+        );
     }
 }
