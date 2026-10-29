@@ -214,8 +214,8 @@
   },
   "lockFileMaintenance": {
     "enabled": true,
-    "branchTopic": "pip-compile-refresh",
-    "commitMessageAction": "Refresh pip-compile outputs"
+    "branchTopic": "lock-file-maintenance",
+    "commitMessageAction": "Refresh dependency lock files"
   },
   "postUpdateOptions": [
     // see https://docs.renovatebot.com/golang/#module-tidying
