@@ -1156,7 +1156,7 @@ jobs:
         with:
           toolchain: stable
       - name: Run cargo doc for otap-dataflow
-        run: cargo doc --locked --no-deps
+        run: cargo doc --locked --workspace --no-deps
         working-directory: ./rust/otap-dataflow
 
   validate-configs:
