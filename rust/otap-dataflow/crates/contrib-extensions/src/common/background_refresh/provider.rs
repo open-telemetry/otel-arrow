@@ -8,17 +8,24 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::StreamExt;
+use otel_arrow_dfe_engine::capability::auth::SaslCredential;
+use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
+    SaslCredentialProvider, SaslCredentialStream,
+};
 use otel_arrow_dfe_engine::capability::{
     CapabilityError, CapabilityErrorSource, ExtensionCapability,
 };
 use otel_arrow_dfe_engine::control::ExtensionControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::extension::EffectHandler;
+use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use rand::RngExt;
 use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
+use tokio_stream::wrappers::WatchStream;
 
 use super::metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
 
@@ -378,6 +385,21 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     }
 }
 
+#[async_trait]
+impl<S: BackgroundProviderSource<SaslCredential>, M: BackgroundProviderMetrics>
+    SharedSaslCredentialProvider
+    for BackgroundProviderExtension<S, M, SaslCredential, SaslCredentialProvider>
+{
+    async fn get_credential(&self) -> Result<SaslCredential, CapabilityError> {
+        self.get_value().await
+    }
+
+    fn credential_stream(&self) -> SaslCredentialStream {
+        let stream = WatchStream::new(self.subscribe()).filter_map(|value| async move { value });
+        Box::pin(stream)
+    }
+}
+
 /// Computes the next refresh instant from a freshly acquired value.
 ///
 /// Refreshes `expiry_buffer` before expiry, but never sooner than
@@ -542,7 +564,12 @@ impl<
                         // expiry, but a value stays usable until ~30 s before
                         // expiry, so reusing it here would defer the planned
                         // early refresh far too long.
-                        if rx.has_changed().unwrap_or(false)
+                        // Once acquisition also reuses a value published before
+                        // start(), not only one published while awaiting the lock.
+                        if (matches!(
+                            inner.refresh_policy.strategy,
+                            BackgroundProviderRefreshStrategy::Once
+                        ) || rx.has_changed().unwrap_or(false))
                             && let Some(value) = self.current_fresh_value() {
                             return Ok(value);
                         }

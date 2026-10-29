@@ -315,6 +315,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:sql_server",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:receiver:syslog_cef",
     "category": "Receiver",
     "description": null,
@@ -342,6 +348,12 @@
     "id": "urn:otel:safety:memory_limiter",
     "category": "Safety",
     "description": "Engine memory pressure monitor and shedding controller",
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:azure_key_vault_sasl_auth",
+    "category": "Extension",
+    "description": null,
     "attributes": {}
   }
 ]

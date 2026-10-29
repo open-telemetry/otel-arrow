@@ -61,6 +61,7 @@ Receivers ingest data into a pipeline.
 | [`urn:microsoft:receiver:json`](src/receivers/microsoft_json_receiver/README.md) | `microsoft-json` | In-Progress; Not Operational; logs | Browser-focused, unauthenticated ingestion of Microsoft Common Schema JSON over HTTP. |
 | [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
 | [`urn:otel:receiver:postgresql`](src/receivers/postgresql_receiver/README.md) | `postgresql` | Experimental | Development-only PostgreSQL polling over unencrypted TCP; explicitly opt-in. |
+| [`urn:otel:receiver:sql_server`](src/receivers/sql_server_receiver/README.md) | `sql-server` | Compatibility may change | Polls SQL Server queries into logs over verified TLS, using capability-based SQL credentials and shared acknowledged checkpoints. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
 
 ## Processors
@@ -98,8 +99,10 @@ Enable `oracle` or `postgresql` explicitly to include those integrations.
 Oracle requires separately provisioned Oracle Client libraries.
 
 The `sql-server` feature is also explicitly opt-in and excluded from all
-aggregates. See the [SQL Server README](src/receivers/sql_server_receiver/README.md)
-for its capabilities and usage.
+aggregates. It needs no separately installed database client. The root feature
+also enables `flat-file-user-pass-auth`.
+See the [SQL Server README](src/receivers/sql_server_receiver/README.md)
+for its operating contract and qualification limits.
 
 When implemented node features are enabled in the top-level binary, their
 factories are registered into the OTAP pipeline factory maps.

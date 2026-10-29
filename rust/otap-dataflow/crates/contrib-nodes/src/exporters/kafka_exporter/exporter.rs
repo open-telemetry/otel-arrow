@@ -44,17 +44,17 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
-};
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
+    ContextEntryTarget, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
@@ -579,7 +579,7 @@ impl KafkaExporter {
     fn append_kafka_header(
         headers: OwnedHeaders,
         format_header_key: &str,
-        propagated: otel_arrow_dfe_config::transport_headers_policy::PropagatedHeader<'_>,
+        propagated: otel_arrow_dfe_config::context::transport_policy::PropagatedHeader<'_>,
     ) -> OwnedHeaders {
         if propagated.header_name == format_header_key {
             return headers;
@@ -1455,7 +1455,9 @@ pub mod test_support {
         header_wire_name: &str,
         header_value: &str,
     ) -> OtapPdata {
-        use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
+        use otel_arrow_dfe_config::context::transport_headers::{
+            TransportHeader, TransportHeaders,
+        };
 
         let bytes = Bytes::from_static(b"payload");
         let proto = match signal_type {
@@ -1637,13 +1639,13 @@ pub mod test_support {
         use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
         use bytes::Bytes;
         use otel_arrow_dfe_config::ContextEntryName;
-        use otel_arrow_dfe_config::context_policy::{
+        use otel_arrow_dfe_config::context::policy::{
             ContextEntryDeclaration, ContextPolicy, ContextScope,
         };
-        use otel_arrow_dfe_config::transport_headers::{
+        use otel_arrow_dfe_config::context::transport_headers::{
             TransportHeader, TransportHeaders, ValueKind,
         };
-        use otel_arrow_dfe_config::transport_headers_policy::{
+        use otel_arrow_dfe_config::context::transport_policy::{
             HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
             PropagationSelectorType,
         };
@@ -1661,8 +1663,8 @@ pub mod test_support {
         use crate::common::kafka::test::{run_on_local_set, with_cluster};
 
         // Engine/telemetry helpers used by send and header-propagation tests.
-        use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
         use otel_arrow_dfe_engine::local::exporter::EffectHandler;
+        use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy;
         use otel_arrow_dfe_engine::runtime_services::{
             CodecEffectHandler, PipelineRuntimeServices,
         };
