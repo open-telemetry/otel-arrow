@@ -8,6 +8,8 @@
 //! schema validation. This is needed because the parquet exporter legitimately
 //! transforms batches in ways that may not conform to the OTAP wire-protocol
 //! schema (e.g. widening ID columns to `UInt32` for partition-unique IDs).
+//!
+//! [`RawBatchStore`]: otel_arrow_dfe_pdata::otap::raw_batch_store::RawBatchStore
 
 use arrow::array::RecordBatch;
 use otel_arrow_dfe_pdata::{
@@ -22,6 +24,8 @@ use otel_arrow_dfe_pdata::{
 ///
 /// Converted from [`OtapArrowRecords`] at the exporter boundary via
 /// `From<OtapArrowRecords>`.
+///
+/// [`RawBatchStore`]: otel_arrow_dfe_pdata::otap::raw_batch_store::RawBatchStore
 #[allow(clippy::large_enum_variant)]
 pub enum OtapParquetRecords {
     /// Logs signal batches.

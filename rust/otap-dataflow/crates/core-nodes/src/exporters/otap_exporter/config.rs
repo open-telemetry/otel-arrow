@@ -49,7 +49,7 @@ pub struct Config {
     pub timeout: Option<Duration>,
 }
 
-/// Configuration for the arrow payloads produced by the [`OtapExporter`]
+/// Configuration for the arrow payloads produced by the [`OTAPExporter`](super::OTAPExporter)
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArrowConfig {

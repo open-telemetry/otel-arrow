@@ -21,7 +21,7 @@
 //!
 //! Example configuration (YAML):
 //! You can optionally scope the transformation using `apply_to`. Valid values: signal, resource, scope.
-//! If omitted, defaults to [signal].
+//! If omitted, defaults to `signal`.
 //! ```yaml
 //! actions:
 //!   - action: "rename"
