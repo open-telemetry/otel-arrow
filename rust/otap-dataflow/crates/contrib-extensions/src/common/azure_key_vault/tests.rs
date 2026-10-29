@@ -467,8 +467,8 @@ async fn sdk_default_transport_does_not_follow_redirects() {
     assert_eq!(response.status(), StatusCode::Found);
 }
 
-/// Scenario: SDK debug logs and operational events observe successful reads and secret-bearing errors.
-/// Guarantees: Captured diagnostics contain stages/categories but no token, secret value, or raw error-body marker.
+/// Scenario: SDK diagnostics are captured while parallel tests may emit unscoped acquisition failures.
+/// Guarantees: Process-isolated capture retains both stages/categories and rejects token, secret, and body leakage.
 #[tokio::test]
 async fn sdk_and_operational_telemetry_redact_sensitive_material() {
     use super::testing::*;
@@ -476,6 +476,30 @@ async fn sdk_and_operational_telemetry_redact_sensitive_material() {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
     use tracing::instrument::WithSubscriber;
+
+    const CHILD: &str = "OTEL_ARROW_TEST_AKV_TELEMETRY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // tracing-core 0.1.36's single-dispatch fast path can register a shared
+        // callsite using another test thread's no-op default, caching "never"
+        // even while this test has a scoped subscriber. Isolate that global
+        // cache, not the suite: one child invocation, no retries or global logger.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "common::azure_key_vault::tests::sdk_and_operational_telemetry_redact_sensitive_material",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("run isolated AKV telemetry test");
+        assert!(
+            output.status.success(),
+            "isolated AKV telemetry test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
 
     #[derive(Clone)]
     struct Capture(Arc<Mutex<Vec<u8>>>);
@@ -511,6 +535,8 @@ async fn sdk_and_operational_telemetry_redact_sensitive_material() {
             RetryOptions::none(),
         );
         let error = source.fetch_pair().await.unwrap_err();
+        assert_eq!(error.stage, super::error::Stage::Password);
+        assert_eq!(error.kind, super::error::FailureKind::Authorization);
         error.log_failure();
         let source = super::testing::source(
             config(),
@@ -521,7 +547,10 @@ async fn sdk_and_operational_telemetry_redact_sensitive_material() {
             }),
             RetryOptions::none(),
         );
-        source.fetch_pair().await.unwrap_err().log_failure();
+        let error = source.fetch_pair().await.unwrap_err();
+        assert_eq!(error.stage, super::error::Stage::Identity);
+        assert_eq!(error.kind, super::error::FailureKind::Authentication);
+        error.log_failure();
     }
     .with_subscriber(subscriber)
     .await;
