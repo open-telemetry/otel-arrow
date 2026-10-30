@@ -8,16 +8,11 @@ policies:
       node: {{ default_node_ctrl_msg_channel_size | default(100) }}
     pdata: {{ default_pdata_channel_size | default(100) }}
 
-{% if push_metrics_endpoint is defined and push_metrics_endpoint -%}
-{%- set push_service_name = "load-generator" %}
-{% include "push_metrics_engine.yaml.j2" %}
-{%- else -%}
 engine:
   telemetry:
     # Keep metric sets of stopped pipelines scrapeable so the final counts
     # survive the shutdown that precedes the last scrape (see #2731).
     metric_unregister_grace_period: {{ metric_unregister_grace_period | default("5s") }}
-{%- endif %}
 
 groups:
   default:
