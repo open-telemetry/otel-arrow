@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
 use tokio::sync::{RwLock, watch};
@@ -16,6 +17,12 @@ use crate::registry::TelemetryRegistryHandle;
 use crate::reporter::{
     MetricsCollectionMessage, MetricsCollectorStatus, MetricsFlushHandle, MetricsReporter,
 };
+
+/// How long the collector waits past the earliest unregister grace deadline
+/// before sweeping. Pipeline shutdowns often come in bursts, for example group
+/// or engine shutdonw, so adding a little bit of slack time can let us prune
+/// multiple pipelines in one wake.
+const UNREGISTER_SWEEP_SLACK: Duration = Duration::from_millis(100);
 
 /// Internal collector responsible for gathering internal telemetry signals (currently metric
 /// sets, also known as multivariate metrics).
@@ -145,13 +152,56 @@ impl InternalCollector {
             return;
         };
         self.drain_pending();
+        let _ = self
+            .registry
+            .reap_expired_metric_unregisters(Instant::now());
     }
 
+    /// Aggregates snapshots until the channel closes, and also drives the removal
+    /// of unregistered metric sets from the registry when their grace deadline
+    /// passes.
     async fn collection_loop(&self) -> Result<(), Error> {
-        while let Ok(message) = self.metrics_receiver.recv_async().await {
-            self.collect_message(message);
+        let unregister_notify = self.registry.unregister_notify();
+        // Resume from deadlines queued before this loop started: a previous
+        // loop may have consumed their notification before being cancelled.
+        let mut next_deadline = self.registry.next_metric_unregister_deadline();
+        let sweep_timer = match next_deadline {
+            Some(deadline) => tokio::time::sleep_until(sweep_instant(deadline)),
+            None => tokio::time::sleep(Duration::ZERO),
+        };
+        tokio::pin!(sweep_timer);
+        loop {
+            tokio::select! {
+                biased;
+
+                // Next pending unregister is ready
+                () = &mut sweep_timer, if next_deadline.is_some() => {
+                    let now = tokio::time::Instant::now().into_std();
+                    next_deadline = self.registry.reap_expired_metric_unregisters(now);
+                    if let Some(deadline) = next_deadline {
+                        sweep_timer.as_mut().reset(sweep_instant(deadline));
+                    }
+                }
+
+                // Registry notified us of a new unregister. This happens when
+                // an unregister hits the registry while there were no existing
+                // pending unregisters.
+                () = unregister_notify.notified() => {
+                    next_deadline = self.registry.next_metric_unregister_deadline();
+                    if let Some(deadline) = next_deadline {
+                        sweep_timer.as_mut().reset(sweep_instant(deadline));
+                    }
+                }
+
+                // Metrics collection message
+                message = self.metrics_receiver.recv_async() => {
+                    let Ok(message) = message else {
+                        return Ok(());
+                    };
+                    self.collect_message(message);
+                }
+            }
         }
-        Ok(())
     }
 
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
@@ -213,6 +263,11 @@ impl InternalCollector {
             }
         }
     }
+}
+
+/// Converts an unregister grace deadline into the collector's sweep wakeup.
+fn sweep_instant(deadline: Instant) -> tokio::time::Instant {
+    tokio::time::Instant::from_std(deadline + UNREGISTER_SWEEP_SLACK)
 }
 
 #[cfg(test)]
@@ -336,6 +391,7 @@ mod tests {
         TelemetryConfig {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(reporting_interval_ms),
+            metric_unregister_grace_period: Duration::ZERO,
             logs: LogsConfig::default(),
             resource: HashMap::new(),
             detectors: Vec::new(),
@@ -373,6 +429,79 @@ mod tests {
             .await
             .expect("collector task should join")
             .expect("collector should stop cleanly");
+    }
+
+    /// Scenario: a metric set is unregistered while a grace period is configured and the
+    /// collector is otherwise idle.
+    /// Guarantees: the collector wakes for the grace deadline and removes the metric set, without
+    /// any other registry activity.
+    #[tokio::test(start_paused = true)]
+    async fn test_collector_removes_unregistered_metric_sets_after_grace() {
+        let config = create_test_config(100);
+        let telemetry_registry = create_test_registry();
+        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(30));
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(Arc::new(collector).run(cancel.clone()));
+
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        assert!(
+            telemetry_registry
+                .unregister_metric_set_at(metric_set.key, tokio::time::Instant::now().into_std(),)
+        );
+
+        tokio::time::sleep(Duration::from_secs(29)).await;
+        assert_eq!(telemetry_registry.metric_set_count(), 1);
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
+
+        cancel.cancel();
+        handle.await.unwrap().unwrap();
+    }
+
+    /// Scenario: the collector consumes the first-deadline notification, is cancelled while that
+    /// deadline is still pending, and is then restarted.
+    /// Guarantees: the restarted collector resumes sweeping from the pending deadline, so both the
+    /// earlier and any later unregistered metric sets are removed after their grace periods.
+    #[tokio::test(start_paused = true)]
+    async fn test_restarted_collector_resumes_unregister_sweeps() {
+        let config = create_test_config(100);
+        let telemetry_registry = create_test_registry();
+        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(30));
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let collector = Arc::new(collector);
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(collector.clone().run(cancel.clone()));
+        let first: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("first"));
+        assert!(telemetry_registry.unregister_metric_set(first.key));
+        // Let the running collector consume the notification for the first deadline.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        cancel.cancel();
+        handle.await.unwrap().unwrap();
+
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(collector.run(cancel.clone()));
+        // The queue is not empty, so this unregister does not notify the collector.
+        let second: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("second"));
+        assert!(telemetry_registry.unregister_metric_set(second.key));
+        assert_eq!(telemetry_registry.metric_set_count(), 2);
+
+        tokio::time::sleep(Duration::from_secs(32)).await;
+        assert_eq!(
+            telemetry_registry.metric_set_count(),
+            0,
+            "the restarted collector must sweep pending grace deadlines"
+        );
+        assert_eq!(telemetry_registry.entity_count(), 0);
+
+        cancel.cancel();
+        handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -609,6 +738,15 @@ mod tests {
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let collector = Arc::new(collector);
 
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
+        // The collector reads the registry when its loop starts. Wait until it is
+        // idle on the channel before blocking the registry.
+        reporter
+            .flush()
+            .await
+            .expect("collector should acknowledge the startup flush");
+
         // Block aggregation after the collector dequeues the first snapshot so
         // the second snapshot deterministically fills the one-slot channel.
         let locked_registry = telemetry_registry.clone();
@@ -621,8 +759,6 @@ mod tests {
         });
         locked_rx.recv().expect("registry lock thread should start");
 
-        let cancel = CancellationToken::new();
-        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
         reporter
             .try_report_snapshot(create_test_snapshot(
                 key,
@@ -642,7 +778,7 @@ mod tests {
         let error = reporter
             .report_snapshot_reliably_until(
                 create_test_snapshot(key, vec![MetricValue::from(3u64), MetricValue::from(3u64)]),
-                std::time::Instant::now() + Duration::from_millis(20),
+                Instant::now() + Duration::from_millis(20),
             )
             .await
             .expect_err("reliable reporting must honor its terminal deadline");
@@ -738,6 +874,15 @@ mod tests {
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let collector = Arc::new(collector);
 
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
+        // The collector reads the registry when its loop starts. Wait until it is
+        // idle on the channel before blocking the registry.
+        reporter
+            .flush()
+            .await
+            .expect("collector should acknowledge the startup flush");
+
         // Hold the registry lock after the collector dequeues the first
         // snapshot. The second snapshot then fills the channel and the third,
         // reliable send holds the shutdown read gate while waiting for room.
@@ -751,8 +896,6 @@ mod tests {
         });
         locked_rx.recv().expect("registry lock thread should start");
 
-        let cancel = CancellationToken::new();
-        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
         reporter
             .try_report_snapshot(create_test_snapshot(
                 key,
