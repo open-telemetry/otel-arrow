@@ -544,6 +544,10 @@ jobs:
   # Windows test partitions depend only on this job, not the Linux build.
   build_required_windows:
     runs-on: windows-latest
+    env:
+      # Match Linux and the Windows cache warmer; hash profiles before restore.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     outputs:
       cache-hit: ${{ steps.rust-cache.outputs.cache-hit }}
     steps:
