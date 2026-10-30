@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793323087031,
+  "lastUpdate": 1793324616707,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -75955,6 +75955,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "157547602+adgrieco@users.noreply.github.com",
+            "name": "adgrieco",
+            "username": "adgrieco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d29aa13f23ed2aa6ec043f28681ff767748731c2",
+          "message": "feat(windows_perf_counters): enable Windows perf-counter receiver (#4593)\n\n# Change summary\n\nEnables the experimental Windows performance-counter receiver\n(`receiver:windows_perf_counters`). Behind the opt-in\n`windows-perf-counters` feature, it collects local PDH counters by\nEnglish name, with exact instances or instance patterns (`*`, `?`), and\nemits them as Gauges or Sums.\n\nThis PR:\n\n- registers the receiver factory and removes the `dead_code` allows that\nregistration makes unnecessary\n- adds the receiver README (configuration, runtime behavior, limits,\nself-metrics and troubleshooting)\n- adds two console example configs, one exact and one wildcard\n- lists the receiver in the contrib-nodes README and the component\nbaseline\n- adds the changelog entry\n\nNo receiver code changes beyond registration.\n\n## Related issue\n\n* Closes #4074\n\n## Validation\n\n- **Unit tests passed (49):** config parsing and rejections, plus the\ncollection rules against a fake PDH: retrying failed adds, skipping\nvalues with no data or invalid data, `#n` suffixes for duplicate\ninstance names, reopening the query after a collect failure, overrun and\nper-counter warnings, and shutdown.\n- **Live PDH tests passed on Windows 11 (English):** exact and\nnon-instanced counters, `\\Processor(*)` with `_Total` opt-in,\n`\\Process(*)` duplicate names, a missing counter that is retried,\npartial instance patterns, backslashes in instance names,\n`recreate_query`, clean shutdown, and a live end-to-end receiver test.\n- **German host:** the smoke test passed on a de-DE Windows host,\nrunning receiver code identical to this PR's.\n\n<details>\n<summary>Exact commands and results</summary>\n\nRun from `rust/otap-dataflow` on this branch.\n\n| Command | Result |\n| --- | --- |\n| `cargo fmt --all -- --check` | Passed. |\n| `cargo clippy -p otel-arrow-dfe-contrib-nodes --features\nwindows-perf-counters --all-targets -- -D warnings` | Passed. |\n| `cargo test -p otel-arrow-dfe-contrib-nodes --features\nwindows-perf-counters --lib windows_perf_counters` | 49 passed; 10 live\ntests ignored. |\n|\n`crates/contrib-nodes/src/receivers/windows_perf_counters_receiver/ci/run.ps1`\n| 9 live PDH tests and the live end-to-end receiver test passed. |\n| `cargo xtask component-inventory --check components-baseline.json` |\nPassed. |\n| `cargo xtask structure-check` | Passed. |\n| `markdownlint-cli2` on both READMEs | 0 issues. |\n| Changelog entry | ASCII only; note 79 and subtext 206 characters.\n`make chlog-validate` not run locally (no Go toolchain); CI runs it. |\n\n</details>\n\n## User-facing changes\n\nNew experimental receiver, off by default. Build with the\n`windows-perf-counters` feature and configure\n`receiver:windows_perf_counters` in a one-core source pipeline. See the\nreceiver README.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 20fdf80b-e0a9-45aa-a715-1b8de389e6e6",
+          "timestamp": "2026-10-30T00:52:35Z",
+          "tree_id": "6411aeab271efd8ab71b5e7b905299dee5f76efd",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d29aa13f23ed2aa6ec043f28681ff767748731c2"
+        },
+        "date": 1793324593283,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.45,
             "unit": "MB"
           },
           {
