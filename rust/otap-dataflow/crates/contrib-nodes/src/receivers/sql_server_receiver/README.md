@@ -1,123 +1,279 @@
 # SQL Server Receiver
 
 <!-- markdownlint-configure-file
-{ "MD013": { "tables": false, "code_blocks": false } }
+{
+  "MD013": { "tables": false, "code_blocks": false },
+  "MD033": { "allowed_elements": ["details", "summary"] }
+}
 -->
 
-This is a **scheduled query-to-logs receiver**, not CDC or
-database-monitoring metrics. Enable `sql-server` explicitly to register
-`urn:otel:receiver:sql_server`. The feature is excluded from all aggregates;
-the root feature also enables `flat-file-user-pass-auth`.
+## Metadata
 
-`TcpConnector` defaults to verified native TLS (Windows Schannel/Linux OpenSSL),
-platform certificate roots, and an optional additional CA file. The factory
-requires one pipeline core and `basic_auth_provider`, acquires shared checkpoint
-ownership, and initializes admission from process memory-pressure state.
-The shared scraper provides scheduling, backpressure, feedback, and persistence;
-it contains no vendor driver and Oracle behavior is unchanged.
+| Property | Value |
+| --- | --- |
+| Type | `urn:otel:receiver:sql_server` |
+| Crate | `otel-arrow-dfe-contrib-nodes` |
+| Feature gate | `sql-server` (opt-in; excluded from all aggregate features) |
+| Output | OTLP logs, one log record per selected database row |
+| Execution | One query per receiver, in a single-core pipeline |
+| Authentication | SQL login through `basic_auth_provider`; no Integrated or Entra authentication |
+| Transport | Verified native TLS by default; no separately installed database driver |
 
-The receiver follows the shared database polling architecture described in
-[RFC #3918][rfc]. See the operating limits and deployment qualification
-requirements below.
+## Overview
+
+The SQL Server receiver polls a read-only T-SQL query, converts its rows into
+structured OpenTelemetry logs, and saves acknowledged progress in filesystem
+checkpoints. Choose a **snapshot** for periodic complete results, or a
+**scalar/composite watermark** for incremental collection.
+
+This is **scheduled query polling**, not Change Data Capture (CDC) or
+database-monitoring metrics. Delivery is conditionally at least once, subject
+to the [source and downstream requirements](#delivery-guarantees); it is not
+exactly once.
+
+SQL Server connectivity, query validation, and native type conversion live in
+this receiver. Scheduling, backpressure, log encoding, downstream feedback,
+and checkpoint storage use the shared database scraper described in
+[RFC #3918][rfc].
+
+## In This Guide
+
+- [Getting started](#getting-started): prerequisites, build, and run.
+- [Configuration](#configuration): example, authentication, field reference,
+  and TLS.
+- [Watermark modes](#cursor-modes): composite, scalar, and snapshot examples.
+- [Delivery guarantees](#delivery-guarantees) and
+  [values and resource limits](#values-and-resource-limits).
+- [Recovery](#recovery-boundaries), including
+  [quarantined sources](#recovering-a-quarantined-source).
+- [Development checks](#focused-development-checks) and
+  [live fixture qualification](#live-fixture-and-qualification).
 
 ## Getting Started
 
-For startup-only Azure Key Vault credentials, see the
-[AKV Basic Auth provider](../../../../contrib-extensions/src/azure_key_vault_user_pass_auth/README.md)
-and [complete AKV pipeline](../../../../../configs/sql-server-akv-console.yaml).
-The existing `basic_auth_provider` binding and verified TLS stay unchanged.
+For a disposable database with generated credentials and certificates, follow
+the [PowerShell demo](DEMO.md). It covers fixture setup, collection, checkpoint
+resume, and cleanup.
 
-See the [PowerShell demo](DEMO.md) for a short fixture setup, run, verification,
-and cleanup walkthrough.
-The complete pipeline is [`configs/sql-server-console.yaml`][example].
-Build from `rust/otap-dataflow` with:
+For an existing database:
+
+1. Choose a [watermark mode](#cursor-modes) and confirm the
+   [source-ordering requirements](#delivery-guarantees).
+2. Provision a dedicated SQL login with CONNECT access to the configured
+   database and SELECT access only to the intended table or view. Metadata
+   discovery requires permission to execute the same query, not blanket
+   administrator access.
+3. Provide a credential extension, trusted server certificate, and persistent,
+   writable checkpoint directory.
+4. Adapt the [complete console pipeline][example] and run one active poller
+   for the source range.
+
+### Build
+
+An existing feature-enabled binary needs no Rust toolchain. To build your own,
+run from `rust\otap-dataflow`:
 
 ```powershell
 cargo build --locked --no-default-features `
     --features sql-server,core-nodes,crypto-ring --bin df_engine
 ```
 
-Use a dedicated SQL login with CONNECT access to the configured database and
-SELECT access only to the intended table/view. Metadata discovery requires
-permission to execute the same query; no blanket administrator grant is needed.
-Integrated/Entra authentication is not supported. Credentials come from the
-`basic_auth_provider` capability, never a connection string or inline password.
+The root `sql-server` feature also enables `flat-file-user-pass-auth`.
+SQL Server uses OS-native TLS independently of the engine's `crypto-*`
+selection; the example selects `crypto-ring` for other engine components.
 
-Set `SQL_SERVER_HOST`, `SQL_SERVER_PORT`, `SQL_SERVER_DATABASE`,
-`SQL_SERVER_USERNAME`, `SQL_SERVER_PASSWORD_FILE`, and `SQL_SERVER_CA_FILE`
-for the example. Omit `ca_file` from the YAML when platform trust is sufficient.
-The password and CA file paths default to `/run/sql-server-secrets/password`
-and `/run/sql-server-secrets/ca.pem` so offline configuration validation needs
-no fixture environment. These are paths, not bundled secrets or trust bypasses:
-provide the files or override the paths before starting the receiver.
-Set `SQL_SERVER_STATE_DIR` to persistent local checkpoint storage (default
-`./state/sql_server`). On Windows use this receiver setting directly:
-optional managed `engine.state_dir` provisioning is Linux-only.
-Run the built engine with `--config configs/sql-server-console.yaml` and an
-appropriate loopback admin bind, such as `--http-admin-bind 127.0.0.1:0`.
+No ODBC/JDBC driver, JVM, SQL tools, or native database client is needed.
+Windows uses system Schannel. Linux builds need OpenSSL development libraries;
+Linux deployments need matching OpenSSL runtime libraries and an up-to-date
+platform root store. Docker, Python, and the OpenSSL command-line tool are
+fixture-only prerequisites.
 
-The console demonstrates collection and feedback, **not durable delivery**.
-Conditional at-least-once delivery requires a feedback-preserving path to a
-durable destination, unique stable commit-visible cursors, unchanged selected
-values, and source retention covering the replay window. Crash recovery may
-replay accepted rows. There is no exactly-once or deduplication guarantee,
-lookback, or automatic distributed partitioning.
+### Run
 
-Use **one active poller per logical source range** and stop-before-start
-replacement. Checkpoint ownership does not detect equivalent queries under
-different identities or state directories. Do not bypass locks. Snapshots
-are periodic observations, not guaranteed replay of transient rows.
+Set these environment variables for the [console pipeline][example].
+The defaults below belong to that example, not the receiver schema.
 
-Receiver operation needs no separately installed ODBC/JDBC driver, JVM, SQL
-tools, or native database client. Docker, Python, and the OpenSSL command-line
-tool are fixture-only. Linux receiver binaries also need OpenSSL runtime
-libraries and an up-to-date platform root store.
-Distributors should provide feature-enabled binaries; users need no Rust
-toolchain to run an existing binary.
+| Variable | Example default | What to provide |
+| --- | --- | --- |
+| `SQL_SERVER_HOST` | `localhost` | Server DNS name or IP address. |
+| `SQL_SERVER_PORT` | `1433` | Explicit TCP port; no instance discovery. |
+| `SQL_SERVER_DATABASE` | `otap_fixture` | Database containing the selected table or view. |
+| `SQL_SERVER_USERNAME` | `otel_reader` | Dedicated SQL reader login. |
+| `SQL_SERVER_PASSWORD_FILE` | `/run/sql-server-secrets/password` | Path to a readable password file. |
+| `SQL_SERVER_CA_FILE` | `/run/sql-server-secrets/ca.pem` | Path to a PEM CA bundle; omit `ca_file` from YAML if platform trust is sufficient. |
+| `SQL_SERVER_STATE_DIR` | `./state/sql_server` | Persistent, writable checkpoint storage. |
+| `SQL_SERVER_CATCH_UP_MAX_PAGES` | `32` | Maximum page fetches per polling cycle. |
 
-## Preparation API
+The default secret paths allow offline configuration validation; they do not
+provide bundled credentials or certificates. Supply the files or override the
+paths before starting. On Windows, set `checkpoint.directory` directly through
+`SQL_SERVER_STATE_DIR`; managed `engine.state_dir` provisioning is Linux-only.
 
-Deserialize `SqlServerReceiverConfig` with Serde. Successful preparation exposes
-the logical `source_id`, validated connection settings, a shared `CompiledQuery`,
-checkpoint policy, semantic fingerprint, and a `SqlServerStatement`.
-The statement retains canonical operator SQL separately from generated native
-SQL and ordered `SqlServerParameter` roles. Getters expose these values for the
-adapter; deserialization and getters do not execute the query or access files.
+From `rust\otap-dataflow`, run:
 
-Configuration errors and `Debug` output redact SQL, endpoints, and cursor
-values. Explicit SQL and connection getters are not redacted and must not be
-logged as diagnostics.
+```powershell
+.\target\debug\df_engine.exe `
+    --config configs\sql-server-console.yaml `
+    --http-admin-bind 127.0.0.1:0
+```
 
-## Configuration Contract
+On Linux, use `./target/debug/df_engine` with the same arguments and a
+shell-appropriate line continuation.
 
-Unknown fields, invalid types, and unsupported enum values are rejected rather
-than replaced with defaults. The required top-level objects are `connection`,
-`query`, `watermark`, and `checkpoint`, together with `source_id`.
+**The console demonstrates collection and feedback, not durable delivery.**
+Stop the previous receiver before starting a replacement. If shutdown is
+unconfirmed, follow [quarantine recovery](#recovering-a-quarantined-source)
+instead of restarting automatically.
 
-- `source_id`: 1..256 ASCII letters, digits, underscores, hyphens, or dots.
-- `connection`: explicit `host` (DNS name or IP) and `database`; optional `port`
-  (default 1433), `connect_timeout` (default 10s), and the SQL Server-only `tls`
-  settings below. Credentials, connection strings, and instance discovery are
-  rejected.
-- `query`: `statement`, `max_rows_per_poll`, and `max_batch_bytes` are required.
-  `interval` defaults to 60s, `timeout` to 30s, and `fetch_size_rows` to
-  `min(300, max_rows_per_poll)`. An explicit fetch size above the row limit is
-  rejected, not reduced. Shared `catch_up` defaults are 32 pages and 10s.
-- `watermark`: an explicit supported mode and initial cursor where applicable.
-- `checkpoint`: the shared directory, retry, and feedback policy. Preparation
-  does not create directories, acquire leases, or read/write checkpoints.
+## Configuration
 
-The interval must be 60s..24h; query and connect timeouts must be 1s..300s.
-These durations require whole seconds. Shared bounds require 1..10,000 rows
-per poll, a nonzero fetch size no larger than the row limit, and batch capacity
-from one byte through 256 MiB. Catch-up permits 1..1024 pages and a duration
-from 1ms through 5 minutes. Existing shared scraper and Oracle
-configuration and checkpoint representations are unchanged.
+### Example
+
+The following is a receiver node under a pipeline's `nodes:` block, not a
+complete pipeline. The [console pipeline][example] includes the credential
+extension, single-core allocation, exporter, and connections.
+
+```yaml
+sql-events:
+  type: urn:otel:receiver:sql_server
+  capabilities:
+    basic_auth_provider: sql-credentials
+  config:
+    source_id: sql-events
+    connection:
+      host: sql.example.com
+      port: 1433
+      database: events
+      tls:
+        enabled: true
+        trust_server_certificate: false
+    query:
+      statement: >
+        SELECT ID, EVENT_TS, PAYLOAD
+        FROM dbo.OTAP_SQL_EVENTS
+        WHERE EVENT_TS > @last_timestamp
+          OR (EVENT_TS = @last_timestamp AND ID > @last_id)
+        ORDER BY EVENT_TS ASC, ID ASC
+      interval: 1m
+      timeout: 30s
+      max_rows_per_poll: 1000
+      fetch_size_rows: 100
+      max_batch_bytes: 4 MiB
+      catch_up:
+        max_pages: 32
+        max_duration: 10s
+    watermark:
+      mode: composite
+      timestamp:
+        column: EVENT_TS
+        bind: last_timestamp
+        initial: "2026-01-01T00:00:00Z"
+        timezone: UTC
+      tie_breaker:
+        column: ID
+        bind: last_id
+        initial: 0
+    checkpoint:
+      directory: ./state/sql_server
+      on_nack: rewind
+      on_permanent_nack: pause
+      nack_backoff: 1s
+      max_consecutive_failures: 5
+```
+
+This example relies on platform certificate trust. For a private CA, add
+`connection.tls.ca_file` with the path to its PEM bundle.
+
+### Authentication
+
+Credentials come from the `basic_auth_provider` capability, never a connection
+string or inline receiver password. Integrated/Entra authentication is not
+supported.
+
+For a mounted password file, configure the
+[flat-file username/password extension](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md)
+under the same pipeline's `extensions:` block:
+
+```yaml
+sql-credentials:
+  type: urn:otel:extension:flat_file_user_pass_auth
+  config:
+    username: '${env:SQL_SERVER_USERNAME:-otel_reader}'
+    password_secret_file: '${env:SQL_SERVER_PASSWORD_FILE:-/run/sql-server-secrets/password}'
+    password_secret_file_refresh: 1m
+```
+
+For startup-only Azure Key Vault credentials, see the
+[AKV Basic Auth provider](../../../../contrib-extensions/src/azure_key_vault_user_pass_auth/README.md)
+and [complete AKV pipeline](../../../../../configs/sql-server-akv-console.yaml).
+It uses the same `basic_auth_provider` binding and verified TLS.
+
+New connections and reconnects acquire the current credentials. Refreshing
+credentials does not reauthenticate an already-open session or reset progress.
+
+### Top-Level Fields
+
+All fields below belong inside the receiver's `config:` block. Unknown fields,
+invalid types, and unsupported enum values are rejected rather than replaced
+with defaults.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `source_id` | **required** | Stable logical source identity: 1-256 ASCII letters, digits, underscores, hyphens, or dots. |
+| `connection` | **required** | SQL Server endpoint and TLS settings. |
+| `query` | **required** | One read-only statement with explicit row and byte limits. |
+| `watermark` | **required** | `snapshot`, `scalar`, or `composite`; see [cursor modes](#cursor-modes). |
+| `checkpoint` | **required** | Persistent state directory and feedback policy. |
+
+### Connection
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `connection.host` | **required** | One DNS name or IP address, not a URL or connection string. |
+| `connection.port` | `1433` | Nonzero TCP port; SQL Browser/instance discovery is not supported. |
+| `connection.database` | **required** | Database name. |
+| `connection.connect_timeout` | `10s` | `1s`-`300s`, in whole seconds; one absolute budget for credential acquisition and connection setup. |
+| `connection.tls` | Verified TLS | SQL Server-specific settings in the [TLS reference](#sql-server-tls-settings). |
+
+### Query
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `query.statement` | **required** | One read-only `SELECT` in the [restricted T-SQL shape](#restricted-t-sql), at most 16 KiB. |
+| `query.interval` | `1m` | `1m`-`24h`, in whole seconds. Delay after a polling cycle, not between acknowledged catch-up pages. |
+| `query.timeout` | `30s` | `1s`-`300s`, in whole seconds. Absolute deadline for metadata validation or a metadata-plus-fetch operation, not a downstream-ACK deadline. |
+| `query.max_rows_per_poll` | **required** | `1`-`10000`. Incremental per-page ceiling; snapshot complete-result ceiling. |
+| `query.fetch_size_rows` | `min(300, max_rows_per_poll)` | Cooperative decode-chunk size, no greater than the row limit; not a TDS packet size. |
+| `query.max_batch_bytes` | **required** | `1` byte-`256 MiB`, as integer bytes or a size string such as `4 MiB`. Separate normalized-row and encoded-OTLP ceilings, not a combined memory limit. |
+| `query.catch_up.max_pages` | `32` | `1`-`1024`, including empty probes. Set to `1` for single-page cycles. |
+| `query.catch_up.max_duration` | `10s` | `1ms`-`5m`. Cycle budget for admitting another fetch, not an in-flight deadline. |
+
+An explicit fetch size above the row limit is rejected, not reduced.
+Interval and timeout values require whole seconds: `1.5m` is valid (90 seconds),
+but `60.5s` is not.
+
+Catch-up is ACK-gated, with one pending page. It stops on an empty page, budget
+exhaustion, downstream/process-memory admission pressure, or a stop request.
+Snapshots are periodic complete observations, not incremental catch-up.
+
+### Checkpoint
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `checkpoint.directory` | **required** | Persistent, writable directory used for checkpoint storage and source ownership. Required in every mode, including snapshot. |
+| `checkpoint.on_nack` | **required** | Must be `rewind`: re-query from durable progress after retryable negative acknowledgement. |
+| `checkpoint.on_permanent_nack` | `pause` | `pause` stops this source until repaired and restarted; `retry` re-queries with capped backoff. |
+| `checkpoint.nack_backoff` | **required** | `1ms`-`5m`; delay before replaying a retryable NACK. The example uses `1s`. |
+| `checkpoint.max_consecutive_failures` | **required** | `1`-`1000`; consecutive durable checkpoint-write failures before termination. The example uses `5`. |
+
+Configuration preparation does not create directories, acquire leases, or
+read/write checkpoints. See [delivery guarantees](#delivery-guarantees) before
+changing source identity or reusing state.
 
 ### SQL Server TLS Settings
 
-These `connection.tls` settings are enforced by the production connector.
-They are SQL Server-specific; shared database/TLS configuration is unchanged.
+TLS is required by default, using platform certificate roots and an optional
+additional CA bundle. These settings belong to `connection.tls`.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -131,75 +287,154 @@ verification. Explicit null or nonboolean flags are rejected. Optional strings
 must not be null; CA paths must be nonempty, and identity overrides follow the
 same DNS/IP rules as `host`, rejecting whitespace, wildcards, URLs, ports,
 userinfo, bracketed IPs, and control characters. DNS names normalize to lowercase.
-SQL Server native TLS does not require a process-installed Rustls provider.
-Unrelated engine components still honor the selected `crypto-*` features.
 
 `enabled: false` requests a non-TLS connection; SQL Server policy may refuse it
-or require encryption. The Tiberius mapping is `NotSupported`, not `Off`
-(which uses login-only TLS). A disabled TLS contract rejects `ca_file`,
+or require encryption. A disabled TLS contract rejects `ca_file`,
 `server_name_override`, and `trust_server_certificate: true` as inapplicable;
 an omitted or explicit false trust flag is allowed.
 
 With TLS enabled, both `ca_file` and `server_name_override` conflict with
 `trust_server_certificate: true`. Preparation rejects these combinations
-instead of silently ignoring CA trust or a requested identity. Tiberius's
-native-TLS bypass disables SNI as well as **both certificate-chain and hostname
-validation**. Use an override only with verified TLS; bypass alone remains an
-explicit controlled-testing option. Configurations that previously combined
-bypass and an override must remove the override or restore verification.
+instead of silently ignoring CA trust or a requested identity. Certificate
+bypass disables SNI as well as **both certificate-chain and hostname
+validation**. Configurations that previously combined bypass and an override
+must remove the override or restore verification.
 
-The factory warns when either unsafe test mode is selected. These modes may
-expose credentials/rows or permit server impersonation; use only non-sensitive
-test data in an isolated environment. Defaults never enable them implicitly.
+**Use non-TLS or certificate-bypass modes only with non-sensitive test data in
+an isolated environment.** The factory warns when either is selected. They may
+expose credentials/rows or permit server impersonation. Defaults never enable
+them implicitly.
 
-Connection accessors `tls_enabled()`, `trust_server_certificate()`, and
-`server_name_override()` expose this contract. The override getter returns
-`None` when omitted, meaning use `host()` for TLS identity.
+## Cursor Modes
 
-### Cursor Modes
+Choose the mode according to the source's publication and retention guarantees,
+not just the available column types. Incremental initial values are
+**exclusive lower bounds**; an existing compatible checkpoint takes precedence.
 
-| Mode | Required source contract | Prepared parameters |
+| Mode | Required source contract | Collection behavior |
 | --- | --- | --- |
-| Snapshot | Complete bounded result, no cursor | Page limit plus one overflow probe |
-| Scalar `int64` | Unique, non-null signed integer | Cursor, page limit |
-| Scalar timestamp | Unique, non-null UTC `datetime2` | Timestamp, page limit |
-| Composite | Non-null UTC `datetime2` plus signed-int tie-breaker; unique pair | Timestamp, tie-breaker, page limit |
+| `snapshot` | Complete bounded result, no cursor | Re-emit the complete current result each interval. |
+| `scalar` with `int64` | Unique, non-null, stable signed integer with commit-visible ordering | Incremental pages after one acknowledged key. |
+| `scalar` with `timestamp` | Unique, non-null, stable UTC `datetime2` with commit-visible ordering | Incremental pages after one acknowledged timestamp. |
+| `composite` | Non-null, stable UTC `datetime2` plus signed-int tie-breaker; unique pair with commit-visible ordering | Incremental pages after the acknowledged timestamp/key pair. |
 
-Scalar cursors use `column`, `bind` (without `@`), and typed `initial`.
-Composite cursors use `timestamp` (`column`, `bind`, `initial`, `timezone: UTC`)
-and `tie_breaker` (`column`, `bind`, signed-integer `initial`).
+The fragments below replace `query` and `watermark` inside the receiver's
+`config:` block. Keep `source_id`, `connection`, `checkpoint`, and the credential
+binding from the [configuration example](#example). Use a new source/checkpoint
+identity when changing modes; do not reuse incompatible progress.
+
+### Composite: Timestamp and Tie-Breaker
+
+Use composite mode when multiple rows can share a timestamp. The tie-breaker
+must make the pair unique.
+
+```yaml
+query:
+  statement: >
+    SELECT EVENT_TS, EVENT_ID, PAYLOAD FROM dbo.EVENTS
+    WHERE EVENT_TS > @last_timestamp
+       OR (EVENT_TS = @last_timestamp AND EVENT_ID > @last_id)
+    ORDER BY EVENT_TS ASC, EVENT_ID ASC
+  max_rows_per_poll: 1000
+  max_batch_bytes: 4 MiB
+watermark:
+  mode: composite
+  timestamp:
+    column: EVENT_TS
+    bind: last_timestamp
+    initial: "2026-01-01T00:00:00Z"
+    timezone: UTC
+  tie_breaker:
+    column: EVENT_ID
+    bind: last_id
+    initial: 0
+```
+
+Both columns must be non-null. The timestamp uses UTC `datetime2`; the
+tie-breaker uses a supported native signed-integer type. A composite key
+distinguishes equal timestamps but **does not solve late commit visibility**.
+
+### Scalar: One Typed Key
+
+Use one unique, non-null, stable cursor. SQL Server supports `int64` and
+`timestamp` scalar values, not unsigned integers or strings.
+
+```yaml
+query:
+  statement: >
+    SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS
+    WHERE EVENT_ID > @last_key
+    ORDER BY EVENT_ID ASC
+  max_rows_per_poll: 1000
+  max_batch_bytes: 4 MiB
+watermark:
+  mode: scalar
+  column: EVENT_ID
+  bind: last_key
+  initial:
+    type: int64
+    value: 0
+```
+
+For a timestamp cursor, use `column: EVENT_TS` in the watermark and that same
+column in the projection, predicate, and ordering. Replace `initial` with:
+
+```yaml
+initial:
+  type: timestamp
+  value: "2026-01-01T00:00:00Z"
+```
+
+A timestamp shared by multiple rows is not a valid scalar key; use composite
+mode instead.
+
+### Snapshot: Complete Result
+
+Snapshot mode needs no cursor predicate, bind, or initial value. Ordering is
+optional; this example uses it for predictable presentation.
+
+```yaml
+query:
+  statement: >
+    SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS
+    ORDER BY EVENT_ID ASC
+  max_rows_per_poll: 1000
+  max_batch_bytes: 4 MiB
+watermark:
+  mode: snapshot
+```
+
+Each result must fit the row, normalized-memory, and encoded-OTLP limits
+**completely**. Overflow rejects the observation without emitting a truncated
+snapshot. Empty results emit no logs. Snapshot checkpoints retain ownership
+and acknowledged revisions, not a resumable row offset. A retry queries current
+data, not a stored copy of an earlier observation.
+
+### Cursor Fields and Timestamp Precision
+
+Scalar cursors require `column`, `bind` (without `@`), and typed `initial`.
+Composite cursors require `timestamp` (`column`, `bind`, `initial`,
+`timezone: UTC`) and `tie_breaker` (`column`, `bind`, signed-integer `initial`).
+Bind names use ASCII letters, digits, and `_`, starting with a letter or `_`.
 
 Initial timestamps normalize to UTC with exactly seven fractional digits.
 Offset-qualified RFC 3339 and timezone-less UTC date/time input are accepted
 only when exactly representable as `datetime2`: years 0001..9999, no leap
 seconds, and no sub-100ns precision loss. Input beyond nanosecond precision is
-rejected rather than truncated.
-
-**Preparation cannot prove commit-visible source ordering.** Incremental
-sources must ensure no row becomes visible later at or below an acknowledged
-cursor, and selected cursor values must not change after publication. A source
-ID, increasing timestamp, or identity/sequence allocation order alone does not
-prove this: transactions can commit out of order. A composite key distinguishes
-equal timestamps but does not solve late visibility. Unsupported sources need a
-publication-order guarantee, a suitable source view, or a different ingestion
-strategy. Database permissions, live types, nullability, uniqueness, and source
-semantics still require validation outside this layer.
+rejected rather than truncated. Live cursor values and initial/checkpoint
+values must also fit the native signed-integer range or `datetime2(p)`
+precision.
 
 ## Restricted T-SQL
 
-Only one `SELECT` from one schema-qualified table or view is accepted. Projections
-must have 1..256 explicit, case-insensitively unique names. Cursor columns must
-be projected directly, without aliases, using their configured spelling.
+Only one `SELECT` from one schema-qualified table or view is accepted.
+Projections must have 1-256 explicit, case-insensitively unique names. Cursor
+columns must be projected directly, without aliases, using their configured
+spelling.
 
 Scalar predicates must be exactly `column > @bind`, with ascending ordering by
-that column. Composite predicates must have this strict keyset shape:
-
-```sql
-SELECT EVENT_TS, EVENT_ID, PAYLOAD FROM dbo.EVENTS
-WHERE EVENT_TS > @last_timestamp
-   OR (EVENT_TS = @last_timestamp AND EVENT_ID > @last_id)
-ORDER BY EVENT_TS ASC, EVENT_ID ASC
-```
+that column. Composite predicates must use the strict keyset shape in the
+[composite example](#composite-timestamp-and-tie-breaker).
 
 Incremental queries cannot add filters or aggregation. Use a source view for
 additional source-side filtering while preserving the source-ordering contract.
@@ -223,12 +458,6 @@ be regular or bracketed, not double-quoted. One trailing semicolon is allowed.
 Input and canonical SQL are limited to 16 KiB; parsing is limited to 2048 tokens
 and recursion depth 32.
 
-Native SQL injects a bound `TOP` and maps configured cursor binds to positional
-`@P1`, `@P2`, etc., without interpolating values. Snapshot limits include one
-extra row to detect overflow. Token-aware rendering preserves quoted literals,
-national strings, escaped bracket identifiers, and bind-like text inside them.
-The adapter supplies every value through typed parameter binding.
-
 ### Validation Boundary
 
 Preparation enforces the receiver's structural rules: one restricted read-only
@@ -248,19 +477,97 @@ Every fetch re-describes and compares the complete plan before reading rows.
 
 Invalid SQL, incompatible metadata, and authorization failures are permanent,
 non-retryable errors, not reconnect-loop triggers. An unsuccessful validation
-leaves no executable plan. Deterministic TDS fixtures cover locally accepted
-expressions such as the examples above, missing objects, denied permissions,
-metadata-reported errors, and nullable cursors at startup and after reconnect.
-Shared-controller tests assert no emitted page, unchanged checkpoints, and no
-extra fetch or reconnect after permanent rejection. These protocol fixtures
-exercise the real driver; the explicitly requested live suite below separately
-exercises the pinned SQL Server fixture.
+leaves no executable plan.
 
 Database acceptance does not replace preparation's polling and checkpoint
 rules, or prove the source ordering, uniqueness, and immutability requirements
-described above.
+described below.
 
-## Compatibility Fingerprint
+## Output
+
+Each selected row becomes one structured OTLP log:
+
+| Element | Mapping |
+| --- | --- |
+| Resource attributes | `db.system.name=microsoft.sql_server` and `receiver.database.source_id=<source_id>`. |
+| Event name | `database.query.row`. |
+| Body | Selected column names and their converted values, including cursor columns. |
+| Event timestamp | Composite timestamp or scalar timestamp cursor; observation time for integer scalar and snapshot modes. |
+| Observed timestamp | Time the receiver observes the page. |
+
+If a source timestamp is outside OTLP's unsigned nanosecond range, the record
+uses observation time and retains the original value in its body. Selecting a
+timestamp in snapshot mode or alongside an integer cursor does not make it the
+event timestamp.
+
+## Delivery Guarantees
+
+**Conditional at-least-once delivery** requires all of the following:
+
+- A feedback-preserving path to a durable destination. Console feedback alone
+  is not durable storage.
+- Unique, non-null, stable incremental cursors with commit-visible ordering:
+  no row may become visible later at or below an acknowledged cursor.
+- Unchanged selected values and source retention covering the replay window.
+- One active poller per logical source range, with persistent checkpoints and
+  stop-before-start replacement.
+
+An increasing timestamp or identity/sequence allocation order alone does not
+prove commit-visible ordering: transactions can commit out of order.
+Preparation and live metadata checks cannot prove source uniqueness,
+immutability, or publication ordering. Unsupported sources need a suitable
+publication-order guarantee or source view, or a different ingestion strategy.
+
+Progress advances only after downstream ACK and durable checkpoint
+installation. Crash recovery may replay rows already accepted downstream.
+There is **no exactly-once, deduplication, lookback, or automatic distributed
+partitioning guarantee**.
+
+Checkpoint ownership does not detect equivalent queries under different source
+identities or state directories. Do not bypass locks or reset progress to work
+around ownership. Snapshots are periodic observations, not guaranteed replay
+of transient rows.
+
+## Implementation Notes
+
+The following details are intended for adapter maintainers and embedding
+applications. Operators should use the configuration and recovery sections.
+
+<details>
+<summary>Preparation API, fingerprint, driver integration, and cancellation internals</summary>
+
+### Preparation API
+
+Deserialize `SqlServerReceiverConfig` with Serde. Successful preparation exposes
+the logical `source_id`, validated connection settings, a shared `CompiledQuery`,
+checkpoint policy, semantic fingerprint, and a `SqlServerStatement`.
+The statement retains canonical operator SQL separately from generated native
+SQL and ordered `SqlServerParameter` roles. Getters expose these values for the
+adapter; deserialization and getters do not execute the query or access files.
+
+Configuration errors and `Debug` output redact SQL, endpoints, and cursor
+values. Explicit SQL and connection getters are not redacted and must not be
+logged as diagnostics.
+
+Connection accessors `tls_enabled()`, `trust_server_certificate()`, and
+`server_name_override()` expose the TLS contract. The override getter returns
+`None` when omitted, meaning use `host()` for TLS identity. Disabled TLS maps
+to Tiberius `NotSupported`, not `Off` (which uses login-only TLS).
+
+Native SQL injects a bound `TOP` and maps configured cursor binds to positional
+`@P1`, `@P2`, etc., without interpolating values. Snapshot limits include one
+extra row to detect overflow. Token-aware rendering preserves quoted literals,
+national strings, escaped bracket identifiers, and bind-like text inside them.
+The adapter supplies every value through typed parameter binding.
+
+Deterministic TDS fixtures cover locally accepted expressions, missing objects,
+denied permissions, metadata-reported errors, and nullable cursors at startup
+and after reconnect. Shared-controller tests assert no emitted page, unchanged
+checkpoints, and no extra fetch or reconnect after permanent rejection. These
+protocol fixtures exercise the real driver; the explicitly requested live suite
+separately exercises the pinned SQL Server fixture.
+
+### Compatibility Fingerprint
 
 The versioned BLAKE3 fingerprint includes database system, source ID, endpoint,
 database, canonical SQL, and normalized cursor configuration. SQL whitespace and
@@ -272,7 +579,7 @@ trust bypass, CA paths, and identity override), checkpoint location, and retry
 tuning are excluded. Credentials are not accepted by this configuration and
 cannot enter the fingerprint. No shared checkpoint format is changed.
 
-## Adapter and Shared Delivery
+### Adapter and Shared Delivery
 
 `SqlServerAdapter<C>` implements the existing local `DriverAdapter` contract.
 Its futures, session, metadata plan, and cancellation state stay on the pipeline
@@ -344,7 +651,22 @@ a fresh validated connection after a failed query. Acknowledged byte-limited
 prefixes retain their synchronized connection instead, with fresh metadata
 validation before the next fetch and a new cancellation generation.
 
-### Recovery Boundaries
+</details>
+
+## Recovery Boundaries
+
+| Failure | Receiver behavior | Operator action |
+| --- | --- | --- |
+| Allowlisted connection/network failure with confirmed setup cleanup | Retry with bounded backoff, then revalidate metadata. | Restore network/server availability; check DNS if retries persist. |
+| Query timeout with acknowledged cancellation | Retry on a fresh validated connection from the last durable cursor. | Investigate query cost or timeout settings. |
+| Invalid SQL, metadata, authorization, credentials, conversion, or certificate/identity failure | Terminal; no automatic retry. | Repair the cause before restarting safely. |
+| Unconfirmed cancellation, transport completion, or owned-worker cleanup | Block reconnect/reuse and quarantine source ownership. | Follow [quarantined-source recovery](#recovering-a-quarantined-source); do not bypass locks. |
+
+Retry delays start at one second, double to a 30-second cap, and reset after a
+successful poll. No failed operation or retry advances progress before ACK.
+
+<details>
+<summary>Detailed retry classification, transport cleanup, and redacted diagnostics</summary>
 
 The shared controller retries a metadata/fetch timeout only after the server
 acknowledges cancellation. The adapter returns a distinct `QueryTimeout` in
@@ -420,7 +742,9 @@ discarded, keeping safe categories and numeric server codes. Tiberius can log
 server error text and row contents, so its futures run with a suppressed tracing
 subscriber; shared redacted diagnostics remain enabled.
 
-### Recovering a Quarantined Source
+</details>
+
+## Recovering a Quarantined Source
 
 1. Stop automatic replacement/restart for this source range. Preserve the error,
    last durable checkpoint, configuration identity, and restricted diagnostics.
@@ -469,6 +793,16 @@ cancellation, fault, load, and deployment qualification remain readiness work.
 TOP bounds returned rows, not necessarily database scan or sort work.
 
 ## Published Driver and Native TLS
+
+The receiver uses the published Tiberius 0.13.0 driver with native TLS:
+Schannel on Windows, OpenSSL on Linux, and Security Framework on macOS.
+It needs no customer-installed ODBC/JDBC driver or Rustls provider.
+
+Binary distributors must supply the matching native libraries and root store,
+and qualify the actual engine feature set and deployment image.
+
+<details>
+<summary>Dependency features, platform packaging, and governance evidence</summary>
 
 Tiberius is optional and resolves from crates.io at 0.13.0 in the workspace
 lockfile, with default features disabled and `tds73,native-tls` enabled.
@@ -519,9 +853,15 @@ This adapter does not require customer-installed ODBC/JDBC drivers, a JVM, or
 native database client. No server, container, or certificate-generation tools
 are required for its deterministic tests.
 
+</details>
+
 ## Focused Development Checks
 
-Run from `rust/otap-dataflow`:
+Deterministic preparation, conversion, protocol, connector, factory, and
+shared-delivery tests require no SQL Server. Linux all-feature CI and the
+synchronized Windows CI/cache feature sets include the opt-in receiver.
+
+Run from `rust\otap-dataflow`:
 
 ```powershell
 python -B -m unittest discover `
@@ -539,10 +879,6 @@ cargo tree -p otel-arrow-dfe-contrib-nodes --no-default-features `
     --features sql-server --edges normal
 ```
 
-These deterministic preparation, conversion, protocol, connector, factory, and
-shared-delivery tests require no SQL Server. Linux all-feature CI and the
-synchronized Windows CI/cache feature sets include the opt-in receiver.
-
 ## Live Fixture and Qualification
 
 Live tests are ignored by default and **fail, rather than skip**, if explicitly
@@ -552,7 +888,11 @@ bundled with Git for Windows when it is absent from PATH.
 
 Starting the fixture accepts the SQL Server Developer container license terms;
 review and authorize that locally first. Use a new private directory outside
-the checkout, and do not proceed if setup fails.
+the checkout, and do not proceed if setup fails. For an interactive collection
+demo rather than the full test suite, use [DEMO.md](DEMO.md).
+
+<details>
+<summary>Run the live suite, manage fixture cleanup, and exercise certificate rotation</summary>
 
 ```powershell
 # From the repository root; use a new directory for each run.
@@ -639,10 +979,7 @@ the target Windows/Schannel and Linux/OpenSSL environments. Passing ignored
 test compilation, dependency graphs, or a loopback peer is not a live-server
 pass. Fixture startup accepts the license and requires the operator's approval.
 
-Driver-internal preallocation/RSS limits, exhaustive fault/cancellation/load
-tests, clean-machine packaging, and broader deployment qualification remain
-readiness work. This does not qualify Windows-hosted SQL Server, other server
-versions, Azure SQL/Managed Instance, or ARM64.
+</details>
 
 [rfc]: https://github.com/open-telemetry/otel-arrow/issues/3918
 [tiberius-token-stream]: https://docs.rs/crate/tiberius/0.13.0/source/src/tds/stream/token.rs
