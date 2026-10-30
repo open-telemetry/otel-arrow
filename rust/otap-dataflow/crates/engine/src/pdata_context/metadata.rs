@@ -273,17 +273,38 @@ impl AuthorizedIdentityEntries {
     }
 
     /// Iterates over captured entries in policy order.
-    pub fn iter(&self) -> impl Iterator<Item = AuthorizedIdentityEntry<'_>> {
-        self.packed
-            .as_deref()
-            .into_iter()
-            .flat_map(|packed| (0..packed.entry_count).map(|index| packed.decode_entry(index)))
+    #[must_use]
+    pub fn iter(&self) -> AuthorizedIdentityEntriesIter<'_> {
+        AuthorizedIdentityEntriesIter {
+            packed: self.packed.as_deref(),
+            next: 0,
+        }
     }
 
     /// Finds an entry by exact configured name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<AuthorizedIdentityEntry<'_>> {
         self.iter().find(|entry| entry.name == name)
+    }
+}
+
+/// Iterates borrowed authorized identity entries in capture-policy order.
+pub struct AuthorizedIdentityEntriesIter<'a> {
+    packed: Option<&'a PackedAuthorizedIdentity>,
+    next: usize,
+}
+
+impl<'a> Iterator for AuthorizedIdentityEntriesIter<'a> {
+    type Item = AuthorizedIdentityEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let packed = self.packed?;
+        if self.next >= packed.entry_count {
+            return None;
+        }
+        let entry = packed.decode_entry(self.next);
+        self.next += 1;
+        Some(entry)
     }
 }
 

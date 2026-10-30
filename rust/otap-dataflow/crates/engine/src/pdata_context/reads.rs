@@ -3,7 +3,9 @@
 
 //! Read adapters retain the existing lookup and materialization semantics.
 
-use super::metadata::{AuthorizedClaimValue, AuthorizedIdentityEntry};
+use super::metadata::{
+    AuthorizedClaimValue, AuthorizedIdentityEntriesIter, AuthorizedIdentityEntry,
+};
 use super::{
     ContextDomain, ContextEntrySelector, ContextEntryTake, ContextEntryTarget,
     ContextMaterializationPlan, ContextNameMatching, ContextProjection, ContextValueCardinality,
@@ -99,6 +101,8 @@ impl ValueRead {
     /// cardinality, so an empty multi-valued claim is present. A composite read
     /// retains the whole entry's presence gate and source cardinalities. Each
     /// member yields at most the number of values the selector's `take` requests.
+    /// Identity `All` reads visit every matching claim in capture-policy order;
+    /// `Exists` and `First` stop at the first matching claim.
     #[must_use]
     pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Option<Read<'a>> {
         let backend = match &self.backend {
@@ -120,13 +124,15 @@ impl ValueRead {
                 }
             }
             ValueReadBackend::AuthorizedIdentity { name, matching } => {
-                let name = name.as_str();
-                ReadBackend::AuthorizedIdentity(
-                    metadata
-                        .authorized_identity_entries()?
-                        .iter()
-                        .find(|entry| matching.matches(entry.name(), name))?,
-                )
+                let mut remaining = IdentityMatches::new(
+                    metadata.authorized_identity_entries()?.iter(),
+                    name.as_str(),
+                    *matching,
+                );
+                ReadBackend::AuthorizedIdentity {
+                    first: remaining.next()?,
+                    remaining,
+                }
             }
             ValueReadBackend::Composite { plan, projection } => {
                 ReadBackend::Composite(metadata.resolve_materialized_context(plan, projection)?)
@@ -150,7 +156,10 @@ enum ReadBackend<'a> {
         first: TransportHeaderRef<'a>,
         remaining: HeaderMatches<'a>,
     },
-    AuthorizedIdentity(AuthorizedIdentityEntry<'a>),
+    AuthorizedIdentity {
+        first: AuthorizedIdentityEntry<'a>,
+        remaining: IdentityMatches<'a>,
+    },
     Composite(MaterializedContextProjection<'a>),
 }
 
@@ -172,7 +181,14 @@ impl<'a> Read<'a> {
                 },
                 take,
             }),
-            ReadBackend::AuthorizedIdentity(entry) => visit(ReadMember::identity(entry, take)),
+            ReadBackend::AuthorizedIdentity { first, remaining } => {
+                visit(ReadMember::identity(first, take));
+                if take == ContextEntryTake::All {
+                    for entry in remaining {
+                        visit(ReadMember::identity(entry, take));
+                    }
+                }
+            }
             ReadBackend::Composite(projection) => projection.visit_members(|member| {
                 visit(ReadMember {
                     name: member.name().as_str(),
@@ -289,6 +305,35 @@ impl<'a> Iterator for HeaderMatches<'a> {
             Self::AsciiCaseInsensitive { headers, name } => {
                 headers.find(|header| header.name.as_str().eq_ignore_ascii_case(name))
             }
+        }
+    }
+}
+
+struct IdentityMatches<'a> {
+    entries: AuthorizedIdentityEntriesIter<'a>,
+    name: &'a str,
+    matching: ContextNameMatching,
+}
+
+impl<'a> Iterator for IdentityMatches<'a> {
+    type Item = AuthorizedIdentityEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.entries
+            .find(|entry| self.matching.matches(entry.name(), self.name))
+    }
+}
+
+impl<'a> IdentityMatches<'a> {
+    fn new(
+        entries: AuthorizedIdentityEntriesIter<'a>,
+        name: &'a str,
+        matching: ContextNameMatching,
+    ) -> Self {
+        Self {
+            entries,
+            name,
+            matching,
         }
     }
 }
@@ -977,6 +1022,117 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![b"untrusted".as_slice()]
         );
+    }
+
+    /// Scenario: captured identity names differ only by case and contain scalar, repeated, or empty values.
+    /// Guarantees: All visits every matching claim in policy order without losing names or cardinality;
+    /// exact matching stays case-sensitive, and Exists and First retain their first-claim behavior.
+    #[test]
+    fn identity_reads_apply_matching_to_all_claims() {
+        let selector = |matching, take| ContextEntrySelector {
+            target: ContextEntryTarget::Primitive {
+                domain: ContextDomain::AuthorizedIdentity,
+                name: name("Tenant"),
+                matching,
+            },
+            form: ContextEntrySelectorForm::Value,
+            take,
+        };
+        let matchers = [
+            ContextNameMatching::Exact,
+            ContextNameMatching::AsciiCaseInsensitive,
+        ];
+        let takes = [
+            ContextEntryTake::Exists,
+            ContextEntryTake::First,
+            ContextEntryTake::All,
+        ];
+        let bindings = compile(
+            [consumes(
+                matchers
+                    .into_iter()
+                    .flat_map(|matching| takes.map(|take| selector(matching, take)))
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
+            &[],
+        );
+        let policy = serde_json::from_value(serde_json::json!([
+            {"claim": "first", "store_as": "Tenant"},
+            {"claim": "unrelated", "store_as": "other"},
+            {"claim": "repeated", "store_as": "tenant"},
+            {"claim": "empty", "store_as": "TENANT"}
+        ]))
+        .expect("identity policy");
+        for first_empty in [false, true] {
+            let mut metadata = Metadata::default();
+            metadata.capture_authorized_identity(
+                &policy,
+                &AuthorizedIdentity::new()
+                    .with_claim(
+                        "first",
+                        if first_empty {
+                            ClaimValue::Many(vec![])
+                        } else {
+                            ClaimValue::One("a".into())
+                        },
+                    )
+                    .with_claim("unrelated", ClaimValue::One("ignored".into()))
+                    .with_claim("repeated", ClaimValue::Many(vec!["b".into(), "b".into()]))
+                    .with_claim("empty", ClaimValue::Many(vec![])),
+            );
+            for matching in matchers {
+                for take in takes {
+                    let mut actual = Vec::new();
+                    bindings
+                        .value(&selector(matching, take))
+                        .expect("declared read")
+                        .read(&metadata)
+                        .expect("present even when the first claim is empty")
+                        .visit_members(|member| {
+                            let member_name = member.name;
+                            let cardinality = member.cardinality;
+                            let values = member
+                                .values()
+                                .map(|value| {
+                                    assert_eq!(value.name, member_name);
+                                    assert_eq!(value.kind, ContextValueKind::Text);
+                                    assert_eq!(value.original_name, None);
+                                    value.bytes
+                                })
+                                .collect::<Vec<_>>();
+                            actual.push((member_name, cardinality, values));
+                        });
+                    let mut expected = vec![(
+                        "Tenant",
+                        if first_empty {
+                            ContextValueCardinality::Many
+                        } else {
+                            ContextValueCardinality::One
+                        },
+                        if first_empty || take == ContextEntryTake::Exists {
+                            vec![]
+                        } else {
+                            vec![b"a".as_slice()]
+                        },
+                    )];
+                    if matching == ContextNameMatching::AsciiCaseInsensitive
+                        && take == ContextEntryTake::All
+                    {
+                        expected.extend([
+                            (
+                                "tenant",
+                                ContextValueCardinality::Many,
+                                vec![b"b".as_slice(), b"b".as_slice()],
+                            ),
+                            ("TENANT", ContextValueCardinality::Many, vec![]),
+                        ]);
+                    }
+                    assert_eq!(actual, expected, "{matching:?}, {take:?}, {first_empty}");
+                }
+            }
+        }
     }
 
     /// Scenario: debug formatting is applied to primitive and composite reads of an identity claim.

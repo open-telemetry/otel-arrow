@@ -30,8 +30,8 @@ pub use bindings::{
 pub use layout::*;
 pub use materialization::*;
 pub use metadata::{
-    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntry, Metadata,
-    PeerAddrMerger,
+    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntriesIter,
+    AuthorizedIdentityEntry, Metadata, PeerAddrMerger,
 };
 pub use propagation::CompiledHeaderPropagationPolicy;
 #[doc(hidden)]
