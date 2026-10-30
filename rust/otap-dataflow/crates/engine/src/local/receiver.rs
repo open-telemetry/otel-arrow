@@ -56,7 +56,7 @@ use otel_arrow_dfe_config::context::transport_policy::{CaptureStats, CompiledHea
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -463,6 +463,37 @@ impl<PData> EffectHandler<PData> {
         self.core.notify_receiver_drained().await
     }
 
+    /// Hands final node metrics to the collector before returning a fatal error.
+    ///
+    /// Normal exits return their snapshots in [`TerminalState`] instead. This
+    /// handoff uses the supplied absolute deadline; the runtime flushes accepted
+    /// snapshots after the receiver returns. An unavailable or full standalone
+    /// reporter is reported as an error, never as a successful handoff.
+    ///
+    /// Handoff is not transactional: if a later snapshot fails or reaches the
+    /// deadline, earlier accepted snapshots remain available to the collector.
+    /// The terminal state is consumed; the failing snapshot and any remaining
+    /// snapshots are dropped. Do not retain cloned snapshots to retry the whole
+    /// batch, which could duplicate the accepted prefix.
+    pub async fn report_terminal_metrics(
+        &self,
+        terminal: TerminalState,
+    ) -> Result<(), TelemetryError> {
+        let deadline = terminal.deadline();
+        for snapshot in terminal.into_metrics() {
+            if self
+                .core
+                .metrics_reporter
+                .report_snapshot_reliably_until(snapshot, deadline)
+                .await?
+                == ReportOutcome::Deferred
+            {
+                return Err(TelemetryError::InternalBufferFull);
+            }
+        }
+        Ok(())
+    }
+
     /// Reports metrics collected by the receiver.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
@@ -496,6 +527,79 @@ mod tests {
 
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
+    }
+
+    /// Scenario: A fatal-exit handoff encounters available, full, then closed standalone metrics channels.
+    /// Guarantees: Accepted snapshots arrive once; full and closed reporters return explicit errors rather than successful handoffs.
+    #[tokio::test(start_paused = true)]
+    async fn terminal_metrics_handoff_reports_full_and_closed_channels() {
+        let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
+        let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
+        metrics.cpu_utilization.set(0.5);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler = EffectHandler::<u64>::new(
+            test_node("recv"),
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_millis(100);
+        handler
+            .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
+            .await
+            .expect("available capacity accepts snapshot");
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
+                .await,
+            Err(TelemetryError::InternalBufferFull)
+        ));
+        let accepted = reports.try_recv().expect("accepted snapshot");
+        assert_eq!(accepted.descriptor().name, "engine");
+        assert!(reports.is_empty());
+        drop(reports);
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
+                .await,
+            Err(TelemetryError::MetricsChannelClosed)
+        ));
+    }
+
+    /// Scenario: A multi-snapshot fatal-exit handoff fills a standalone channel after its first snapshot.
+    /// Guarantees: Handoff returns an error without rolling back or duplicating the accepted prefix.
+    #[tokio::test(start_paused = true)]
+    async fn terminal_metrics_handoff_preserves_accepted_prefix() {
+        let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
+        let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
+        let snapshots = [0.25, 0.5, 0.75].map(|value| {
+            metrics.cpu_utilization.set(value);
+            metrics.snapshot()
+        });
+        let expected = snapshots[0].get_metrics().to_vec();
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler = EffectHandler::<u64>::new(
+            test_node("recv"),
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_millis(100);
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, snapshots))
+                .await,
+            Err(TelemetryError::InternalBufferFull)
+        ));
+        let accepted = reports.try_recv().expect("first snapshot remains accepted");
+        assert_eq!(accepted.get_metrics(), &expected);
+        assert!(reports.is_empty(), "remaining snapshots were not accepted");
     }
 
     #[tokio::test]
