@@ -38,6 +38,7 @@ use crate::error::Error;
 use crate::message::{Message, SharedExporterInbox};
 use crate::node::NodeId;
 use crate::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use crate::pdata_context::{NodeBindings, SinkBinding};
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
@@ -101,9 +102,10 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Immutable propagation policy shared by handler clones.
-    /// `None` disables propagation.
-    propagation_policy: Option<Arc<HeaderPropagationPolicy>>,
+    /// Legacy propagation binding for manually constructed handlers.
+    propagation_policy: Option<Arc<SinkBinding>>,
+    /// Compiler-owned immutable bindings shared with the node's pipeline context.
+    node_bindings: Option<Arc<NodeBindings>>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -118,6 +120,7 @@ impl<PData> EffectHandler<PData> {
             core: EffectHandlerCore::new(node_id, metrics_reporter, runtime_services),
             _pd: PhantomData,
             propagation_policy: None,
+            node_bindings: None,
         }
     }
 
@@ -138,12 +141,36 @@ impl<PData> EffectHandler<PData> {
     /// `None` disables propagation.
     #[must_use]
     pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
-        self.propagation_policy.as_deref()
+        self.sink().map(SinkBinding::policy)
     }
 
     /// Sets the propagation policy for transport header filtering.
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        self.propagation_policy = policy.map(Arc::new);
+        if let Some(bindings) = &mut self.node_bindings {
+            Arc::make_mut(bindings).set_header_propagation_policy(policy);
+        } else {
+            self.propagation_policy = policy.map(|policy| Arc::new(SinkBinding::new(policy)));
+        }
+    }
+
+    /// Returns this exporter's immutable runtime bindings.
+    #[must_use]
+    pub fn node_bindings(&self) -> Option<&Arc<NodeBindings>> {
+        self.node_bindings.as_ref()
+    }
+
+    pub(crate) fn set_node_bindings(&mut self, bindings: Arc<NodeBindings>) {
+        self.propagation_policy = None;
+        self.node_bindings = Some(bindings);
+    }
+
+    /// Returns the compiled sink operation, if propagation is configured.
+    #[must_use]
+    pub fn sink(&self) -> Option<&SinkBinding> {
+        match &self.node_bindings {
+            Some(bindings) => bindings.sink(),
+            None => self.propagation_policy.as_deref(),
+        }
     }
 
     /// Print an info message to the engine's diagnostic stream (stderr).

@@ -18,16 +18,28 @@ use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::{
-    Outcome, SignalAttributes, SignalOutcomeAttributes,
+    Outcome, OutcomeAttributes, SignalAttributes, SignalOutcomeAttributes,
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::ops::AsyncFnOnce;
 use std::time::{Duration, Instant};
+
+/// Accepted receiver-initiated collection attempts, completed before downstream handoff.
+///
+/// One scrape or bounded query page is one attempt, independent of result rows,
+/// signal classification, and emitted PData. Skipped opportunities are not attempts.
+#[metric_set(name = "receiver.pulled", measurement_attributes = OutcomeAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct ReceiverPulledMetrics {
+    /// Number of accepted collection attempts reaching a terminal local outcome.
+    #[metric(unit = "{attempt}")]
+    pub attempts: Counter<u64>,
+}
 
 /// Receiver-local handling of classified messages received at the external boundary.
 #[metric_set(
@@ -69,25 +81,19 @@ impl ReceiverReceivedPayloadMetrics {
     }
 }
 
-/// Receiver-defined local processing of classified external messages.
-#[metric_set(
-    name = "receiver.processing",
-    measurement_attributes = SignalAttributes
-)]
+/// Basic receiver-local processing duration, independent of signal and outcome.
+#[metric_set(name = "receiver.processing")]
 #[derive(Debug, Default, Clone)]
-struct ReceiverProcessingBasicMetrics {
+pub struct ReceiverProcessingBasicMetrics {
     /// Node-defined receiver-local processing time.
     #[metric(unit = "s")]
     duration: Mmsc,
 }
 
 /// Normal-resolution receiver-local processing duration.
-#[metric_set(
-    name = "receiver.processing",
-    measurement_attributes = SignalAttributes
-)]
+#[metric_set(name = "receiver.processing")]
 #[derive(Debug, Default, Clone)]
-struct ReceiverProcessingNormalMetrics {
+pub struct ReceiverProcessingNormalMetrics {
     /// Node-defined receiver-local processing time.
     ///
     /// Each receiver documents its stable start and end boundary. Downstream
@@ -98,26 +104,46 @@ struct ReceiverProcessingNormalMetrics {
 }
 
 /// Detailed-resolution receiver-local processing duration.
-#[metric_set(
-    name = "receiver.processing",
-    measurement_attributes = SignalAttributes
-)]
+#[metric_set(name = "receiver.processing")]
 #[derive(Debug, Default, Clone)]
-struct ReceiverProcessingDetailedMetrics {
+pub struct ReceiverProcessingDetailedMetrics {
     /// Node-defined receiver-local processing time.
     #[metric(unit = "s")]
     duration: HistogramDetailed,
 }
 
-#[derive(Debug)]
-enum ReceiverProcessingMetricSet {
-    Basic(MeasurementMetricSet<ReceiverProcessingBasicMetrics>),
-    Normal(MeasurementMetricSet<ReceiverProcessingNormalMetrics>),
-    Detailed(MeasurementMetricSet<ReceiverProcessingDetailedMetrics>),
+/// Receiver-local duration shared by message processing and source collection.
+///
+/// Callers gate registration and clock reads with `NODE_LOCAL_DURATION` and
+/// document their operation boundary. One operation records one duration,
+/// regardless of its signal classification or terminal outcome.
+pub enum ReceiverProcessingMetricSet {
+    /// Basic min/max/sum/count aggregation.
+    Basic(MetricSet<ReceiverProcessingBasicMetrics>),
+    /// Normal-resolution exponential histogram aggregation.
+    Normal(MetricSet<ReceiverProcessingNormalMetrics>),
+    /// Detailed-resolution exponential histogram aggregation.
+    Detailed(MetricSet<ReceiverProcessingDetailedMetrics>),
+}
+
+impl std::fmt::Debug for ReceiverProcessingMetricSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (tier, key) = match self {
+            Self::Basic(metrics) => ("basic", metrics.metrics_key()),
+            Self::Normal(metrics) => ("normal", metrics.metrics_key()),
+            Self::Detailed(metrics) => ("detailed", metrics.metrics_key()),
+        };
+        f.debug_struct("ReceiverProcessingMetricSet")
+            .field("tier", &tier)
+            .field("metrics_key", &key)
+            .finish()
+    }
 }
 
 impl ReceiverProcessingMetricSet {
-    fn register(registrar: &impl MetricSetRegistrar, tier: DistributionTier) -> Self {
+    /// Registers the receiver duration with its entity context and configured tier.
+    #[must_use]
+    pub fn register(registrar: &impl MetricSetRegistrar, tier: DistributionTier) -> Self {
         match tier {
             DistributionTier::Basic => {
                 Self::Basic(ReceiverProcessingBasicMetrics::register(registrar))
@@ -131,33 +157,38 @@ impl ReceiverProcessingMetricSet {
         }
     }
 
-    fn record(&mut self, attributes: SignalAttributes, duration: Duration) {
+    /// Records one locally completed operation, including failure or cancellation.
+    pub fn record(&mut self, duration: Duration) {
         let value = duration.as_secs_f64();
         match self {
-            Self::Basic(metrics) => metrics.with(attributes).duration.record(value),
-            Self::Normal(metrics) => metrics.with(attributes).duration.record(value),
-            Self::Detailed(metrics) => metrics.with(attributes).duration.record(value),
+            Self::Basic(metrics) => metrics.duration.record(value),
+            Self::Normal(metrics) => metrics.duration.record(value),
+            Self::Detailed(metrics) => metrics.duration.record(value),
         }
     }
 
-    fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+    /// Reports pending durations, retaining them when the reporter is full.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         match self {
-            Self::Basic(metrics) => reporter.report_measurement(metrics),
-            Self::Normal(metrics) => reporter.report_measurement(metrics),
-            Self::Detailed(metrics) => reporter.report_measurement(metrics),
+            Self::Basic(metrics) => reporter.report(metrics),
+            Self::Normal(metrics) => reporter.report(metrics),
+            Self::Detailed(metrics) => reporter.report(metrics),
         }
     }
 
-    fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+    /// Takes recorded durations for terminal handoff without emitting empty intervals.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         match self {
-            Self::Basic(metrics) => metrics.terminal_snapshots(),
-            Self::Normal(metrics) => metrics.terminal_snapshots(),
-            Self::Detailed(metrics) => metrics.terminal_snapshots(),
+            Self::Basic(metrics) if !metrics.is_empty() => metrics.terminal_snapshots(),
+            Self::Normal(metrics) if !metrics.is_empty() => metrics.terminal_snapshots(),
+            Self::Detailed(metrics) if !metrics.is_empty() => metrics.terminal_snapshots(),
+            _ => Vec::new(),
         }
     }
 }
 
-/// Receiver-local processing state for one classified external message.
+/// Receiver-local processing state for one external message.
 ///
 /// One external message may emit zero, one, or several PData messages. This
 /// state owns the external-message observation; engine-managed `node.output`
@@ -258,15 +289,15 @@ impl ReceiverMetrics {
 
     /// Records one completed receiver processing observation.
     pub fn record<T, E>(&mut self, completed: CompletedReceiverProcessing<T, E>) -> Result<T, E> {
-        let Some(signal) = completed.signal else {
-            return completed.result;
-        };
         if let Some(duration) = completed.duration {
             self.processing
                 .as_mut()
                 .expect("duration collection requires a registered receiver duration metric")
-                .record(SignalAttributes { signal }, duration);
+                .record(duration);
         }
+        let Some(signal) = completed.signal else {
+            return completed.result;
+        };
         let attributes = SignalOutcomeAttributes {
             signal,
             outcome: completed.outcome,
@@ -334,7 +365,8 @@ impl ReceiverProcessing {
     ///
     /// `Ok((signal, value))` records success. Return errors through
     /// [`Self::failed`] or [`Self::refused`] after signal classification.
-    /// An unclassified `Err(error)` emits no shared receiver metric.
+    /// An unclassified `Err(error)` still records enabled processing duration,
+    /// but emits no signal-attributed received counters.
     #[must_use = "the completed receiver processing observation must be recorded"]
     pub fn run<T, E>(
         mut self,
@@ -781,6 +813,45 @@ mod tests {
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::cell::Cell;
 
+    /// Scenario: Collection attempts terminate with different outcomes before any signal is known.
+    /// Guarantees: Reporting preserves disjoint outcome counts without a signal dimension and drains each bucket once.
+    #[test]
+    fn receiver_pulled_attempts_report_disjoint_outcomes() {
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ReceiverPulledMetrics::register(&pipeline_ctx);
+        let outcomes = [
+            (Outcome::Success, "success", 2),
+            (Outcome::Failure, "failure", 3),
+        ];
+        for (outcome, _, count) in outcomes {
+            let attributes = OutcomeAttributes { outcome };
+            metrics.with(attributes).attempts.add(count);
+            metrics.with(attributes).attempts.inc();
+        }
+
+        let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(4);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("report attempts");
+        let snapshots: Vec<_> = rx.try_iter().collect();
+        assert_eq!(snapshots.len(), outcomes.len());
+        for (_, wire_outcome, count) in outcomes {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| {
+                    snapshot.measurement_attribute_value("outcome") == Some(wire_outcome)
+                })
+                .expect("recorded outcome");
+            assert_eq!(snapshot.descriptor().name, "receiver.pulled");
+            assert_eq!(snapshot.measurement_attribute_value("signal"), None);
+            let descriptor = &snapshot.descriptor().metrics[0];
+            assert_eq!(descriptor.name, "attempts");
+            assert_eq!(descriptor.unit, "{attempt}");
+            assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), count + 1);
+        }
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
     fn new_attempted_metrics() -> MeasurementMetricSet<ExporterAttemptedMetrics> {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
@@ -943,12 +1014,7 @@ mod tests {
         );
 
         let mut processing = new_processing_metrics(DistributionTier::Normal);
-        processing.record(
-            SignalAttributes {
-                signal: SignalType::Metrics,
-            },
-            Duration::from_millis(10),
-        );
+        processing.record(Duration::from_millis(10));
         let processing_snapshot = processing
             .terminal_snapshots()
             .into_iter()
@@ -957,7 +1023,7 @@ mod tests {
         assert_eq!(processing_snapshot.descriptor().name, "receiver.processing");
         assert_eq!(
             processing_snapshot.measurement_attribute_value("signal"),
-            Some("metrics")
+            None
         );
         assert_eq!(
             processing_snapshot.measurement_attribute_value("outcome"),
@@ -1110,12 +1176,7 @@ mod tests {
                 .processing
                 .as_mut()
                 .expect("receiver duration metric")
-                .record(
-                    SignalAttributes {
-                        signal: SignalType::Logs,
-                    },
-                    Duration::from_millis(1250),
-                );
+                .record(Duration::from_millis(1250));
             let processing_snapshot = receiver
                 .terminal_snapshots()
                 .into_iter()
@@ -1132,6 +1193,15 @@ mod tests {
             };
             assert_eq!(processing_value.tier_name(), expected_tier);
             assert_eq!(processing_value.summary(), (1, 1.25, 1.25, 1.25));
+            assert_eq!(
+                processing_snapshot.measurement_attribute_value("signal"),
+                None
+            );
+            assert_eq!(
+                processing_snapshot.measurement_attribute_value("outcome"),
+                None
+            );
+            assert!(receiver.terminal_snapshots().is_empty());
 
             let mut exporter = new_exporter_duration_metrics(tier);
             exporter
@@ -1309,7 +1379,7 @@ mod tests {
         assert_eq!(snapshots.len(), 3);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.processing"
-                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot.measurement_attribute_value("signal").is_none()
                 && snapshot.measurement_attribute_value("outcome").is_none()
         }));
         for metric_name in ["messages", "payload.size"] {
@@ -1365,7 +1435,7 @@ mod tests {
     }
 
     /// Scenario: Receiver processing fails before the message signal can be classified.
-    /// Guarantees: The original error is returned without emitting incorrectly attributed shared metrics.
+    /// Guarantees: The original error and an unattributed duration are preserved without inventing received counters.
     #[test]
     fn receiver_helper_allows_failure_before_signal_classification() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::all());
@@ -1375,6 +1445,64 @@ mod tests {
             .processing()
             .run(|_| Err::<(SignalType, ()), ErrorWithOutcome<_>>("invalid envelope".into()));
         assert_eq!(metrics.record(completed), Err("invalid envelope"));
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.descriptor().name, "receiver.processing");
+        assert_eq!(snapshot.measurement_attribute_value("signal"), None);
+        assert_eq!(snapshot.measurement_attribute_value("outcome"), None);
+        let [MetricValue::Distribution(duration)] = snapshot.get_metrics() else {
+            panic!("expected unclassified processing duration");
+        };
+        assert_eq!(duration.summary().0, 1);
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: One receiver processes messages of two different signals with timing enabled.
+    /// Guarantees: Durations share one operation-level distribution while received counters retain separate signal buckets.
+    #[test]
+    fn receiver_processing_duration_combines_signals_without_merging_counts() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+        for signal in [SignalType::Logs, SignalType::Metrics] {
+            let completed = metrics
+                .processing()
+                .run(|_| Ok::<_, ErrorWithOutcome<()>>((signal, ())));
+            metrics.record(completed).expect("classified processing");
+        }
+
+        let (reports, mut reporter) = MetricsReporter::create_new_and_receiver(3);
+        metrics
+            .report(&mut reporter)
+            .expect("report receiver metrics");
+        let snapshots: Vec<_> = reports.try_iter().collect();
+        assert_eq!(snapshots.len(), 3);
+        for signal in ["logs", "metrics"] {
+            let received = snapshots
+                .iter()
+                .find(|snapshot| {
+                    snapshot.descriptor().name == "receiver.received"
+                        && snapshot.measurement_attribute_value("signal") == Some(signal)
+                })
+                .expect("separate received signal");
+            assert_eq!(
+                received.measurement_attribute_value("outcome"),
+                Some("success")
+            );
+            assert_eq!(received.get_metrics()[0].to_u64_lossy(), 1);
+        }
+        let processing = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "receiver.processing")
+            .expect("shared processing distribution");
+        assert_eq!(processing.measurement_attribute_value("signal"), None);
+        assert_eq!(processing.measurement_attribute_value("outcome"), None);
+        let [MetricValue::Distribution(duration)] = processing.get_metrics() else {
+            panic!("expected receiver processing distribution");
+        };
+        assert_eq!(duration.summary().0, 2);
         assert!(metrics.terminal_snapshots().is_empty());
     }
 
@@ -1396,7 +1524,8 @@ mod tests {
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 3);
         assert!(snapshots.iter().all(|snapshot| {
-            snapshot.measurement_attribute_value("signal") == Some("logs")
+            (snapshot.descriptor().name == "receiver.processing"
+                || snapshot.measurement_attribute_value("signal") == Some("logs"))
                 && snapshot.measurement_attribute_value("outcome") != Some("failure")
         }));
         assert!(snapshots.iter().any(|snapshot| {

@@ -16,7 +16,7 @@ use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
-use crate::pdata_context::CompiledContextBindings;
+use crate::pdata_context::{CompiledContextBindings, NodeBindings};
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
@@ -494,6 +494,14 @@ impl PipelineContext {
     #[must_use]
     pub fn compiled_context_bindings(&self) -> &Arc<CompiledContextBindings> {
         &self.compiled_context_bindings
+    }
+
+    /// Returns the shared runtime context bindings for this context's current node.
+    #[must_use]
+    pub fn node_bindings(&self) -> Option<Arc<NodeBindings>> {
+        self.compiled_context_bindings
+            .node_bindings(&self.pipeline_key(), &self.node_id)
+            .cloned()
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.

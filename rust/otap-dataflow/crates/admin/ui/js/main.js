@@ -296,6 +296,9 @@
 
   const engineCpuUtilEl = document.getElementById("engine-cpu-util");
   const engineMemoryRssEl = document.getElementById("engine-memory-rss");
+  const engineMemoryCommitEl = document.getElementById("engine-memory-commit");
+  const engineMemoryCommitCard = document.getElementById("card-engine-memory-commit");
+  const engineMetricsGrid = document.getElementById("engine-metrics-grid");
   const engineGroupCountEl = document.getElementById("engine-group-count");
   const enginePipelineCountEl = document.getElementById("engine-pipeline-count");
   const engineCoreCountEl = document.getElementById("engine-core-count");
@@ -384,6 +387,7 @@
   let selectedPipelineInterconnect = null;
   let lastEngineCpuUtilPercent = null;
   let lastEngineMemoryRssMiB = null;
+  let lastEngineMemoryCommitMiB = null;
   let lastEngineUptimeSeconds = null;
   let lastCoreUsage = new Map();
   let hideZeroActivity = false;
@@ -460,6 +464,12 @@
       canvasId: "engineChartMemory",
       metrics: [
         { key: "engine.memory.rss", color: "rgba(59,130,246,0.9)" },
+      ],
+    },
+    engineMemoryCommit: {
+      canvasId: "engineChartMemoryCommit",
+      metrics: [
+        { key: "engine.memory.commit", color: "rgba(168,85,247,0.9)" },
       ],
     },
     cpu: {
@@ -2447,12 +2457,14 @@
       {
         lastCpuUtilPercent: lastEngineCpuUtilPercent,
         lastMemoryRssMiB: lastEngineMemoryRssMiB,
+        lastMemoryCommitMiB: lastEngineMemoryCommitMiB,
         lastUptimeSeconds: lastEngineUptimeSeconds,
       },
       { holdLastValues: HOLD_LAST_ENGINE_VALUES }
     );
     lastEngineCpuUtilPercent = values.lastCpuUtilPercent;
     lastEngineMemoryRssMiB = values.lastMemoryRssMiB;
+    lastEngineMemoryCommitMiB = values.lastMemoryCommitMiB;
     lastEngineUptimeSeconds = values.lastUptimeSeconds;
     engineGroupCountEl.textContent = String(values.groupCount);
     enginePipelineCountEl.textContent = String(values.pipelineCount);
@@ -2461,6 +2473,12 @@
       values.cpuUtilPercent == null ? "n/a" : `${values.cpuUtilPercent.toFixed(1)}%`;
     engineMemoryRssEl.textContent =
       values.memoryRssMiB == null ? "n/a" : `${values.memoryRssMiB.toFixed(1)} MiB`;
+    const hasMemoryCommit = values.lastMemoryCommitMiB != null;
+    engineMemoryCommitCard.classList.toggle("hidden", !hasMemoryCommit);
+    engineMetricsGrid.classList.toggle("xl:grid-cols-6", !hasMemoryCommit);
+    engineMetricsGrid.classList.toggle("xl:grid-cols-7", hasMemoryCommit);
+    engineMemoryCommitEl.textContent =
+      values.memoryCommitMiB == null ? "n/a" : `${values.memoryCommitMiB.toFixed(1)} MiB`;
     engineUptimeEl.textContent = formatDurationSeconds(values.uptimeSeconds);
 
     const timestamp = ts || lastSampleTs;
@@ -2472,6 +2490,9 @@
     }
     if (Number.isFinite(values.currentMemoryRssMiB)) {
       recordPipelineMetric("engine.memory.rss", values.currentMemoryRssMiB, timestamp);
+    }
+    if (Number.isFinite(values.currentMemoryCommitMiB)) {
+      recordPipelineMetric("engine.memory.commit", values.currentMemoryCommitMiB, timestamp);
     }
     if (Number.isFinite(values.currentUptimeSeconds)) {
       recordPipelineMetric("engine.uptime", values.currentUptimeSeconds, timestamp);
@@ -3112,6 +3133,10 @@
     },
     "engine.memory.rss": {
       el: engineMemoryRssEl,
+      format: (value) => (Number.isFinite(value) ? `${value.toFixed(1)} MiB` : "n/a"),
+    },
+    "engine.memory.commit": {
+      el: engineMemoryCommitEl,
       format: (value) => (Number.isFinite(value) ? `${value.toFixed(1)} MiB` : "n/a"),
     },
     "engine.uptime": {

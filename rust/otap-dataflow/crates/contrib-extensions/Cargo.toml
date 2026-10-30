@@ -51,6 +51,7 @@ sha2 = { workspace = true, optional = true }
 contrib-extensions = [
     "azure-identity-auth",
     "azure-key-vault-sasl-auth",
+    "azure-key-vault-user-pass-auth",
     "flat-file-api-key-auth",
     "flat-file-sasl-auth",
     "flat-file-user-pass-auth",
@@ -61,6 +62,8 @@ contrib-extensions = [
 azure-identity-auth = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Azure Key Vault startup SASL authentication extension.
 azure-key-vault-sasl-auth = ["dep:azure_core", "azure_core/tokio", "dep:azure_identity", "dep:azure_security_keyvault_secrets", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
+# Azure Key Vault startup BasicAuthProvider extension, independently selectable.
+azure-key-vault-user-pass-auth = ["dep:azure_core", "azure_core/tokio", "dep:azure_identity", "dep:azure_security_keyvault_secrets", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file API key authentication extension (ApiKeyProvider capability).
 flat-file-api-key-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file SASL authentication extension (SaslCredentialProvider capability).

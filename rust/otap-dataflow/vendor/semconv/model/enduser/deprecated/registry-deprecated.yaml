@@ -1,0 +1,22 @@
+groups:
+  - id: registry.enduser.deprecated
+    type: attribute_group
+    display_name: Deprecated End User Attributes
+    brief: "Describes deprecated end user attributes."
+    attributes:
+      - id: enduser.role
+        type: string
+        deprecated:
+          reason: uncategorized
+          note: Use `user.roles` instead.
+        stability: development
+        brief: "Deprecated, use `user.roles` instead."
+        examples: 'admin'
+      - id: enduser.scope
+        type: string
+        deprecated:
+          reason: obsoleted
+          note: Removed, no replacement at this time.
+        stability: development
+        brief: "Deprecated, no replacement at this time."
+        examples: 'read:message, write:files'

@@ -1,0 +1,78 @@
+# Replace endpoint, secret references, connection, and state path before running.
+# Build with postgresql,azure-key-vault-user-pass-auth,crypto-ring.
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          database-credentials:
+            type: urn:otel:extension:azure_key_vault_user_pass_auth
+            config:
+              vault_url: https://example-vault.vault.azure.net
+              username_secret:
+                name: postgresql-username
+              password_secret:
+                name: postgresql-password
+              identity:
+                method: managed_identity
+              startup_timeout: 30s
+        nodes:
+          database:
+            type: urn:otel:receiver:postgresql
+            capabilities:
+              basic_auth_provider: database-credentials
+            config:
+              source_id: postgresql-events
+              connection:
+                host: database.example.com
+                port: 5432
+                database: receiver_fixture
+                tls:
+                  enabled: true
+              query:
+                statement: >
+                  SELECT e.event_ts, e.event_id, e.actor
+                  FROM public.receiver_events AS e
+                  WHERE (
+                    e.event_ts > :last_timestamp
+                    OR (
+                      e.event_ts = :last_timestamp
+                      AND e.event_id > :last_tie_breaker
+                    )
+                  )
+                  ORDER BY e.event_ts ASC, e.event_id ASC
+                interval: 1m
+                fetch_size_rows: 100
+                max_rows_per_poll: 1000
+                max_batch_bytes: 4MiB
+              watermark:
+                mode: composite
+                timestamp:
+                  column: event_ts
+                  bind: last_timestamp
+                  initial: "2026-01-01T00:00:00Z"
+                  timezone: UTC
+                tie_breaker:
+                  column: event_id
+                  bind: last_tie_breaker
+                  initial: 0
+              checkpoint:
+                directory: ./state/postgresql-akv
+                on_nack: rewind
+                on_permanent_nack: pause
+                nack_backoff: 1s
+                max_consecutive_failures: 5
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+        connections:
+          - from: database
+            to: console
