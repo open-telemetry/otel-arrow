@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793338548776,
+  "lastUpdate": 1793360467906,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -76188,6 +76188,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-datafusion_physical_plan",
             "value": 3.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "737f200728592234c002b2e38c46b3067c59abbc",
+          "message": "chore(deps): update rust patches and stable minors (#4600)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [globset](https://redirect.github.com/BurntSushi/ripgrep)\n([source](https://redirect.github.com/BurntSushi/ripgrep/tree/HEAD/crates/globset))\n| workspace.dependencies | patch | `0.4.20` → `0.4.21` |\n| [smallvec](https://redirect.github.com/servo/rust-smallvec) |\nworkspace.dependencies | minor | `1.15.2` → `1.16.4` |\n| [tonic](https://redirect.github.com/grpc/grpc-rust) |\nworkspace.dependencies | patch | `0.14.8` → `0.14.9` |\n| [tonic-prost](https://redirect.github.com/grpc/grpc-rust) |\nworkspace.dependencies | patch | `0.14.8` → `0.14.9` |\n| [tonic-prost-build](https://redirect.github.com/grpc/grpc-rust) |\nworkspace.dependencies | patch | `0.14.8` → `0.14.9` |\n| [zip](https://redirect.github.com/zip-rs/zip2) |\nworkspace.dependencies | patch | `=9.1.2` → `=9.1.3` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>BurntSushi/ripgrep (globset)</summary>\n\n###\n[`v0.4.21`](https://redirect.github.com/BurntSushi/ripgrep/compare/globset-0.4.20...globset-0.4.21)\n\n[Compare\nSource](https://redirect.github.com/BurntSushi/ripgrep/compare/globset-0.4.20...globset-0.4.21)\n\n</details>\n\n<details>\n<summary>servo/rust-smallvec (smallvec)</summary>\n\n###\n[`v1.16.4`](https://redirect.github.com/servo/rust-smallvec/releases/tag/v1.16.4)\n\n[Compare\nSource](https://redirect.github.com/servo/rust-smallvec/compare/v1.16.3...v1.16.4)\n\n#### What's Changed\n\n- Port fuzzer changes from PR\n[#&#8203;737](https://redirect.github.com/servo/rust-smallvec/issues/737)\nto v1 by\n[@&#8203;GauravPawar101](https://redirect.github.com/GauravPawar101) in\n[#&#8203;753](https://redirect.github.com/servo/rust-smallvec/pull/753)\n- chore: bump version by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;779](https://redirect.github.com/servo/rust-smallvec/pull/779)\n\n**Full Changelog**:\n<https://github.com/servo/rust-smallvec/compare/v1.16.3...v1.16.4>\n\n###\n[`v1.16.3`](https://redirect.github.com/servo/rust-smallvec/releases/tag/v1.16.3)\n\n[Compare\nSource](https://redirect.github.com/servo/rust-smallvec/compare/v1.16.2...v1.16.3)\n\n#### What's Changed\n\n- Port new fuzzer to v1 by\n[@&#8203;bolshoytoster](https://redirect.github.com/bolshoytoster) in\n[#&#8203;678](https://redirect.github.com/servo/rust-smallvec/pull/678)\n- fix: overflow during fuzzy check by\n[@&#8203;GauravPawar101](https://redirect.github.com/GauravPawar101) in\n[#&#8203;693](https://redirect.github.com/servo/rust-smallvec/pull/693)\n- chore: bump version by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;723](https://redirect.github.com/servo/rust-smallvec/pull/723)\n\n**Full Changelog**:\n<https://github.com/servo/rust-smallvec/compare/v1.16.2...v1.16.3>\n\n###\n[`v1.16.2`](https://redirect.github.com/servo/rust-smallvec/releases/tag/v1.16.2)\n\n[Compare\nSource](https://redirect.github.com/servo/rust-smallvec/compare/v1.16.1...v1.16.2)\n\n#### What's Changed\n\n- Backport v2’s retain implementation to v1 by\n[@&#8203;charliermarsh](https://redirect.github.com/charliermarsh) in\n[#&#8203;596](https://redirect.github.com/servo/rust-smallvec/pull/596)\n- Fix element ownership tracking with may_dangle by\n[@&#8203;charliermarsh](https://redirect.github.com/charliermarsh) in\n[#&#8203;594](https://redirect.github.com/servo/rust-smallvec/pull/594)\n- Fix Cargo manual_readme warning by\n[@&#8203;Rayan-and-beyond](https://redirect.github.com/Rayan-and-beyond)\nin\n[#&#8203;608](https://redirect.github.com/servo/rust-smallvec/pull/608)\n- chore: bump version by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;617](https://redirect.github.com/servo/rust-smallvec/pull/617)\n\n#### New Contributors\n\n-\n[@&#8203;Rayan-and-beyond](https://redirect.github.com/Rayan-and-beyond)\nmade their first contribution in\n[#&#8203;608](https://redirect.github.com/servo/rust-smallvec/pull/608)\n\n**Full Changelog**:\n<https://github.com/servo/rust-smallvec/compare/v1.16.1...v1.16.2>\n\n###\n[`v1.16.1`](https://redirect.github.com/servo/rust-smallvec/releases/tag/v1.16.1)\n\n[Compare\nSource](https://redirect.github.com/servo/rust-smallvec/compare/v1.16.0...v1.16.1)\n\n#### What's Changed\n\n- Speed up push by expanding triple_mut by\n[@&#8203;bolshoytoster](https://redirect.github.com/bolshoytoster) in\n[#&#8203;557](https://redirect.github.com/servo/rust-smallvec/pull/557)\n- chore: bump version to 1.16.1 by\n[@&#8203;ryux1](https://redirect.github.com/ryux1) in\n[#&#8203;585](https://redirect.github.com/servo/rust-smallvec/pull/585)\n- fix: doc warning by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;582](https://redirect.github.com/servo/rust-smallvec/pull/582)\n- fix: cargo warnings by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;581](https://redirect.github.com/servo/rust-smallvec/pull/581)\n\n#### New Contributors\n\n- [@&#8203;ryux1](https://redirect.github.com/ryux1) made their first\ncontribution in\n[#&#8203;585](https://redirect.github.com/servo/rust-smallvec/pull/585)\n\n**Full Changelog**:\n<https://github.com/servo/rust-smallvec/compare/v1.16.0...v1.16.1>\n\n###\n[`v1.16.0`](https://redirect.github.com/servo/rust-smallvec/releases/tag/v1.16.0)\n\n[Compare\nSource](https://redirect.github.com/servo/rust-smallvec/compare/v1.15.2...v1.16.0)\n\n#### What's Changed\n\n- Include debug_metadata/\\*.natvis in the published crate to fix\ndebugger_visualizer/docs.rs build by\n[@&#8203;teddytennant](https://redirect.github.com/teddytennant) in\n[#&#8203;417](https://redirect.github.com/servo/rust-smallvec/pull/417)\n- feat: removed debugger visualizer + tests by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;420](https://redirect.github.com/servo/rust-smallvec/pull/420)\n- feat: added style check to CI && rustfmt.toml by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;436](https://redirect.github.com/servo/rust-smallvec/pull/436)\n\n#### New Contributors\n\n- [@&#8203;teddytennant](https://redirect.github.com/teddytennant) made\ntheir first contribution in\n[#&#8203;417](https://redirect.github.com/servo/rust-smallvec/pull/417)\n\n**Full Changelog**:\n<https://github.com/servo/rust-smallvec/compare/v1.15.2...v1.16.0>\n\n</details>\n\n<details>\n<summary>grpc/grpc-rust (tonic)</summary>\n\n###\n[`v0.14.9`](https://redirect.github.com/grpc/grpc-rust/releases/tag/tonic-prost-v0.14.9)\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc-rust/compare/tonic-v0.14.8...tonic-v0.14.9)\n\n##### Fixed\n\n- fix/silence all clippy warnings\n([#&#8203;2807](https://redirect.github.com/grpc/grpc-rust/pull/2807))\n\n##### Other\n\n- fix changelog duplicate and update repository URLs\n([#&#8203;2943](https://redirect.github.com/grpc/grpc-rust/pull/2943))\n- relax codec Default bounds\n([#&#8203;2681](https://redirect.github.com/grpc/grpc-rust/pull/2681))\n- License update\n([#&#8203;2749](https://redirect.github.com/grpc/grpc-rust/pull/2749))\n\n</details>\n\n<details>\n<summary>zip-rs/zip2 (zip)</summary>\n\n###\n[`v9.1.3`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#913---2026-10-27)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.1.2...v9.1.3)\n\n##### <!-- 0 -->🚀 Features\n\n- *(extra_fields)* support 0xd935 Android ZIP alignment extra field\n([#&#8203;928](https://redirect.github.com/zip-rs/zip2/pull/928))\n([#&#8203;1198](https://redirect.github.com/zip-rs/zip2/pull/1198))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- *(format)* record correct 32-bit EOCD offset in ZIP64 archives\n([#&#8203;1205](https://redirect.github.com/zip-rs/zip2/pull/1205))\n- *(aes)* wipe AES round keys when the cipher is dropped\n([#&#8203;1204](https://redirect.github.com/zip-rs/zip2/pull/1204))\n- *(fuzz)* treat a comment change in a merged sub-writer as\nnon-streamable\n([#&#8203;1188](https://redirect.github.com/zip-rs/zip2/pull/1188))\n- *(aes)* zeroize AesCtrZipKeyStream buffer and counter on drop\n([#&#8203;1196](https://redirect.github.com/zip-rs/zip2/pull/1196))\n- *(extract)* prevent symlink-follow truncation via\nFILE_FLAG_OPEN_REPARSE_POINT\n([#&#8203;1195](https://redirect.github.com/zip-rs/zip2/pull/1195))\n- *(write)* drop a stale Unicode Path extra field when copying an entry\n([#&#8203;1187](https://redirect.github.com/zip-rs/zip2/pull/1187))\n- *(write)* don't leave a stale tail that completes a fake EOCD in the\ncomment\n([#&#8203;1186](https://redirect.github.com/zip-rs/zip2/pull/1186))\n- *(write)* reject deflate levels below 10 when only zopfli is enabled\n([#&#8203;1182](https://redirect.github.com/zip-rs/zip2/pull/1182))\n\n##### <!-- 4 -->⚡ Performance\n\n- *(read)* accelerate extraction with 64 KiB reusable buffer\n([#&#8203;1206](https://redirect.github.com/zip-rs/zip2/pull/1206))\n- *(aes)* encrypt AES-CTR counter blocks in batches\n([#&#8203;1203](https://redirect.github.com/zip-rs/zip2/pull/1203))\n- *(read)* eliminate double allocation by populating IndexMap directly\n([#&#8203;1200](https://redirect.github.com/zip-rs/zip2/pull/1200))\n- *(read)* preallocate files vector in read_central_header\n([#&#8203;1199](https://redirect.github.com/zip-rs/zip2/pull/1199))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xODguMiIsInVwZGF0ZWRJblZlciI6IjQ0LjE4OC4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-30T10:47:24Z",
+          "tree_id": "2b8c75e9319c3873b690b0506556eb3a7c379443",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/737f200728592234c002b2e38c46b3067c59abbc"
+        },
+        "date": 1793360447771,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
             "unit": "MB"
           },
           {
