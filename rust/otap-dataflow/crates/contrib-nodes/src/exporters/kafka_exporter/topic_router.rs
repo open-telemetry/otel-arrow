@@ -39,7 +39,12 @@ use super::error::KafkaExporterError;
 use super::metrics::{KafkaExporterMetrics, KafkaTopicSource};
 use crate::common::kafka::validate_kafka_topic;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaderRef;
+use otel_arrow_dfe_engine::pdata_context::{
+    ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
+    ContextEntryTarget, ContextNameMatching,
+};
 use otel_arrow_dfe_otap::pdata::Context;
 use regex::Regex;
 use std::borrow::Cow;
@@ -56,6 +61,19 @@ use std::borrow::Cow;
 pub struct TopicRouter;
 
 impl TopicRouter {
+    /// Selects the first case-insensitive header match used for topic routing.
+    pub(super) fn topic_read_selector(name: &ContextEntryName) -> ContextEntrySelector {
+        ContextEntrySelector {
+            target: ContextEntryTarget::Primitive {
+                domain: ContextDomain::TransportHeader,
+                name: name.clone(),
+                matching: ContextNameMatching::AsciiCaseInsensitive,
+            },
+            form: ContextEntrySelectorForm::Value,
+            take: ContextEntryTake::First,
+        }
+    }
+
     /// Resolves the destination topic for a signal and increments the
     /// appropriate topic routing metric.
     ///
@@ -214,10 +232,7 @@ mod tests {
         use otel_arrow_dfe_config::PipelineKey;
         use otel_arrow_dfe_config::engine::OtelDataflowSpec;
         use otel_arrow_dfe_engine::PipelineFactory;
-        use otel_arrow_dfe_engine::pdata_context::{
-            ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
-            ContextEntryTarget, ContextNameMatching, ReadValue,
-        };
+        use otel_arrow_dfe_engine::pdata_context::ReadValue;
 
         let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
             "version": "otel_dataflow/v1",
@@ -257,15 +272,9 @@ mod tests {
             )
             .expect("Kafka bindings");
         let read = bindings
-            .value(&ContextEntrySelector {
-                target: ContextEntryTarget::Primitive {
-                    domain: ContextDomain::TransportHeader,
-                    name: "Topic".try_into().expect("context name"),
-                    matching: ContextNameMatching::AsciiCaseInsensitive,
-                },
-                form: ContextEntrySelectorForm::Value,
-                take: ContextEntryTake::First,
-            })
+            .value(&TopicRouter::topic_read_selector(
+                &"Topic".try_into().expect("context name"),
+            ))
             .expect("topic read");
         let signal = make_signal_config("fallback", Some("Topic"));
         for context in [

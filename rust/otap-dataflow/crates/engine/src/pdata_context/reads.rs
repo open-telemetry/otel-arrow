@@ -221,15 +221,13 @@ impl<'a> ReadMember<'a> {
     ///
     /// Yields no values for `Exists`, at most one for `First`, and all for `All`;
     /// unrequested values are never scanned.
-    pub fn values(mut self) -> impl Iterator<Item = ReadValue<'a>> {
-        std::iter::from_fn(move || match self.take {
-            ContextEntryTake::Exists => None,
-            ContextEntryTake::First => {
-                self.take = ContextEntryTake::Exists;
-                self.values.next()
-            }
-            ContextEntryTake::All => self.values.next(),
-        })
+    pub fn values(self) -> impl Iterator<Item = ReadValue<'a>> {
+        let limit = match self.take {
+            ContextEntryTake::Exists => 0,
+            ContextEntryTake::First => 1,
+            ContextEntryTake::All => usize::MAX,
+        };
+        self.values.take(limit)
     }
 }
 
@@ -668,11 +666,6 @@ mod tests {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::AllCaptured {
                         domain: ContextDomain::TransportHeader,
-                    },
-                },
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllCaptured {
-                        domain: ContextDomain::AuthorizedIdentity,
                     },
                 },
             ]

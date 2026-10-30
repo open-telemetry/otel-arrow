@@ -241,6 +241,9 @@ pub enum ContextConsumerSelector {
         entries: Box<[ContextEntrySelector]>,
     },
     /// Selects every primitive in one domain using its stored name.
+    ///
+    /// Only transport headers support this selection; all-captured authorized
+    /// identity reads are rejected during binding compilation.
     AllCaptured {
         /// Source authority domain.
         domain: ContextDomain,
@@ -713,8 +716,11 @@ impl CompiledNodeState {
                         }
                         ContextConsumerSelector::AllCaptured { domain } => match domain {
                             ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
-                            // Identity claims are read only through explicit named reads.
-                            ContextDomain::AuthorizedIdentity => {}
+                            ContextDomain::AuthorizedIdentity => {
+                                return Err(invalid_context(
+                                    "all-captured authorized identity reads are not supported; use explicit named identity reads",
+                                ));
+                            }
                         },
                     }
                     component_declarations.push(ContextDeclaration::Consumes { selector });
@@ -1682,7 +1688,7 @@ groups:
         }
     }
 
-    /// Scenario: same-name sources are declared in different domains for reads, writes, and all-captured.
+    /// Scenario: same-name sources are declared in different domains for named reads and writes.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
     fn declaration_domains_are_part_of_binding_identity() {
@@ -1701,16 +1707,13 @@ groups:
                         }]),
                     },
                 },
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllCaptured { domain },
-                },
             ]
         };
         let header = declarations(ContextDomain::TransportHeader);
         let identity = declarations(ContextDomain::AuthorizedIdentity);
         let combined: NodeContextDeclarations =
             header.clone().into_iter().chain(identity.clone()).collect();
-        assert_eq!(combined.len(), 6);
+        assert_eq!(combined.len(), 4);
         assert!(
             !context_runtime_requirements(combined).preserves_original_name(&context_name("id"))
         );
@@ -1734,6 +1737,35 @@ groups:
             );
             assert!(!installed.pipeline_bindings_match(&candidate, &key));
             assert!(!candidate.pipeline_bindings_match(&installed, &key));
+        }
+    }
+
+    /// Scenario: a node declares all-captured identity reads, alone or alongside all-captured headers.
+    /// Guarantees: binding compilation rejects the unsupported identity selection instead of ignoring it.
+    #[test]
+    fn all_captured_identity_reads_are_rejected() {
+        for domains in [
+            vec![ContextDomain::AuthorizedIdentity],
+            vec![
+                ContextDomain::TransportHeader,
+                ContextDomain::AuthorizedIdentity,
+            ],
+        ] {
+            let declarations = declarations_by_pipeline(
+                domains
+                    .into_iter()
+                    .map(|domain| ContextDeclaration::Consumes {
+                        selector: ContextConsumerSelector::AllCaptured { domain },
+                    })
+                    .collect(),
+            );
+            let requirements = ContextRuntimeRequirements::compile(&declarations);
+            assert!(matches!(
+                CompiledContextBindings::compile(declarations, &requirements),
+                Err(Error::InvalidUserConfig { error })
+                    if error.contains("all-captured authorized identity reads are not supported")
+                        && error.contains("use explicit named identity reads")
+            ));
         }
     }
 
