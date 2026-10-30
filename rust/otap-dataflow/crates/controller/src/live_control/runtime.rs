@@ -89,6 +89,7 @@ impl<
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
+        start_ticket: Option<StartGateTicket>,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
         let core_placement =
             deployment
@@ -182,6 +183,7 @@ impl<
                         tracing_setup,
                         internal_telemetry,
                         thread_startup_ready,
+                        start_ticket,
                     )
                 })) {
                     Ok(Ok(_)) => RuntimeInstanceExit::Success,
@@ -223,6 +225,18 @@ impl<
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<DeployedPipelineKey, Error> {
+        self.launch_gated_pipeline_instance(deployment, core_id, deployment_generation, None)
+    }
+
+    /// Launches one regular pipeline instance that, when `start_ticket` is set,
+    /// waits at its start gate between build and run.
+    pub(super) fn launch_gated_pipeline_instance(
+        self: &Arc<Self>,
+        deployment: &LogicalPipelineDeployment,
+        core_id: usize,
+        deployment_generation: u64,
+        start_ticket: Option<StartGateTicket>,
+    ) -> Result<DeployedPipelineKey, Error> {
         let thread_id = self.next_thread_id();
         let launched = self.launch_pipeline_thread(
             deployment,
@@ -231,6 +245,7 @@ impl<
             thread_id,
             self.engine_tracing_setup.clone(),
             None,
+            start_ticket,
         )?;
         let deployed_key = launched.pipeline_key.clone();
         self.register_launched_instance(launched);
@@ -1689,6 +1704,9 @@ impl<
 
             let coordinator_reserved = !coordinator_active
                 && (!producer_keys.is_empty() || !observability_senders.is_empty());
+            if !state.global_shutdown_requested {
+                state.shutdown_followed_error = state.first_error.is_some();
+            }
             state.global_shutdown_requested = true;
             if state.global_shutdown_deadline.is_none() {
                 state.global_shutdown_deadline = Some(deadline);
@@ -1990,6 +2008,24 @@ impl<
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         state.global_shutdown_requested
+    }
+
+    /// Returns whether an engine-wide shutdown has been requested.
+    pub(crate) fn global_shutdown_requested(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_requested
+    }
+
+    /// Returns whether global shutdown was requested without a prior runtime error, as for an
+    /// operator signal, rather than as the consequence of a fatal pipeline failure.
+    pub(crate) fn shutdown_requested_without_error(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.global_shutdown_requested && !state.shutdown_followed_error
     }
 
     /// Returns whether every registered runtime instance has exited.

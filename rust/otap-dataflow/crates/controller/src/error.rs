@@ -79,6 +79,13 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>, // ToDo : Use a more specific error type if possible
     },
 
+    /// Initial reconciliation could not establish the configured regular pipelines.
+    #[error("Startup pipeline reconciliation failed: {message}")]
+    StartupReconciliationFailed {
+        /// Human-readable rejection or rollout failure detail.
+        message: String,
+    },
+
     /// A console writer stopped on an I/O error and queued output was abandoned.
     ///
     /// Reported through the run result because a dead writer may have no console

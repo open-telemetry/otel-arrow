@@ -9,6 +9,13 @@ use crate::engine::{
 };
 use crate::error::Error;
 
+fn validate_startup_timeout(path: &str, value: u64, errors: &mut Vec<Error>) {
+    if value == 0 {
+        let error = format!("{path} must be greater than zero");
+        errors.push(Error::InvalidUserConfig { error });
+    }
+}
+
 /// Validates that context entries declared at the innermost scope (such as at pipeline or group
 /// level) do not shadow entries already declared at a broader scope (such as group or engine).
 ///
@@ -84,6 +91,17 @@ impl OtelDataflowSpec {
         if let Err(e) = self.engine.telemetry.validate() {
             errors.push(e);
         }
+
+        validate_startup_timeout(
+            "engine.controller.startup_step_timeout_secs",
+            self.engine.controller.startup_step_timeout_secs,
+            &mut errors,
+        );
+        validate_startup_timeout(
+            "engine.controller.startup_failure_drain_timeout_secs",
+            self.engine.controller.startup_failure_drain_timeout_secs,
+            &mut errors,
+        );
 
         // The observability pipeline is always present (deserialization installs
         // the built-in default when it is omitted). Exactly one internal receiver

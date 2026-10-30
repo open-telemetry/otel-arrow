@@ -39,8 +39,10 @@ use std::time::{Duration, Instant};
 mod execution;
 mod planning;
 mod runtime;
+mod start_gate;
 mod state;
 
+pub(crate) use self::start_gate::{StartGate, StartGateAbortOnDrop, StartGateTicket};
 #[cfg(test)]
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
@@ -228,6 +230,7 @@ impl<
                 generation_counters: HashMap::new(),
                 active_instances: 0,
                 active_engine_operation: None,
+                startup_reconcile_active: false,
                 next_reconcile_id: 0,
                 next_rollout_id: 0,
                 next_shutdown_id: 0,
@@ -236,6 +239,7 @@ impl<
                 next_recovery_id: 0,
                 next_pipeline_operation_reservation_id: 0,
                 first_error: None,
+                shutdown_followed_error: false,
                 instance_wait_released: false,
                 global_shutdown_requested: false,
                 global_shutdown_deadline: None,
@@ -244,35 +248,6 @@ impl<
             }),
             state_changed: Condvar::new(),
         }
-    }
-
-    /// Seeds the runtime registry with a pipeline already committed at startup.
-    pub(super) fn register_committed_pipeline(&self, deployment: &LogicalPipelineDeployment) {
-        let pipeline_key = PipelineKey::new(
-            deployment.resolved.pipeline_group_id.clone(),
-            deployment.resolved.pipeline_id.clone(),
-        );
-        self.observed_state_store.set_pipeline_active_cores(
-            pipeline_key.clone(),
-            deployment
-                .placement
-                .cores
-                .iter()
-                .map(|core| core.core_id.id),
-        );
-        self.observed_state_store
-            .set_pipeline_active_generation(pipeline_key.clone(), deployment.baseline_generation);
-
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        _ = state
-            .generation_counters
-            .insert(pipeline_key.clone(), deployment.baseline_generation + 1);
-        _ = state
-            .logical_pipelines
-            .insert(pipeline_key, deployment.clone());
     }
 
     /// Allocates the next controller-local logical thread identifier.

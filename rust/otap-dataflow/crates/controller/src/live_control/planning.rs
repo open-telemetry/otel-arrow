@@ -43,6 +43,7 @@ impl<
                 .is_some_and(|operation_id| operation_id == self.operation_id)
             {
                 state.active_engine_operation = None;
+                state.startup_reconcile_active = false;
                 true
             } else {
                 false
@@ -133,6 +134,7 @@ impl<
 
     fn begin_reconcile_operation(
         self: &Arc<Self>,
+        startup: bool,
     ) -> Result<(String, EngineOperationGuard<PData>), ControlPlaneError> {
         let reconcile_id = {
             let mut state = self
@@ -148,6 +150,7 @@ impl<
             let reconcile_id = format!("reconcile-{}", state.next_reconcile_id);
             state.next_reconcile_id += 1;
             state.active_engine_operation = Some(reconcile_id.clone());
+            state.startup_reconcile_active = startup;
             reconcile_id
         };
         Ok((
@@ -1163,6 +1166,7 @@ impl<
             .collect();
         let step_timeout_secs = request.step_timeout_secs.max(1);
         let drain_timeout_secs = request.drain_timeout_secs.max(1);
+        let rollback_failed_candidate = true;
         let rollout = RolloutRecord::new(
             rollout_id,
             pipeline_group_id.clone(),
@@ -1173,6 +1177,7 @@ impl<
                 .as_ref()
                 .map(|record| record.baseline_generation),
             drain_timeout_secs,
+            rollback_failed_candidate,
             target_deployment
                 .resolved
                 .policies
@@ -1203,6 +1208,8 @@ impl<
             rollout,
             step_timeout_secs,
             drain_timeout_secs,
+            rollback_failed_candidate: true,
+            start_gate: None,
         })
     }
 
@@ -1928,6 +1935,41 @@ impl<
         status.state == ApiPipelineRolloutState::Succeeded
     }
 
+    /// Records one terminal reconcile rollout and returns its failure reason, if it failed.
+    fn record_reconcile_rollout(
+        status: &mut EngineConfigReconcileStatus,
+        pipeline_key: &PipelineKey,
+        action: ConfigChangeAction,
+        terminal_rollout: RolloutStatus,
+    ) -> Option<String> {
+        let succeeded = Self::rollout_succeeded(&terminal_rollout);
+        let failure_reason = terminal_rollout.failure_reason.clone();
+        status.changes.push(ConfigChangeStatus {
+            pipeline_group_id: Some(pipeline_key.pipeline_group_id().clone()),
+            pipeline_id: Some(pipeline_key.pipeline_id().clone()),
+            action,
+            state: if succeeded {
+                "succeeded".to_owned()
+            } else {
+                "failed".to_owned()
+            },
+            rollout: Some(terminal_rollout),
+            shutdown: None,
+            detail: failure_reason.clone(),
+        });
+        status.updated_at = timestamp_now();
+        if succeeded {
+            return None;
+        }
+        let reason = failure_reason
+            .unwrap_or_else(|| "pipeline rollout did not complete successfully".to_owned());
+        Some(format!(
+            "pipeline '{}:{}': {reason}",
+            pipeline_key.pipeline_group_id().as_ref(),
+            pipeline_key.pipeline_id().as_ref()
+        ))
+    }
+
     fn wait_for_rollout_terminal(&self, initial_status: RolloutStatus) -> RolloutStatus {
         let mut status = initial_status;
         while !Self::rollout_terminal(&status) {
@@ -2217,11 +2259,40 @@ impl<
     }
 
     /// Reconciles live controller state to a complete desired engine config.
-    pub(super) fn reconcile_engine_config(
+    pub(crate) fn reconcile_engine_config(
         self: &Arc<Self>,
         request: EngineConfigReconcileRequest,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
-        let (reconcile_id, guard) = self.begin_reconcile_operation()?;
+        self.reconcile_engine_config_core(
+            request.config,
+            request.step_timeout_secs,
+            request.drain_timeout_secs,
+            request.delete_timeout_secs,
+            request.delete_missing,
+            false,
+        )
+    }
+
+    /// Reconciles initial startup state while deferring failed candidates to global shutdown.
+    pub(crate) fn reconcile_engine_config_startup(
+        self: &Arc<Self>,
+        config: OtelDataflowSpec,
+        step_timeout_secs: u64,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.reconcile_engine_config_core(config, step_timeout_secs, 0, 0, true, true)
+    }
+
+    fn reconcile_engine_config_core(
+        self: &Arc<Self>,
+        desired_config: OtelDataflowSpec,
+        step_timeout_secs: u64,
+        drain_timeout_secs: u64,
+        delete_timeout_secs: u64,
+        delete_missing: bool,
+        startup: bool,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        let rollback_failed_candidate = !startup;
+        let (reconcile_id, guard) = self.begin_reconcile_operation(startup)?;
         let started_at = timestamp_now();
         let mut status = EngineConfigReconcileStatus::new(
             reconcile_id,
@@ -2231,7 +2302,6 @@ impl<
         );
 
         let live_config = self.engine_config_snapshot();
-        let desired_config = request.config;
         desired_config
             .validate()
             .map_err(|err| ControlPlaneError::InvalidRequest {
@@ -2244,7 +2314,7 @@ impl<
         )?;
 
         let target_config =
-            Self::reconcile_target_config(&live_config, &desired_config, request.delete_missing);
+            Self::reconcile_target_config(&live_config, &desired_config, delete_missing);
         Self::validate_live_state_dir_unchanged(&live_config, &target_config)?;
         target_config
             .validate()
@@ -2356,18 +2426,33 @@ impl<
         for (pipeline_key, pipeline) in desired_keys {
             let reconfigure_request = ReconfigureRequest {
                 pipeline,
-                step_timeout_secs: request.step_timeout_secs,
-                drain_timeout_secs: request.drain_timeout_secs,
+                step_timeout_secs,
+                drain_timeout_secs,
             };
-            let plan = self.prepare_rollout_plan_for_engine_operation(
-                pipeline_key.pipeline_group_id(),
-                pipeline_key.pipeline_id(),
-                &reconfigure_request,
-                Some(&target_config),
-                Some(Arc::clone(&target_context_bindings)),
-                Some(guard.operation_id()),
-                Some(&projected_exclusive_core_ids),
-            )?;
+            let mut plan = self
+                .prepare_rollout_plan_for_engine_operation(
+                    pipeline_key.pipeline_group_id(),
+                    pipeline_key.pipeline_id(),
+                    &reconfigure_request,
+                    Some(&target_config),
+                    Some(Arc::clone(&target_context_bindings)),
+                    Some(guard.operation_id()),
+                    Some(&projected_exclusive_core_ids),
+                )
+                .map_err(|error| match error {
+                    ControlPlaneError::InvalidRequest { message } => {
+                        ControlPlaneError::InvalidRequest {
+                            message: format!(
+                                "pipeline '{}:{}': {message}",
+                                pipeline_key.pipeline_group_id().as_ref(),
+                                pipeline_key.pipeline_id().as_ref()
+                            ),
+                        }
+                    }
+                    other => other,
+                })?;
+            plan.rollback_failed_candidate = rollback_failed_candidate;
+            plan.rollout.rollback_failed_candidate = rollback_failed_candidate;
             let action = Self::rollout_change_action(plan.action);
             let current_conflicting_core_ids =
                 self.current_reserved_conflicting_core_ids(&pipeline_key, &plan.rollout);
@@ -2404,35 +2489,79 @@ impl<
             rollout_plans.push((pipeline_key, action, plan));
         }
 
-        for (pipeline_key, action, plan) in rollout_plans {
-            let initial_rollout =
-                self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
-            let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
-            let succeeded = Self::rollout_succeeded(&terminal_rollout);
-            let failure_reason = terminal_rollout.failure_reason.clone();
-            status.changes.push(ConfigChangeStatus {
-                pipeline_group_id: Some(pipeline_key.pipeline_group_id().clone()),
-                pipeline_id: Some(pipeline_key.pipeline_id().clone()),
-                action,
-                state: if succeeded {
-                    "succeeded".to_owned()
-                } else {
-                    "failed".to_owned()
-                },
-                rollout: Some(terminal_rollout),
-                shutdown: None,
-                detail: failure_reason.clone(),
-            });
-            status.updated_at = timestamp_now();
-            if !succeeded {
+        // New pipelines are built first and released together, so every new topic subscription
+        // exists before any new pipeline accepts or emits data. Build order does not matter: no
+        // data moves during build. Replace and resize rollouts then run one at a time as before.
+        let (create_plans, other_plans): (Vec<_>, Vec<_>) = rollout_plans
+            .into_iter()
+            .partition(|(_, _, plan)| matches!(plan.action, RolloutAction::Create));
+
+        if !create_plans.is_empty() {
+            let gate = StartGate::new();
+            let gate_guard = StartGateAbortOnDrop(Arc::clone(&gate));
+            let expected_built: usize = create_plans
+                .iter()
+                .map(|(_, _, plan)| plan.target_assigned_cores.len())
+                .sum();
+            let mut spawned = Vec::with_capacity(create_plans.len());
+            for (pipeline_key, action, mut plan) in create_plans {
+                plan.start_gate = Some(Arc::clone(&gate));
+                match self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id())) {
+                    Ok(initial_rollout) => spawned.push((pipeline_key, action, initial_rollout)),
+                    Err(error) => {
+                        gate.abort(format!("reconcile could not start a rollout: {error}"));
+                        for (_, _, initial_rollout) in spawned {
+                            let _ = self.wait_for_rollout_terminal(initial_rollout);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            let build_deadline = Instant::now() + Duration::from_secs(step_timeout_secs);
+            let interrupted = || {
+                self.global_shutdown_requested()
+                    .then(|| "engine shutdown requested before new pipelines started".to_owned())
+            };
+            match gate.wait_until_built(expected_built, build_deadline, interrupted) {
+                Ok(()) => gate.open(),
+                Err(reason) => gate.abort(reason),
+            }
+            drop(gate_guard);
+
+            let mut first_failure = None;
+            for (pipeline_key, action, initial_rollout) in spawned {
+                let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
+                let failed = Self::record_reconcile_rollout(
+                    &mut status,
+                    &pipeline_key,
+                    action,
+                    terminal_rollout,
+                );
+                if first_failure.is_none() {
+                    first_failure = failed;
+                }
+            }
+            if let Some(failure_reason) = first_failure {
                 status.state = EngineConfigReconcileState::Failed;
-                status.failure_reason = failure_reason
-                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
+                status.failure_reason = Some(failure_reason);
                 return Ok(status);
             }
         }
 
-        if request.delete_missing {
+        for (pipeline_key, action, plan) in other_plans {
+            let initial_rollout =
+                self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
+            let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
+            if let Some(failure_reason) =
+                Self::record_reconcile_rollout(&mut status, &pipeline_key, action, terminal_rollout)
+            {
+                status.state = EngineConfigReconcileState::Failed;
+                status.failure_reason = Some(failure_reason);
+                return Ok(status);
+            }
+        }
+
+        if delete_missing {
             for pipeline_key in self.live_pipeline_keys() {
                 if desired_key_set.contains(&pipeline_key) {
                     continue;
@@ -2440,7 +2569,7 @@ impl<
                 let delete = self.request_delete_pipeline_for_engine_operation(
                     pipeline_key.pipeline_group_id(),
                     pipeline_key.pipeline_id(),
-                    request.delete_timeout_secs,
+                    delete_timeout_secs,
                     Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";
@@ -2470,7 +2599,7 @@ impl<
                 }
                 let delete = self.request_delete_group_for_engine_operation(
                     &pipeline_group_id,
-                    request.delete_timeout_secs,
+                    delete_timeout_secs,
                     Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";

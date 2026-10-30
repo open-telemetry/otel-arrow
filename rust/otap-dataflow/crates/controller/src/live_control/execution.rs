@@ -14,6 +14,41 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    /// Reports the resolved target placement before a rollout launches pipeline instances.
+    fn report_pipeline_core_allocation(&self, plan: &CandidateRolloutPlan) {
+        let placement = &plan.target_deployment.placement;
+        let resolved_cores = placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let resolved_numa_nodes = placement
+            .cores
+            .iter()
+            .map(|core| {
+                core.known_numa_node_id
+                    .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+
+        otel_info!(
+            "pipeline.core_allocation",
+            pipeline_group_id = plan.pipeline_group_id.as_ref(),
+            pipeline_id = plan.pipeline_id.as_ref(),
+            num_cores = placement.core_count(),
+            core_allocation = %plan
+                .target_deployment
+                .resolved
+                .policies
+                .resources
+                .core_allocation,
+            resolved_cores = resolved_cores,
+            resolved_numa_nodes = resolved_numa_nodes,
+        );
+    }
+
     /// Emits the internal telemetry event for a rollout/shutdown worker panic.
     pub(super) fn report_controller_worker_panic(
         &self,
@@ -76,6 +111,9 @@ impl<
             let Some(rollout) = state.rollouts.get(rollout_id) else {
                 return;
             };
+            if !rollout.rollback_failed_candidate {
+                return;
+            }
             let target_generation = rollout.target_generation;
             let timeout_secs = rollout.drain_timeout_secs;
 
@@ -149,6 +187,10 @@ impl<
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;
         });
+
+        if !matches!(plan.action, RolloutAction::NoOp) {
+            self.report_pipeline_core_allocation(&plan);
+        }
 
         let result = match plan.action {
             RolloutAction::Create => self.run_create_rollout(&plan),
@@ -315,49 +357,67 @@ impl<
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
         let mut launched = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
-        for core_id in &plan.target_assigned_cores {
-            self.update_rollout_core_state(
-                &plan.pipeline_key,
-                &plan.rollout.rollout_id,
-                *core_id,
-                "starting",
-                None,
-            );
-            let deployed_key = match self.launch_regular_pipeline_instance(
-                &plan.target_deployment,
-                *core_id,
-                plan.target_deployment.baseline_generation,
-            ) {
-                Ok(deployed_key) => deployed_key,
-                Err(err) => {
-                    let reason = err.to_string();
-                    self.update_rollout_core_state(
-                        &plan.pipeline_key,
-                        &plan.rollout.rollout_id,
+        let rollout_result = (|| {
+            for core_id in &plan.target_assigned_cores {
+                self.update_rollout_core_state(
+                    &plan.pipeline_key,
+                    &plan.rollout.rollout_id,
+                    *core_id,
+                    "starting",
+                    None,
+                );
+                let start_ticket = plan.start_gate.as_ref().map(|gate| {
+                    gate.ticket(format!(
+                        "pipeline '{}:{}' core {core_id}",
+                        plan.pipeline_group_id.as_ref(),
+                        plan.pipeline_id.as_ref()
+                    ))
+                });
+                let deployed_key = self
+                    .launch_gated_pipeline_instance(
+                        &plan.target_deployment,
                         *core_id,
-                        "failed",
-                        Some(reason.clone()),
-                    );
-                    // Create rollouts have no previous generation to restore, so a launch
-                    // failure must tear down any candidate instances that were already started.
-                    return self.rollback_create_rollout(plan, &launched, reason);
-                }
-            };
-            launched.push(deployed_key);
-        }
+                        plan.target_deployment.baseline_generation,
+                        start_ticket,
+                    )
+                    .map_err(|err| {
+                        let reason = err.to_string();
+                        self.update_rollout_core_state(
+                            &plan.pipeline_key,
+                            &plan.rollout.rollout_id,
+                            *core_id,
+                            "failed",
+                            Some(reason.clone()),
+                        );
+                        reason
+                    })?;
+                launched.push(deployed_key);
+            }
 
-        for deployed_key in &launched {
-            if let Err(reason) = self.wait_for_pipeline_ready(deployed_key, deadline) {
+            if let Some(gate) = &plan.start_gate {
+                gate.wait_decision()
+                    .map_err(|reason| format!("pipeline start aborted: {reason}"))?;
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+            for deployed_key in &launched {
+                self.wait_for_pipeline_ready(deployed_key, deadline)?;
+                self.update_rollout_core_state(
+                    &plan.pipeline_key,
+                    &plan.rollout.rollout_id,
+                    deployed_key.core_id,
+                    "ready",
+                    None,
+                );
+            }
+            Ok::<(), String>(())
+        })();
+
+        if let Err(reason) = rollout_result {
+            if plan.rollback_failed_candidate {
                 return self.rollback_create_rollout(plan, &launched, reason);
             }
-            self.update_rollout_core_state(
-                &plan.pipeline_key,
-                &plan.rollout.rollout_id,
-                deployed_key.core_id,
-                "ready",
-                None,
-            );
+            return Err(RolloutExecutionError::Failed(reason));
         }
 
         self.commit_pipeline_deployment(plan);

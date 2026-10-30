@@ -44,7 +44,7 @@
 use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
-use otel_arrow_dfe_admin::ControlPlane;
+use otel_arrow_dfe_admin::{ControlPlane, EngineConfigReconcileState};
 use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
@@ -145,9 +145,16 @@ pub use controller_monitor::{
 };
 
 use live_control::{ControllerRuntime, LaunchedPipelineThread, LogicalPipelineDeployment};
-use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
+use placement::{CorePlacement, PipelinePlacement, PlacementPlanner};
 
 use otel_arrow_dfe_engine::component_inventory;
+
+/// Maximum duration Rust documents as comfortable for cross-platform `Instant` arithmetic.
+const MAX_PORTABLE_TIMEOUT_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+
+fn cap_timeout_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.min(MAX_PORTABLE_TIMEOUT_SECS)
+}
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -482,30 +489,37 @@ struct InferredTopicModeReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PipelineNodeKey {
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+    node_id: otel_arrow_dfe_config::NodeId,
+}
+
+impl PipelineNodeKey {
+    fn wiring_vertex(&self) -> TopicWiringVertex {
+        TopicWiringVertex::PipelineNode(self.clone())
+    }
+
+    fn label(&self) -> String {
+        format!(
+            "pipeline:{}/{}/{}",
+            self.pipeline_group_id.as_ref(),
+            self.pipeline_id.as_ref(),
+            self.node_id.as_ref()
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TopicWiringVertex {
-    PipelineNode {
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        node_id: otel_arrow_dfe_config::NodeId,
-    },
-    Topic {
-        declared_name: TopicName,
-    },
+    PipelineNode(PipelineNodeKey),
+    Topic { declared_name: TopicName },
 }
 
 impl TopicWiringVertex {
     fn label(&self) -> String {
         match self {
-            Self::PipelineNode {
-                pipeline_group_id,
-                pipeline_id,
-                node_id,
-            } => format!(
-                "pipeline:{}/{}/{}",
-                pipeline_group_id.as_ref(),
-                pipeline_id.as_ref(),
-                node_id.as_ref()
-            ),
+            Self::PipelineNode(node) => node.label(),
             Self::Topic { declared_name } => format!("topic:{}", declared_name.as_ref()),
         }
     }
@@ -695,6 +709,35 @@ impl<
         InferredTopicMode::Mixed
     }
 
+    fn visit_pipeline_configs(
+        config: &OtelDataflowSpec,
+        mut visit: impl FnMut(&PipelineKey, &PipelineConfig),
+    ) {
+        let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
+        group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        for group_id in group_ids {
+            let group = &config.groups[&group_id];
+            let mut group_pipelines = group.pipelines.iter().collect::<Vec<_>>();
+            group_pipelines.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+            for (pipeline_id, pipeline) in group_pipelines {
+                let pipeline_key = PipelineKey::new(group_id.clone(), pipeline_id.clone());
+                visit(&pipeline_key, pipeline);
+            }
+        }
+
+        let pipeline_key = PipelineKey::new(
+            SYSTEM_PIPELINE_GROUP_ID.into(),
+            SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+        );
+        let pipeline = config
+            .engine
+            .observability
+            .pipeline
+            .clone()
+            .into_pipeline_config();
+        visit(&pipeline_key, &pipeline);
+    }
+
     fn infer_topic_modes(
         config: &OtelDataflowSpec,
         global_names: &HashMap<TopicName, TopicName>,
@@ -711,20 +754,11 @@ impl<
             _ = usage_by_declared_topic.insert(declared_name.clone(), TopicUsageSummary::default());
         }
 
-        let mut visit_topic_node =
-            |pipeline_group_id: &PipelineGroupId, node_config: &NodeUserConfig| {
-                let topic_name = match Self::parse_topic_name_from_node_config(node_config) {
-                    Some(topic_name) => topic_name,
-                    None => return,
-                };
-                let Some(declared_topic_name) = Self::resolve_declared_topic_name(
-                    pipeline_group_id,
-                    &topic_name,
-                    global_names,
-                    group_names,
-                ) else {
-                    return;
-                };
+        Self::visit_topic_nodes(
+            config,
+            global_names,
+            group_names,
+            |_node, node_config, declared_topic_name| {
                 let Some(summary) = usage_by_declared_topic.get_mut(&declared_topic_name) else {
                     return;
                 };
@@ -749,26 +783,8 @@ impl<
                     }
                     _ => {}
                 }
-            };
-
-        for (group_id, group_cfg) in &config.groups {
-            for pipeline_cfg in group_cfg.pipelines.values() {
-                for (_node_id, node_cfg) in pipeline_cfg.node_iter() {
-                    if node_cfg.r#type.id() != "topic" {
-                        continue;
-                    }
-                    visit_topic_node(group_id, node_cfg.as_ref());
-                }
-            }
-        }
-
-        let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-        for (_node_id, node_cfg) in config.engine.observability.pipeline.nodes.iter() {
-            if node_cfg.r#type.id() != "topic" {
-                continue;
-            }
-            visit_topic_node(&system_group_id, node_cfg.as_ref());
-        }
+            },
+        );
 
         let mut declared_topics: Vec<_> = usage_by_declared_topic.into_iter().collect();
         declared_topics.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
@@ -803,33 +819,39 @@ impl<
         let _ = adjacency.entry(to).or_default();
     }
 
-    fn collect_topic_wiring_edges_for_pipeline(
+    fn collect_pipeline_wiring_edges(
         adjacency: &mut HashMap<TopicWiringVertex, Vec<TopicWiringVertex>>,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
         pipeline: &PipelineConfig,
-        global_names: &HashMap<TopicName, TopicName>,
-        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
     ) {
         for connection in pipeline.connection_iter() {
             let targets = connection.to_nodes();
             for source in connection.from_sources() {
-                let source_vertex = TopicWiringVertex::PipelineNode {
+                let source_vertex = TopicWiringVertex::PipelineNode(PipelineNodeKey {
                     pipeline_group_id: pipeline_group_id.clone(),
                     pipeline_id: pipeline_id.clone(),
                     node_id: source.node_id().clone(),
-                };
+                });
                 for target in &targets {
-                    let target_vertex = TopicWiringVertex::PipelineNode {
+                    let target_vertex = TopicWiringVertex::PipelineNode(PipelineNodeKey {
                         pipeline_group_id: pipeline_group_id.clone(),
                         pipeline_id: pipeline_id.clone(),
                         node_id: target.clone(),
-                    };
+                    });
                     Self::add_topic_wiring_edge(adjacency, source_vertex.clone(), target_vertex);
                 }
             }
         }
+    }
 
+    fn visit_topic_nodes_for_pipeline(
+        pipeline_key: &PipelineKey,
+        pipeline: &PipelineConfig,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+        mut visit: impl FnMut(PipelineNodeKey, &NodeUserConfig, TopicName),
+    ) {
         let mut topic_nodes = pipeline.node_iter().collect::<Vec<_>>();
         topic_nodes.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
         for (node_id, node_config) in topic_nodes {
@@ -840,29 +862,40 @@ impl<
                 continue;
             };
             let Some(declared_name) = Self::resolve_declared_topic_name(
-                pipeline_group_id,
+                pipeline_key.pipeline_group_id(),
                 &topic_name,
                 global_names,
                 group_names,
             ) else {
                 continue;
             };
-            let node_vertex = TopicWiringVertex::PipelineNode {
-                pipeline_group_id: pipeline_group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                node_id: node_id.clone(),
-            };
-            let topic_vertex = TopicWiringVertex::Topic { declared_name };
-            match node_config.kind() {
-                NodeKind::Exporter => {
-                    Self::add_topic_wiring_edge(adjacency, node_vertex, topic_vertex);
-                }
-                NodeKind::Receiver => {
-                    Self::add_topic_wiring_edge(adjacency, topic_vertex, node_vertex);
-                }
-                _ => {}
-            }
+            visit(
+                PipelineNodeKey {
+                    pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
+                    pipeline_id: pipeline_key.pipeline_id().clone(),
+                    node_id: node_id.clone(),
+                },
+                node_config,
+                declared_name,
+            );
         }
+    }
+
+    fn visit_topic_nodes(
+        config: &OtelDataflowSpec,
+        global_names: &HashMap<TopicName, TopicName>,
+        group_names: &HashMap<(PipelineGroupId, TopicName), TopicName>,
+        mut visit: impl FnMut(PipelineNodeKey, &NodeUserConfig, TopicName),
+    ) {
+        Self::visit_pipeline_configs(config, |pipeline_key, pipeline| {
+            Self::visit_topic_nodes_for_pipeline(
+                pipeline_key,
+                pipeline,
+                global_names,
+                group_names,
+                &mut visit,
+            );
+        });
     }
 
     fn detect_topic_wiring_cycles(
@@ -929,49 +962,35 @@ impl<
     ) -> Result<(), Error> {
         let mut adjacency = HashMap::<TopicWiringVertex, Vec<TopicWiringVertex>>::new();
 
-        let mut group_ids = config.groups.keys().cloned().collect::<Vec<_>>();
-        group_ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
-        for group_id in group_ids {
-            let Some(group_cfg) = config.groups.get(&group_id) else {
-                return Err(Error::PipelineRuntimeError {
-                    source: Box::new(EngineError::InternalError {
-                        message: format!(
-                            "group `{}` disappeared while validating topic wiring",
-                            group_id.as_ref()
-                        ),
-                    }),
-                });
-            };
-            let mut pipelines = group_cfg.pipelines.iter().collect::<Vec<_>>();
-            pipelines.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
-            for (pipeline_id, pipeline_cfg) in pipelines {
-                Self::collect_topic_wiring_edges_for_pipeline(
-                    &mut adjacency,
-                    &group_id,
-                    pipeline_id,
-                    pipeline_cfg,
-                    global_names,
-                    group_names,
-                );
-            }
-        }
-
-        let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-        let observability_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-        let pipeline_cfg = config
-            .engine
-            .observability
-            .pipeline
-            .clone()
-            .into_pipeline_config();
-        Self::collect_topic_wiring_edges_for_pipeline(
-            &mut adjacency,
-            &system_group_id,
-            &observability_pipeline_id,
-            &pipeline_cfg,
-            global_names,
-            group_names,
-        );
+        Self::visit_pipeline_configs(config, |pipeline_key, pipeline| {
+            Self::collect_pipeline_wiring_edges(
+                &mut adjacency,
+                pipeline_key.pipeline_group_id(),
+                pipeline_key.pipeline_id(),
+                pipeline,
+            );
+            Self::visit_topic_nodes_for_pipeline(
+                pipeline_key,
+                pipeline,
+                global_names,
+                group_names,
+                |node, node_config, topic| {
+                    let topic_vertex = TopicWiringVertex::Topic {
+                        declared_name: topic,
+                    };
+                    let node_vertex = node.wiring_vertex();
+                    match node_config.kind() {
+                        NodeKind::Exporter => {
+                            Self::add_topic_wiring_edge(&mut adjacency, node_vertex, topic_vertex);
+                        }
+                        NodeKind::Receiver => {
+                            Self::add_topic_wiring_edge(&mut adjacency, topic_vertex, node_vertex);
+                        }
+                        _ => {}
+                    }
+                },
+            );
+        });
 
         if let Some(cycle) = Self::detect_topic_wiring_cycles(&adjacency)
             .into_iter()
@@ -1409,6 +1428,53 @@ impl<
         }
     }
 
+    fn cleanup_failed_startup<C: ControlPlane + ?Sized>(
+        runtime: &ControllerRuntime<PData>,
+        control_plane: &C,
+        memory_limiter_handle: Option<
+            ThreadLocalTaskHandle<(), otel_arrow_dfe_telemetry::error::Error>,
+        >,
+        engine_metrics_handle: ThreadLocalTaskHandle<
+            (ServiceStats, Duration),
+            otel_arrow_dfe_telemetry::error::Error,
+        >,
+        controller_telemetry_guard: live_control::ControllerTelemetryGuard<'_, PData>,
+        startup_failure_drain_timeout_secs: u64,
+        final_console_report: &mut Option<(ServiceStats, Duration)>,
+    ) {
+        if let Some(handle) = memory_limiter_handle
+            && let Err(err) = handle.shutdown_and_join()
+        {
+            otel_warn!(
+                "controller.startup_failure_memory_limiter_shutdown_failed",
+                error = err.to_string()
+            );
+        }
+        match engine_metrics_handle.shutdown_and_join() {
+            Ok(report) => *final_console_report = Some(report),
+            Err(err) => {
+                otel_warn!(
+                    "controller.startup_failure_engine_metrics_shutdown_failed",
+                    error = err.to_string()
+                );
+            }
+        }
+        drop(controller_telemetry_guard);
+        if let Err(error) = control_plane.shutdown_all(startup_failure_drain_timeout_secs) {
+            otel_warn!(
+                "controller.startup_failure_pipeline_shutdown_failed",
+                error = format!("{error:?}")
+            );
+        }
+        let _ = runtime.wait_for_global_shutdown_completion();
+        if !runtime.wait_until_all_instances_exit_for(Duration::from_secs(12)) {
+            otel_warn!(
+                "controller.startup_failure_pipeline_shutdown_timeout",
+                message = "Timed out waiting for pipelines to stop after controller startup failed"
+            );
+        }
+    }
+
     /// Combines the engine result with an already-observed console outcome.
     fn fold_console_output_result(
         result: Result<(), Error>,
@@ -1683,8 +1749,6 @@ impl<
             visible_cpu_count = topology.visible_cpus().len(),
             visible_node_count = topology.visible_nodes().len()
         );
-        let placement_snapshot =
-            Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
         let observability_placement = PipelinePlacement {
             pipeline_group_id: observability_pipeline.pipeline_group_id.clone(),
             pipeline_id: observability_pipeline.pipeline_id.clone(),
@@ -1697,7 +1761,6 @@ impl<
             observability_placement,
             Arc::new(ListenerGroupSnapshot::empty()),
         );
-
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
             controller_ctx.clone(),
@@ -1829,64 +1892,66 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
-        for (pipeline_entry, pipeline_placement) in
-            pipelines.iter().zip(placement_snapshot.pipelines.iter())
+        let shutdown_signal_listener =
+            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
+                // Register before reconciliation starts regular pipelines so a termination signal
+                // can trigger graceful shutdown throughout startup.
+                Some(Self::spawn_shutdown_signal_listener(Arc::clone(
+                    &control_plane,
+                ))?)
+            } else {
+                None
+            };
+
+        let config = &engine_config.engine.controller;
+        let step_timeout_secs = cap_timeout_secs(config.startup_step_timeout_secs);
+        let drain_timeout_secs = cap_timeout_secs(config.startup_failure_drain_timeout_secs);
+
+        let startup_failure = match runtime
+            .reconcile_engine_config_startup(engine_config.clone(), step_timeout_secs)
         {
-            let deployment = LogicalPipelineDeployment::new(
-                pipeline_entry.clone(),
-                Arc::clone(&context.bindings),
-                0,
-                pipeline_placement.clone(),
-                Arc::new(listener_group::snapshot_for_pipeline(
-                    pipeline_entry,
-                    pipeline_placement,
-                    placement_snapshot.generation,
-                )),
+            Ok(status) if status.state == EngineConfigReconcileState::Succeeded => None,
+            Ok(status) => Some(
+                status
+                    .failure_reason
+                    .unwrap_or_else(|| "pipeline rollout did not succeed".to_owned()),
+            ),
+            Err(source) => Some(source.to_string()),
+        };
+        if let Some(message) = startup_failure {
+            // A termination signal during startup stops the pipelines being launched, which
+            // makes reconciliation fail; that is the requested shutdown, not a startup error.
+            // A fatal pipeline failure also requests shutdown, but after recording its error.
+            let shutdown_requested = runtime.global_shutdown_requested();
+            let operator_shutdown = runtime.shutdown_requested_without_error();
+            Self::cleanup_failed_startup(
+                &runtime,
+                control_plane.as_ref(),
+                memory_limiter_handle,
+                engine_metrics_handle,
+                controller_telemetry_guard,
+                drain_timeout_secs,
+                final_console_report,
             );
-            runtime.register_committed_pipeline(&deployment);
-            let num_cores = pipeline_placement.core_count();
-
-            let core_allocation = pipeline_entry
-                .policies
-                .resources
-                .core_allocation
-                .to_string();
-            let resolved_cores = pipeline_placement
-                .cores
-                .iter()
-                .map(|core| core.core_id.id.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let resolved_numa_nodes = pipeline_placement
-                .cores
-                .iter()
-                .map(|core| {
-                    core.known_numa_node_id
-                        .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            otel_info!(
-                "pipeline.core_allocation",
-                pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
-                pipeline_id = pipeline_entry.pipeline_id.as_ref(),
-                num_cores = num_cores,
-                core_allocation = core_allocation,
-                resolved_cores = resolved_cores,
-                resolved_numa_nodes = resolved_numa_nodes
-            );
-
-            for placement in &pipeline_placement.cores {
-                let launched = runtime.launch_pipeline_thread(
-                    &deployment,
-                    placement.core_id.id,
-                    placement_snapshot.generation,
-                    runtime.next_thread_id(),
-                    telemetry_system.engine_tracing_setup(),
-                    None,
-                )?;
-                runtime.register_launched_instance(launched);
+            if shutdown_requested
+                && !operator_shutdown
+                && let Some(error) = runtime.take_runtime_error()
+            {
+                return Err(error);
             }
+            if operator_shutdown {
+                otel_info!(
+                    "controller.startup_interrupted_by_shutdown",
+                    message =
+                        "Shutdown was requested during startup reconciliation; exiting gracefully",
+                    reason = message
+                );
+                return match shutdown_signal_listener {
+                    Some(listener) => listener.shutdown_and_join(),
+                    None => Ok(()),
+                };
+            }
+            return Err(Error::StartupReconciliationFailed { message });
         }
 
         drop(metrics_reporter);
@@ -1907,43 +1972,19 @@ impl<
         ) {
             Ok(handles) => handles,
             Err(err) => {
-                if let Some(handle) = memory_limiter_handle
-                    && let Err(stop_err) = handle.shutdown_and_join()
-                {
-                    otel_warn!(
-                        "controller.extension_startup_memory_limiter_shutdown_failed",
-                        error = stop_err.to_string()
-                    );
-                }
-                match engine_metrics_handle.shutdown_and_join() {
-                    Ok(report) => *final_console_report = Some(report),
-                    Err(stop_err) => {
-                        otel_warn!(
-                            "controller.extension_startup_engine_metrics_shutdown_failed",
-                            error = stop_err.to_string()
-                        );
-                    }
-                }
-                drop(controller_telemetry_guard);
-                if let Err(shutdown_err) = control_plane.shutdown_all(10) {
-                    otel_warn!(
-                        "controller.extension_startup_shutdown_failed",
-                        error = format!("{shutdown_err:?}"),
-                        message = "Failed to shut down launched pipelines after controller extension startup failed"
-                    );
-                }
-                let _ = runtime.wait_for_global_shutdown_completion();
-                if !runtime.all_instances_exited() {
-                    otel_warn!(
-                        "controller.extension_startup_pipeline_shutdown_timeout",
-                        message = "Timed out waiting for pipelines and system observability to stop after controller extension startup failed"
-                    );
-                }
+                Self::cleanup_failed_startup(
+                    &runtime,
+                    control_plane.as_ref(),
+                    memory_limiter_handle,
+                    engine_metrics_handle,
+                    controller_telemetry_guard,
+                    drain_timeout_secs,
+                    final_console_report,
+                );
                 return Err(err);
             }
         };
 
-        let signal_control_plane = Arc::clone(&control_plane);
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
@@ -1969,15 +2010,6 @@ impl<
         // In standard engine mode, keep the main thread blocked until an explicit
         // engine-wide shutdown drains every pipeline. An empty engine, or one whose
         // last pipeline stops independently, must remain available for live control.
-        let shutdown_signal_listener =
-            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
-                // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
-                // control plane.
-                Some(Self::spawn_shutdown_signal_listener(signal_control_plane)?)
-            } else {
-                None
-            };
-
         if run_mode == RunMode::ParkMainThread {
             runtime.wait_until_global_shutdown_drains_or_released();
         }
@@ -2585,128 +2617,6 @@ impl<
         }
     }
 
-    fn add_pipeline_context_to_core_allocation_error(
-        err: Error,
-        pipeline_entry: &ResolvedPipelineConfig,
-    ) -> Error {
-        match err {
-            Error::InvalidCoreAllocation {
-                alloc,
-                message,
-                available,
-            } => Error::InvalidCoreAllocation {
-                alloc,
-                message: format!(
-                    "Pipeline {}:{} has invalid core allocation: {}",
-                    pipeline_entry.pipeline_group_id.as_ref(),
-                    pipeline_entry.pipeline_id.as_ref(),
-                    message
-                ),
-                available,
-            },
-            other => other,
-        }
-    }
-
-    /// Pre-resolves core assignments for all regular pipelines.
-    ///
-    /// This validates the full pipeline set before any pipeline thread is spawned.
-    fn preflight_pipeline_placement(
-        pipelines: &[ResolvedPipelineConfig],
-        available_core_ids: &[CoreId],
-        topology: &NumaTopology,
-    ) -> Result<PlacementSnapshot, Error> {
-        let mut reserved_core_ids = BTreeSet::new();
-        let mut placements = vec![None; pipelines.len()];
-
-        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
-            if !matches!(
-                pipeline_entry.policies.resources.core_allocation.strategy,
-                CoreAllocationStrategy::CoreSet
-            ) {
-                continue;
-            }
-            let selected = Self::select_cores_for_allocation_with_placement(
-                available_core_ids.to_vec(),
-                &pipeline_entry.policies.resources.core_allocation,
-                topology,
-                &BTreeSet::new(),
-            )
-            .map_err(|err| {
-                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
-            })?;
-            reserved_core_ids.extend(selected.iter().map(|core| core.id));
-            placements[idx] = Some(PipelinePlacement {
-                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
-                pipeline_id: pipeline_entry.pipeline_id.clone(),
-                cores: selected
-                    .into_iter()
-                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
-                    .collect(),
-            });
-        }
-
-        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
-            if placements[idx].is_some() {
-                continue;
-            }
-            let selected = Self::select_cores_for_allocation_with_placement(
-                available_core_ids.to_vec(),
-                &pipeline_entry.policies.resources.core_allocation,
-                topology,
-                &reserved_core_ids,
-            )
-            .map_err(|err| {
-                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
-            })?;
-            if matches!(
-                pipeline_entry.policies.resources.core_allocation.strategy,
-                CoreAllocationStrategy::CoreCount
-            ) {
-                reserved_core_ids.extend(selected.iter().map(|core| core.id));
-            }
-            placements[idx] = Some(PipelinePlacement {
-                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
-                pipeline_id: pipeline_entry.pipeline_id.clone(),
-                cores: selected
-                    .into_iter()
-                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
-                    .collect(),
-            });
-        }
-
-        Ok(PlacementSnapshot::from_assignments(
-            0,
-            placements
-                .into_iter()
-                .map(|placement| placement.expect("every pipeline placement is resolved"))
-                .collect(),
-        ))
-    }
-
-    /// Pre-resolves core assignments for compatibility tests.
-    #[cfg(test)]
-    fn preflight_pipeline_core_allocations(
-        pipelines: &[ResolvedPipelineConfig],
-        available_core_ids: &[CoreId],
-    ) -> Result<Vec<Vec<CoreId>>, Error> {
-        Ok(Self::preflight_pipeline_placement(
-            pipelines,
-            available_core_ids,
-            &NumaTopology::unknown(),
-        )?
-        .pipelines
-        .into_iter()
-        .map(|placement| {
-            placement
-                .cores
-                .into_iter()
-                .map(|core| core.core_id)
-                .collect()
-        })
-        .collect())
-    }
-
     fn observability_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
         DeployedPipelineKey {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
@@ -2735,6 +2645,7 @@ impl<
             0,
             tracing_setup,
             Some((internal_telemetry_settings, startup_tx)),
+            None,
         )?;
 
         // Wait for the observability pipeline to signal successful startup.
@@ -2787,6 +2698,7 @@ impl<
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
         startup_ready: Arc<std::sync::atomic::AtomicBool>,
+        start_ticket: Option<live_control::StartGateTicket>,
     ) -> Result<Vec<()>, Error> {
         // Pin thread to specific core. As much as possible, we pin
         // before allocating memory.
@@ -2823,34 +2735,39 @@ impl<
                 .as_ref()
                 .map(|(settings, _)| settings)
                 .cloned();
-            let mut runtime_pipeline = pipeline_factory
-                .build(
-                    pipeline_context.clone(),
-                    pipeline_config.clone(),
-                    channel_capacity_policy,
-                    telemetry_policy,
-                    rate_limiter_policies,
-                    rate_limiter_scope,
-                    internal_telemetry_settings,
-                )
-                .map_err(|e| {
-                    if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
-                        let _ = startup_tx.send(Err(EngineError::InternalError {
-                            message: e.to_string(),
-                        }));
-                    }
-                    otel_error!(
-                        "controller.pipeline_build_failed",
-                        pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
-                        pipeline_id = pipeline_key.pipeline_id.as_ref(),
-                        core_id = core_id.id,
-                        error = %e,
-                        message = "Failed to build runtime pipeline from configuration"
-                    );
-                    Error::PipelineRuntimeError {
-                        source: Box::new(e),
-                    }
-                })?;
+            let build_result = pipeline_factory.build(
+                pipeline_context.clone(),
+                pipeline_config.clone(),
+                channel_capacity_policy,
+                telemetry_policy,
+                rate_limiter_policies,
+                rate_limiter_scope,
+                internal_telemetry_settings,
+            );
+            let mut start_ticket = start_ticket;
+            if let Err(e) = &build_result
+                && let Some(ticket) = start_ticket.take()
+            {
+                ticket.fail(&e.to_string());
+            }
+            let mut runtime_pipeline = build_result.map_err(|e| {
+                if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
+                    let _ = startup_tx.send(Err(EngineError::InternalError {
+                        message: e.to_string(),
+                    }));
+                }
+                otel_error!(
+                    "controller.pipeline_build_failed",
+                    pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
+                    pipeline_id = pipeline_key.pipeline_id.as_ref(),
+                    core_id = core_id.id,
+                    error = %e,
+                    message = "Failed to build runtime pipeline from configuration"
+                );
+                Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                }
+            })?;
 
             let startup_event_reporter = obs_evt_reporter.clone();
             let startup_pipeline_key = pipeline_key.clone();
@@ -2867,6 +2784,22 @@ impl<
                     let _ = startup_tx.send(Ok(()));
                 }
             });
+
+            // Hold here until every instance created by the same reconcile is built, so all new
+            // topic subscriptions exist before any new pipeline accepts or emits data.
+            if let Some(ticket) = start_ticket
+                && let Err(reason) = ticket.built_and_wait()
+            {
+                otel_info!(
+                    "controller.pipeline_start_aborted",
+                    pipeline_group_id = pipeline_key.pipeline_group_id.as_ref(),
+                    pipeline_id = pipeline_key.pipeline_id.as_ref(),
+                    core_id = core_id.id,
+                    reason = reason.as_str(),
+                    message = "Built pipeline was not started because its start gate was aborted"
+                );
+                return Ok(Vec::new());
+            }
 
             // Start the pipeline (this will use the current thread's Tokio runtime)
             runtime_pipeline
@@ -3034,10 +2967,20 @@ impl Drop for ShutdownSignalListenerHandle {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use otel_arrow_dfe_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    fn run_console_reporting_child(test_name: &str) {
+    /// Scenario: a configured timeout exceeds the portable `Instant` arithmetic range.
+    /// Guarantees: controller startup caps the effective timeout at 100 years while preserving
+    /// smaller configured values.
+    #[test]
+    fn startup_timeout_is_capped_at_portable_instant_range() {
+        assert_eq!(cap_timeout_secs(u64::MAX), MAX_PORTABLE_TIMEOUT_SECS);
+        assert_eq!(cap_timeout_secs(30), 30);
+    }
+
+    /// Re-runs one test in a fresh child process so process-global state starts clean.
+    pub(super) fn run_console_reporting_child(test_name: &str) {
         use std::process::{Command, Stdio};
 
         let mut child = Command::new(std::env::current_exe().expect("test binary path"))
@@ -3460,6 +3403,173 @@ groups: {}
         std::process::exit(0);
     }
 
+    /// Scenario: the process receives SIGTERM while startup reconciliation is waiting for a
+    /// regular pipeline to become ready.
+    /// Guarantees: the controller treats the signal as a graceful shutdown and returns success
+    /// instead of reporting a startup reconciliation failure.
+    #[cfg(unix)]
+    #[test]
+    fn termination_signal_during_startup_reconciliation_exits_gracefully() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::termination_signal_during_startup_reconciliation_exits_gracefully",
+            );
+            return;
+        }
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    startup_step_timeout_secs: 60
+groups:
+  g:
+    pipelines:
+      p:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:never-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("startup signal config should parse");
+
+        // The signal listener is registered before reconciliation launches the pipeline, so
+        // signalling once the receiver has started cannot hit the default SIGTERM disposition.
+        let signaller = thread::spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !NEVER_READY_RECEIVER_STARTED.load(Ordering::SeqCst) {
+                assert!(
+                    Instant::now() < deadline,
+                    "never-ready receiver did not start"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            let status = std::process::Command::new("kill")
+                .args(["-TERM", &std::process::id().to_string()])
+                .status()
+                .expect("kill command should run");
+            assert!(status.success(), "kill -TERM failed: {status}");
+        });
+
+        let result = Controller::new(test_pipeline_factory()).run_forever_with_options(
+            config,
+            ControllerRunOptions {
+                handle_os_signals: true,
+                ..Default::default()
+            },
+        );
+        signaller.join().expect("signaller thread should not panic");
+        assert!(
+            result.is_ok(),
+            "SIGTERM during startup should shut down gracefully: {result:?}"
+        );
+        std::process::exit(0);
+    }
+
+    /// Scenario: during startup reconciliation pipeline `a` starts and then fails with runtime
+    /// recovery disabled, while pipeline `b` never becomes ready.
+    /// Guarantees: the failure stops startup without waiting for `b`'s step timeout, and its
+    /// engine-wide shutdown is not mistaken for an operator shutdown; the controller returns the
+    /// original pipeline error instead of success. The step timeout is far above the child
+    /// process deadline, so waiting for it fails the test.
+    #[test]
+    fn fatal_pipeline_failure_during_startup_reconciliation_returns_error() {
+        if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+            run_console_reporting_child(
+                "tests::fatal_pipeline_failure_during_startup_reconciliation_returns_error",
+            );
+            return;
+        }
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+policies:
+  runtime_recovery:
+    enabled: false
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        admin: noop
+        internal: noop
+  controller:
+    startup_step_timeout_secs: 120
+groups:
+  g:
+    pipelines:
+      a:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:fails-after-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      b:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:never-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("fatal startup failure config should parse");
+
+        let result = Controller::new(test_pipeline_factory())
+            .run_forever_with_options(config, ControllerRunOptions::default());
+        let error = result.expect_err("a fatal pipeline failure during startup must be an error");
+        assert!(
+            error
+                .to_string()
+                .contains("simulated failure after readiness"),
+            "the original pipeline failure must reach the caller: {error}"
+        );
+        std::process::exit(0);
+    }
+
     /// Scenario: the metrics collector is not running during the final console handoff.
     /// Guarantees: the reporting task returns an error instead of claiming a confirmed
     /// final sample.
@@ -3785,7 +3895,7 @@ groups: {}
         );
     }
 
-    use otel_arrow_dfe_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
+    use otel_arrow_dfe_config::policy::CoreRange;
     use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
     use otel_arrow_dfe_engine::control::NodeControlMsg;
@@ -3828,27 +3938,19 @@ groups: {}
         )
     }
 
-    fn minimal_pipeline_config() -> PipelineConfig {
-        PipelineConfig::from_yaml(
-            "g".into(),
-            "p".into(),
-            r#"
-nodes:
-  receiver:
-    type: "urn:test:receiver:example"
-    config: null
-  exporter:
-    type: "urn:test:exporter:example"
-    config: null
-connections:
-  - from: receiver
-    to: exporter
-"#,
+    static TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_REGULAR_RECEIVER_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn test_receiver_shutdown_counts() -> (usize, usize) {
+        (
+            TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS.load(Ordering::Relaxed),
+            TEST_REGULAR_RECEIVER_SHUTDOWNS.load(Ordering::Relaxed),
         )
-        .expect("minimal test pipeline config should parse")
     }
 
-    struct TestObservabilityReceiver;
+    struct TestObservabilityReceiver {
+        shutdown_counter: &'static AtomicUsize,
+    }
 
     #[async_trait(?Send)]
     impl receiver::Receiver<()> for TestObservabilityReceiver {
@@ -3862,6 +3964,37 @@ connections:
                 match msg {
                     NodeControlMsg::DrainIngress { deadline, .. } => {
                         effect_handler.notify_receiver_drained().await?;
+                        _ = self.shutdown_counter.fetch_add(1, Ordering::Relaxed);
+                        return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                    }
+                    NodeControlMsg::Shutdown { deadline, .. } => {
+                        _ = self.shutdown_counter.fetch_add(1, Ordering::Relaxed);
+                        return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    static NEVER_READY_RECEIVER_STARTED: AtomicBool = AtomicBool::new(false);
+
+    /// Receiver that requires startup readiness but never signals it, while still honoring
+    /// shutdown so a global drain can stop it before readiness.
+    struct NeverReadyReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for NeverReadyReceiver {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            NEVER_READY_RECEIVER_STARTED.store(true, Ordering::SeqCst);
+            loop {
+                match ctrl_chan.recv().await? {
+                    NodeControlMsg::DrainIngress { deadline, .. } => {
+                        effect_handler.notify_receiver_drained().await?;
                         return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                     }
                     NodeControlMsg::Shutdown { deadline, .. } => {
@@ -3871,6 +4004,55 @@ connections:
                 }
             }
         }
+    }
+
+    fn create_never_ready_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(
+            ReceiverWrapper::local(NeverReadyReceiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
+    }
+
+    struct FailsAfterReadyReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for FailsAfterReadyReceiver {
+        async fn start(
+            self: Box<Self>,
+            _ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            // Makes failing after the create rollout commits the likely order. Failing earlier
+            // must lead to the same result, so the delay does not decide the outcome.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Err(otel_arrow_dfe_engine::error::Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Other,
+                error: "simulated failure after readiness".to_owned(),
+                source_detail: String::new(),
+            })
+        }
+    }
+
+    fn create_fails_after_ready_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(ReceiverWrapper::local(
+            FailsAfterReadyReceiver,
+            node,
+            node_config,
+            receiver_config,
+        ))
     }
 
     struct TestObservabilityProcessor;
@@ -3906,18 +4088,69 @@ connections:
     }
 
     fn create_test_observability_receiver(
-        _pipeline_ctx: PipelineContext,
+        pipeline_ctx: PipelineContext,
         node: otel_arrow_dfe_engine::node::NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
         Ok(ReceiverWrapper::local(
-            TestObservabilityReceiver,
+            TestObservabilityReceiver {
+                shutdown_counter: if pipeline_ctx.pipeline_group_id().as_ref()
+                    == SYSTEM_PIPELINE_GROUP_ID
+                {
+                    &TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS
+                } else {
+                    &TEST_REGULAR_RECEIVER_SHUTDOWNS
+                },
+            },
             node,
             node_config,
             receiver_config,
         ))
+    }
+
+    fn fail_test_receiver_creation(
+        _pipeline_ctx: PipelineContext,
+        _node: otel_arrow_dfe_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: "simulated startup pipeline build failure".to_owned(),
+        })
+    }
+
+    struct StartFailingTestReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for StartFailingTestReceiver {
+        async fn start(
+            self: Box<Self>,
+            _ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            Err(otel_arrow_dfe_engine::error::Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Connect,
+                error: "simulated startup pipeline start failure".to_owned(),
+                source_detail: String::new(),
+            })
+        }
+    }
+
+    fn create_start_failing_test_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(
+            ReceiverWrapper::local(StartFailingTestReceiver, node, node_config, receiver_config)
+                .with_startup_readiness(),
+        )
     }
 
     fn create_test_observability_processor(
@@ -3965,6 +4198,34 @@ connections:
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
+        ReceiverFactory {
+            name: "urn:test:receiver:build-fails",
+            create: fail_test_receiver_creation,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:start-fails",
+            create: create_start_failing_test_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:never-ready",
+            create: create_never_ready_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:fails-after-ready",
+            create: create_fails_after_ready_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
     ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
@@ -3999,7 +4260,7 @@ connections:
         },
     ];
 
-    fn test_pipeline_factory() -> &'static PipelineFactory<()> {
+    pub(super) fn test_pipeline_factory() -> &'static PipelineFactory<()> {
         Box::leak(Box::new(PipelineFactory::new(
             TEST_OBSERVABILITY_RECEIVERS,
             TEST_OBSERVABILITY_PROCESSORS,
@@ -4037,7 +4298,9 @@ connections:
             assert!(opened.is_dir());
             assert_eq!(opened.permissions().mode() & 0o777, 0o700);
             Ok(ReceiverWrapper::local(
-                TestObservabilityReceiver,
+                TestObservabilityReceiver {
+                    shutdown_counter: &TEST_REGULAR_RECEIVER_SHUTDOWNS,
+                },
                 node,
                 node_config,
                 receiver_config,
@@ -4281,27 +4544,6 @@ groups: {{}}
             extension_type, extension_type
         ))
         .expect("controller extension config should parse")
-    }
-
-    fn resolved_pipeline_with_core_allocation(
-        pipeline_group_id: &str,
-        pipeline_id: &str,
-        core_allocation: CoreAllocation,
-    ) -> ResolvedPipelineConfig {
-        ResolvedPipelineConfig {
-            pipeline_group_id: pipeline_group_id.to_string().into(),
-            pipeline_id: pipeline_id.to_string().into(),
-            pipeline: minimal_pipeline_config(),
-            topic_scope: TopicScope::GLOBAL,
-            policies: ResolvedPolicies {
-                resources: ResolvedResourcesPolicy {
-                    core_allocation,
-                    memory_limiter: None,
-                },
-                ..Default::default()
-            },
-            role: ResolvedPipelineRole::Regular,
-        }
     }
 
     fn global_topic_handle(
@@ -4812,7 +5054,7 @@ engine:
       failing:
         type: "{}"
 groups: {{}}
-        "#,
+      "#,
             FAILING_CONTROLLER_EXTENSION_URN
         ))
         .expect("failing controller extension config should parse");
@@ -5076,192 +5318,6 @@ groups: {{}}
                     message.contains("overlap"),
                     "Expected overlap error message, got: {}",
                     message
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn preflight_fails_fast_when_later_pipeline_allocation_is_invalid() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(2)),
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p2",
-                CoreAllocation::core_set(vec![CoreRange {
-                    start: 999,
-                    end: 999,
-                }]),
-            ),
-        ];
-
-        let err = Controller::<()>::preflight_pipeline_core_allocations(
-            &pipelines,
-            &available_core_ids(),
-        )
-        .expect_err("preflight should fail");
-        match err {
-            Error::InvalidCoreAllocation { .. } => {}
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn preflight_succeeds_and_allows_cross_pipeline_core_overlap() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 1, end: 2 }]),
-            ),
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p2",
-                CoreAllocation::core_set(vec![CoreRange { start: 2, end: 3 }]),
-            ),
-        ];
-
-        let assignments = Controller::<()>::preflight_pipeline_core_allocations(
-            &pipelines,
-            &available_core_ids(),
-        )
-        .expect("preflight should succeed");
-
-        assert_eq!(assignments.len(), 2);
-        assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
-        assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
-    }
-
-    #[test]
-    fn preflight_reserves_core_count_across_pipelines() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(5)),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(5)),
-        ];
-
-        let err = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect_err("core_count allocations should not oversubscribe implicit cores");
-
-        match err {
-            Error::InvalidCoreAllocation { message, .. } => {
-                assert!(
-                    message.contains(
-                        "Requested 5 cores but placement strategy could not produce a valid unreserved core set"
-                    ),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn preflight_reserves_explicit_core_set_before_later_core_count() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
-            ),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(2)),
-        ];
-
-        let placement = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect("preflight should succeed");
-
-        assert_eq!(
-            to_ids(
-                &placement.pipelines[0]
-                    .cores
-                    .iter()
-                    .map(|core| core.core_id)
-                    .collect::<Vec<_>>()
-            ),
-            vec![0, 1, 2, 3]
-        );
-        assert_eq!(
-            to_ids(
-                &placement.pipelines[1]
-                    .cores
-                    .iter()
-                    .map(|core| core.core_id)
-                    .collect::<Vec<_>>()
-            ),
-            vec![4, 5]
-        );
-    }
-
-    #[test]
-    fn preflight_core_count_all_uses_only_unreserved_cores() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
-            ),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
-        ];
-
-        let placement = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect("preflight should succeed");
-
-        assert_eq!(
-            to_ids(
-                &placement.pipelines[1]
-                    .cores
-                    .iter()
-                    .map(|core| core.core_id)
-                    .collect::<Vec<_>>()
-            ),
-            vec![4, 5, 6, 7]
-        );
-    }
-
-    #[test]
-    fn preflight_core_count_all_errors_when_no_unreserved_cores_remain() {
-        let pipelines = vec![
-            resolved_pipeline_with_core_allocation(
-                "g1",
-                "p1",
-                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 7 }]),
-            ),
-            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
-        ];
-
-        let err = Controller::<()>::preflight_pipeline_placement(
-            &pipelines,
-            &available_core_ids(),
-            &NumaTopology::unknown(),
-        )
-        .expect_err("preflight should reject empty effective core_count placement");
-
-        match err {
-            Error::InvalidCoreAllocation {
-                message, available, ..
-            } => {
-                assert!(
-                    message.contains("no unreserved cores are available"),
-                    "unexpected message: {message}"
-                );
-                assert_eq!(
-                    available,
-                    available_core_ids()
-                        .iter()
-                        .map(|core| core.id)
-                        .collect::<Vec<_>>()
                 );
             }
             other => panic!("unexpected error: {other:?}"),

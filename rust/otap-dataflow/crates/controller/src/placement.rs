@@ -8,26 +8,6 @@ use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::topology::{NumaTopology, TopologyCompleteness};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Stable placement snapshot for a controller deployment generation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PlacementSnapshot {
-    /// Monotonic placement generation. Startup uses generation `0`.
-    pub generation: u64,
-    /// Per-pipeline placements in controller launch order.
-    pub pipelines: Vec<PipelinePlacement>,
-}
-
-impl PlacementSnapshot {
-    /// Creates a placement snapshot from resolved per-pipeline assignments.
-    #[must_use]
-    pub fn from_assignments(generation: u64, pipelines: Vec<PipelinePlacement>) -> Self {
-        Self {
-            generation,
-            pipelines,
-        }
-    }
-}
-
 /// Resolved placement for one logical pipeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipelinePlacement {

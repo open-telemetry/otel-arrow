@@ -92,6 +92,9 @@ traffic flip across the whole pipeline.
 
 ## Boundaries and Current Limits
 
+- The admin server, including its health endpoints, becomes available only
+  after startup reconciliation succeeds. If startup reconciliation fails or
+  times out, the process exits without making the admin API available.
 - Updates are in-memory only. The startup YAML file is not rewritten.
 - The target pipeline group must already exist for per-pipeline
   reconfiguration.
@@ -278,6 +281,10 @@ flowchart TD
     owns -->|"No: shutdown took ownership"| shutdown
     owns -->|"No: rollout or engine operation"| defer
 ```
+
+The startup reconciliation is an exception: it only creates pipelines, so a
+pipeline that fails after its own startup rollout finished is recovered (or
+fails the engine) immediately instead of waiting for the remaining pipelines.
 
 Reconfigure and pipeline-shutdown requests synchronously wait for a preempted
 recovery worker to release its candidate. If a replacement is already in
@@ -480,6 +487,13 @@ Behavior:
 - Placement-sensitive rollouts are planned before they start. Desired
   `core_set` pipelines are considered before desired `core_count` pipelines so
   controller-selected `core_count` placements avoid explicit core requests.
+- New pipelines are built together and released together: every new instance
+  is built (creating its topic subscriptions) before any new instance starts,
+  so no new pipeline can send to a topic before the new pipelines that consume
+  it are subscribed. Any topic wiring between pipelines is supported, including
+  pipelines that send to each other. If one new instance fails to build, no new
+  instance starts. Pipelines that are already running are not paused.
+- Replace and resize rollouts run after the new pipelines, one at a time.
 - `core_count` placements avoid both committed `core_set` cores and other
   committed or in-flight `core_count` cores. Explicit `core_set` pipelines may
   still overlap other explicit `core_set` pipelines as operator intent.
@@ -511,6 +525,8 @@ Response body is an `EngineConfigReconcileStatus` with:
 Each `changes` entry identifies the affected group and optional pipeline, the
 selected action (`create`, `noop`, `replace`, `resize`, or `delete`), the
 terminal state, and the rollout or shutdown status when applicable.
+Planning errors and terminal rollout failure reasons identify the affected
+pipeline group and pipeline ID.
 
 Status codes:
 

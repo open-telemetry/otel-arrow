@@ -1,0 +1,8 @@
+change_type: breaking
+component: engine
+note: df_engine startup now fails if any configured pipeline does not build, or then become ready, within the startup step timeout.
+issues: [4302]
+subtext: >-
+  All pipelines are built before any starts, so topic subscriptions exist before data flows.
+  A failure drains every pipeline before extensions start.
+  Migration: For slow-starting pipelines, raise engine.controller.startup_step_timeout_secs (default 30).
