@@ -18,4 +18,4 @@ issues: [4533]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Both secrets are validated before startup readiness and cached until restart. Bind basic_auth_provider to azure_key_vault_user_pass_auth; no inline/file fallback or automatic rotation is provided.
+subtext: Both secrets are validated before startup readiness and cached until restart. Invalid credentials identify which secret to fix. Bind basic_auth_provider to azure_key_vault_user_pass_auth; no inline/file fallback or automatic rotation is provided.

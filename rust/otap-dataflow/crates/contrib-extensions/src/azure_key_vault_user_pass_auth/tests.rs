@@ -14,6 +14,7 @@ use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 
+use super::error::{FailureKind, Stage};
 use super::*;
 use crate::common::azure_key_vault::testing::{
     FakeCredential, FakeTransport, PAYLOAD, Reply, TOKEN, config, config_value, failure, secret,
@@ -247,7 +248,7 @@ async fn failures_are_redacted_and_never_publish() {
 }
 
 /// Scenario: AKV returns malformed, missing, empty, inactive, or protocol-incompatible values in either slot.
-/// Guarantees: Basic Auth restrictions are enforced without trimming, normalization, or partial publication.
+/// Guarantees: Errors identify the offending field without leaking values, normalization, or partial publication.
 #[tokio::test]
 async fn invalid_secret_values_and_basic_auth_restrictions() {
     let invalid_models = [
@@ -259,6 +260,11 @@ async fn invalid_secret_values_and_basic_auth_restrictions() {
         serde_json::json!({"value": PAYLOAD, "attributes": {"nbf": 253402300799_i64}}),
     ];
     for password in [false, true] {
+        let stage = if password {
+            Stage::Password
+        } else {
+            Stage::Username
+        };
         for model in &invalid_models {
             let mut replies = vec![];
             if password {
@@ -270,7 +276,10 @@ async fn invalid_secret_values_and_basic_auth_restrictions() {
                 config(),
                 FakeCredential::default(),
             );
-            assert_redacted(extension.get_credential().await.unwrap_err());
+            let error = extension.get_credential().await.unwrap_err();
+            let acquisition = error.source.downcast_ref::<error::Error>().unwrap();
+            assert_eq!(acquisition.stage, stage);
+            assert_redacted(error);
             assert!(extension.subscribe().borrow().is_none());
         }
         let mut invalid_values = vec!["\n", "\r", "\t", "\0", "\u{7f}", "\u{85}"];
@@ -290,7 +299,11 @@ async fn invalid_secret_values_and_basic_auth_restrictions() {
             };
             let transport = FakeTransport::new(vec![secret(&user), secret(&pass)]);
             let extension = extension(transport, config(), FakeCredential::default());
-            assert_redacted(extension.get_credential().await.unwrap_err());
+            let error = extension.get_credential().await.unwrap_err();
+            let acquisition = error.source.downcast_ref::<error::Error>().unwrap();
+            assert_eq!(acquisition.stage, stage);
+            assert_eq!(acquisition.kind, FailureKind::InvalidValue);
+            assert_redacted(error);
             assert!(
                 extension
                     .credential_stream()

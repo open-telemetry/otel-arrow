@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
-use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
+use otel_arrow_dfe_engine::capability::auth::{BasicAuthCredential, BasicAuthCredentialError};
 
 use super::config::Config;
 use super::error::{Error, FailureKind, Stage};
@@ -39,8 +39,11 @@ impl BackgroundProviderSource<BasicAuthCredential> for Auth {
 
     async fn fetch(&self) -> Result<BasicAuthCredential, Error> {
         let pair = self.source.fetch_pair().await?;
-        BasicAuthCredential::new(pair.username, pair.password).map_err(|_| Error {
-            stage: Stage::Acquisition,
+        BasicAuthCredential::new(pair.username, pair.password).map_err(|error| Error {
+            stage: match error {
+                BasicAuthCredentialError::InvalidUsername { .. } => Stage::Username,
+                BasicAuthCredentialError::InvalidPassword { .. } => Stage::Password,
+            },
             kind: FailureKind::InvalidValue,
         })
     }

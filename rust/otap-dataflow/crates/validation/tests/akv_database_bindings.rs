@@ -3,8 +3,7 @@
 
 //! Offline integration of real AKV extension and database receiver factories.
 //! No vault access, database connection, or native Oracle initialization occurs.
-//! Keep these in the binary's test harness so all-feature test builds do not
-//! also compile a production binary with mutually exclusive feature selections.
+//! Opt in with `akv-database-bindings`; the sample binary stays provider-agnostic.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -34,12 +33,13 @@ use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use serde_json::Value;
 
 fn check_binding(example: &str, factory: &ReceiverFactory<OtapPdata>) {
-    let document: Value = serde_yaml::from_str(example).unwrap();
+    let document: Value = serde_yaml::from_str(example).expect("example parses as YAML");
     let pipeline = &document["groups"]["default"]["pipelines"]["main"];
     let extension_config = &pipeline["extensions"]["database-credentials"];
     assert_eq!(extension_config["type"], AZURE_KEY_VAULT_USER_PASS_AUTH_URN);
     let extension_factory = &AZURE_KEY_VAULT_USER_PASS_AUTH_EXTENSION;
-    (extension_factory.validate_config)(&extension_config["config"]).unwrap();
+    (extension_factory.validate_config)(&extension_config["config"])
+        .expect("example AKV config is valid");
     let (context, _metrics) = test_extension_ctx();
     let name = "database-credentials".into();
     let bundle = (extension_factory.create)(
@@ -51,18 +51,20 @@ fn check_binding(example: &str, factory: &ReceiverFactory<OtapPdata>) {
         )),
         &ExtensionConfig::new("database-credentials"),
     )
-    .unwrap();
+    .expect("AKV factory constructs offline");
     let mut registry = CapabilityRegistry::new();
     bundle
         .register_into(extension_factory.capabilities.as_ref(), &mut registry)
-        .unwrap();
+        .expect("AKV BasicAuthProvider registers");
     let known = HashSet::from(["database-credentials".into()]);
-    let bindings =
-        serde_json::from_value(pipeline["nodes"]["database"]["capabilities"].clone()).unwrap();
-    let resolved = resolve_bindings_for_test(&bindings, &registry, &known).unwrap();
+    let bindings = serde_json::from_value(pipeline["nodes"]["database"]["capabilities"].clone())
+        .expect("example capability bindings deserialize");
+    let resolved = resolve_bindings_for_test(&bindings, &registry, &known)
+        .expect("local capability binding resolves");
     // Production receiver factories request the local adapter of a shared provider.
     assert!(resolved.require_local::<BasicAuthProvider>().is_ok());
-    let resolved = resolve_bindings_for_test(&bindings, &registry, &known).unwrap();
+    let resolved = resolve_bindings_for_test(&bindings, &registry, &known)
+        .expect("shared capability binding resolves");
     assert!(resolved.require_shared::<BasicAuthProvider>().is_ok());
     assert!(
         resolve_bindings_for_test(
@@ -84,13 +86,13 @@ fn check_binding(example: &str, factory: &ReceiverFactory<OtapPdata>) {
         .is_err()
     );
 
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().expect("isolated checkpoint directory");
     let mut node = NodeUserConfig::new_receiver_config(factory.name);
     assert_eq!(pipeline["nodes"]["database"]["type"], factory.name);
     node.config = pipeline["nodes"]["database"]["config"].clone();
     node.config["checkpoint"]["directory"] = serde_json::json!(directory.path());
     node.capabilities = bindings.clone();
-    (factory.validate_config)(&node.config).unwrap();
+    (factory.validate_config)(&node.config).expect("example receiver config is valid");
     let node = Arc::new(node);
     let runtime = TestRuntime::<OtapPdata>::new();
     let context = || {
@@ -115,7 +117,10 @@ fn check_binding(example: &str, factory: &ReceiverFactory<OtapPdata>) {
         build(&Capabilities::empty()).is_err(),
         "binding is required"
     );
-    let resolve = || resolve_bindings_for_test(&bindings, &registry, &known).unwrap();
+    let resolve = || {
+        resolve_bindings_for_test(&bindings, &registry, &known)
+            .expect("fresh receiver capability binding resolves")
+    };
     let receiver = build(&resolve()).expect("real receiver accepts shared AKV BasicAuthProvider");
     assert!(
         build(&resolve()).is_err(),
@@ -130,7 +135,7 @@ fn check_binding(example: &str, factory: &ReceiverFactory<OtapPdata>) {
 #[test]
 fn oracle_akv_binding() {
     check_binding(
-        include_str!("../configs/oracle-akv-console.yaml"),
+        include_str!("../../../configs/oracle-akv-console.yaml"),
         &ORACLE_RECEIVER,
     );
 }
@@ -140,7 +145,7 @@ fn oracle_akv_binding() {
 #[test]
 fn postgresql_akv_binding() {
     check_binding(
-        include_str!("../configs/postgresql-akv-console.yaml"),
+        include_str!("../../../configs/postgresql-akv-console.yaml"),
         &POSTGRESQL_RECEIVER,
     );
 }
@@ -150,7 +155,7 @@ fn postgresql_akv_binding() {
 #[test]
 fn sql_server_akv_binding() {
     check_binding(
-        include_str!("../configs/sql-server-akv-console.yaml"),
+        include_str!("../../../configs/sql-server-akv-console.yaml"),
         &SQL_SERVER_RECEIVER,
     );
 }

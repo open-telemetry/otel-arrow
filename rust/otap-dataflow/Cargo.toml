@@ -54,12 +54,6 @@ dhat = { workspace = true, optional = true }
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 
-[dev-dependencies]
-otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
-serde_json.workspace = true
-serde_yaml.workspace = true
-tempfile.workspace = true
-
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { version = "0.62.0", path = "crates/admin-api" }
 otel-arrow-dfe-admin-types = { version = "0.62.0", path = "crates/admin-types" }

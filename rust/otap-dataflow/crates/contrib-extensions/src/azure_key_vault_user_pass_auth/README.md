@@ -123,6 +123,8 @@ follow the shared provider's existing metrics contract.
 
 Shared `azure_key_vault.acquisition_failed` events carry only a bounded stage
 (`identity`, `client`, `username`, `password`, `acquisition`) and failure category.
+Basic Auth validation failures identify `username` or `password` with the
+`invalid_value` category, so operators can correct the offending secret.
 Raw SDK errors, response bodies, tokens, and source chains are discarded.
 Secret and credential Debug output is redacted; secret allocations are zeroized
 on drop. Do not enable HTTP-body instrumentation or log exposed capability
@@ -173,7 +175,7 @@ database:
 
 ```sh
 cargo test -p otel-arrow-dfe-contrib-extensions --no-default-features --features azure-key-vault-user-pass-auth,crypto-ring --lib
-cargo test -p otel-arrow-dfe --no-default-features --features azure-key-vault-user-pass-auth,oracle,postgresql,sql-server,crypto-ring --bin df_engine akv_database_bindings
+cargo test -p otel-arrow-dfe-validation --no-default-features --features akv-database-bindings,crypto-ring --test akv_database_bindings
 ```
 
 Offline success is **not live qualification**. Live AKV/database qualification
