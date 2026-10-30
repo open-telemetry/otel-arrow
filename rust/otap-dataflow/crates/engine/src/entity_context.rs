@@ -61,7 +61,7 @@ tokio::task_local! {
 
 /// Per-task snapshot for fast lookups.
 /// Separate from NodeTelemetryState to avoid RefCell borrows on hot paths during node execution.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct NodeTaskContext {
     telemetry_handle: Option<NodeTelemetryHandle>,
 
@@ -137,6 +137,21 @@ where
     F: Future<Output = T>,
 {
     NODE_TASK_CONTEXT.scope(ctx, fut)
+}
+
+/// Captures the current node context for a child future before it is spawned.
+///
+/// Tokio tasks do not inherit task locals. Call this in the parent node task,
+/// then spawn the returned future so background telemetry retains that node's
+/// attribution. An unscoped caller leaves the child unscoped.
+pub fn inherit_node_context<F: Future>(fut: F) -> impl Future<Output = F::Output> {
+    let context = NODE_TASK_CONTEXT.try_with(Clone::clone).ok();
+    async move {
+        match context {
+            Some(context) => instrument_with_node_context(context, fut).await,
+            None => fut.await,
+        }
+    }
 }
 
 /// Returns the current node telemetry handle, if set.
@@ -449,6 +464,95 @@ mod tests {
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
     use std::collections::HashMap;
+
+    /// Scenario: two exporter tasks spawn local background work, then their
+    /// children log the same reload failure after yielding to each other.
+    /// Guarantees: every child log retains its originating exporter's entity,
+    /// even after the parent task's node scope has ended.
+    #[test]
+    fn inherited_node_context_attributes_two_exporter_background_tasks() {
+        use otel_arrow_dfe_config::observed_state::SendPolicy;
+        use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+        use otel_arrow_dfe_telemetry::event::{ObservedEvent, ObservedEventReporter};
+        use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline = controller.pipeline_context_with("group".into(), "pipe".into(), 0, 1, 0);
+        let keys: Vec<_> = ["exporter-a", "exporter-b"]
+            .into_iter()
+            .map(|name| {
+                pipeline
+                    .with_node_context(
+                        name.into(),
+                        "urn:otel:exporter:otlp_grpc".into(),
+                        NodeKind::Exporter,
+                        HashMap::new(),
+                    )
+                    .register_node_entity()
+            })
+            .collect();
+        let (sender, receiver) = flume::bounded(4);
+        let setup = TracingSetup::new(
+            ProviderSetup::InternalAsync {
+                reporter: ObservedEventReporter::new(SendPolicy::default(), sender),
+            },
+            LogLevel::default(),
+            || node_entity_key().into_iter().collect(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        setup.with_subscriber(|| {
+            runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+                let mut tasks = Vec::new();
+                for &key in &keys {
+                    instrument_with_node_context(
+                        NodeTaskContext::new(Some(key), None, None, Vec::new()),
+                        async {
+                            tasks.push(tokio::task::spawn_local(inherit_node_context(async {
+                                tokio::task::yield_now().await;
+                                otel_arrow_dfe_telemetry::otel_warn!(
+                                    "tls.client_reload.failed",
+                                    message = "certificate/key mismatch"
+                                );
+                            })));
+                        },
+                    )
+                    .await;
+                }
+                for task in tasks {
+                    task.await.expect("background task");
+                }
+                assert!(node_entity_key().is_none());
+            }));
+        });
+        let mut observed = Vec::new();
+        for event in receiver.try_iter() {
+            if let ObservedEvent::Log(event) = event {
+                assert_eq!(event.record.context.len(), 1);
+                observed.push(event.record.context[0]);
+            }
+        }
+        assert_eq!(observed.len(), 2);
+        for key in keys {
+            assert_eq!(observed.iter().filter(|&&actual| actual == key).count(), 1);
+        }
+    }
+
+    /// Scenario: a child future is captured outside any node task scope.
+    /// Guarantees: the future runs normally without inventing node attribution.
+    #[tokio::test]
+    async fn inherited_node_context_allows_unscoped_callers() {
+        let result = inherit_node_context(async {
+            tokio::task::yield_now().await;
+            assert!(node_entity_key().is_none());
+            42
+        })
+        .await;
+        assert_eq!(result, 42);
+    }
 
     /// Scenario: A pipeline with node and channel telemetry finishes and drops every guard.
     /// Guarantees: All registered entities and metric sets, including measurement sets, are removed.

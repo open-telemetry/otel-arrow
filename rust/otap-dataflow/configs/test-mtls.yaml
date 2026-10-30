@@ -53,6 +53,16 @@ groups:
                 cert_file: "./test-certs/client.crt"
                 key_file: "./test-certs/client.key"
 
+                # File-backed client TLS reloads every 5 minutes by default.
+                # null disables reload; "0s" is rejected.
+                # Separate CA/cert/key replacements are not one atomic update.
+                # Detectable inconsistencies keep current material until a later poll.
+                # Kubernetes projected volumes pin one generation per attempt;
+                # subPath mounts do not receive projected-volume updates.
+                # Invalid files or pool-build errors retain the old pool.
+                # Later backend TLS rejection does not roll back an installed pool.
+                reload_interval: "5m"
+
         connections:
           - from: receiver
             to: exporter
