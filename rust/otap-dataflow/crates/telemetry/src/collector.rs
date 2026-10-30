@@ -446,10 +446,10 @@ mod tests {
 
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
-        assert!(telemetry_registry.unregister_metric_set_at(
-            metric_set.key,
-            tokio::time::Instant::now().into_std(),
-        ));
+        assert!(
+            telemetry_registry
+                .unregister_metric_set_at(metric_set.key, tokio::time::Instant::now().into_std(),)
+        );
 
         tokio::time::sleep(Duration::from_secs(29)).await;
         assert_eq!(telemetry_registry.metric_set_count(), 1);
