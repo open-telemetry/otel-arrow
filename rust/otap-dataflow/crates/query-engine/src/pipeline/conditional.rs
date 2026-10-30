@@ -33,7 +33,9 @@ use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr}
 use crate::pipeline::filter::data_points::{
     filter_metric_data_points, remove_all_metric_data_points,
 };
-use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
+use crate::pipeline::filter::{
+    RowSelection, align_selection_to_root, scoped_value_to_boolean_array,
+};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, ParentBehavior, PipelineStage};
@@ -115,6 +117,22 @@ fn remove_payload_from_branches(
     for branch_result in branch_results {
         _ = branch_result.remove(payload_type);
     }
+}
+
+/// Returns the rows of `otap_batch` that are not selected by `already_selected_vec`.
+fn filter_unselected_rows(
+    already_selected_vec: &BooleanArray,
+    otap_batch: &OtapArrowRecords,
+    pool: &mut IdBitmapPool,
+) -> Result<OtapArrowRecords> {
+    if already_selected_vec.true_count() == 0 {
+        // no rows have been selected, so every row remains and there is no need to materialize
+        // an all-true selection vector
+        return Ok(otap_batch.clone());
+    }
+
+    let unselected_vec = not(already_selected_vec)?;
+    Ok(filter_otap_batch(&unselected_vec, otap_batch, pool)?)
 }
 
 fn build_parent_selection(
@@ -252,12 +270,16 @@ impl PipelineStage for ConditionalPipelineStage {
         let mut already_selected_vec =
             BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None);
 
+        // set when a branch's condition passes for every row, in which case that branch selects
+        // all rows not selected by previous branches without updating `already_selected_vec`
+        let mut all_rows_selected = false;
+
         let mut branch_results = Vec::with_capacity(
             self.branches.len() + if self.default_branch.is_some() { 1 } else { 0 },
         );
         let mut reindex_branch_results = false;
         for branch in &mut self.branches {
-            if already_selected_vec.true_count() == root_batch.num_rows() {
+            if all_rows_selected || already_selected_vec.true_count() == root_batch.num_rows() {
                 // all rows have been selected by previous branches, so there is no need to continue
                 // executing the next branches with empty batches
                 break;
@@ -275,31 +297,27 @@ impl PipelineStage for ConditionalPipelineStage {
             let eval_ctx = EvalContext::new(session_ctx);
             let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
-            let predicate_selection_vec = match predicate_result {
-                None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
+            let predicate_selection = match predicate_result {
+                None => RowSelection::Empty,
                 Some(scoped_value) => {
                     if !(matches!(
                         scoped_value.scope,
                         DataScope::Record(_) | DataScope::RootParent(_)
                     )) && scoped_value.scope != DataScope::StaticScalar
                     {
-                        align_selection_to_root(Some(scoped_value), &otap_batch, &eval_ctx)?
+                        RowSelection::Rows(align_selection_to_root(
+                            Some(scoped_value),
+                            &otap_batch,
+                            &eval_ctx,
+                        )?)
                     } else {
-                        // extract the BooleanArray from the ScopedValue
-                        scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
+                        RowSelection::from_aligned_values(
+                            scoped_value.values,
+                            root_batch.num_rows(),
+                        )?
                     }
                 }
             };
-
-            let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
-
-            // update the list of rows that were already selected by branches
-            already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
-
-            if branch_selection_vec.true_count() == 0 {
-                // no rows selected - no sense executing the branch on zero rows
-                continue;
-            }
 
             // create a batch with only the rows that match the condition
             //
@@ -309,8 +327,37 @@ impl PipelineStage for ConditionalPipelineStage {
             // branch for every batch. For example, if the branch doesn't read or write some child
             // batch, we could avoid materializing it and sync up the rows once all branches have
             // been evaluated.
-            let mut branch_otap_batch =
-                filter_otap_batch(&branch_selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
+            let mut branch_otap_batch = match predicate_selection {
+                RowSelection::Empty => {
+                    // no rows selected - no sense executing the branch on zero rows
+                    continue;
+                }
+                RowSelection::All => {
+                    // the condition passes for every row, so this branch selects all the rows that
+                    // were not selected by previous branches, and no rows remain for subsequent
+                    // branches or the default branch
+                    all_rows_selected = true;
+                    filter_unselected_rows(
+                        &already_selected_vec,
+                        &otap_batch,
+                        &mut self.id_bitmap_pool,
+                    )?
+                }
+                RowSelection::Rows(predicate_selection_vec) => {
+                    let branch_selection_vec =
+                        and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+
+                    // update the list of rows that were already selected by branches
+                    already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
+
+                    if branch_selection_vec.true_count() == 0 {
+                        // no rows selected - no sense executing the branch on zero rows
+                        continue;
+                    }
+
+                    filter_otap_batch(&branch_selection_vec, &otap_batch, &mut self.id_bitmap_pool)?
+                }
+            };
 
             for stage in &mut branch.pipeline_stages {
                 branch_otap_batch = stage
@@ -330,9 +377,9 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // handle the default branch - e.g. the rows that did not match the condition from any of
         // the previous branches
-        if already_selected_vec.true_count() != root_batch.num_rows() {
-            let mut default_branch_batch = filter_otap_batch(
-                &not(&already_selected_vec)?,
+        if !all_rows_selected && already_selected_vec.true_count() != root_batch.num_rows() {
+            let mut default_branch_batch = filter_unselected_rows(
+                &already_selected_vec,
                 &otap_batch,
                 &mut self.id_bitmap_pool,
             )?;
@@ -1642,6 +1689,142 @@ mod test {
             LogRecord::build()
                 .severity_text("ERROR")
                 .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    /// Scenario: An always-false branch is followed by an always-true branch, a branch whose
+    /// condition matches some records, and a default branch.
+    /// Guarantees: Only the always-true branch applies, and it applies to every record; the
+    /// branches after it and the default branch apply to no records.
+    #[tokio::test]
+    async fn test_conditional_with_scalar_branch_conditions() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+        let query = r#"logs |
+            if (false) {
+                rename attributes "x" as "a"
+            } else if (true) {
+                rename attributes "x" as "b"
+            } else if (severity_text == "ERROR") {
+                rename attributes "x" as "c"
+            } else {
+                rename attributes "x" as "d"
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("b", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("b", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    /// Scenario: An always-true branch follows a branch whose condition matches only some
+    /// records, and is followed by a default branch.
+    /// Guarantees: The always-true branch applies to exactly the records the earlier branch did
+    /// not select, and the default branch applies to no records.
+    #[tokio::test]
+    async fn test_conditional_scalar_true_branch_selects_remaining_rows() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+        let query = r#"logs |
+            if (severity_text == "ERROR") {
+                rename attributes "x" as "a"
+            } else if (true) {
+                rename attributes "x" as "b"
+            } else {
+                rename attributes "x" as "c"
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("b", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("b", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    /// Scenario: A logs batch flows through a conditional whose branch conditions check the
+    /// signal type, which has the same result for every record in a batch.
+    /// Guarantees: The branch for another signal type applies to no records, the branch for
+    /// logs applies to every record, and the default branch applies to no records.
+    #[tokio::test]
+    async fn test_conditional_with_signal_type_branch_conditions() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+        let query = r#"signals |
+            if (is Span) {
+                rename attributes "x" as "span"
+            } else if (is Log) {
+                rename attributes "x" as "log"
+            } else {
+                rename attributes "x" as "other"
+            }
+        "#;
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let result = otap_to_logs_data(pipeline.execute(input).await.unwrap());
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("log", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("log", AnyValue::new_string("test"))])
                 .finish(),
         ];
 
