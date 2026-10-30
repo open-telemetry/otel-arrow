@@ -634,7 +634,7 @@ mod tests {
         );
         for sanitize in [false, true] {
             if sanitize {
-                sanitize_otap_batch(&mut output);
+                sanitize_otap_batch(&mut output).unwrap();
             }
             let body = output
                 .root_record_batch()
@@ -718,7 +718,7 @@ mod tests {
         );
         for sanitize in [false, true] {
             if sanitize {
-                sanitize_otap_batch(&mut output);
+                sanitize_otap_batch(&mut output).unwrap();
             }
             let root = output.root_record_batch().unwrap();
             let strings = root.column_by_name(consts::SEVERITY_TEXT).unwrap();

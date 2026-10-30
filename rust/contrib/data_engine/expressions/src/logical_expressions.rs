@@ -94,6 +94,26 @@ impl LogicalExpression {
         }
     }
 
+    pub fn invert(&mut self) {
+        let query_location = self.get_query_location().clone();
+
+        // Move the expression out without cloning. The placeholder is
+        // immediately replaced below.
+        let expression = std::mem::replace(
+            self,
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(query_location.clone(), false),
+            ))),
+        );
+
+        *self = match expression {
+            LogicalExpression::Not(not) => *not.inner_expression,
+            expression => {
+                LogicalExpression::Not(NotLogicalExpression::new(query_location, expression))
+            }
+        };
+    }
+
     fn fmt_binary_with_indent(
         f: &mut std::fmt::Formatter<'_>,
         indent: &str,
@@ -727,6 +747,121 @@ mod tests {
     use regex::Regex;
 
     use super::*;
+
+    fn static_boolean(value: bool) -> LogicalExpression {
+        LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+            BooleanScalarExpression::new(QueryLocation::new_fake(), value),
+        )))
+    }
+
+    fn static_integer(value: i64) -> ScalarExpression {
+        ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), value),
+        ))
+    }
+
+    fn static_double(value: f64) -> ScalarExpression {
+        ScalarExpression::Static(StaticScalarExpression::Double(DoubleScalarExpression::new(
+            QueryLocation::new_fake(),
+            value,
+        )))
+    }
+
+    fn static_string(value: &str) -> ScalarExpression {
+        ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+            QueryLocation::new_fake(),
+            value,
+        )))
+    }
+
+    /// Scenario: Each logical expression variant is inverted, including a comparison with NaN.
+    /// Guarantees: Inversion returns the exact boolean complement without algebraically rewriting operands.
+    #[test]
+    fn test_invert_negates_all_logical_expression_variants() {
+        let expressions = vec![
+            static_boolean(true),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_integer(1),
+                static_integer(2),
+                false,
+            )),
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_double(f64::NAN),
+                static_double(1.0),
+            )),
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_integer(1),
+                static_integer(2),
+            )),
+            LogicalExpression::Not(NotLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_boolean(false),
+            )),
+            LogicalExpression::And(AndLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_boolean(true),
+                static_boolean(false),
+            )),
+            LogicalExpression::Or(OrLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_boolean(false),
+                static_boolean(true),
+            )),
+            LogicalExpression::Contains(ContainsLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_string("hello world"),
+                static_string("hello"),
+                false,
+            )),
+            LogicalExpression::Matches(MatchesLogicalExpression::new(
+                QueryLocation::new_fake(),
+                static_string("hello world"),
+                static_string("^world"),
+            )),
+        ];
+        let pipeline: PipelineExpression = Default::default();
+        let scope = pipeline.get_resolution_scope();
+
+        for mut expression in expressions {
+            let mut original = expression.clone();
+            let original_value = original.try_resolve_static(&scope).unwrap().unwrap();
+
+            expression.invert();
+
+            assert_eq!(
+                Some(!original_value),
+                expression.try_resolve_static(&scope).unwrap()
+            );
+        }
+    }
+
+    /// Scenario: A logical expression is inverted twice.
+    /// Guarantees: The first inversion preserves the original tree under Not and the second restores it exactly.
+    #[test]
+    fn test_invert_eliminates_double_negation() {
+        let original = LogicalExpression::Contains(ContainsLogicalExpression::new(
+            QueryLocation::new_fake(),
+            static_string("hello world"),
+            static_string("hello"),
+            false,
+        ));
+        let mut expression = original.clone();
+
+        expression.invert();
+
+        let LogicalExpression::Not(not) = &expression else {
+            panic!("Expected inverted expression to be Not");
+        };
+        assert_eq!(original.get_query_location(), not.get_query_location());
+        assert_eq!(&original, not.get_inner_expression());
+
+        expression.invert();
+
+        assert_eq!(original, expression);
+    }
 
     #[test]
     fn test_equal_to_try_resolve_static() {

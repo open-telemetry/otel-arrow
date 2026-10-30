@@ -27,6 +27,10 @@ concurrency:
 jobs:
   warm-linux:
     runs-on: ubuntu-latest
+    env:
+      # Keep build profiles and cache keys aligned with required Linux archives.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,6 +68,10 @@ jobs:
 
   warm-windows:
     runs-on: windows-latest
+    env:
+      # Keep build profiles and cache keys aligned with required Windows archives.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,7 +87,7 @@ jobs:
           prefix-key: v1-rust
           shared-key: build_required
           # Bump in both Windows cache steps when the synchronized feature set changes.
-          key: windows-features-v2
+          key: windows-features-v4
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -103,5 +111,5 @@ jobs:
       - name: Warm required build cache
         if: steps.rust-cache.outputs.cache-hit != 'true'
         # Keep the feature set synchronized with rust-ci.yml's required Windows build.
-        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,unsafe-optimizations --workspace --exclude otel-arrow-dfe-component-inventory --list-type binaries-only --message-format json
+        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,sql-server,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --list-type binaries-only --message-format json
         working-directory: ./rust/otap-dataflow

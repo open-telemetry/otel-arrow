@@ -750,6 +750,7 @@ mod tests {
                         "otel-arrow-dfe-telemetry",
                         "otel-arrow-dfe-telemetry-macros",
                     ],
+                    "otel-arrow-dfe-core-nodes" => &["otel-arrow-dfe-filelog-checkpoint"],
                     "otel-arrow-dfe-engine" => &[
                         "otel-arrow-dfe-channel",
                         "otel-arrow-dfe-component-inventory-syntax",

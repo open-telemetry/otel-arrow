@@ -1,50 +1,47 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Reference `kernel-processor` guest plugin.
+//! Minimal reference `kernel-processor` guest plugin.
 //!
-//! Keeps only log records whose `severity_text` equals `"ERROR"`, by
-//! orchestrating the host `filter-by-attribute-eq` kernel over a host-managed
-//! pdata resource handle. No bulk Arrow data crosses the WASM boundary.
+//! Keeps only log records whose `severity_text` equals `"ERROR"` by
+//! orchestrating a native host kernel over a host-managed pdata resource.
+//! The SDK checks the host ABI before initialization; the plugin logs and
+//! records a counter from `initialize`.
 //!
-//! Built as a `no_std`, `wasm32-wasip2` component. Not a Cargo workspace
-//! member; compiled on demand by the wasm-host integration test.
+//! Built as a Rust-nightly `wasm32-wasip3` component using `std`. It is not a
+//! Cargo workspace member.
 
-#![no_std]
-
-extern crate alloc;
-
-// A tiny global allocator so the generated bindings (which use `alloc`) work in
-// a `no_std` component.
-#[global_allocator]
-static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
-
-wit_bindgen::generate!({
-    world: "kernel-processor",
-    path: "../../wit",
-});
-
-// wit-bindgen names the exported-interface trait `Guest`; alias it to `Plugin`
-// to model the author-facing naming a plugin implementer would expect.
-use exports::otel::otap_dataflow_plugin::processor::Guest as Plugin;
-use otel::otap_dataflow_plugin::otel_kernels::{AttrScope, Pdata, filter_by_attribute_eq};
+use wasm_guest_sdk::{
+    AttrScope, Lifecycle, LogLevel, Pdata, Plugin, counter_add, export_plugin,
+    filter_by_attribute_eq, log,
+};
 
 struct SeverityFilter;
 
 impl Plugin for SeverityFilter {
-    fn process(data: Pdata) -> Option<Pdata> {
-        Some(filter_by_attribute_eq(
-            data,
-            AttrScope::Record,
-            "severity_text",
-            "ERROR",
-        ))
+    async fn process(data: Pdata) -> Option<Pdata> {
+        Some(
+            filter_by_attribute_eq(
+                data,
+                AttrScope::Record,
+                String::from("severity_text"),
+                String::from("ERROR"),
+            )
+            .await,
+        )
     }
 }
 
-export!(SeverityFilter);
+impl Lifecycle for SeverityFilter {
+    async fn initialize() -> Result<(), wasm_guest_sdk::InitError> {
+        log(
+            LogLevel::Info,
+            String::from("severity-filter initialize: configuration loaded"),
+        )
+        .await;
+        counter_add(String::from("severity_filter.initialize"), 1).await;
+        Ok(())
+    }
+}
+
+export_plugin!(SeverityFilter);

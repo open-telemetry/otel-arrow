@@ -17,7 +17,8 @@ Target module: `crates/contrib-nodes/src/receivers/kafka_receiver/`
 
 The receiver ingests telemetry from Kafka topics into the OTAP df-engine
 pipeline. Payloads may be OTLP-proto, OTAP-proto, or Syslog (logs only),
-selected per signal by config and overridable per message by a Kafka header.
+or plaintext (logs only), selected per signal by config and overridable per
+message by a Kafka header.
 Topics are routed to a signal by
 subscription (literal names or `^`-prefixed regex, with optional exclude
 patterns).
@@ -38,18 +39,6 @@ The single most important design fact is a **concurrency boundary**:
 These two worlds are bridged by exactly one small shared object
 (`RebalanceState`), whose fields are individually guarded by per-field locks and
 atomics. Understanding that bridge is the key to understanding the receiver.
-
-> **Note (execution context / blocking risk).** In rdkafka 0.38.0, polling
-> `consumer.recv()` invokes the rebalance and commit callbacks inline
-> (`MessageStream::poll_next` -> `BaseConsumer::poll_queue` runs any queued
-> rebalance/commit event on the calling thread). Because the receive loop is the
-> only caller of `recv()`, these callbacks execute on the pipeline thread during
-> normal consumption -- not on a separate librdkafka poll thread. As a result,
-> the **synchronous** commit in `handle_revoke` (`pre_rebalance(Revoke)`, a
-> `CommitMode::Sync` broker round-trip) runs on the pipeline thread and **can
-> block the receive loop** during a rebalance, contradicting the non-blocking
-> guarantee described below. This is documented as a known risk for now; moving
-> the commit off the pipeline thread is future work.
 
 ### Kafka-native framing
 
@@ -73,15 +62,11 @@ The receiver maps onto standard librdkafka consumer behavior as follows:
   `cooperative_sticky`), read isolation (`isolation.level`), and start position
   (`auto.offset.reset`) are surfaced directly as config.
 
-The receiver avoids blocking the single-threaded runtime on a broker round-trip
-in steady state: commits are asynchronous (the broker result arrives later on
-the commit callback), and any potentially blocking librdkafka call
-(consumer-lag lookups, final consumer close) is bounded and off-loaded. The one
-exception is the synchronous commit-before-revoke in `pre_rebalance(Revoke)`:
-because rebalance callbacks are served inline by `recv()` (see the note above),
-that `CommitMode::Sync` commit runs on the pipeline thread and can block it
-during a rebalance. It is bounded by librdkafka's internal commit timeout;
-moving it off the pipeline thread is future work.
+All commits are asynchronous (`CommitMode::Async`): the broker result arrives
+later on the commit callback. This includes the commit-before-revoke in
+`pre_rebalance(Revoke)`, which enqueues its commit before the callback returns.
+Any potentially blocking librdkafka call (consumer-lag lookups, final consumer
+close) is bounded and off-loaded.
 
 ## Architecture Overview
 
@@ -173,9 +158,10 @@ behavior funnels through a single stateless `SignalDecoder` (receiver/decode.rs)
 `decode_signal_with_extractions` selects the per-signal format via
 `config.encoding_for(signal)`, applies any header extractions, and defers to the
 one `decode_signal_payload` path. That decoder is the single source of truth for
-message formats, the Syslog-logs-only restriction, and decode-error mapping (a
-failure becomes one `SignalDecode { signal }` error, tagged with the routed
-signal for metrics and events).
+message formats, the plaintext/Syslog logs-only restrictions, and decode-error
+mapping (a failure becomes one `SignalDecode { signal }` error, tagged with the
+routed signal for metrics and events). Plaintext and Syslog are constructed
+directly as Arrow records without an intermediate OTLP protobuf representation.
 
 ```mermaid
 flowchart TD
@@ -185,7 +171,7 @@ flowchart TD
     TID -->|id space exhausted| REJX["reject: topic-id exhausted"]
     TID -->|ok| DUP{"duplicate? (idempotency,<br/>generation-aware)"}
     DUP -->|yes| SKIP["skip"]
-    DUP -->|no| PROC["process_kafka:<br/>route topic -> signal,<br/>SignalDecoder: detect format (OTLP / OTAP / Syslog),<br/>decode_signal_payload + optional header extraction,<br/>capture transport headers"]
+    DUP -->|no| PROC["process_kafka:<br/>route topic -> signal,<br/>SignalDecoder: detect format (OTLP / OTAP / plaintext / Syslog),<br/>decode_signal_payload + optional header extraction,<br/>capture transport headers"]
     PROC -->|empty payload| REJE["reject: empty payload"]
     PROC -->|unknown topic| REJU["reject: unknown topic"]
     PROC -->|decode ok| SEND["track offset, subscribe Ack/Nack<br/>send downstream (awaits = backpressure)"]
@@ -206,8 +192,8 @@ Highlights:
   reprocessed, not skipped.
 - Records buffered inside librdkafka for a partition that is paused for replay
   are discarded here; the pending seek is what re-reads them.
-- Syslog decoding is supported only for the logs signal; a Syslog format on a
-  traces or metrics signal is rejected as a decode error.
+- Plaintext and Syslog decoding are supported only for the logs signal; either
+  format on a traces or metrics signal is rejected as a decode error.
 
 ## Offset commit and at-least-once
 
@@ -229,7 +215,7 @@ flowchart TD
     T1 & T2 & T3 & T4 --> COMMIT["async commit to broker<br/>(only owned partitions)"]
     COMMIT -.-> RESULT["commit result on callback -> metrics"]
 
-    REV["pre_rebalance(Revoke)"] --> CSYNC["sync commit committable snapshot<br/>commit-before-revoke"]
+    REV["pre_rebalance(Revoke)"] --> CSYNC["async commit committable snapshot<br/>commit-before-revoke"]
 
     MODE["auto-commit mode"] -.->|"tracker inert;<br/>librdkafka owns offsets"| TRK
 ```
@@ -244,8 +230,15 @@ Highlights:
 - These four steady-state triggers commit **asynchronously**; the broker outcome
   is observed later on the commit callback (the single source of truth for commit
   success/failure metrics). The separate commit-before-revoke path in
-  `pre_rebalance(Revoke)` is the one exception: it commits **synchronously** so
-  owned partitions are persisted before they leave the member.
+  `pre_rebalance(Revoke)` also commits **asynchronously** (`CommitMode::Async`),
+  enqueuing the commit before the revoke callback returns so owned offsets are
+  submitted before the partitions leave the member.
+- Because the commit-before-revoke is asynchronous, a broker rejection of it is
+  observed on the shared commit callback and counted as a generic commit failure
+  (`offset_commits{outcome="failure"}`), not as a rebalance-specific metric. The
+  `group.rebalance.commit_enqueue_failures` counter records only the rare local
+  failure to *enqueue* that async commit. Either way delivery stays at-least-once:
+  an un-persisted commit-before-revoke causes the new owner to redeliver.
 
 ## Rebalance and consumer group
 
@@ -262,7 +255,7 @@ sequenceDiagram
     participant SH as RebalanceState
     participant LP as Receive loop
 
-    SC->>SH: pre_rebalance(Revoke)<br/>sync commit committable snapshot, enqueue revoked
+    SC->>SH: pre_rebalance(Revoke)<br/>async commit committable snapshot, enqueue revoked
     SC->>SH: post_rebalance(Assign)<br/>record owned set + one fresh generation shared by newly-acquired partitions
     loop each loop turn
         LP->>SH: drain revoked queue + metric counters
@@ -277,10 +270,11 @@ Highlights:
 - The callbacks (run on the pipeline thread inside `recv()`) only record facts
   (owned set, revoked queue, metric counters) into `RebalanceState`; the loop
   reconciles them and purges the tracker on its next turn, generation-aware. The
-  one exception is `pre_rebalance(Revoke)`, which additionally issues a
-  synchronous commit-before-revoke (see below).
-- `pre_rebalance(Revoke)` commits the committable snapshot (synchronously) so
-  owned partitions are committed before they leave the member (commit-before-revoke).
+  one exception is `pre_rebalance(Revoke)`, which additionally issues an
+  asynchronous commit-before-revoke (see below).
+- `pre_rebalance(Revoke)` commits the committable snapshot asynchronously
+  (`CommitMode::Async`, enqueued before the callback returns) so owned partitions
+  are submitted before they leave the member (commit-before-revoke).
 - `post_rebalance(Assign)` allocates a **single** fresh ownership generation
   shared by all partitions newly acquired in that rebalance; partitions retained
   across the rebalance keep their existing generation.
@@ -380,18 +374,16 @@ retry/replay, and transport errors.
 - **Callbacks cannot mutate loop state.** librdkafka rebalance/commit callbacks
   are served inline by `consumer.recv()` and so run on the pipeline thread; they
   only write facts into `RebalanceState`, and the loop applies them (tracker
-  purge, metric folding) at the top of each turn. The lone exception is the
-  synchronous commit-before-revoke in `pre_rebalance(Revoke)` (see below).
-- **Mostly non-blocking runtime.** Steady-state commits are asynchronous;
-  consumer-lag lookups run on a `spawn_blocking` worker bounded by a deadline
-  and a cancellation token; the final consumer close on shutdown/drain is
-  bounded by the shutdown deadline; assignment-resume retries are scheduled with
-  capped backoff and re-driven from the loop's deadline branch rather than
-  blocking a callback. The **known exception** is the synchronous
-  commit-before-revoke in `pre_rebalance(Revoke)`: because that callback is
-  served inline by `recv()`, its `CommitMode::Sync` round-trip runs on the
-  pipeline thread and can block the loop during a rebalance (bounded by
-  librdkafka's internal commit timeout; moving it off-thread is future work).
+  purge, metric folding) at the top of each turn. `pre_rebalance(Revoke)`
+  additionally issues an asynchronous commit-before-revoke (see below).
+- **Never block the runtime.** All commits are asynchronous (`CommitMode::Async`),
+  both the steady-state commits and the commit-before-revoke in
+  `pre_rebalance(Revoke)`; the broker outcome arrives later on the commit
+  callback. Consumer-lag lookups run on a `spawn_blocking` worker bounded by a
+  deadline and a cancellation token; the final consumer close on shutdown/drain
+  is bounded by the shutdown deadline; assignment-resume retries are scheduled
+  with capped backoff and re-driven from the loop's deadline branch rather than
+  blocking a callback.
 - **Generations guard correctness.** A *per-partition ownership* generation
   scopes tracker state across rebalances (generations start at 1, with 0 as the
   unowned sentinel; a stale revoke cannot purge freshly reassigned state; a stale

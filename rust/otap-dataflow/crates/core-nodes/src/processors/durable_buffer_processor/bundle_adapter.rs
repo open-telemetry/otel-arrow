@@ -54,7 +54,8 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otap::schema::SchemaIdBuilder;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 

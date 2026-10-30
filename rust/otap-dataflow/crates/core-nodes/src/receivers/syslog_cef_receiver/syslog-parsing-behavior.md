@@ -10,7 +10,8 @@
 ## Format Detection Order
 
 The top-level `parse()` function in
-`crates/otap/src/syslog_cef_receiver/parser/mod.rs`
+`crates/core-nodes/src/receivers/syslog_cef_receiver/parser/mod.rs`
+rejects empty input immediately with `EmptyInput`. For non-empty input, it
 tries formats in this order:
 
 <!-- markdownlint-disable MD038 -->
@@ -18,7 +19,7 @@ tries formats in this order:
 1. **Pure CEF** -- input starts with `CEF:`
 2. **RFC 5424** -- requires `<PRI>VERSION ` structure
 3. **RFC 3164** -- very lenient fallback (accepts almost anything non-empty)
-4. **Error** -- only if all three fail (practically only on empty input)
+4. **Error** -- `UnknownFormat` if no format succeeds
 
 <!-- markdownlint-enable MD038 -->
 
@@ -58,7 +59,7 @@ tries formats in this order:
 
 | # | Input Example | Error | Notes |
 | --- | --- | --- | --- |
-| 1 | `""` (empty) | `UnknownFormat` | All three sub-parsers fail with `EmptyInput`; `parse()` returns `UnknownFormat`. This is the **only** input that `parse()` rejects (RFC 3164 accepts everything else). |
+| 1 | `""` (empty) | `EmptyInput` | `parse()` rejects empty input immediately, before attempting any format parser. This is the **only** input that `parse()` rejects (RFC 3164 accepts everything else). |
 
 ### Cases That Parse Successfully but with Degraded/Partial Results
 
@@ -146,8 +147,8 @@ tries formats in this order:
   `is_fully_parsed()` returns `false`, and the log **body**
   is set to the raw input for debugging.
 - **Empty input is the only true rejection** --
-  `parse()` returns `Err` only for empty input (since
-  RFC 3164 catches everything else).
+  `parse()` returns `Err(ParseError::EmptyInput)` before attempting any
+  format parser (RFC 3164 catches all non-empty input).
 - **CEF parsing failures are non-fatal** -- if CEF header
   parsing fails (wrong version, too few pipes), the input
   falls through to RFC 5424 / RFC 3164.

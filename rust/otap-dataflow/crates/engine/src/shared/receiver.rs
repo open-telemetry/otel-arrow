@@ -40,14 +40,19 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::pdata_context::{
+    Arrival, ArrivalBinding, ContextMaterializationPlan, Metadata, NodeBindings,
+};
+use crate::readiness::ReadinessSignaller;
+use crate::receiver::ReceiverContextMaterialization;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_policy::{CaptureStats, CompiledHeaderCapturePolicy};
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -107,11 +112,16 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
-    /// Immutable capture policy shared by request handlers.
-    /// `None` disables capture.
+    /// Legacy capture policy for manually constructed handlers.
     capture_policy: Option<Arc<CompiledHeaderCapturePolicy>>,
-    /// Immutable authorized identity policy shared by request handlers.
+    /// Legacy identity policy for manually constructed handlers.
     authorized_identity_policy: Option<Arc<AuthorizedIdentityPolicy>>,
+    /// Compiler-owned immutable bindings, shared with the node's pipeline context.
+    node_bindings: Option<Arc<NodeBindings>>,
+    /// Data-type-specific context materialization shared by request handlers.
+    context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+    /// Optional signal used to gate pipeline startup on receiver initialization.
+    readiness: Option<ReadinessSignaller>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -134,6 +144,9 @@ impl<PData> EffectHandler<PData> {
             router,
             capture_policy: None,
             authorized_identity_policy: None,
+            node_bindings: None,
+            context_materialization_plan: None,
+            readiness: None,
         }
     }
 
@@ -172,23 +185,125 @@ impl<PData> EffectHandler<PData> {
     /// `None` disables capture.
     #[must_use]
     pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
-        self.capture_policy.as_deref()
+        match &self.node_bindings {
+            Some(bindings) => bindings.header_capture_policy(),
+            None => self.capture_policy.as_deref(),
+        }
     }
 
     /// Sets the capture policy for transport header extraction.
     pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
-        self.capture_policy = policy.map(Arc::new);
+        if let Some(bindings) = &mut self.node_bindings {
+            Arc::make_mut(bindings).set_header_capture_policy(policy);
+        } else {
+            self.capture_policy = policy.map(Arc::new);
+        }
     }
 
     /// Returns the authorized identity claim projection policy.
     #[must_use]
     pub fn authorized_identity_policy(&self) -> Option<&AuthorizedIdentityPolicy> {
-        self.authorized_identity_policy.as_deref()
+        match &self.node_bindings {
+            Some(bindings) => bindings.authorized_identity_policy(),
+            None => self.authorized_identity_policy.as_deref(),
+        }
     }
 
     /// Sets the authorized identity claim projection policy.
     pub fn set_authorized_identity_policy(&mut self, policy: Option<AuthorizedIdentityPolicy>) {
-        self.authorized_identity_policy = policy.map(Arc::new);
+        if let Some(bindings) = &mut self.node_bindings {
+            Arc::make_mut(bindings).set_authorized_identity_policy(policy);
+        } else {
+            self.authorized_identity_policy = policy.map(Arc::new);
+        }
+    }
+
+    /// Returns this receiver's immutable runtime bindings.
+    #[must_use]
+    pub fn node_bindings(&self) -> Option<&Arc<NodeBindings>> {
+        self.node_bindings.as_ref()
+    }
+
+    pub(crate) fn set_node_bindings(&mut self, bindings: Arc<NodeBindings>) {
+        self.capture_policy = None;
+        self.authorized_identity_policy = None;
+        self.node_bindings = Some(bindings);
+    }
+
+    /// Forms complete request metadata without removing the legacy send hook.
+    #[must_use]
+    pub fn form_context(&self, arrival: &Arrival<'_>) -> (Metadata, Option<CaptureStats>) {
+        match self
+            .node_bindings
+            .as_ref()
+            .and_then(|bindings| bindings.arrival())
+        {
+            Some(binding) => binding.form(arrival),
+            None => ArrivalBinding::form_with(
+                self.capture_policy(),
+                self.authorized_identity_policy(),
+                self.context_materialization_plan
+                    .as_ref()
+                    .map(|plan| &plan.plan),
+                arrival,
+            ),
+        }
+    }
+
+    /// Materializes configured context entries before receiver output.
+    pub fn materialize_context(&self, data: &mut PData) {
+        if let Some(materialization) = &self.context_materialization_plan {
+            materialization.apply(data);
+        }
+    }
+
+    /// Sets the pipeline's data-type-specific context materialization.
+    pub(crate) fn set_context_materialization(
+        &mut self,
+        materialization: Option<ReceiverContextMaterialization<PData>>,
+    ) {
+        if let Some(bindings) = &mut self.node_bindings {
+            Arc::make_mut(bindings).set_materialization_plan(
+                materialization
+                    .as_ref()
+                    .map(|materialization| materialization.plan.clone())
+                    .unwrap_or_default(),
+            );
+        }
+        self.context_materialization_plan = materialization;
+    }
+
+    /// Installs a data-type-specific context materializer.
+    pub fn set_context_materializer(
+        &mut self,
+        plan: ContextMaterializationPlan,
+        materialize: fn(&mut PData, &ContextMaterializationPlan),
+    ) {
+        self.set_context_materialization(Some(ReceiverContextMaterialization::new(
+            plan,
+            materialize,
+        )));
+    }
+
+    pub(crate) fn set_readiness_signaller(&mut self, readiness: Option<ReadinessSignaller>) {
+        self.readiness = readiness;
+    }
+
+    /// Attaches an observable readiness signal to a receiver effect handler in tests.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_readiness_signaller_for_test(mut self, readiness: ReadinessSignaller) -> Self {
+        self.readiness = Some(readiness);
+        self
+    }
+
+    /// Signals that fallible receiver startup has completed.
+    ///
+    /// This is a no-op for receivers that did not opt into startup readiness.
+    pub fn signal_ready(&self) {
+        if let Some(readiness) = &self.readiness {
+            readiness.ready();
+        }
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -197,7 +312,8 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ReceiverError`] if the message could not be routed to a port.
     #[inline]
-    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+    pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+        self.materialize_context(&mut data);
         self.router.send_default(data).await
     }
 
@@ -212,16 +328,22 @@ impl<PData> EffectHandler<PData> {
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
-    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+    pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+        self.materialize_context(&mut data);
         self.router.try_send_default(data)
     }
 
     /// Sends a message to a specific named output port.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    pub async fn send_message_to<P>(
+        &self,
+        port: P,
+        mut data: PData,
+    ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
+        self.materialize_context(&mut data);
         self.router.send_to(port, data).await
     }
 
@@ -236,10 +358,11 @@ impl<PData> EffectHandler<PData> {
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
     #[inline]
-    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
+        self.materialize_context(&mut data);
         self.router.try_send_to(port, data)
     }
 

@@ -1,0 +1,9 @@
+change_type: bug_fix
+component: pipeline
+note: Backpressure admission policy now pauses pdata intake as soon as any route is blocked, preventing unexpected NACKs.
+issues: [4535]
+subtext: |
+  Routers with on_full: backpressure previously waited until every
+  selectable route was blocked before pausing intake, so a second message
+  to an already-parked port could still be NACKed. The router now pauses
+  as soon as any route parks a message, eliminating those NACKs.

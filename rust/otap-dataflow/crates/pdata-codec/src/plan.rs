@@ -9,7 +9,8 @@ use crate::{CodecError, CodecRegistry, PdataEncoding, ResolvedCodec};
 /// Representation-neutral policy applied to independently encoded output.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct EncodePolicy {
-    /// Maximum encoded batch size when a codec can enforce it directly.
+    /// Maximum encoded batch size, checked on matching-format forwarding and
+    /// passed to encoders that can enforce it during encoding.
     pub max_encoded_size: Option<NonZeroUsize>,
 }
 
@@ -52,25 +53,42 @@ impl EncodingPlan {
     pub const fn policy(self) -> EncodePolicy {
         self.policy
     }
+
+    /// Checks forwarded bytes without allocating or instantiating an encoder.
+    pub(crate) fn validate_encoded_size(self, actual: usize) -> Result<(), CodecError> {
+        if let Some(limit) = self.policy.max_encoded_size
+            && actual > limit.get()
+        {
+            return Err(CodecError::EncodedSizeLimitExceeded {
+                encoding: self.codec.encoding().clone(),
+                actual,
+                limit: limit.get(),
+            });
+        }
+        Ok(())
+    }
 }
 
-/// Startup-resolved representations a read-only consumer can inspect directly.
+/// Resolved encodings a read-only consumer accepts for direct borrowed access.
 ///
-/// This is an input policy, not the inspected value itself. [`crate::PdataView`]
-/// is the value returned after applying the plan.
+/// This set does not restrict which input formats may reach the consumer. When
+/// obtaining a [`crate::PdataView`], listed encodings are borrowed without decoding;
+/// other encodings fall back to decoding into native OTAP. Already-native OTAP is
+/// always borrowed. An empty set therefore requires native OTAP access, rather
+/// than rejecting all encoded input. Borrowing encoded bytes does not validate them.
 #[derive(Clone, Debug, Default)]
-pub struct InspectionPlan {
+pub struct AcceptedEncodings {
     accepted: Arc<[ResolvedCodec]>,
 }
 
-impl InspectionPlan {
-    /// Requires native OTAP, decoding encoded input on demand.
+impl AcceptedEncodings {
+    /// Accepts no encodings directly, decoding encoded input to native OTAP on demand.
     #[must_use]
     pub fn native() -> Self {
         Self::default()
     }
 
-    /// Accepts the listed encoded representations without materialization.
+    /// Accepts the listed encodings directly; other encodings fall back to native OTAP.
     #[must_use]
     pub fn accept_encoded(codecs: impl IntoIterator<Item = ResolvedCodec>) -> Self {
         Self {

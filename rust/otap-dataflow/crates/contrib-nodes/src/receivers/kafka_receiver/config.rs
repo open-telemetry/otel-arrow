@@ -584,16 +584,16 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             return Err(KafkaReceiverError::ConfigNoSignalTopics);
         }
 
-        if builder.traces.encoding() == MessageFormat::Syslog {
+        for (signal, signal_config) in [("traces", &builder.traces), ("metrics", &builder.metrics)]
+        {
+            let encoding = match signal_config.encoding() {
+                MessageFormat::Plaintext => "plaintext",
+                MessageFormat::Syslog => "syslog",
+                MessageFormat::OtlpProto | MessageFormat::OtapProto => continue,
+            };
             return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
-                signal: "traces".to_string(),
-                encoding: "syslog".to_string(),
-            });
-        }
-        if builder.metrics.encoding() == MessageFormat::Syslog {
-            return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
-                signal: "metrics".to_string(),
-                encoding: "syslog".to_string(),
+                signal: signal.to_string(),
+                encoding: encoding.to_string(),
             });
         }
 
@@ -922,6 +922,13 @@ impl KafkaReceiverConfigBuilder {
     #[must_use]
     pub fn with_logs(mut self, logs: SignalConfig) -> Self {
         self.logs = logs;
+        self
+    }
+
+    /// Set the authentication configuration.
+    #[must_use]
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = Some(auth);
         self
     }
 
@@ -1366,6 +1373,15 @@ impl KafkaReceiverConfig {
     #[must_use]
     pub fn auth(&self) -> Option<&Auth> {
         self.inner.auth.as_ref()
+    }
+
+    /// Returns `true` when the receiver requires a SASL credential provider.
+    #[must_use]
+    pub fn uses_sasl_credential_provider(&self) -> bool {
+        self.inner
+            .auth
+            .as_ref()
+            .is_some_and(Auth::uses_sasl_credential_provider)
     }
 
     /// Build Kafka client configuration.

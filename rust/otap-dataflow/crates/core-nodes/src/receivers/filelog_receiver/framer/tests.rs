@@ -1000,3 +1000,13 @@ fn truncate_incomplete_tail_and_bom_only_completion() {
         [frame]
     );
 }
+
+/// Scenario: Newline framing uses raw or dual text/source payloads at its effective bound.
+/// Guarantees: The primitive exposes the conservative conformance payload peak with checked arithmetic.
+#[test]
+fn payload_peak_estimate() {
+    let raw = config(Encoding::Raw, OnDecodeError::PreserveRaw, 16);
+    assert_eq!(raw.payload_peak_bytes().unwrap(), 4 * (16 + 16) + 16 + 16);
+    let text = config(Encoding::Utf8, OnDecodeError::PreserveRaw, 16);
+    assert_eq!(text.payload_peak_bytes().unwrap(), 8 * (16 + 16) + 32 + 16);
+}

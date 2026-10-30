@@ -37,7 +37,7 @@ impl BenchLogParser {
     ) -> Result<(OtapArrowRecords, u64), otel_arrow_dfe_pdata::error::Error> {
         batch.decode_transport_optimized_ids()?;
         let (mut batch, counts) = self.0.apply(batch).await?;
-        sanitize_otap_batch_cooperative(&mut batch).await;
+        sanitize_otap_batch_cooperative(&mut batch).await?;
         let errors = counts
             .values()
             .filter(|(reason, _)| *reason != parse_logs::DataError::ObservedFallback)

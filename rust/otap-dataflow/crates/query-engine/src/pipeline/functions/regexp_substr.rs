@@ -885,9 +885,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -938,9 +942,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -996,9 +1004,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1044,9 +1056,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1086,9 +1102,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1139,9 +1159,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1188,9 +1212,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1230,9 +1258,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1285,9 +1317,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let error = physical_expr.evaluate(&input).unwrap_err();
             assert!(
@@ -1336,9 +1372,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
             let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["hello"]));
@@ -1390,9 +1430,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1445,9 +1489,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1496,9 +1544,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1542,9 +1594,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
             let expected: ArrayRef = Arc::new(StringArray::new_null(3));
@@ -1594,9 +1650,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1650,9 +1710,13 @@ mod test {
             )
             .unwrap();
 
-            let physical_expr =
-                create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                    .unwrap();
+            let physical_expr = create_physical_expr(
+                &plan,
+                &df_schema,
+                session_context.state().execution_props(),
+                &Default::default(),
+            )
+            .unwrap();
 
             let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1701,9 +1765,13 @@ mod test {
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
 
@@ -1731,9 +1799,13 @@ mod test {
         let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
         let df_schema = DFSchema::empty();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         match result {
@@ -1747,9 +1819,13 @@ mod test {
             capture_args(lit("arrow"), lit("hello (.*)"), lit(1u16)),
         ));
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         match result {
@@ -1786,9 +1862,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::from_iter([
@@ -1828,9 +1908,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         // start=3 means search from char index 2 onward:
@@ -1871,9 +1955,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::new_null(1));
@@ -1908,9 +1996,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         // "hello world" -> 2nd word match = "world"
@@ -1947,9 +2039,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::new_null(1));
@@ -1989,9 +2085,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         // Case-insensitive: "HELLO" matches "hello" and "HELLO", not "no match"
@@ -2028,9 +2128,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         // start=6 -> search " world foo bar" (from char 5 onward)
@@ -2078,9 +2182,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::from_iter([Some("foo")]));
@@ -2126,9 +2234,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::from_iter([
@@ -2173,9 +2285,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::new_null(2));
@@ -2216,9 +2332,13 @@ mod test {
         let df_schema =
             DFSchema::from_unqualified_fields(input.schema().fields.clone(), Default::default())
                 .unwrap();
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         let expected: ArrayRef = Arc::new(StringArray::from_iter_values(["hello", "bar", "one"]));
@@ -2247,9 +2367,13 @@ mod test {
         let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
         let df_schema = DFSchema::empty();
 
-        let physical_expr =
-            create_physical_expr(&plan, &df_schema, session_context.state().execution_props())
-                .unwrap();
+        let physical_expr = create_physical_expr(
+            &plan,
+            &df_schema,
+            session_context.state().execution_props(),
+            &Default::default(),
+        )
+        .unwrap();
 
         let result = physical_expr.evaluate(&input).unwrap();
         match result {

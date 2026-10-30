@@ -8,7 +8,12 @@ policies:
       node: {{ default_node_ctrl_msg_channel_size | default(100) }}
     pdata: {{ default_pdata_channel_size | default(100) }}
 
+{% if push_metrics_endpoint is defined and push_metrics_endpoint -%}
+{%- set push_service_name = "backend-service" %}
+{% include "push_metrics_engine.yaml.j2" %}
+{%- else -%}
 engine: {}
+{%- endif %}
 
 {%- set receiver_type = backend_receiver_type | default("otap") -%}
 {%- set listen_addr = listening_addr | default("0.0.0.0:1235") -%}

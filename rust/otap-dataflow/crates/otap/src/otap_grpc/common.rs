@@ -144,15 +144,33 @@ pub fn tune_max_concurrent_requests(config: &mut GrpcServerSettings, downstream_
     }
 }
 
-/// Applies the shared server tuning options to a tonic server builder.
+/// Applies some shared server tuning options to a tonic server builder. Not all
+/// settings are applied to the server by this function, some are expected to
+/// be applied by the caller.
+///
+/// Settings handled by this function:
+///
+/// - `concurrency_limit_per_connection` (from `transport_concurrency_limit`, falling back to
+///   `max_concurrent_requests`)
+/// - `load_shed`
+/// - `initial_stream_window_size` and `initial_connection_window_size`
+/// - `max_frame_size`
+/// - `http2_adaptive_window`
+/// - `http2_keepalive_interval` and `http2_keepalive_timeout`
+/// - `timeout`
+///
+/// Settings NOT handled by this function:
+///
+/// - `max_concurrent_streams`
+/// - `max_decoding_message_size`
+/// - request/response compression
+/// - TLS
 pub fn apply_server_tuning<L>(builder: Server<L>, config: &GrpcServerSettings) -> Server<L> {
     let transport_limit = config
         .transport_concurrency_limit
         .filter(|&limit| limit != 0)
         .unwrap_or(config.max_concurrent_requests)
         .max(1);
-
-    let fallback_streams = config.max_concurrent_requests.min(u32::MAX as usize) as u32;
 
     let mut builder = builder
         .concurrency_limit_per_connection(transport_limit)
@@ -163,15 +181,6 @@ pub fn apply_server_tuning<L>(builder: Server<L>, config: &GrpcServerSettings) -
         .http2_adaptive_window(Some(config.http2_adaptive_window))
         .http2_keepalive_interval(config.http2_keepalive_interval)
         .http2_keepalive_timeout(config.http2_keepalive_timeout);
-
-    let mut max_concurrent_streams = config
-        .max_concurrent_streams
-        .map(|value| if value == 0 { fallback_streams } else { value })
-        .unwrap_or(fallback_streams);
-    if max_concurrent_streams == 0 {
-        max_concurrent_streams = 1;
-    }
-    builder = builder.max_concurrent_streams(Some(max_concurrent_streams));
 
     // Apply timeout if configured
     if let Some(timeout) = config.timeout {

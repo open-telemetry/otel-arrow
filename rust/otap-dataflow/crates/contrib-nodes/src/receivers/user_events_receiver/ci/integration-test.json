@@ -1,0 +1,15 @@
+{
+  "id": "user-events-linux",
+  "name": "User Events Linux smoke",
+  "runner": "ubuntu-latest",
+  "platform": "Linux",
+  "timeout_minutes": 30,
+  "required": true,
+  "paths": [
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/user_events_receiver/**"
+  ],
+  "command": [
+    "bash",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/user_events_receiver/ci/run.sh"
+  ]
+}

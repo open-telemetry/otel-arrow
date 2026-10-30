@@ -22,17 +22,19 @@ use std::sync::Arc;
 #[cfg(feature = "dev-tools")]
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 #[cfg(feature = "dev-tools")]
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 #[cfg(feature = "dev-tools")]
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 #[cfg(feature = "dev-tools")]
 use weaver_semconv::{
-    attribute::{
-        AttributeType, BasicRequirementLevelSpec, PrimitiveOrArrayTypeSpec, RequirementLevel,
-        ValueSpec,
-    },
-    group::{GroupType, InstrumentSpec},
     registry_repo::RegistryRepo,
+    v1::{
+        attribute::{
+            AttributeType, BasicRequirementLevelSpec, PrimitiveOrArrayTypeSpec, RequirementLevel,
+            ValueSpec,
+        },
+        group::{GroupType, InstrumentSpec},
+    },
 };
 
 fn scrape_blocking(source: &mut ProcfsSource, due: ProcfsFamilies) -> io::Result<HostScrape> {
@@ -2073,6 +2075,9 @@ enum AttributeValueKind {
 
 #[cfg(feature = "dev-tools")]
 fn load_semconv_registry() -> ResolvedRegistry {
+    // weaver fetches remote registries over rustls without choosing a crypto
+    // provider. Production installs one at startup; tests must do it here.
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path = std::env::var("OTAP_HOST_METRICS_SEMCONV_REGISTRY")
         .map(|path| {
             path.parse::<VirtualDirectoryPath>()

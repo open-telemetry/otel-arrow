@@ -60,7 +60,7 @@ use super::semconv_signal::semconv_otlp_logs;
 use super::synthetic_signal::static_otlp_logs_with_config;
 use prost::Message;
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 
@@ -91,18 +91,18 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 ///
 /// The registry source can be overridden via the `OTAP_SEMCONV_REGISTRY`
 /// env var (any `VirtualDirectoryPath`-parseable value, e.g. a local path).
-/// When unset, the upstream Git repo is used.
+/// When unset, the upstream Git repo pinned via [`config::default_registry_path`]
+/// is used.
 fn load_semconv_registry() -> ResolvedRegistry {
+    // weaver fetches remote registries over rustls without choosing a crypto
+    // provider. Production installs one at startup; tests must do it here.
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path = std::env::var("OTAP_SEMCONV_REGISTRY")
         .map(|path| {
             path.parse::<VirtualDirectoryPath>()
                 .expect("valid OTAP_SEMCONV_REGISTRY")
         })
-        .unwrap_or_else(|_| VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
-        });
+        .unwrap_or_else(|_| super::config::default_registry_path());
 
     let mut semconv_errors = Vec::new();
     let registry_repo = RegistryRepo::try_new(None, &registry_path, &mut semconv_errors)

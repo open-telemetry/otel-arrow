@@ -1436,6 +1436,13 @@ complete validated transaction as an absolute file offset at or beyond
 same namespace ownership before trusting the saved append boundary. A changed
 generation or section boundary requires full recovery, not reuse of that offset.
 Repair never rewrites the immutable prefix or truncates below `wal_offset`.
+For live resolution, preserve the original open file description until its
+writeback-error history has been checked. After checking ownership, the
+pending attempt, and its expected file-size range, sync that original handle
+before reopening for recovery. This includes earlier deferred progress as
+well as the failed attempt. A failure poisons the store before any repair or
+re-append; a newly opened handle is not a substitute for this barrier.
+
 Under exclusive namespace ownership:
 
 | Append result | Required handling |
@@ -1443,7 +1450,7 @@ Under exclusive namespace ownership:
 | Definitively no bytes written | Keep the known boundary and retry within the store-failure policy |
 | Known partial write | Mark the live store unavailable, reopen `checkpoint.db`, validate through the known boundary, classify the suffix with the fixed envelope, truncate to the known boundary only when the suffix is a mechanically valid torn append, sync the truncation, then retry |
 | Ambiguous write result | Reopen and validate: accept an exactly sequenced complete valid transaction as appended; truncate and retry only a mechanically valid torn append beginning at the known boundary; fail closed on any complete invalid header/frame or unclassifiable bytes |
-| Append completed but required sync failed | Reopen and validate; if the transaction is complete and valid, do not append it again--retry the sync under the store-failure policy; if incomplete, use the torn-append repair above before applying progress |
+| Append completed but required sync failed | Poison the store and fail the receiver without releasing retained work. Neither a sync retry nor reopen-and-sync can establish durability. Resumption requires explicit storage remediation and reconstruction from trusted state, not automatic WAL-tail repair |
 
 Repair never scans for an inner operation pattern, never truncates before the
 known last-valid boundary, and never converts a complete bad header CRC, length
@@ -1455,6 +1462,43 @@ Logical application occurs only after the append is known complete and valid.
 A failed required sync may leave already applied progress newer than the
 durable frontier, but it does not authorize a duplicate append or partial
 operation application.
+
+Any failed required file or directory synchronization is terminal for the
+current store, including a barrier reached during pending-append resolution.
+Keep namespace ownership and retained work until the worker is quiescent;
+block further state use, appends, publication, and sync-only retries. Partial
+write repair above applies only when no synchronization failure has occurred.
+
+Linux may discard failed dirty writes and report a writeback error only once.
+A later successful fsync, including through a newly opened handle, cannot prove
+that those bytes reached storage. See the kernel's
+[writeback error tracking](https://cdn.kernel.org/doc/html/latest/core-api/errseq.html)
+and the [PostgreSQL failure-policy change](https://www.postgresql.org/message-id/E1gObQY-00021d-L6%40gemulon.postgresql.org).
+Ordinary recovery cannot detect all writeback errors observed by an earlier
+process during the same boot. Its recovery file sync is not a retrospective
+durability proof. Automatic receiver replacement, dropping/reopening the
+store, or restarting the process does not remediate a known synchronization
+failure. The caller must require explicit storage incident recovery before
+resuming that namespace; reboot alone does not reconstruct lost writes.
+
+Enforcement beyond a store instance is a receiver and lifecycle-supervisor
+responsibility. The store's poison latch is instance-local: constructing a
+fresh store does not consult durable or process-wide failure history. The
+supervisor must retain a known terminal failure beyond teardown, propagate
+startup sync errors as terminal too, and prevent automatic reopen during
+retry, reconfiguration, and process supervision. Integration tests must verify
+that this gate blocks a fresh open; an instance-local poison response alone
+does not establish that guarantee. The administrative recovery design must
+define the incident-recovery and clearance protocol before exposing a reset
+action. A best-effort marker on failing storage cannot by itself guarantee
+enforcement, and removing one would not reconstruct lost checkpoint data.
+
+A future approved repair may durably publish a fresh generation rebuilt from
+trusted complete state after storage remediation. Rewriting just the most
+recent retained frame is insufficient when earlier deferred transactions or
+publication metadata were affected. This format does not define an automatic
+repair for that failure. Do not overwrite the immutable prefix in place or
+truncate previously accepted progress as an implicit recovery procedure.
 
 The format persists checkpoint state and the defined framing resume, not
 unacknowledged emitted batches or their timing-dependent boundaries. The

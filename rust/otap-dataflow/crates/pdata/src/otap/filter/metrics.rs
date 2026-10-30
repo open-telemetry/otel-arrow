@@ -6,17 +6,13 @@
 use crate::arrays::get_required_array;
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
-use crate::otap::filter::{
-    IdBitmapPool, MatchType, default_match_type, filter_otap_batch, nulls_to_false,
-    regex_match_column,
-};
+use crate::otap::filter::{IdBitmapPool, Pattern, filter_otap_batch, nulls_to_false};
 use crate::schema::consts;
-use arrow::array::{BooleanArray, StringArray};
+use arrow::array::BooleanArray;
 use arrow::buffer::BooleanBuffer;
-use serde::Deserialize;
 
-/// Overall requirements to use when filtering metrics.
-#[derive(Debug, Clone, Deserialize)]
+/// Compiled filter for metrics.
+#[derive(Debug, Clone)]
 pub struct MetricFilter {
     /// Include match properties describe metrics that should be included in the pipeline.
     /// If both include and exclude are specified, include filtering occurs first.
@@ -26,16 +22,11 @@ pub struct MetricFilter {
     exclude: Option<MetricMatchProperties>,
 }
 
-/// Set of metric properties to match against.
-#[derive(Debug, Clone, Deserialize)]
+/// Compiled set of metric properties to match against.
+#[derive(Debug, Clone)]
 pub struct MetricMatchProperties {
-    /// MatchType specifies the type of matching desired.
-    #[serde(default = "default_match_type")]
-    match_type: MatchType,
-
-    /// MetricNames is a list of metric names that the metric's name field must match against.
-    #[serde(default)]
-    metric_names: Vec<String>,
+    /// MetricNames is a list of patterns that the metric's name field must match against.
+    metric_names: Vec<Pattern>,
 }
 
 impl MetricFilter {
@@ -97,11 +88,8 @@ impl MetricFilter {
 impl MetricMatchProperties {
     /// Create a new metric match properties value.
     #[must_use]
-    pub const fn new(match_type: MatchType, metric_names: Vec<String>) -> Self {
-        Self {
-            match_type,
-            metric_names,
-        }
+    pub const fn new(metric_names: Vec<Pattern>) -> Self {
+        Self { metric_names }
     }
 
     /// Create a filter for the metrics root record batch.
@@ -122,14 +110,7 @@ impl MetricMatchProperties {
         let names_column = get_required_array(metrics, consts::NAME)?;
         let mut filter = BooleanArray::from(BooleanBuffer::new_unset(num_rows));
         for name in &self.metric_names {
-            let name_filter = match self.match_type {
-                MatchType::Regexp => regex_match_column(names_column, name)?,
-                MatchType::Strict => {
-                    let value_scalar = StringArray::new_scalar(name);
-                    arrow::compute::kernels::cmp::eq(&names_column, &value_scalar)
-                        .expect("can compare string name column to string scalar")
-                }
-            };
+            let name_filter = name.matches(names_column)?;
             filter = arrow::compute::or_kleene(&name_filter, &filter)
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
@@ -147,7 +128,6 @@ impl MetricMatchProperties {
 mod test {
     use super::*;
     use crate::otap::Metrics;
-    use crate::otap::filter::MatchType;
     use crate::proto::OtlpProtoMessage;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::common::v1::InstrumentationScope;
@@ -194,10 +174,8 @@ mod test {
 
     #[test]
     fn test_filter_include_metric_names() {
-        let include = MetricMatchProperties::new(
-            MatchType::Strict,
-            vec!["test.counter1".into(), "test.counter3".into()],
-        );
+        let include =
+            MetricMatchProperties::new(Pattern::many_exact(&["test.counter1", "test.counter3"]));
         let filter = MetricFilter::new(Some(include), None);
         let mut pool = IdBitmapPool::new();
 
@@ -221,7 +199,7 @@ mod test {
 
     #[test]
     fn test_filter_exclude_metric_names() {
-        let exclude = MetricMatchProperties::new(MatchType::Strict, vec!["test.counter2".into()]);
+        let exclude = MetricMatchProperties::new(Pattern::many_exact(&["test.counter2"]));
         let filter = MetricFilter::new(None, Some(exclude));
         let mut pool = IdBitmapPool::new();
 
@@ -245,7 +223,7 @@ mod test {
 
     #[test]
     fn test_filter_metric_names_regex() {
-        let include = MetricMatchProperties::new(MatchType::Regexp, vec![r"^aio_.*_count$".into()]);
+        let include = MetricMatchProperties::new(Pattern::many_regex(&[r"^aio_.*_count$"]));
         let filter = MetricFilter::new(Some(include), None);
         let mut pool = IdBitmapPool::new();
 
@@ -279,10 +257,9 @@ mod test {
             (
                 "include-only",
                 MetricFilter::new(
-                    Some(MetricMatchProperties::new(
-                        MatchType::Strict,
-                        vec!["test.counter".into()],
-                    )),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&[
+                        "test.counter",
+                    ]))),
                     None,
                 ),
             ),
@@ -290,23 +267,16 @@ mod test {
                 "exclude-only",
                 MetricFilter::new(
                     None,
-                    Some(MetricMatchProperties::new(
-                        MatchType::Strict,
-                        vec!["test.counter".into()],
-                    )),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&[
+                        "test.counter",
+                    ]))),
                 ),
             ),
             (
                 "include-and-exclude",
                 MetricFilter::new(
-                    Some(MetricMatchProperties::new(
-                        MatchType::Strict,
-                        vec!["a".into()],
-                    )),
-                    Some(MetricMatchProperties::new(
-                        MatchType::Strict,
-                        vec!["b".into()],
-                    )),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&["a"]))),
+                    Some(MetricMatchProperties::new(Pattern::many_exact(&["b"]))),
                 ),
             ),
         ];
@@ -347,10 +317,10 @@ mod test {
         assert_eq!(rows(&input, ArrowPayloadType::NumberDataPoints), 3);
 
         let filter = MetricFilter::new(
-            Some(MetricMatchProperties::new(
-                MatchType::Strict,
-                vec!["test.counter1".into(), "test.counter3".into()],
-            )),
+            Some(MetricMatchProperties::new(Pattern::many_exact(&[
+                "test.counter1",
+                "test.counter3",
+            ]))),
             None,
         );
         let mut pool = IdBitmapPool::new();

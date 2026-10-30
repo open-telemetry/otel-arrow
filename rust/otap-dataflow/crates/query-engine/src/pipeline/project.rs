@@ -254,7 +254,7 @@ impl Projection {
 
     fn try_sanitize_columns(columns: &mut [ArrayRef]) -> Result<()> {
         for column in columns.iter_mut() {
-            if let Some(new_column) = sanitize_column(column.as_ref()) {
+            if let Some(new_column) = sanitize_column(column.as_ref())? {
                 *column = new_column;
             }
         }

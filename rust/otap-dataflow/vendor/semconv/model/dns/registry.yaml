@@ -1,0 +1,21 @@
+groups:
+  - id: registry.dns
+    type: attribute_group
+    display_name: DNS Attributes
+    brief: >
+      This document defines the shared attributes used to report a DNS query.
+    attributes:
+      - id: dns.question.name
+        type: string
+        stability: development
+        brief: The name being queried.
+        examples: ["www.example.com", "opentelemetry.io"]
+        note: >
+          The name represents the queried domain name as it appears in the DNS query
+          without any additional normalization.
+      - id: dns.answers
+        type: string[]
+        stability: development
+        brief: The list of IPv4 or IPv6 addresses resolved during DNS lookup.
+        examples:
+          - ["10.0.0.1", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"]

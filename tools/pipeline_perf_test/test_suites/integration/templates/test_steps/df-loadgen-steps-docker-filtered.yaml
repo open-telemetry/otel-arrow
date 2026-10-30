@@ -70,7 +70,7 @@ steps:
                 # metric_weight: 0
                 # trace_weight: 0
                 # log_weight: 100
-                # registry_path: "https://github.com/open-telemetry/semantic-conventions.git[model]"
+                {% if registry_path is defined %}registry_path: "{{registry_path}}"{% endif %}
                 # ----- Exporter config -----
                 # loadgen_exporter_type: otap        # Options: otap, otlp, or custom/invalid
                 # engine_hostname: localhost

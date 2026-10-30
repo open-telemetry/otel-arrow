@@ -5,11 +5,11 @@
 //!
 //! Packs and unpacks Kafka message identity (topic id, partition, offset,
 //! delivery generation) into [`CallData`] for Ack/Nack routing, and decodes
-//! OTLP-proto / OTAP-proto / Syslog payloads (optionally applying header
+//! OTLP-proto / OTAP-proto / plaintext / Syslog payloads (optionally applying header
 //! extractions) into [`OtapPdata`].
 //!
 //! [`SignalDecoder`] maps a [`SignalType`] onto the configured encoding,
-//! the OTLP/OTAP/Syslog payload decoders, and the header-extraction dispatch.
+//! the OTLP/OTAP/plaintext/Syslog payload decoders, and the header-extraction dispatch.
 
 use super::super::config::HeaderExtraction;
 use super::super::headers::HeaderExtractions;
@@ -27,8 +27,9 @@ use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
-use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+use otel_arrow_dfe_pdata::encode::record::logs::LogsRecordBatchBuilder;
+use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords, from_record_messages};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
 use prost::Message;
 use rdkafka::message::BorrowedMessage;
 use smallvec::smallvec;
@@ -74,14 +75,19 @@ pub(super) fn decode_calldata(calldata: &CallData) -> (u32, i32, i64, DeliveryGe
     )
 }
 
-/// The canonical error for a Syslog payload routed to a non-logs signal.
-///
-/// Defined once so the plain decode path and the extraction path share the
-/// exact same "logs only" message.
-fn syslog_logs_only_error() -> EngineError {
+/// Build the canonical error for a logs-only encoding routed to another signal.
+fn logs_only_error(encoding: &str) -> EngineError {
     EngineError::PdataConversionError {
-        error: "syslog encoding is only supported for logs".to_string(),
+        error: format!("{encoding} encoding is only supported for logs"),
     }
+}
+
+fn syslog_logs_only_error() -> EngineError {
+    logs_only_error("syslog")
+}
+
+fn plaintext_logs_only_error() -> EngineError {
+    logs_only_error("plaintext")
 }
 
 /// Reject Syslog decoding for signal types other than logs.
@@ -95,13 +101,22 @@ pub(super) fn reject_syslog_for_non_log_signal(
     Err(syslog_logs_only_error())
 }
 
+/// Reject plaintext decoding for signal types other than logs.
+pub(super) fn reject_plaintext_for_non_log_signal(
+    _extractions: &HeaderExtractions,
+    _data: &[u8],
+) -> Result<OtapPdata, EngineError> {
+    Err(plaintext_logs_only_error())
+}
+
 /// Stateless, signal-keyed decoder.
 ///
 /// A single `SignalDecoder` serves every [`SignalType`]; the `signal` is passed
 /// to each associated function rather than owned. This groups all per-signal
-/// decode behavior (encoding selection, telemetry label, OTLP/OTAP/Syslog
-/// decode, and header-extraction dispatch) so message formats, the Syslog
-/// restriction, and error mapping have one source of truth.
+/// decode behavior (encoding selection, telemetry label,
+/// OTLP/OTAP/plaintext/Syslog decode, and header-extraction dispatch) so
+/// message formats, logs-only restrictions, and error mapping have one source
+/// of truth.
 pub(crate) struct SignalDecoder;
 
 impl SignalDecoder {
@@ -191,13 +206,57 @@ impl SignalDecoder {
             })
     }
 
+    /// Build one Arrow log record whose body is the complete UTF-8 payload.
+    pub(crate) fn decode_plaintext_logs(data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
+        let _ = std::str::from_utf8(data).map_err(|e| EngineError::PdataConversionError {
+            error: format!("Failed to decode plaintext payload as UTF-8: {e}"),
+        })?;
+
+        let mut logs = LogsRecordBatchBuilder::new();
+        logs.append_id(Some(0));
+        logs.resource.append_id(0.into());
+        logs.resource.append_schema_url(None);
+        logs.resource.append_dropped_attributes_count(0);
+        logs.scope.append_id(0.into());
+        logs.scope.append_name(None);
+        logs.scope.append_version(None);
+        logs.scope.append_dropped_attributes_count(0);
+        logs.append_schema_url(None);
+        logs.append_time_unix_nano(0);
+        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            logs.append_observed_time_unix_nano(now.as_nanos() as i64);
+        } else {
+            logs.append_observed_time_unix_nano(0);
+        }
+        logs.append_severity_number(None);
+        logs.append_severity_text(None);
+        logs.body.append_str(data);
+        logs.append_dropped_attributes_count(0);
+        logs.append_flags(None);
+        let _ = logs.append_trace_id(None);
+        let _ = logs.append_span_id(None);
+        logs.append_event_name(None);
+
+        let record_batch = logs
+            .finish()
+            .map_err(|e| EngineError::PdataConversionError {
+                error: format!("Failed to encode plaintext payload as Arrow records: {e}"),
+            })?;
+        let mut records = OtapArrowRecords::Logs(Logs::default());
+        records
+            .set(ArrowPayloadType::Logs, record_batch)
+            .map_err(|e| EngineError::PdataConversionError {
+                error: format!("Failed to store plaintext Arrow records: {e}"),
+            })?;
+        Ok(records)
+    }
+
     /// Decode a Kafka payload for `signal` into [`OtapPdata`] without header
     /// extraction.
     ///
-    /// This is the one plain decode path. The OTLP and OTAP arms differ only by
-    /// the request/record variant selected for `signal`; the Syslog arm is
-    /// logs-only (traces/metrics reject with the canonical error), so the "logs
-    /// only" restriction is defined once.
+    /// This is the one plain decode path. OTLP payloads stay as bytes, while
+    /// OTAP, plaintext, and Syslog payloads become Arrow records. Plaintext and
+    /// Syslog are logs-only, so traces/metrics reject with the canonical error.
     pub(crate) fn decode_signal_payload(
         signal: SignalType,
         data: &[u8],
@@ -209,6 +268,13 @@ impl SignalDecoder {
                 let records = Self::decode_otap(signal, data)?;
                 Ok(OtapPdata::new(Context::default(), records.into()))
             }
+            MessageFormat::Plaintext => match signal {
+                SignalType::Logs => Ok(OtapPdata::new(
+                    Context::default(),
+                    Self::decode_plaintext_logs(data)?.into(),
+                )),
+                SignalType::Traces | SignalType::Metrics => Err(plaintext_logs_only_error()),
+            },
             MessageFormat::Syslog => match signal {
                 SignalType::Logs => Ok(OtapPdata::new(
                     Context::default(),
@@ -245,6 +311,11 @@ impl SignalDecoder {
                 SignalType::Metrics => HeaderExtractions::apply_otap_metrics,
                 SignalType::Logs => HeaderExtractions::apply_otap_logs,
             };
+        let apply_plaintext: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError> =
+            match signal {
+                SignalType::Logs => HeaderExtractions::apply_plaintext_logs,
+                SignalType::Traces | SignalType::Metrics => reject_plaintext_for_non_log_signal,
+            };
         // Syslog is logs-only: logs inject into the parsed record, traces and
         // metrics reject with the canonical decode error.
         let apply_syslog: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError> =
@@ -260,6 +331,7 @@ impl SignalDecoder {
             message_format,
             apply_otlp,
             apply_otap,
+            apply_plaintext,
             apply_syslog,
             move |data, message_format| Self::decode_signal_payload(signal, data, message_format),
         )
@@ -281,6 +353,7 @@ pub(super) fn decode_with_extractions<F>(
     message_format: MessageFormat,
     apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_otap: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
+    apply_plaintext: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_syslog: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     decode: F,
 ) -> Result<OtapPdata, EngineError>
@@ -291,12 +364,14 @@ where
         let extractions = match message_format {
             MessageFormat::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
             MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
+            MessageFormat::Plaintext => HeaderExtractions::otap(kafka_message, extractors),
             MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
         };
         if extractions.has_any() {
             return match message_format {
                 MessageFormat::OtlpProto => apply_otlp(&extractions, data),
                 MessageFormat::OtapProto => apply_otap(&extractions, data),
+                MessageFormat::Plaintext => apply_plaintext(&extractions, data),
                 MessageFormat::Syslog => apply_syslog(&extractions, data),
             };
         }
@@ -307,6 +382,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
     use prost::Message;
 
@@ -397,11 +473,7 @@ mod tests {
             .take_payload()
             .try_into_with_default()
             .expect("syslog logs convert to OTLP bytes");
-        let request =
-            otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest::decode(
-                proto.as_bytes(),
-            )
-            .expect("decode OTLP logs");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
         assert_eq!(request.resource_logs.len(), 1);
     }
 

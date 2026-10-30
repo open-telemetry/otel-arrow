@@ -30,6 +30,7 @@ groups:
             config:
               data_source: {{ data_source | default("semantic_conventions") }}
               generation_strategy: {{ generation_strategy | default("pre_generated") }}
+              registry_path: "{{ registry_path | default("https://github.com/open-telemetry/semantic-conventions.git@v1.44.0[model]") }}"
               traffic_config:
                 production_mode: {{ production_mode | default("smooth") }}
                 max_batch_size: {{ loadgen_max_batch_size | default(1000) }}

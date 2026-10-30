@@ -5,10 +5,16 @@ policies:
       node: 100
       pipeline: 100
     pdata: 100
+{%- if push_metrics_endpoint is defined and push_metrics_endpoint %}
+{%- set push_service_name = "df-engine" %}
+{%- set engine_log_level = "info" %}
+{% include "push_metrics_engine.yaml.j2" %}
+{%- else %}
 engine:
   telemetry:
     logs:
       level: info
+{%- endif %}
 groups:
   default:
     pipelines:

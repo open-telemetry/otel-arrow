@@ -10,7 +10,9 @@ use arrow::array::Array;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::logs::{LogFilter, LogMatchProperties};
-use otel_arrow_dfe_pdata::otap::filter::{self, MatchType, build_uint16_id_filter};
+use otel_arrow_dfe_pdata::otap::filter::{
+    AttrMatcher, Pattern, ValueMatcher, build_uint16_id_filter,
+};
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -44,7 +46,7 @@ fn bench_log_filter(
     for batch_size in batch_sizes {
         let benchmark_id = BenchmarkId::new("batch_size", batch_size);
 
-        let filter = LogFilter::new(include.clone(), exclude.clone(), Vec::new());
+        let filter = LogFilter::new(include.clone(), exclude.clone());
         let batch = generate_logs_batch(*batch_size);
         _ = group.bench_with_input(benchmark_id, &(batch, filter), |b, input| {
             b.iter_batched(
@@ -66,24 +68,22 @@ fn bench_filter(c: &mut Criterion) {
     let batch_sizes = [32, 1024, 8092];
 
     let include = LogMatchProperties::new(
-        MatchType::Strict,
-        Vec::new(),          // no resource attr filter,
-        Vec::new(),          // no record attrs filter,
-        vec!["WARN".into()], // severity_text = "WARN",
-        None,                // no severity number filter,
-        Vec::new(),          // no bodies filter
+        Vec::new(),                          // no resource attr filter,
+        Vec::new(),                          // no record attrs filter,
+        vec![Pattern::Exact("WARN".into())], // severity_text = "WARN",
+        None,                                // no severity number filter,
+        Vec::new(),                          // no bodies filter
     );
     bench_log_filter(c, &batch_sizes, "simple_field_filter", Some(include), None);
 
     let include = LogMatchProperties::new(
-        MatchType::Strict,
         Vec::new(), // no resource attr filter,
         vec![
             // attrs["code.namespace"] == "main"
-            filter::KeyValue::new(
-                "code.namespace".into(),
-                filter::AnyValue::String("main".into()),
-            ),
+            AttrMatcher {
+                key: "code.namespace".into(),
+                value: ValueMatcher::String(Pattern::Exact("main".into())),
+            },
         ],
         Vec::new(), // no severity text filter
         None,       // no severity number filter,
@@ -92,15 +92,17 @@ fn bench_filter(c: &mut Criterion) {
     bench_log_filter(c, &batch_sizes, "simple_attrs_filter", Some(include), None);
 
     let include = LogMatchProperties::new(
-        MatchType::Strict,
         Vec::new(),
         vec![
             // attrs["code.namespace"] == "main" or attrs["code.line.number"] == 2
-            filter::KeyValue::new(
-                "code.namespace".into(),
-                filter::AnyValue::String("main".into()),
-            ),
-            filter::KeyValue::new("code.line.number".into(), filter::AnyValue::Int(2)),
+            AttrMatcher {
+                key: "code.namespace".into(),
+                value: ValueMatcher::String(Pattern::Exact("main".into())),
+            },
+            AttrMatcher {
+                key: "code.line.number".into(),
+                value: ValueMatcher::Int(2),
+            },
         ],
         Vec::new(), // no severity text filter
         None,       // no severity number filter,
@@ -109,18 +111,17 @@ fn bench_filter(c: &mut Criterion) {
     bench_log_filter(c, &batch_sizes, "attrs_or_filter", Some(include), None);
 
     let include = LogMatchProperties::new(
-        MatchType::Strict,
         Vec::new(),
         vec![
             // attrs["code.namespace"] == "main"
-            filter::KeyValue::new(
-                "code.namespace".into(),
-                filter::AnyValue::String("main".into()),
-            ),
+            AttrMatcher {
+                key: "code.namespace".into(),
+                value: ValueMatcher::String(Pattern::Exact("main".into())),
+            },
         ],
-        vec!["WARN".into()], // severity_text == "WARN"
-        None,                // no severity number filter,
-        Vec::new(),          // no bodies filter
+        vec![Pattern::Exact("WARN".into())], // severity_text == "WARN"
+        None,                                // no severity number filter,
+        Vec::new(),                          // no bodies filter
     );
     bench_log_filter(c, &batch_sizes, "attr_and_prop_filter", Some(include), None);
 }

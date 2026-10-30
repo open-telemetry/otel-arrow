@@ -6133,11 +6133,14 @@ mod tests {
             .await;
     }
 
-    // If the metrics reporter channel is full, the completion dispatcher should
-    // keep the state dirty and retry on the next flush interval.
+    /// Scenario: Periodic completion telemetry encounters a full single-slot reporter channel.
+    /// Guarantees: A deferred flush retains the second Ack delta and retries it after capacity returns,
+    /// independent of wall-clock progress or task scheduling.
     #[tokio::test]
     async fn test_completion_metrics_retry_after_deferred_flush() {
         let local = LocalSet::new();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
 
         local
             .run_until(async {
@@ -6158,8 +6161,7 @@ mod tests {
                 );
 
                 let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+                let mut dispatcher = std::pin::pin!(dispatcher.run());
 
                 completion_tx
                     .send(PipelineCompletionMsg::DeliverAck {
@@ -6168,14 +6170,17 @@ mod tests {
                     .await
                     .unwrap();
 
+                // Poll to quiescence so the Ack is delivered and its flush timer is armed
+                // before simulated time advances; no background task ordering is assumed.
+                assert!(futures::poll!(dispatcher.as_mut()).is_pending());
                 let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive first Ack")
-                    .expect("processor control channel should stay open");
+                let first_ack = processor_ctrl
+                    .try_recv()
+                    .expect("processor should receive first Ack");
                 assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+                clock.advance(flush_interval);
+                assert!(futures::poll!(dispatcher.as_mut()).is_pending());
                 assert_eq!(
                     snapshot_rx.len(),
                     1,
@@ -6189,13 +6194,14 @@ mod tests {
                     .await
                     .unwrap();
 
-                let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive second Ack")
-                    .expect("processor control channel should stay open");
+                assert!(futures::poll!(dispatcher.as_mut()).is_pending());
+                let second_ack = processor_ctrl
+                    .try_recv()
+                    .expect("processor should receive second Ack");
                 assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+                clock.advance(flush_interval);
+                assert!(futures::poll!(dispatcher.as_mut()).is_pending());
                 assert_eq!(
                     snapshot_rx.len(),
                     1,
@@ -6206,7 +6212,8 @@ mod tests {
                     .try_recv()
                     .expect("first snapshot should be buffered");
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+                clock.advance(flush_interval);
+                assert!(futures::poll!(dispatcher.as_mut()).is_pending());
                 let retried_metrics = collect_metric_set_snapshots(
                     &snapshot_rx,
                     completion_metrics_key,
@@ -6233,9 +6240,13 @@ mod tests {
                 );
 
                 drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+                assert!(
+                    matches!(
+                        futures::poll!(dispatcher.as_mut()),
+                        std::task::Poll::Ready(Ok(()))
+                    ),
+                    "dispatcher should stop cleanly after its completion channel closes"
+                );
             })
             .await;
     }

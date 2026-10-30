@@ -992,6 +992,8 @@ mod linux_integration_tests {
         true
     }
 
+    /// Scenario: CI enables the live User Events smoke test on a capable Linux host.
+    /// Guarantees: Tracefs and EventHeader samples are emitted, collected, and decoded.
     #[tokio::test(flavor = "current_thread")]
     async fn user_events_linux_e2e_smoke_when_available() {
         if std::env::var_os(RUN_USEREVENTS_E2E_ENV).is_none() {
@@ -1182,7 +1184,7 @@ mod config_tests {
     };
     use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_ctx};
-    use otel_arrow_dfe_pdata::OtapPayload;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     use super::metrics::{DropAttributes, DropReason, SampleAttributes, SampleOutcome};

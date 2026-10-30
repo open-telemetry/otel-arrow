@@ -17,7 +17,8 @@ groups:
             config:
               listening_addr: "127.0.0.1:4327"
               response_stream_channel_size: 256
-              compression_method: zstd
+              request_compression: zstd
+              response_compression: zstd
 
           perf_noop:
             type: exporter:noop

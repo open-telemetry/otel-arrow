@@ -110,7 +110,8 @@ impl InFlightWrites {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
 
     fn logs_pdata() -> OtapPdata {
         OtapPdata::new_todo_context(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(

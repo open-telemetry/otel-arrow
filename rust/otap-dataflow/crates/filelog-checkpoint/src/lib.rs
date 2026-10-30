@@ -1,20 +1,29 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Filelog-specific version 1 checkpoint wire codec.
+//! Filelog-specific version 1 checkpoint wire codec and transactional replay.
 //!
 //! The version 1 on-disk representation is the compatibility contract. This
 //! crate's Rust API remains internal and experimental under repository policy.
-//! It contains no filesystem, publication, replay-table, receiver-runtime, or
-//! administration implementation.
+//! Linux storage is available through the `store` module on Linux. Receiver runtime and
+//! administration remain separate layers.
 
+mod admission;
 mod checkpoint;
 mod error;
 mod framing_profile;
+mod namespace;
 mod primitives;
+mod replay;
 mod snapshot;
 mod wal;
 
+#[cfg(target_os = "linux")]
+pub mod store;
+
+pub use admission::{
+    AdmissionError, CHECKPOINT_MAX_BYTES, CheckpointBounds, maximum_snapshot_bytes,
+};
 pub use checkpoint::{
     CHECKPOINT_HEADER_BYTES, CheckpointHeader, decode_checkpoint_header,
     decode_checkpoint_snapshot, encode_checkpoint,
@@ -23,12 +32,14 @@ pub use error::{DecodeError, EncodeError};
 pub use framing_profile::{
     FramingEncoding, FramingOnDecodeError, FramingProfileParams, MaxLogSizeBehavior, MultilineMode,
 };
+pub use namespace::namespace_component;
 pub use primitives::{
     ADVISORY_PATH_STORED_MAX_BYTES, AUDIT_REASON_MAX_BYTES, AdvisoryPath, AdvisoryPathKind,
     COMMITTED_FRONTIER_GUARD_WINDOW_BYTES, CommittedFrontierGuard, CommittedFrontierWindow,
     FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, FRAMING_PROFILE_VERSION, FileId, FramingResume,
     LifecycleState, Locator, NAMESPACE_ID_MAX_BYTES, crc32c, namespace_digest,
 };
+pub use replay::{ReplayConfig, ReplayError, ReplayState, ReplayStep};
 pub use snapshot::{
     QuarantineEvidence, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
     SNAPSHOT_MAX_RECORD_FRAME_BYTES, Snapshot, SnapshotRecord, decode_snapshot, encode_snapshot,

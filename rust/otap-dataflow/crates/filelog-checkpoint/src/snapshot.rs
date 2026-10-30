@@ -76,7 +76,7 @@ pub struct SnapshotRecord {
 }
 
 impl SnapshotRecord {
-    fn validate(&self) -> Result<(), &'static str> {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if self.file_epoch == 0 {
             return Err("file_epoch must be nonzero");
         }

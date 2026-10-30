@@ -82,6 +82,20 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Move populated batches from `source` into `self`, overwriting existing batches.
+    ///
+    /// For each payload type, if `source` contains a batch it is moved into `self`, replacing
+    /// any existing batch for that slot. Payload types that are absent in `source` are left
+    /// unchanged in `self`.
+    pub fn replace_batches_from(&mut self, mut source: Self) -> Result<()> {
+        for &payload_type in self.allowed_payload_types() {
+            if let Some(batch) = source.remove(payload_type) {
+                self.set(payload_type, batch)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Get the list of possible payload types associated with the batch of this type.
     /// Note: It's not guaranteed that this batch will actual contain all these
     /// payload types

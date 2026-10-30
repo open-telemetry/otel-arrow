@@ -18,6 +18,7 @@ use arrow::{
         StructArray, make_array,
     },
     datatypes::{ArrowDictionaryKeyType, ArrowNativeType, UInt8Type, UInt16Type},
+    error::Result,
 };
 use arrow_schema::DataType;
 
@@ -62,64 +63,69 @@ impl CooperativeBudget {
 }
 
 /// Sanitize a batch while yielding between bounded dictionary-processing units.
+///
+/// Returns an error if sanitization overflows an Arrow offset type.
 pub async fn sanitize_record_batch_cooperative(
     record_batch: &RecordBatch,
     budget: &mut CooperativeBudget,
-) -> Option<RecordBatch> {
+) -> Result<Option<RecordBatch>> {
     let mut columns = Cow::from(record_batch.columns());
     for (index, column) in record_batch.columns().iter().enumerate() {
-        if let Some(sanitized) = sanitize_column_cooperative(column.as_ref(), budget).await {
+        if let Some(sanitized) = sanitize_column_cooperative(column.as_ref(), budget).await? {
             columns.to_mut()[index] = sanitized;
         }
     }
-    match columns {
+    Ok(match columns {
         Cow::Borrowed(_) => None,
         Cow::Owned(columns) => Some(
             RecordBatch::try_new(record_batch.schema(), columns).expect("sanitized column shape"),
         ),
-    }
+    })
 }
 
 async fn sanitize_column_cooperative(
     column: &dyn Array,
     budget: &mut CooperativeBudget,
-) -> Option<Arc<dyn Array>> {
+) -> Result<Option<Arc<dyn Array>>> {
     budget.consume(1, 0).await;
     if let Some(dictionary) = column.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
-        return sanitized_dict_cooperative(dictionary, budget)
-            .await
-            .map(|array| Arc::new(array) as Arc<dyn Array>);
+        return Ok(sanitized_dict_cooperative(dictionary, budget)
+            .await?
+            .map(|array| Arc::new(array) as Arc<dyn Array>));
     }
     if let Some(dictionary) = column
         .as_any()
         .downcast_ref::<DictionaryArray<UInt16Type>>()
     {
-        return sanitized_dict_cooperative(dictionary, budget)
-            .await
-            .map(|array| Arc::new(array) as Arc<dyn Array>);
+        return Ok(sanitized_dict_cooperative(dictionary, budget)
+            .await?
+            .map(|array| Arc::new(array) as Arc<dyn Array>));
     }
-    let structure = column.as_any().downcast_ref::<StructArray>()?;
+    let Some(structure) = column.as_any().downcast_ref::<StructArray>() else {
+        return Ok(None);
+    };
     let mut columns: Cow<'_, [Arc<dyn Array>]> = Cow::Borrowed(structure.columns());
     for (index, field) in structure.columns().iter().enumerate() {
-        if let Some(sanitized) = Box::pin(sanitize_column_cooperative(field.as_ref(), budget)).await
+        if let Some(sanitized) =
+            Box::pin(sanitize_column_cooperative(field.as_ref(), budget)).await?
         {
             columns.to_mut()[index] = sanitized;
         }
     }
-    match columns {
+    Ok(match columns {
         Cow::Borrowed(_) => None,
         Cow::Owned(columns) => Some(Arc::new(StructArray::new(
             structure.fields().clone(),
             columns,
             structure.nulls().cloned(),
         ))),
-    }
+    })
 }
 
 async fn sanitized_dict_cooperative<Key: ArrowDictionaryKeyType>(
     dictionary: &DictionaryArray<Key>,
     budget: &mut CooperativeBudget,
-) -> Option<DictionaryArray<Key>>
+) -> Result<Option<DictionaryArray<Key>>>
 where
     Key::Native: SanitizeDictHelper,
 {
@@ -134,7 +140,7 @@ where
                 live[index] = true;
                 live_count += 1;
                 if live_count == values.len() {
-                    return None;
+                    return Ok(None);
                 }
             }
         }
@@ -197,7 +203,7 @@ where
                 .unwrap_or(usize::MAX);
         }
         budget.consume(index - start, run_bytes).await;
-        selected.extend(0, start, index);
+        selected.try_extend(0, start, index)?;
     }
     let mut keys = Vec::with_capacity(dictionary.len());
     for key in dictionary.keys().iter() {
@@ -207,13 +213,17 @@ where
         }));
     }
     let keys = PrimitiveArray::<Key>::new(keys.into(), dictionary.keys().nulls().cloned());
-    Some(DictionaryArray::new(keys, make_array(selected.freeze())))
+    Ok(Some(DictionaryArray::new(
+        keys,
+        make_array(selected.freeze()),
+    )))
 }
 
 /// Sanitizes a single array column, returning `Some` with the sanitized array if any changes
 /// were made, or `None` if the array was already clean.
-#[must_use]
-pub fn sanitize_column(column: &dyn Array) -> Option<Arc<dyn Array>> {
+///
+/// Returns an error if sanitization overflows an Arrow offset type.
+pub fn sanitize_column(column: &dyn Array) -> Result<Option<Arc<dyn Array>>> {
     complete_synchronously(sanitize_column_cooperative(
         column,
         &mut CooperativeBudget::synchronous(),
@@ -221,8 +231,9 @@ pub fn sanitize_column(column: &dyn Array) -> Option<Arc<dyn Array>> {
 }
 
 /// Sanitizes every column in a record batch without requiring an async runtime.
-#[must_use]
-pub fn sanitize_record_batch(record_batch: &RecordBatch) -> Option<RecordBatch> {
+///
+/// Returns an error if sanitization overflows an Arrow offset type.
+pub fn sanitize_record_batch(record_batch: &RecordBatch) -> Result<Option<RecordBatch>> {
     complete_synchronously(sanitize_record_batch_cooperative(
         record_batch,
         &mut CooperativeBudget::synchronous(),
@@ -270,7 +281,7 @@ mod test {
             ])),
         );
 
-        let result = sanitize_column(&input);
+        let result = sanitize_column(&input).unwrap();
 
         let expected = DictionaryArray::new(
             UInt16Array::from_iter_values([0, 1, 2, 2, 3]),
@@ -289,7 +300,7 @@ mod test {
             Arc::new(StringArray::from_iter_values(["0", "1", "2"])),
         );
 
-        assert!(sanitize_column(&input).is_none());
+        assert!(sanitize_column(&input).unwrap().is_none());
     }
 
     #[test]
@@ -322,7 +333,9 @@ mod test {
         )]));
         let batch = RecordBatch::try_new(schema, vec![Arc::new(struct_arr)]).unwrap();
 
-        let result = sanitize_record_batch(&batch).expect("should sanitize");
+        let result = sanitize_record_batch(&batch)
+            .unwrap()
+            .expect("should sanitize");
 
         let result_struct = result
             .column(0)
@@ -381,7 +394,7 @@ mod test {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(struct_arr)]).unwrap();
 
         assert!(
-            sanitize_record_batch(&batch).is_none(),
+            sanitize_record_batch(&batch).unwrap().is_none(),
             "should return None when all dict values are live"
         );
     }
@@ -397,7 +410,7 @@ mod test {
             Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
         );
 
-        let result = sanitize_column(&input);
+        let result = sanitize_column(&input).unwrap();
 
         let expected = DictionaryArray::new(
             UInt16Array::from(vec![Some(0), None, Some(1), None, Some(1)]),
@@ -418,7 +431,7 @@ mod test {
             Arc::new(StringArray::from_iter_values(["a", "b", "c"])),
         );
 
-        assert!(sanitize_column(&input).is_none());
+        assert!(sanitize_column(&input).unwrap().is_none());
     }
 
     /// Scenario: Runtime-free synchronous calls exceed both cooperative thresholds in a nested dictionary.
@@ -447,14 +460,17 @@ mod test {
         let input = StructArray::from(vec![(field.clone(), Arc::new(input) as Arc<dyn Array>)]);
         let expected = StructArray::from(vec![(field, Arc::new(expected) as Arc<dyn Array>)]);
         assert_eq!(
-            sanitize_column(&input).unwrap().to_data(),
+            sanitize_column(&input)
+                .expect("sanitization succeeds")
+                .expect("unused dictionary values are removed")
+                .to_data(),
             expected.to_data()
         );
         let input =
             RecordBatch::try_from_iter([("body", Arc::new(input) as Arc<dyn Array>)]).unwrap();
         let expected =
             RecordBatch::try_from_iter([("body", Arc::new(expected) as Arc<dyn Array>)]).unwrap();
-        assert_eq!(sanitize_record_batch(&input), Some(expected));
+        assert_eq!(sanitize_record_batch(&input).unwrap(), Some(expected));
     }
 
     /// Scenario: Live values form runs exceeding the item and byte copy quanta, split by a dead gap.
@@ -504,7 +520,12 @@ mod test {
                 )) as Arc<dyn Array>,
             )])
             .unwrap();
-            assert_eq!(sanitize_record_batch(&input).unwrap(), expected);
+            assert_eq!(
+                sanitize_record_batch(&input)
+                    .expect("sanitization succeeds")
+                    .expect("unused dictionary values are removed"),
+                expected
+            );
             let progress = Rc::new(Cell::new(0));
             let done = Rc::new(Cell::new(false));
             let actual = tokio::task::LocalSet::new()
@@ -524,7 +545,8 @@ mod test {
                         &mut CooperativeBudget::default(),
                     )
                     .await
-                    .unwrap();
+                    .expect("sanitization succeeds")
+                    .expect("unused dictionary values are removed");
                     done.set(true);
                     observer.await.unwrap();
                     output
@@ -576,13 +598,19 @@ mod test {
                 let output =
                     sanitize_record_batch_cooperative(&batch, &mut CooperativeBudget::default())
                         .await
-                        .unwrap();
+                        .expect("sanitization succeeds")
+                        .expect("unused dictionary values are removed");
                 done.set(true);
                 observer.await.unwrap();
                 output
             })
             .await;
-        assert_eq!(actual, sanitize_record_batch(&batch).unwrap());
+        assert_eq!(
+            actual,
+            sanitize_record_batch(&batch)
+                .expect("sanitization succeeds")
+                .expect("unused dictionary values are removed")
+        );
         // LIVE * WIDTH is 4 MiB, so a 256 KiB quantum needs far more yields than 128-item runs give.
         assert!(
             progress.get() > 8,
@@ -611,7 +639,9 @@ mod test {
         )]);
         let batch =
             RecordBatch::try_from_iter([("body", Arc::new(structure) as Arc<dyn Array>)]).unwrap();
-        let expected = sanitize_record_batch(&batch).unwrap();
+        let expected = sanitize_record_batch(&batch)
+            .expect("sanitization succeeds")
+            .expect("unused dictionary values are removed");
         let done = Rc::new(Cell::new(false));
         let progress = Rc::new(Cell::new(0));
         let mut budget = CooperativeBudget::default();
@@ -629,7 +659,8 @@ mod test {
                 });
                 let output = sanitize_record_batch_cooperative(&batch, &mut budget)
                     .await
-                    .unwrap();
+                    .expect("sanitization succeeds")
+                    .expect("unused dictionary values are removed");
                 done.set(true);
                 observer.await.unwrap();
                 output
@@ -703,13 +734,15 @@ mod test {
                     let batch = RecordBatch::try_from_iter([("value", column)]).unwrap();
                     let expected =
                         RecordBatch::try_from_iter([("value", expected_column)]).unwrap();
-                    let synchronous =
-                        sanitize_record_batch(&batch).unwrap_or_else(|| batch.clone());
+                    let synchronous = sanitize_record_batch(&batch)
+                        .unwrap()
+                        .unwrap_or_else(|| batch.clone());
                     let actual = sanitize_record_batch_cooperative(
                         &batch,
                         &mut CooperativeBudget::default(),
                     )
                     .await
+                    .unwrap()
                     .unwrap_or_else(|| batch.clone());
                     assert_eq!(synchronous, expected);
                     assert_eq!(actual, expected);

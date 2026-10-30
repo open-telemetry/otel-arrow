@@ -26,23 +26,26 @@
 //!
 //! `OtapArrowRecords` does not cache these sizes. Its stores are cloneable and
 //! mutable through `set()` and `remove()`, so a cache owned by the records could
-//! become stale. [`crate::OtapPayload`] safely caches logical size at the wrapper
-//! level because accessing records for mutation consumes the wrapper; wrapping
-//! the resulting records again starts with a fresh cache. Consumers retaining
-//! bare records should compute once when retention starts and store the value
-//! with their retained state or ticket.
+//! become stale. Runtime payload wrappers cache logical size outside this
+//! low-level data model. Consumers retaining bare records should compute once
+//! when retention starts and store the value with their retained state or ticket.
 //!
 //! Sizing performance is proportional to the number of arrays and buffers, not
-//! to the number of rows or byte values. Each column calls `to_data()`, which
-//! performs a small structural clone of `Arc`-backed Arrow metadata and does
-//! not copy buffer contents. Retained-memory accounting also uses a `HashSet`
-//! to dedupe buffers; callers can reuse and clear a [`CountedAllocations`]
-//! value across calls if this ever shows up in profiles.
+//! to the number of rows or byte values. Logical sizing walks typed arrays
+//! directly and only falls back to `to_data()` for array types OTAP does not
+//! use, because `to_data()` allocates a structural clone of every array (and
+//! recursively of every child) and showed up in batch processor profiles with
+//! many small inputs. Retained-memory accounting still calls `to_data()` per
+//! column and uses a `HashSet` to dedupe buffers; callers can reuse and clear
+//! a [`CountedAllocations`] value across calls if this ever shows up in
+//! profiles.
 
 use std::{collections::HashSet, ptr::NonNull};
 
-use arrow::array::{ArrayData, RecordBatch};
+use arrow::array::{Array, ArrayData, ArrayRef, AsArray, OffsetSizeTrait, RecordBatch};
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
+use arrow::util::bit_util;
 
 /// Buffer allocations already counted during one retained-memory accounting
 /// call.
@@ -64,18 +67,14 @@ pub fn record_batch_pinned_bytes(batch: &RecordBatch, seen: &mut CountedAllocati
 
 /// Returns the logical Arrow buffer bytes associated with `batch`.
 ///
-/// This delegates the definition to [`ArrayData::get_slice_memory_size`].
-/// Direct buffers are measured using the array's active offset and length,
-/// nested child arrays follow Arrow's own recursive sizing semantics, and
-/// shared buffers are counted once per logical array reference.
+/// The definition is [`ArrayData::get_slice_memory_size`], computed without
+/// materializing `ArrayData` (see [`array_slice_memory_size`]). Direct buffers
+/// are measured using the array's active offset and length, nested child
+/// arrays follow Arrow's own recursive sizing semantics, and shared buffers
+/// are counted once per logical array reference.
 pub fn record_batch_logical_bytes(batch: &RecordBatch) -> Result<usize, ArrowError> {
     batch.columns().iter().try_fold(0usize, |total, array| {
-        let array_bytes = array.to_data().get_slice_memory_size()?;
-        total.checked_add(array_bytes).ok_or_else(|| {
-            ArrowError::ComputeError(
-                "Integer overflow computing logical Arrow byte size".to_string(),
-            )
-        })
+        checked_add(total, array_slice_memory_size(array.as_ref())?)
     })
 }
 
@@ -103,22 +102,112 @@ fn array_data_pinned_bytes(data: &ArrayData, seen: &mut CountedAllocations) -> u
             .sum::<usize>()
 }
 
+/// Returns exactly what `array.to_data().get_slice_memory_size()` returns,
+/// without allocating the intermediate `ArrayData`.
+///
+/// Mirrors arrow-data's `get_slice_memory_size`: each layout buffer counts
+/// `len` fixed-width slots (`len + 1` for offsets), variable-width data counts
+/// the bytes between the first and last active offset, a validity bitmap
+/// counts `ceil(len / 8)`, and child arrays are sized recursively. Children
+/// are what `to_data()` would produce: struct fields are already sliced, while
+/// dictionary values and list values are the full child arrays. Types OTAP
+/// does not produce fall back to `to_data()` so the result stays identical.
+pub fn array_slice_memory_size(array: &dyn Array) -> Result<usize, ArrowError> {
+    let len = array.len();
+    let data_type = array.data_type();
+    let own = match data_type {
+        DataType::Boolean => bit_util::ceil(len, 8),
+        DataType::Utf8 => byte_array_size(array.as_string::<i32>().value_offsets())?,
+        DataType::LargeUtf8 => byte_array_size(array.as_string::<i64>().value_offsets())?,
+        DataType::Binary => byte_array_size(array.as_binary::<i32>().value_offsets())?,
+        DataType::LargeBinary => byte_array_size(array.as_binary::<i64>().value_offsets())?,
+        DataType::FixedSizeBinary(width) => fixed_width_size(len, *width as usize)?,
+        DataType::Dictionary(key_type, _) => {
+            let key_width = key_type
+                .primitive_width()
+                .ok_or_else(|| invalid_layout(data_type))?;
+            let values = array.as_any_dictionary().values();
+            checked_add(
+                fixed_width_size(len, key_width)?,
+                array_slice_memory_size(values.as_ref())?,
+            )?
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .try_fold(0usize, |total, child| {
+                checked_add(total, array_slice_memory_size(child.as_ref())?)
+            })?,
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            list_size(list.value_offsets(), list.values())?
+        }
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            list_size(list.value_offsets(), list.values())?
+        }
+        _ if data_type.is_primitive() => {
+            let width = data_type
+                .primitive_width()
+                .ok_or_else(|| invalid_layout(data_type))?;
+            fixed_width_size(len, width)?
+        }
+        _ => return array.to_data().get_slice_memory_size(),
+    };
+
+    // `ArrayDataBuilder::build` drops validity buffers without nulls (e.g. a
+    // slice of a nullable array that selects only valid rows), so arrow only
+    // counts the bitmap when the active range contains a null.
+    let null_bytes = if array.nulls().is_some_and(|nulls| nulls.null_count() > 0) {
+        bit_util::ceil(len, 8)
+    } else {
+        0
+    };
+    checked_add(own, null_bytes)
+}
+
+/// Offsets buffer (`len + 1` slots) plus the active value bytes.
+fn byte_array_size<O: OffsetSizeTrait>(offsets: &[O]) -> Result<usize, ArrowError> {
+    debug_assert!(!offsets.is_empty(), "offsets always hold len + 1 entries");
+    let value_bytes = (offsets[offsets.len() - 1] - offsets[0]).as_usize();
+    checked_add(
+        fixed_width_size(offsets.len(), size_of::<O>())?,
+        value_bytes,
+    )
+}
+
+/// Offsets buffer (`len + 1` slots) plus the full values child array.
+fn list_size<O: OffsetSizeTrait>(offsets: &[O], values: &ArrayRef) -> Result<usize, ArrowError> {
+    debug_assert!(!offsets.is_empty(), "offsets always hold len + 1 entries");
+    checked_add(
+        fixed_width_size(offsets.len(), size_of::<O>())?,
+        array_slice_memory_size(values.as_ref())?,
+    )
+}
+
+fn fixed_width_size(slots: usize, byte_width: usize) -> Result<usize, ArrowError> {
+    slots.checked_mul(byte_width).ok_or_else(overflow_error)
+}
+
+fn checked_add(a: usize, b: usize) -> Result<usize, ArrowError> {
+    a.checked_add(b).ok_or_else(overflow_error)
+}
+
+fn overflow_error() -> ArrowError {
+    ArrowError::ComputeError("Integer overflow computing logical Arrow byte size".to_string())
+}
+
+fn invalid_layout(data_type: &DataType) -> ArrowError {
+    ArrowError::InvalidArgumentError(format!("No fixed-width layout for data type {data_type}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{mem::size_of, sync::Arc};
 
-    use arrow::array::{
-        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
-        UInt32Array, UInt32Builder,
-    };
-    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
-    use bytes::Bytes;
-
     use crate::otap::{Logs, OtapArrowRecords};
-    use crate::otlp::OtlpProtoBytes;
-    use crate::payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
     use crate::proto::OtlpProtoMessage;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -126,6 +215,11 @@ mod tests {
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::testing::fixtures::logs_with_full_resource_and_scope;
     use crate::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
+    use arrow::array::{
+        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
+        UInt32Array, UInt32Builder,
+    };
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
 
     use super::{CountedAllocations, record_batch_logical_bytes, record_batch_pinned_bytes};
 
@@ -306,7 +400,7 @@ mod tests {
     }
 
     /// Scenario: a record batch slice selects subsets of primitive and UTF-8 arrays.
-    /// Guarantees: logical sizing follows Arrow's active-slice accounting.
+    /// Guarantees: logical sizing counts active values and the UTF-8 terminal offset.
     #[test]
     fn logical_bytes_follow_primitive_and_utf8_slices() {
         let batch = batch_with_columns(vec![
@@ -324,7 +418,7 @@ mod tests {
 
         let slice = batch.slice(1, 2);
         let primitive_bytes = 2 * size_of::<u32>();
-        let utf8_offset_bytes = 2 * size_of::<i32>();
+        let utf8_offset_bytes = (slice.num_rows() + 1) * size_of::<i32>();
         let utf8_value_bytes = "betagamma".len();
 
         assert_eq!(
@@ -334,7 +428,7 @@ mod tests {
     }
 
     /// Scenario: two dictionary columns share one dictionary values array.
-    /// Guarantees: logical sizing counts the dictionary for each logical array reference.
+    /// Guarantees: each logical reference counts dictionary values and their terminal offset.
     #[test]
     fn logical_bytes_count_shared_dictionary_per_array_reference() {
         let values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta"]));
@@ -359,7 +453,7 @@ mod tests {
             ),
         ]);
         let keys_bytes = 4 * size_of::<u8>();
-        let dictionary_bytes = 2 * size_of::<i32>() + "alphabeta".len();
+        let dictionary_bytes = (values.len() + 1) * size_of::<i32>() + "alphabeta".len();
 
         assert_eq!(logical_bytes(&batch), 2 * (keys_bytes + dictionary_bytes));
     }
@@ -384,37 +478,8 @@ mod tests {
         assert_eq!(records.retained_memory_bytes(), 0);
     }
 
-    /// Scenario: a serialized OTLP payload is wrapped in the opaque payload type.
-    /// Guarantees: OTLP logical and retained byte estimates both equal the protobuf length.
-    #[test]
-    fn otlp_payload_num_bytes_matches_retained_memory_bytes() {
-        let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(b"abc"));
-        let mut otlp_payload: OtapPayload = otlp_bytes.clone().into();
-
-        assert_eq!(otlp_bytes.num_bytes(), otlp_bytes.retained_memory_bytes());
-        assert_eq!(
-            otlp_payload.num_bytes(),
-            Some(otlp_payload.retained_memory_bytes())
-        );
-    }
-
-    /// Scenario: an empty OTAP logs payload is converted into and out of the opaque payload type.
-    /// Guarantees: the conversion preserves the payload's logs root type.
-    #[test]
-    fn empty_otap_payload_preserves_root_type() {
-        let arrow_payload: OtapPayload = OtapArrowRecords::Logs(Logs::default()).into();
-
-        assert_eq!(
-            match arrow_payload.into_data() {
-                PayloadData::OtapArrowRecords(records) => records.root_payload_type(),
-                PayloadData::OtlpBytes(_) => unreachable!(),
-            },
-            ArrowPayloadType::Logs
-        );
-    }
-
     /// Scenario: a ListArray slice selects one list while retaining its original child array.
-    /// Guarantees: logical sizing preserves Arrow's recursive child-array semantics.
+    /// Guarantees: logical sizing counts the terminal offset and the full retained child array.
     #[test]
     fn logical_bytes_follow_arrow_list_child_semantics() {
         let array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
@@ -425,7 +490,7 @@ mod tests {
         let data_type = array.data_type().clone();
         let slice = array.slice(1, 1);
         let batch = batch_with_columns(vec![("list", data_type, Arc::new(slice) as ArrayRef)]);
-        let list_offset_bytes = size_of::<i32>();
+        let list_offset_bytes = (batch.num_rows() + 1) * size_of::<i32>();
         let child_bytes = size_of::<[i32; 8]>();
 
         assert_eq!(logical_bytes(&batch), list_offset_bytes + child_bytes);
@@ -469,5 +534,268 @@ mod tests {
             otap_bytes < retained_bytes,
             "expected OTAP logical bytes ({otap_bytes}) to be smaller than retained bytes ({retained_bytes})"
         );
+    }
+}
+
+/// Parity between [`array_slice_memory_size`] and arrow's
+/// `to_data().get_slice_memory_size()`.
+#[cfg(test)]
+mod slice_size_parity_tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use arrow::array::{
+        Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray,
+        Int32Array, LargeListArray, LargeStringArray, ListArray, MapBuilder, NullArray,
+        RecordBatch, StringArray, StringBuilder, StructArray, UInt8Array, UInt16Array, UInt32Array,
+    };
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Int32Type, UInt8Type, UInt16Type};
+    use arrow_ipc::reader::StreamReader;
+    use arrow_ipc::writer::StreamWriter;
+
+    use super::{array_slice_memory_size, record_batch_logical_bytes};
+    use crate::otap::OtapArrowRecords;
+    use crate::proto::OtlpProtoMessage;
+    use crate::testing::fixtures::{self, DataGenerator, LogsConfig, MetricsConfig, TracesConfig};
+    use crate::testing::round_trip::otlp_to_otap;
+
+    /// Scenario: arrays of every type OTAP produces, plus fallback types, each
+    /// whole and sliced at several offsets.
+    /// Guarantees: the allocation-free size equals arrow's `ArrayData` size.
+    #[test]
+    fn targeted_arrays_match_arrow_slice_memory_size() {
+        for array in targeted_arrays() {
+            assert_parity_with_slices(array.as_ref());
+        }
+    }
+
+    /// Scenario: every column of OTAP logs, traces and metrics batches, as
+    /// encoded and after an IPC round trip (the receiver's representation).
+    /// Guarantees: column and batch sizes equal the `to_data()` implementation.
+    #[test]
+    fn otap_batches_match_arrow_slice_memory_size() {
+        for records in otap_fixture_records() {
+            for payload_type in records.allowed_payload_types() {
+                let Some(batch) = records.get(*payload_type) else {
+                    continue;
+                };
+                for batch in [batch.clone(), ipc_round_trip(batch)] {
+                    assert_batch_parity(&batch);
+                    let rows = batch.num_rows();
+                    assert_batch_parity(&batch.slice(rows / 3, rows - rows / 3));
+                    assert_batch_parity(&batch.slice(0, rows / 2));
+                }
+            }
+        }
+    }
+
+    fn assert_batch_parity(batch: &RecordBatch) {
+        assert_eq!(
+            record_batch_logical_bytes(batch).unwrap(),
+            batch
+                .columns()
+                .iter()
+                .map(|column| column.to_data().get_slice_memory_size().unwrap())
+                .sum::<usize>(),
+            "schema {:?}",
+            batch.schema()
+        );
+        for column in batch.columns() {
+            assert_parity_with_slices(column.as_ref());
+        }
+    }
+
+    fn assert_parity_with_slices(array: &dyn Array) {
+        assert_parity(array);
+        let len = array.len();
+        let mut slices = vec![(0, len / 2), (len / 3, len - len / 3), (len / 2, 0)];
+        if len > 0 {
+            slices.push((len - 1, 1));
+        }
+        for (offset, slice_len) in slices {
+            assert_parity(array.slice(offset, slice_len).as_ref());
+        }
+    }
+
+    fn assert_parity(array: &dyn Array) {
+        assert_eq!(
+            array_slice_memory_size(array).unwrap(),
+            array.to_data().get_slice_memory_size().unwrap(),
+            "data type {} len {} offset {}",
+            array.data_type(),
+            array.len(),
+            array.offset()
+        );
+    }
+
+    fn targeted_arrays() -> Vec<ArrayRef> {
+        let utf8_values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta", "gamma"]));
+        let binary_values: ArrayRef =
+            Arc::new(BinaryArray::from(vec![b"ab".as_ref(), b"cde".as_ref()]));
+        let fsb_values: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from_iter([[1u8; 16], [2u8; 16]].into_iter()).unwrap(),
+        );
+
+        let dict_u8_utf8: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![Some(0), None, Some(2), Some(1), Some(0)]),
+            Arc::clone(&utf8_values),
+        ));
+        let dict_u16_binary: ArrayRef = Arc::new(DictionaryArray::<UInt16Type>::new(
+            UInt16Array::from(vec![1, 0, 1, 1]),
+            binary_values,
+        ));
+        let dict_u8_fsb: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![0, 1, 1]),
+            fsb_values,
+        ));
+
+        let list: ArrayRef = Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), None, Some(3)]),
+            None,
+            Some(vec![]),
+            Some(vec![Some(4), Some(5)]),
+        ]));
+        let large_list: ArrayRef =
+            Arc::new(LargeListArray::from_iter_primitive::<Int32Type, _, _>(
+                vec![Some(vec![Some(1)]), Some(vec![Some(2), Some(3)])],
+            ));
+
+        let struct_fields = Fields::from(vec![
+            Field::new("id", DataType::UInt16, true),
+            Field::new(
+                "name",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new("list", list.data_type().clone(), true),
+        ]);
+        let nested_struct: ArrayRef = Arc::new(StructArray::new(
+            struct_fields.clone(),
+            vec![
+                Arc::new(UInt16Array::from(vec![Some(1), None, Some(3), Some(4)])),
+                Arc::new(DictionaryArray::<UInt8Type>::new(
+                    UInt8Array::from(vec![0, 1, 2, 0]),
+                    utf8_values,
+                )),
+                Arc::clone(&list),
+            ],
+            Some(NullBuffer::from(vec![true, false, true, true])),
+        ));
+        let outer_struct: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![
+                Field::new("inner", nested_struct.data_type().clone(), true),
+                Field::new("flag", DataType::Boolean, true),
+            ]),
+            vec![
+                Arc::clone(&nested_struct),
+                Arc::new(BooleanArray::from(vec![
+                    Some(true),
+                    None,
+                    Some(false),
+                    Some(true),
+                ])),
+            ],
+            None,
+        ));
+
+        let mut map_builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        map_builder.keys().append_value("k");
+        map_builder.values().append_value("v");
+        map_builder.append(true).unwrap();
+        map_builder.append(false).unwrap();
+        let map: ArrayRef = Arc::new(map_builder.finish());
+
+        vec![
+            Arc::new(UInt32Array::from(vec![1, 2, 3, 4, 5])),
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+            Arc::new(UInt32Array::from(Vec::<u32>::new())),
+            Arc::new(BooleanArray::from(vec![Some(true), None, Some(false)])),
+            Arc::new(StringArray::from(vec![
+                Some("a"),
+                None,
+                Some("ccc"),
+                Some(""),
+            ])),
+            Arc::new(StringArray::from(Vec::<&str>::new())),
+            Arc::new(LargeStringArray::from(vec!["x", "yy", "zzz"])),
+            Arc::new(BinaryArray::from(vec![
+                Some(b"a".as_ref()),
+                None,
+                Some(b"bc".as_ref()),
+            ])),
+            Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    [Some([1u8; 8]), None, Some([3u8; 8])].into_iter(),
+                    8,
+                )
+                .unwrap(),
+            ),
+            dict_u8_utf8,
+            dict_u16_binary,
+            dict_u8_fsb,
+            list,
+            large_list,
+            nested_struct,
+            outer_struct,
+            map,
+            Arc::new(NullArray::new(5)),
+        ]
+    }
+
+    fn otap_fixture_records() -> Vec<OtapArrowRecords> {
+        let mut messages: Vec<OtlpProtoMessage> = vec![
+            fixtures::logs_with_full_resource_and_scope().into(),
+            fixtures::logs_multiple_resources_mixed_content().into(),
+            fixtures::traces_with_full_resource_and_scope().into(),
+            fixtures::traces_multiple_resources_mixed_content().into(),
+            fixtures::metrics_sum_with_full_resource_and_scope().into(),
+            fixtures::metrics_multiple_sums_no_resource().into(),
+        ];
+
+        let mut logs = DataGenerator::with_logs_config(
+            LogsConfig::new(8)
+                .with_resources(2)
+                .with_scopes_per_resource(2)
+                .with_resource_attrs(4)
+                .with_scope_attrs(3)
+                .with_log_attrs(3),
+        );
+        messages.push(logs.generate_logs_from_config().into());
+
+        let mut traces = DataGenerator::with_traces_config(
+            TracesConfig::new(8)
+                .with_resources(2)
+                .with_scopes_per_resource(2)
+                .with_resource_attrs(4)
+                .with_scope_attrs(3)
+                .with_span_attrs(3),
+        );
+        messages.push(traces.generate_traces_from_config().into());
+
+        let mut metrics = DataGenerator::with_metrics_config(
+            MetricsConfig::new()
+                .with_gauges(vec![4])
+                .with_sums(vec![3])
+                .with_histograms(vec![4])
+                .with_summaries(vec![2])
+                .with_resource_attrs(4)
+                .with_scope_attrs(3)
+                .with_metric_attrs(3),
+        );
+        messages.push(metrics.generate_metrics_from_config().into());
+
+        messages.iter().map(otlp_to_otap).collect()
+    }
+
+    fn ipc_round_trip(batch: &RecordBatch) -> RecordBatch {
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &batch.schema()).unwrap();
+            writer.write(batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let mut reader = StreamReader::try_new(Cursor::new(buf), None).unwrap();
+        reader.next().unwrap().unwrap()
     }
 }

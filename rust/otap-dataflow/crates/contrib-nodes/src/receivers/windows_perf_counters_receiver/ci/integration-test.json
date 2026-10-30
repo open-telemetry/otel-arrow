@@ -1,0 +1,17 @@
+{
+  "id": "windows-perf-counters-windows",
+  "name": "Windows performance counters smoke",
+  "runner": "windows-latest",
+  "platform": "Windows",
+  "timeout_minutes": 30,
+  "required": true,
+  "paths": [
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/windows_perf_counters_receiver/**"
+  ],
+  "command": [
+    "pwsh",
+    "-NoProfile",
+    "-File",
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/windows_perf_counters_receiver/ci/run.ps1"
+  ]
+}

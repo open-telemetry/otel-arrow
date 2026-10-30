@@ -11,7 +11,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow_ipc::CompressionType;
 use arrow_ipc::writer::{
-    CompressionContext, DictionaryHandling, DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
+    DictionaryHandling, DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
     write_message,
 };
 
@@ -36,7 +36,7 @@ struct StreamProducer {
     schema: SchemaRef,
 
     /// compression context for the stream
-    compression_context: CompressionContext,
+    compression_context: IpcWriteContext,
 }
 
 impl StreamProducer {
@@ -50,7 +50,7 @@ impl StreamProducer {
 
         let mut instance = Self {
             buffer: cursor,
-            compression_context: CompressionContext::default(),
+            compression_context: IpcWriteContext::default(),
             dictionary_tracker: DictionaryTracker::new(false),
             data_gen: IpcDataGenerator::default(),
             schema_id,

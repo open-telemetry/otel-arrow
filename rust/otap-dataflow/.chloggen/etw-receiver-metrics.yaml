@@ -1,0 +1,7 @@
+change_type: breaking
+component: pipeline
+note: >-
+  Migrated ETW receiver telemetry from flat counters to dimensioned metric populations with enum attributes.
+issues: [3530]
+subtext: >-
+  Migration: Update dashboards to use the restructured metrics: receiver.etw.events (received, forwarded), receiver.etw.drops (events, by reason), receiver.etw.decode (errors), and receiver.etw.session (events.lost, buffers.written, buffers.lost by delivery).

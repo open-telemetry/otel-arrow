@@ -12,7 +12,7 @@ use crate::ExtensionId;
 use crate::PipelineGroupId;
 use crate::PipelineId;
 use crate::TopicName;
-use crate::context_policy::{ContextPolicy, ContextScope};
+use crate::context::policy::{ContextPolicy, ContextScope};
 use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
@@ -2950,7 +2950,7 @@ groups:
         );
         assert_eq!(
             policy.header_propagation.default.selector.selector_type,
-            crate::transport_headers_policy::PropagationSelectorType::AllCaptured
+            crate::context::transport_policy::PropagationSelectorType::AllCaptured
         );
     }
 

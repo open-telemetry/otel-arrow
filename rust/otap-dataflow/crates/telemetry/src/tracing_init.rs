@@ -561,7 +561,7 @@ mod tests {
         // Historically, a partial body write left an unpatched length
         // placeholder + trailing garbage bytes in the inline buffer, which
         // corrupted subsequent fields appended by encode_log_record (notably
-        // dropped_attributes_count itself). encode_body_string is now wrapped
+        // dropped_attributes_count itself). The body encoding is now wrapped
         // in try_encode to roll back partial bytes on overflow.
         crate::with_cleared_rust_log(|| {
             let (reporter, receiver) = test_reporter();

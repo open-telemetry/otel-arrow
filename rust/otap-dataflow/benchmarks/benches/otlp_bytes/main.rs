@@ -14,11 +14,11 @@ use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use prost::Message;
 use prost::bytes::BytesMut;
 
-use otel_arrow_dfe_pdata::OtapPayload;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;

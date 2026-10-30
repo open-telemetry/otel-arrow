@@ -72,6 +72,8 @@ macro_rules! id_column_dispatch {
 pub(crate) use id_column_dispatch;
 
 /// Create a new record batch by taking the specified ranges from the provided record batch.
+///
+/// Returns an error if copying the ranges overflows an Arrow offset type.
 pub fn take_record_batch_ranges(
     rb: &RecordBatch,
     ranges: &[Range<usize>],
@@ -82,7 +84,7 @@ pub fn take_record_batch_ranges(
         let data = column.to_data();
         let mut new_data = MutableArrayData::new(vec![&data], false, new_len);
         for range in ranges {
-            new_data.extend(0, range.start, range.end);
+            new_data.try_extend(0, range.start, range.end)?;
         }
         new_columns.push(make_array(new_data.freeze()));
     }

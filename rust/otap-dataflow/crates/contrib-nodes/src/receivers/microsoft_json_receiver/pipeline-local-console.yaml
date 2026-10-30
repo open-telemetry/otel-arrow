@@ -1,0 +1,26 @@
+# Run from this directory so endpoint paths resolve against the pipeline file.
+# Configuration example only: construction currently returns NotImplemented.
+version: otel_dataflow/v1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:microsoft:receiver:json
+            config:
+              listening_addr: "127.0.0.1:9090"
+              allowed_origins: ["https://example.com"]
+              endpoints:
+                "/OneCollector/1.0":
+                  config_file: onecollector-1ds-endpoint.yaml
+                "/v2/track":
+                  config_file: azure-monitor-envelope.yaml
+                "/v2.1/track":
+                  config_file: azure-monitor-envelope.yaml
+          console:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: receiver
+            to: console

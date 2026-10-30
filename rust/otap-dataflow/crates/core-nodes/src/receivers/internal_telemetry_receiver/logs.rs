@@ -4,14 +4,14 @@
 //! Internal logs receiver state
 
 use bytes::Bytes;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::Sizer;
-use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
-use otel_arrow_dfe_pdata::otlp::common::EncodeFailure;
+use otel_arrow_dfe_pdata::otlp::{EncodeFailure, ProtoBuffer};
+use otel_arrow_dfe_pdata_codec::builtins::resolve_otlp;
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
@@ -495,7 +495,15 @@ impl LogExportState {
         )?;
         Ok(OtapPdata::new(
             Context::default(),
-            OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into(),
+            // SAFETY: PipelineRuntimeServices validates the immutable global
+            // registry before starting this receiver, including built-in OTLP.
+            resolve_otlp()
+                .expect("validated OTLP codec")
+                .admit(SignalType::Logs, buf.into_bytes())
+                .map_err(|error| Error::PdataConversionError {
+                    error: error.to_string(),
+                })?
+                .into(),
         ))
     }
 

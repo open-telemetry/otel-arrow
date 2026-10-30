@@ -58,6 +58,14 @@ engine:
                       pipeline group process.
                 - selector:
                     scope_name: engine
+                    instrument_name: memory.commit
+                  stream:
+                    name: process_memory_private_commit
+                    description: >-
+                      Total private committed memory used by the pipeline group
+                      process on Windows.
+                - selector:
+                    scope_name: engine
                     instrument_name: cpu.utilization
                   stream:
                     name: process_cpu_utilization

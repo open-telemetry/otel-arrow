@@ -3,11 +3,11 @@
 
 //! Engine and pipeline policy declarations.
 
-use crate::authorized_identity_policy::AuthorizedIdentityPolicy;
 use crate::byte_units;
-use crate::context_policy::{ContextEntryDeclaration, ContextPolicy};
+use crate::context::authorized_identity::AuthorizedIdentityPolicy;
+use crate::context::policy::{ContextEntryDeclaration, ContextPolicy};
+use crate::context::transport_policy::TransportHeadersPolicy;
 use crate::health::HealthPolicy;
-use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
 use serde::Deserializer;
 use serde::de;
@@ -75,6 +75,17 @@ impl Policies {
     #[must_use]
     pub fn resources(&self) -> Option<&ResourcesPolicy> {
         self.resources.as_ref()
+    }
+
+    /// Returns a clone of this policy set with the context declarations
+    /// cleared, for comparisons that intentionally ignore context-only
+    /// changes (which are validated separately via context bindings).
+    #[must_use]
+    pub fn without_context(&self) -> Self {
+        Self {
+            context: None,
+            ..self.clone()
+        }
     }
 
     /// Resolves a fully-populated policy set from scopes ordered by precedence.
@@ -2248,7 +2259,7 @@ hard_limit: 2 GiB
 
     #[test]
     fn validates_transport_headers_selector() {
-        use crate::transport_headers_policy::{
+        use crate::context::transport_policy::{
             HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
             PropagationSelectorType, TransportHeadersPolicy,
         };

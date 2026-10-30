@@ -11,7 +11,8 @@
 use arrow::array::RecordBatch;
 use bytes::Bytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes, TryIntoWithOptions};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 use super::transform::logs_fast::{LogsFastTransform, LogsFastTransformer};
 use super::transform::logs_otlp::OtlpLogsTransformer;

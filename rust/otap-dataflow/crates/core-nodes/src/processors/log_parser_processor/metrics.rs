@@ -20,6 +20,7 @@ pub(super) enum ParserErrorType {
     IdDecode,
     OutputSend,
     Internal,
+    Sanitization,
 }
 
 #[attribute_set(item, measurement)]

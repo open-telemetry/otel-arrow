@@ -1,21 +1,29 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::{array::*, buffer::NullBuffer, datatypes::*};
+use std::marker::PhantomData;
+
+use arrow::{
+    array::*,
+    buffer::{MutableBuffer, NullBuffer},
+    datatypes::*,
+};
+
+use crate::DictionaryValueError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DictionaryKeyArray {
     KeyArray(DictionaryArrowKeyArray),
     BooleanArray {
-        data_type: DataType,
+        data_type: DictionaryKeyType,
         values: BooleanArray,
     },
     UniqueValues {
-        data_type: DataType,
+        data_type: DictionaryKeyType,
         length: usize,
     },
     SingleValue {
-        data_type: DataType,
+        data_type: DictionaryKeyType,
         length: usize,
         value_index: Option<usize>,
     },
@@ -104,7 +112,7 @@ impl DictionaryKeyArray {
         }
     }
 
-    pub fn data_type(&self) -> DataType {
+    pub fn data_type(&self) -> DictionaryKeyType {
         match self {
             DictionaryKeyArray::KeyArray(a) => a.data_type(),
             DictionaryKeyArray::BooleanArray {
@@ -202,16 +210,16 @@ impl DictionaryArrowKeyArray {
         self.as_array().nulls().cloned()
     }
 
-    pub fn data_type(&self) -> DataType {
+    pub fn data_type(&self) -> DictionaryKeyType {
         match self {
-            DictionaryArrowKeyArray::Int8(_) => DataType::Int8,
-            DictionaryArrowKeyArray::Int16(_) => DataType::Int16,
-            DictionaryArrowKeyArray::Int32(_) => DataType::Int32,
-            DictionaryArrowKeyArray::Int64(_) => DataType::Int64,
-            DictionaryArrowKeyArray::UInt8(_) => DataType::UInt8,
-            DictionaryArrowKeyArray::UInt16(_) => DataType::UInt16,
-            DictionaryArrowKeyArray::UInt32(_) => DataType::UInt32,
-            DictionaryArrowKeyArray::UInt64(_) => DataType::UInt64,
+            DictionaryArrowKeyArray::Int8(_) => DictionaryKeyType::Int8,
+            DictionaryArrowKeyArray::Int16(_) => DictionaryKeyType::Int16,
+            DictionaryArrowKeyArray::Int32(_) => DictionaryKeyType::Int32,
+            DictionaryArrowKeyArray::Int64(_) => DictionaryKeyType::Int64,
+            DictionaryArrowKeyArray::UInt8(_) => DictionaryKeyType::UInt8,
+            DictionaryArrowKeyArray::UInt16(_) => DictionaryKeyType::UInt16,
+            DictionaryArrowKeyArray::UInt32(_) => DictionaryKeyType::UInt32,
+            DictionaryArrowKeyArray::UInt64(_) => DictionaryKeyType::UInt64,
         }
     }
 
@@ -274,6 +282,30 @@ impl_from_key_array!(UInt16Type, UInt16);
 impl_from_key_array!(UInt32Type, UInt32);
 impl_from_key_array!(UInt64Type, UInt64);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictionaryKeyType {
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+}
+
+pub enum DictionaryArrowKeyArrayIter<'a> {
+    Int8(PrimitiveIter<'a, Int8Type>),
+    Int16(PrimitiveIter<'a, Int16Type>),
+    Int32(PrimitiveIter<'a, Int32Type>),
+    Int64(PrimitiveIter<'a, Int64Type>),
+
+    UInt8(PrimitiveIter<'a, UInt8Type>),
+    UInt16(PrimitiveIter<'a, UInt16Type>),
+    UInt32(PrimitiveIter<'a, UInt32Type>),
+    UInt64(PrimitiveIter<'a, UInt64Type>),
+}
+
 impl<'a> Iterator for DictionaryArrowKeyArrayIter<'a> {
     type Item = Option<usize>;
 
@@ -291,18 +323,6 @@ impl<'a> Iterator for DictionaryArrowKeyArrayIter<'a> {
     }
 }
 
-pub enum DictionaryArrowKeyArrayIter<'a> {
-    Int8(PrimitiveIter<'a, Int8Type>),
-    Int16(PrimitiveIter<'a, Int16Type>),
-    Int32(PrimitiveIter<'a, Int32Type>),
-    Int64(PrimitiveIter<'a, Int64Type>),
-
-    UInt8(PrimitiveIter<'a, UInt8Type>),
-    UInt16(PrimitiveIter<'a, UInt16Type>),
-    UInt32(PrimitiveIter<'a, UInt32Type>),
-    UInt64(PrimitiveIter<'a, UInt64Type>),
-}
-
 fn get_bool_array_value_index_for_key_index(
     array: &BooleanArray,
     key_index: usize,
@@ -310,6 +330,127 @@ fn get_bool_array_value_index_for_key_index(
     (key_index < array.len() && !array.is_null(key_index))
         .then(|| unsafe { array.value_unchecked(key_index) })
         .map(|b| b as usize)
+}
+
+pub(crate) struct DictionaryKeyArrayBuilder<K: ArrowDictionaryKeyType> {
+    key_length: usize,
+    key_bit_length: usize,
+    key_buffer: MutableBuffer,
+    null_buffer: Option<MutableBuffer>,
+    marker: PhantomData<K>,
+}
+
+impl<K: ArrowDictionaryKeyType> DictionaryKeyArrayBuilder<K> {
+    pub fn new(key_length: usize) -> DictionaryKeyArrayBuilder<K> {
+        let key_bit_length = arrow::util::bit_util::ceil(key_length, 8);
+
+        Self {
+            key_length,
+            key_bit_length,
+            key_buffer: MutableBuffer::from_len_zeroed(size_of::<K::Native>() * key_length),
+            null_buffer: None,
+            marker: Default::default(),
+        }
+    }
+
+    pub fn get_writer(&mut self) -> DictionaryKeyArrayWriter<'_, K> {
+        DictionaryKeyArrayWriter {
+            key_bit_length: self.key_bit_length,
+            key_builder: self.key_buffer.typed_data_mut::<K::Native>().as_mut_ptr(),
+            null_buffer: &mut self.null_buffer,
+        }
+    }
+
+    pub fn has_nulls(&self) -> bool {
+        self.null_buffer.is_some()
+    }
+
+    pub fn finish(self) -> PrimitiveArray<K> {
+        PrimitiveArray::<K>::new(
+            self.key_buffer.into(),
+            self.null_buffer
+                .and_then(|v| NullBufferBuilder::new_from_buffer(v, self.key_length).build()),
+        )
+    }
+}
+
+pub(crate) struct DictionaryKeyArrayWriter<'a, K: ArrowDictionaryKeyType> {
+    key_bit_length: usize,
+    key_builder: *mut K::Native,
+    null_buffer: &'a mut Option<MutableBuffer>,
+}
+
+impl<K: ArrowDictionaryKeyType> DictionaryKeyArrayWriter<'_, K> {
+    pub fn get_typed_value_index(value_index: usize) -> Result<K::Native, DictionaryValueError> {
+        <K as ArrowPrimitiveType>::Native::from_usize(value_index).ok_or(
+            DictionaryValueError::KeyOverflow {
+                value_index,
+                key_data_type: K::DATA_TYPE,
+            },
+        )
+    }
+
+    /// Returns an error if the value index cannot be represented by the key type.
+    ///
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
+    pub unsafe fn set_value_index_unchecked(
+        &mut self,
+        key_index: usize,
+        value_index: usize,
+    ) -> Result<(), DictionaryValueError> {
+        let value_index = Self::get_typed_value_index(value_index)?;
+
+        unsafe { self.set_value_index_typed_unchecked(key_index, value_index) };
+        Ok(())
+    }
+
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
+    pub unsafe fn set_value_index_typed_unchecked(
+        &mut self,
+        key_index: usize,
+        value_index: K::Native,
+    ) {
+        unsafe { *self.key_builder.add(key_index) = value_index }
+    }
+
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
+    pub unsafe fn set_null_unchecked(&mut self, key_index: usize) {
+        unsafe {
+            ensure_null_buffer_and_push_null(self.null_buffer, key_index, self.key_bit_length)
+        }
+    }
+}
+
+pub(crate) unsafe fn ensure_null_buffer_and_push_null(
+    null_buffer: &mut Option<MutableBuffer>,
+    index: usize,
+    key_bit_length: usize,
+) {
+    if let Some(buffer) = null_buffer {
+        let ptr = buffer.typed_data_mut::<u8>().as_mut_ptr();
+
+        let i = index / 8;
+        let b = 1 << (index % 8);
+
+        unsafe { *ptr.add(i) &= !b };
+    } else {
+        let mut buffer = MutableBuffer::new(key_bit_length).with_bitset(key_bit_length, true);
+
+        let ptr = buffer.typed_data_mut::<u8>().as_mut_ptr();
+
+        let i = index / 8;
+        let b = 1 << (index % 8);
+
+        unsafe { *ptr.add(i) &= !b };
+
+        *null_buffer = Some(buffer);
+    }
 }
 
 #[cfg(test)]
@@ -326,7 +467,7 @@ mod tests {
         assert_eq!(primitive.get_value_index_for_key_index(3), None);
 
         let boolean = DictionaryKeyArray::BooleanArray {
-            data_type: DataType::Int8,
+            data_type: DictionaryKeyType::Int8,
             values: BooleanArray::from(vec![Some(false), Some(true), None]),
         };
         assert_eq!(boolean.get_value_index_for_key_index(0), Some(0));
@@ -340,19 +481,19 @@ mod tests {
     #[test]
     fn synthetic_key_arrays_report_metadata_and_validity() {
         let unique = DictionaryKeyArray::UniqueValues {
-            data_type: DataType::UInt16,
+            data_type: DictionaryKeyType::UInt16,
             length: 2,
         };
         assert_eq!(unique.len(), 2);
         assert!(!unique.is_empty());
         assert!(!unique.is_null());
         assert!(unique.nulls().is_none());
-        assert_eq!(unique.data_type(), DataType::UInt16);
+        assert_eq!(unique.data_type(), DictionaryKeyType::UInt16);
         assert_eq!(unique.get_value_index_for_key_index(1), Some(1));
         assert_eq!(unique.get_value_index_for_key_index(2), None);
 
         let null = DictionaryKeyArray::SingleValue {
-            data_type: DataType::Int32,
+            data_type: DictionaryKeyType::Int32,
             length: 2,
             value_index: None,
         };

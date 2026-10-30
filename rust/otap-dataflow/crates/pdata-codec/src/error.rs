@@ -12,6 +12,8 @@ pub enum CodecOperation {
     Decode,
     /// Convert native OTAP to encoded bytes.
     Encode,
+    /// Merge or split independently decodable batches.
+    Batch,
 }
 
 impl std::fmt::Display for CodecOperation {
@@ -19,6 +21,7 @@ impl std::fmt::Display for CodecOperation {
         formatter.write_str(match self {
             Self::Decode => "decode",
             Self::Encode => "encode",
+            Self::Batch => "batch",
         })
     }
 }
@@ -52,11 +55,21 @@ pub enum RegistryError {
         /// Invalid registration identity.
         encoding: PdataEncoding,
     },
-    /// A decoder registration cannot report primary-signal item counts.
-    #[error("pdata encoding `{encoding}` has a decoder but no item counter")]
+    /// A decoder or native item batcher cannot report primary-signal item counts.
+    #[error(
+        "pdata encoding `{encoding}` requires an item counter for decoding or native item batching"
+    )]
     MissingItemCounter {
         /// Invalid registration identity.
         encoding: PdataEncoding,
+    },
+    /// A native batching declaration is inconsistent.
+    #[error("invalid pdata batching registration `{encoding}`: {reason}")]
+    InvalidBatching {
+        /// Invalid identity.
+        encoding: PdataEncoding,
+        /// Validation failure.
+        reason: String,
     },
     /// The requested identity is not linked into this binary.
     #[error("no pdata codec registered for `{encoding}`")]
@@ -72,6 +85,14 @@ pub enum CodecError {
     /// Registry validation or lookup failed.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// A codec-owned constructed batch violated its admission contract.
+    #[error("invalid constructed pdata for `{encoding}`: {reason}")]
+    InvalidConstruction {
+        /// Target codec identity.
+        encoding: PdataEncoding,
+        /// Contract violation, without telemetry contents.
+        reason: String,
+    },
     /// A registered codec does not implement the requested operation.
     #[error("pdata codec `{encoding}` cannot {operation}")]
     UnsupportedCodecOperation {
@@ -79,6 +100,12 @@ pub enum CodecError {
         encoding: PdataEncoding,
         /// Requested operation.
         operation: CodecOperation,
+    },
+    /// A batching plan or codec batch output violated its contract.
+    #[error("invalid pdata batching operation: {reason}")]
+    InvalidBatch {
+        /// Validation or execution failure.
+        reason: String,
     },
     /// A registered codec does not support an operation for this signal.
     #[error("pdata codec `{encoding}` cannot {operation} {signal:?}")]
@@ -101,6 +128,16 @@ pub enum CodecError {
         #[source]
         source: Box<dyn StdError + Send + Sync>,
     },
+    /// An encoded batch exceeds the output plan's size limit.
+    #[error("pdata codec `{encoding}` output size {actual} exceeds limit {limit}")]
+    EncodedSizeLimitExceeded {
+        /// Output codec identity.
+        encoding: PdataEncoding,
+        /// Actual encoded size in bytes.
+        actual: usize,
+        /// Maximum permitted encoded size in bytes.
+        limit: usize,
+    },
     /// A decoder returned a different signal from the admitted envelope.
     #[error("pdata codec `{encoding}` decoded {actual:?}, expected {expected:?}")]
     SignalChanged {
@@ -122,6 +159,13 @@ pub enum CodecError {
 }
 
 impl CodecError {
+    /// Creates a representation-independent batching error.
+    pub fn invalid_batch(reason: impl Into<String>) -> Self {
+        Self::InvalidBatch {
+            reason: reason.into(),
+        }
+    }
+
     /// Wraps a codec implementation error without losing its source chain.
     pub fn operation(
         encoding: &PdataEncoding,

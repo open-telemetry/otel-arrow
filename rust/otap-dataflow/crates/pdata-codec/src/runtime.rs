@@ -5,13 +5,13 @@
 //!
 //! [`CodecServiceBuilder`] combines an immutable validated registry and decode
 //! policy with fresh runtime state. Cloned [`CodecService`] handles share that
-//! state within one pipeline, while decoder and encoder instances are created
-//! lazily and reused. The decode policy is applied once at decoder creation;
-//! payload admission and matching-format forwarding therefore require neither
-//! codec construction nor mutable runtime access.
+//! pipeline, while decoder, encoder, and batcher instances are created lazily
+//! and reused. The decode policy is applied once at decoder creation; payload
+//! admission and matching-format forwarding therefore require neither codec
+//! construction nor mutable runtime access.
 //!
-//! Codec trait calls are currently synchronous. The service holds its runtime
-//! lock for the duration of each codec operation and, for prepared output, for
+//! Synchronous codec operations hold the service runtime lock for their
+//! duration and, for prepared output, for
 //! the synchronous consumer callback. Nested access from that callback returns
 //! an error instead of blocking on the same lock. A panic while state is
 //! borrowed poisons the service; later operations report that state as
@@ -19,19 +19,23 @@
 //! codec borrow crosses an async suspension. [`EncodeOutput::into_bytes`]
 //! detaches owned bytes before an asynchronous transport send, but it does not
 //! make encoding asynchronous.
-//! A codec that performs slow or blocking work would still block its caller;
-//! bounded offloading is intentionally left to a future execution layer at the
-//! engine service boundary.
+//! [`CodecService::decode_cooperative`] starts a synchronous decode or an owned
+//! incremental job under the lock, then releases the lock before driving that
+//! job. The engine supplies scheduler-aware yielding between work segments.
+//! There is no worker thread, spawned conversion task, or hidden pending queue.
+//! Ordinary decoders still execute synchronously; bounded offloading for work
+//! that cannot cooperate requires a separate execution policy.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    CodecError, CodecOperation, CodecRegistry, DecodePolicy, EncodeOutput, EncodedPdata,
-    EncodingPlan, InspectionPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError,
-    ResolvedCodec,
+    AcceptedEncodings, BatchSettings, CodecBatches, CodecError, CodecOperation, CodecRegistry,
+    DecodeBudget, DecodePolicy, DecodeTask, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher,
+    PdataDecoder, PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
 
 struct DecoderInstance {
@@ -44,10 +48,16 @@ struct EncoderInstance {
     encoder: Box<dyn PdataEncoder>,
 }
 
+struct BatcherInstance {
+    codec: ResolvedCodec,
+    batcher: Box<dyn PdataBatcher>,
+}
+
 #[derive(Default)]
 struct CodecRuntime {
     decoders: Vec<DecoderInstance>,
     encoders: Vec<EncoderInstance>,
+    batchers: Vec<BatcherInstance>,
 }
 
 /// Builds a pipeline-local codec service from a validated registry.
@@ -94,9 +104,9 @@ impl CodecServiceBuilder {
 
 /// Scoped access to mutable codec instances owned by one pipeline runtime.
 ///
-/// Codec operations are synchronous and release the runtime lock before
-/// returning. Callers must detach prepared output before awaiting asynchronous
-/// work. The module-level documentation describes the execution boundary.
+/// Synchronous operations release the runtime lock before returning. Incremental
+/// decode jobs own their state and release service access before suspension.
+/// Callers must detach prepared output before awaiting asynchronous work.
 #[derive(Clone)]
 pub struct CodecService {
     registry: Arc<CodecRegistry>,
@@ -132,17 +142,73 @@ impl CodecService {
 
     /// Decodes admitted bytes through a lazily reused decoder instance.
     pub fn decode(&self, encoded: &EncodedPdata) -> Result<OtapArrowRecords, CodecError> {
+        self.decode_parts(encoded.codec(), encoded.signal_type(), encoded.bytes())
+    }
+
+    /// Decodes encoded parts without constructing an envelope.
+    pub fn decode_parts(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &Bytes,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        codec.require_decoder(signal)?;
         let mut runtime = self.lock()?;
         let records = runtime
-            .decoder(encoded.codec(), self.decode_policy)?
-            .decode(encoded.signal_type(), encoded.bytes())
+            .decoder(codec, self.decode_policy)?
+            .decode(signal, bytes)
             .map_err(|error| {
-                error.with_operation_context(encoded.encoding(), CodecOperation::Decode)
+                error.with_operation_context(codec.encoding(), CodecOperation::Decode)
             })?;
-        if records.signal_type() != encoded.signal_type() {
+        if records.signal_type() != signal {
             return Err(CodecError::SignalChanged {
-                encoding: encoded.encoding().clone(),
-                expected: encoded.signal_type(),
+                encoding: codec.encoding().clone(),
+                expected: signal,
+                actual: records.signal_type(),
+            });
+        }
+        Ok(records)
+    }
+
+    /// Decodes without keeping mutable service access across scheduling points.
+    ///
+    /// Ordinary codecs finish synchronously. Incremental jobs are driven by the
+    /// caller future: there is no spawned task, worker thread, or hidden queue.
+    /// Existing node concurrency and channel backpressure bound admitted jobs.
+    /// The engine supplies its scheduler-aware yield operation: immediately
+    /// self-waking can repeatedly poll a LocalSet without driving I/O or timers.
+    pub async fn decode_cooperative<Y: Future<Output = ()>>(
+        &self,
+        encoded: &EncodedPdata,
+        mut yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        let codec = encoded.codec();
+        let signal = encoded.signal_type();
+        codec.require_decoder(signal)?;
+        let task = {
+            let mut runtime = self.lock()?;
+            runtime
+                .decoder(codec, self.decode_policy)?
+                .start_decode(signal, encoded.bytes())
+                .map_err(|error| {
+                    error.with_operation_context(codec.encoding(), CodecOperation::Decode)
+                })?
+        };
+        let records = match task {
+            DecodeTask::Ready(records) => records,
+            DecodeTask::Incremental(mut job) => loop {
+                match job.step(DecodeBudget::default()).map_err(|error| {
+                    error.with_operation_context(codec.encoding(), CodecOperation::Decode)
+                })? {
+                    Some(records) => break records,
+                    None => yield_to_runtime().await,
+                }
+            },
+        };
+        if records.signal_type() != signal {
+            return Err(CodecError::SignalChanged {
+                encoding: codec.encoding().clone(),
+                expected: signal,
                 actual: records.signal_type(),
             });
         }
@@ -153,16 +219,33 @@ impl CodecService {
     pub fn view<'a>(
         &self,
         encoded: &'a EncodedPdata,
-        plan: &InspectionPlan,
+        accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
-        if plan.accepts(encoded.codec()) {
+        self.view_parts(
+            encoded.codec(),
+            encoded.signal_type(),
+            encoded.bytes(),
+            accepted_encodings,
+        )
+    }
+
+    /// Views encoded parts without constructing an envelope.
+    pub fn view_parts<'a>(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &'a Bytes,
+        accepted_encodings: &AcceptedEncodings,
+    ) -> Result<PdataView<'a>, CodecError> {
+        codec.require_decoder(signal)?;
+        if accepted_encodings.accepts(codec) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
-                encoded.encoding(),
-                encoded.signal_type(),
-                encoded.bytes(),
+                codec.encoding(),
+                signal,
+                bytes,
             )));
         }
-        self.decode(encoded)
+        self.decode_parts(codec, signal, bytes)
             .map(|records| PdataView::Native(std::borrow::Cow::Owned(records)))
     }
 
@@ -194,6 +277,24 @@ impl CodecService {
         self.with_encoded_output(records, plan, |output| output.into_bytes())
     }
 
+    /// Re-batches independently decodable inputs with reused runtime-local state.
+    pub fn batch(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        settings: &BatchSettings,
+        inputs: Vec<Bytes>,
+    ) -> Result<CodecBatches, CodecError> {
+        codec.require_batcher(signal)?;
+        let mut runtime = self.lock()?;
+        let batcher = runtime.batcher(codec).map_err(|error| {
+            error.with_operation_context(codec.encoding(), CodecOperation::Batch)
+        })?;
+        batcher
+            .batch(signal, settings, inputs)
+            .map_err(|error| error.with_operation_context(codec.encoding(), CodecOperation::Batch))
+    }
+
     /// Returns whether two handles address the same pipeline-owned state.
     #[must_use]
     pub fn shares_state_with(&self, other: &Self) -> bool {
@@ -204,7 +305,7 @@ impl CodecService {
     #[cfg(any(test, feature = "testing"))]
     pub fn test_instance_count(&self) -> Result<usize, CodecError> {
         let runtime = self.lock()?;
-        Ok(runtime.decoders.len() + runtime.encoders.len())
+        Ok(runtime.decoders.len() + runtime.encoders.len() + runtime.batchers.len())
     }
 }
 
@@ -249,6 +350,25 @@ impl CodecRuntime {
             }
         };
         Ok(self.encoders[index].encoder.as_mut())
+    }
+
+    fn batcher(&mut self, codec: ResolvedCodec) -> Result<&mut dyn PdataBatcher, CodecError> {
+        let index = match self
+            .batchers
+            .iter()
+            .position(|instance| instance.codec == codec)
+        {
+            Some(index) => index,
+            None => {
+                let index = self.batchers.len();
+                self.batchers.push(BatcherInstance {
+                    codec,
+                    batcher: codec.create_batcher()?,
+                });
+                index
+            }
+        };
+        Ok(self.batchers[index].batcher.as_mut())
     }
 }
 

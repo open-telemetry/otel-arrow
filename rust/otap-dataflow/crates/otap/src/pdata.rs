@@ -16,383 +16,54 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 
 use async_trait::async_trait;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::{PortName, SignalFormat, SignalType};
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
+use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
-use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
+use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
 use otel_arrow_dfe_engine::control::{
-    AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
+    AckMsg, CallData, Frame, NackMsg, NodeControlMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
-use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
+use otel_arrow_dfe_engine::pdata_context::{
+    AuthorizedIdentityEntries, ContextMaterializationPlan, ContextProjection, MaterializedContext,
+    MaterializedContextProjection, Metadata, PeerAddrMerger,
+};
+use otel_arrow_dfe_engine::processor::{
+    FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
+};
+use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
+use otel_arrow_dfe_pdata_codec::{
+    AcceptedEncodings, BatchPlan, BatchingOutput, CodecError, EncodePolicy, EncodingPlan,
+    OtapPayload, PdataEncoding, PdataPayloadDecodeError, PdataView,
+};
 
-const AUTHORIZED_ENTRY_LEN: usize = 20;
-const AUTHORIZED_VALUE_LEN: usize = 8;
-
-/// A verified authorization claim stored under a configured context entry name.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct AuthorizedIdentityEntry<'a> {
-    name: &'a str,
-    value: AuthorizedClaimValue<'a>,
-}
-
-impl fmt::Debug for AuthorizedIdentityEntry<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AuthorizedIdentityEntry")
-            .field("name", &self.name)
-            .field("value_count", &self.value.len())
-            .finish()
-    }
-}
-
-impl<'a> AuthorizedIdentityEntry<'a> {
-    /// Returns the configured context entry name.
-    #[must_use]
-    pub const fn name(&self) -> &'a str {
-        self.name
-    }
-
-    /// Returns the verified claim value without flattening its cardinality.
-    #[must_use]
-    pub const fn value(&self) -> AuthorizedClaimValue<'a> {
-        self.value
-    }
-}
-
-/// Borrowed single- or multi-valued authorized claim.
-#[derive(Clone, Copy)]
-pub struct AuthorizedClaimValue<'a> {
-    storage: &'a PackedAuthorizedIdentity,
-    first_value: usize,
-    value_count: usize,
-    many: bool,
-}
-
-impl PartialEq for AuthorizedClaimValue<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.many == other.many
-            && self.value_count == other.value_count
-            && self.values().eq(other.values())
-    }
-}
-
-impl Eq for AuthorizedClaimValue<'_> {}
-
-impl fmt::Debug for AuthorizedClaimValue<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AuthorizedClaimValue")
-            .field("value_count", &self.value_count)
-            .field("many", &self.many)
-            .finish()
-    }
-}
-
-impl<'a> AuthorizedClaimValue<'a> {
-    /// Returns the single value, or `None` when the source claim was multi-valued.
-    #[must_use]
-    pub fn as_str(&self) -> Option<&'a str> {
-        (!self.many && self.value_count == 1).then(|| self.storage.decode_value(self.first_value))
-    }
-
-    /// Iterates values in source order.
-    pub fn values(&self) -> impl Iterator<Item = &'a str> + '_ {
-        (0..self.value_count)
-            .map(move |offset| self.storage.decode_value(self.first_value + offset))
-    }
-
-    /// Returns the number of values.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.value_count
-    }
-
-    /// Returns whether the claim contains no values.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.value_count == 0
-    }
-
-    /// Returns whether the source claim used multi-valued cardinality.
-    #[must_use]
-    pub const fn is_many(&self) -> bool {
-        self.many
-    }
-}
-
-#[derive(PartialEq, Eq)]
-struct PackedAuthorizedIdentity {
-    bytes: Box<[u8]>,
-    entry_count: usize,
-    value_count: usize,
-}
-
-/// Immutable authorization-derived context entries.
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct AuthorizedIdentityEntries {
-    packed: Option<Arc<PackedAuthorizedIdentity>>,
-}
-
-struct AuthorizedIdentityEntriesDebug<'a>(&'a AuthorizedIdentityEntries);
-
-impl fmt::Debug for AuthorizedIdentityEntriesDebug<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.0.iter()).finish()
-    }
-}
-
-impl fmt::Debug for AuthorizedIdentityEntries {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AuthorizedIdentityEntries")
-            .field("entries", &AuthorizedIdentityEntriesDebug(self))
-            .finish()
-    }
-}
-
-impl AuthorizedIdentityEntries {
-    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
-        PackedAuthorizedIdentity::capture(policy, identity).map(|packed| Self {
-            packed: Some(Arc::new(packed)),
-        })
-    }
-
-    /// Returns the number of captured entries.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.packed.as_ref().map_or(0, |packed| packed.entry_count)
-    }
-
-    /// Returns whether no entries were captured.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Iterates over captured entries in policy order.
-    pub fn iter(&self) -> impl Iterator<Item = AuthorizedIdentityEntry<'_>> {
-        self.packed
-            .as_deref()
-            .into_iter()
-            .flat_map(|packed| (0..packed.entry_count).map(|index| packed.decode_entry(index)))
-    }
-
-    /// Finds an entry by exact configured name.
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<AuthorizedIdentityEntry<'_>> {
-        self.iter().find(|entry| entry.name == name)
-    }
-}
-
-impl PackedAuthorizedIdentity {
-    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
-        let mut entry_count = 0usize;
-        let mut value_count = 0usize;
-        let mut blob_len = 0usize;
-        for projection in policy.iter() {
-            let Some(claim) = identity.claim(&projection.claim) else {
-                continue;
-            };
-            entry_count = entry_count
-                .checked_add(1)
-                .expect("authorized identity entry count overflow");
-            value_count = value_count
-                .checked_add(claim.as_slice().len())
-                .expect("authorized identity value count overflow");
-            blob_len = claim
-                .as_slice()
-                .iter()
-                .try_fold(
-                    blob_len
-                        .checked_add(projection.store_as.as_str().len())
-                        .expect("authorized identity blob length overflow"),
-                    |total, value| total.checked_add(value.len()),
-                )
-                .expect("authorized identity blob length overflow");
-        }
-        if entry_count == 0 {
-            return None;
-        }
-        let entry_bytes = entry_count
-            .checked_mul(AUTHORIZED_ENTRY_LEN)
-            .expect("authorized identity entry descriptor length overflow");
-        let value_bytes = value_count
-            .checked_mul(AUTHORIZED_VALUE_LEN)
-            .expect("authorized identity value descriptor length overflow");
-        let descriptor_len = entry_bytes
-            .checked_add(value_bytes)
-            .expect("authorized identity descriptor length overflow");
-        let mut bytes = vec![
-            0;
-            descriptor_len
-                .checked_add(blob_len)
-                .expect("authorized identity packed length overflow")
-        ];
-        let mut blob_at = descriptor_len;
-        let mut value_index = 0;
-
-        let mut entry_index = 0;
-        for projection in policy.iter() {
-            let Some(claim) = identity.claim(&projection.claim) else {
-                continue;
-            };
-            let entry_at = entry_index * AUTHORIZED_ENTRY_LEN;
-            let name_range = write_context_blob(
-                &mut bytes,
-                &mut blob_at,
-                projection.store_as.as_str().as_bytes(),
-            )
-            .expect("preallocated authorized identity name range");
-            write_context_range(&mut bytes, entry_at, name_range)
-                .expect("authorized identity name range fits descriptor");
-            write_context_u32(&mut bytes, entry_at + 8, value_index)
-                .expect("authorized identity first value fits descriptor");
-            write_context_u32(&mut bytes, entry_at + 12, claim.as_slice().len())
-                .expect("authorized identity value count fits descriptor");
-            bytes[entry_at + 16] = u8::from(matches!(claim, ClaimValue::Many(_)));
-
-            for value in claim.as_slice() {
-                let range = write_context_blob(&mut bytes, &mut blob_at, value.as_bytes())
-                    .expect("preallocated authorized identity value range");
-                let value_at = entry_bytes + value_index * AUTHORIZED_VALUE_LEN;
-                write_context_range(&mut bytes, value_at, range)
-                    .expect("authorized identity value range fits descriptor");
-                value_index += 1;
-            }
-            entry_index += 1;
-        }
-
-        Some(Self {
-            bytes: bytes.into_boxed_slice(),
-            entry_count,
-            value_count,
-        })
-    }
-
-    fn decode_entry(&self, index: usize) -> AuthorizedIdentityEntry<'_> {
-        debug_assert!(
-            index < self.entry_count,
-            "packed authorized identity index must be in bounds"
-        );
-        self.try_decode_entry(index)
-            .expect("in-bounds packed authorized identity entry must decode")
-    }
-
-    fn try_decode_entry(&self, index: usize) -> Option<AuthorizedIdentityEntry<'_>> {
-        let at = index.checked_mul(AUTHORIZED_ENTRY_LEN)?;
-        let name = read_context_str(&self.bytes, read_context_range(&self.bytes, at)?)?;
-        let first_value = read_context_u32(&self.bytes, at + 8)?;
-        let value_count = read_context_u32(&self.bytes, at + 12)?;
-        let _ = first_value
-            .checked_add(value_count)
-            .filter(|end| *end <= self.value_count)?;
-        let many = match *self.bytes.get(at + 16)? {
-            0 => false,
-            1 => true,
-            _ => return None,
-        };
-        Some(AuthorizedIdentityEntry {
-            name,
-            value: AuthorizedClaimValue {
-                storage: self,
-                first_value,
-                value_count,
-                many,
-            },
-        })
-    }
-
-    fn value(&self, index: usize) -> Option<&str> {
-        if index >= self.value_count {
-            return None;
-        }
-        let values_at = self.entry_count.checked_mul(AUTHORIZED_ENTRY_LEN)?;
-        let at = values_at.checked_add(index.checked_mul(AUTHORIZED_VALUE_LEN)?)?;
-        read_context_str(&self.bytes, read_context_range(&self.bytes, at)?)
-    }
-
-    fn decode_value(&self, index: usize) -> &str {
-        debug_assert!(
-            index < self.value_count,
-            "packed authorized identity value index must be in bounds"
-        );
-        self.value(index)
-            .expect("in-bounds packed authorized identity value must decode")
-    }
-}
-
-fn write_context_blob(bytes: &mut [u8], at: &mut usize, value: &[u8]) -> Option<(usize, usize)> {
-    let start = *at;
-    let end = start.checked_add(value.len())?;
-    bytes.get_mut(start..end)?.copy_from_slice(value);
-    *at = end;
-    Some((start, value.len()))
-}
-
-fn write_context_range(bytes: &mut [u8], at: usize, range: (usize, usize)) -> Option<()> {
-    write_context_u32(bytes, at, range.0)?;
-    write_context_u32(bytes, at + 4, range.1)
-}
-
-fn write_context_u32(bytes: &mut [u8], at: usize, value: usize) -> Option<()> {
-    bytes
-        .get_mut(at..at.checked_add(4)?)?
-        .copy_from_slice(&u32::try_from(value).ok()?.to_le_bytes());
-    Some(())
-}
-
-fn read_context_range(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
-    Some((
-        read_context_u32(bytes, at)?,
-        read_context_u32(bytes, at + 4)?,
-    ))
-}
-
-fn read_context_u32(bytes: &[u8], at: usize) -> Option<usize> {
-    Some(u32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)
-}
-
-fn read_context_str(bytes: &[u8], range: (usize, usize)) -> Option<&str> {
-    std::str::from_utf8(bytes.get(range.0..range.0.checked_add(range.1)?)?).ok()
-}
+mod delivery;
+pub use delivery::{OtapPdataUpdateCause, OtapPdataUpdateError, PdataDelivery};
 
 /// Context for OTAP requests.
 ///
-/// Carries four independent concerns:
+/// Carries independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
-/// - **Transport headers**: Protocol-neutral request-scoped metadata captured
-///   from inbound transport headers. Preserved across transport boundaries.
-/// - **Authorized identity**: Verified claims selected by policy and kept
-///   separate from untrusted transport headers. Preserved across transport
-///   boundaries.
-/// - **Peer address**: Optional socket address observed by the receiving
-///   socket at request acceptance time. Populated by receivers that have a
-///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
-///   sourceless receivers (file-based, journald). Preserved across transport
-///   boundaries.
+/// - **Metadata**: Request-scoped message metadata (transport headers,
+///   authorized identity, materialized entries, and peer address). Preserved
+///   across transport boundaries. See [`Metadata`].
+/// - **Flow metric and signal**: Delivery bookkeeping, described below.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
-    /// Transport headers captured from inbound protocol metadata.
-    ///
-    /// Empty when no headers have been captured (the common case, zero
-    /// additional allocation).
-    transport_headers: TransportHeaders,
-    /// Verified authorization claims selected by policy.
-    authorized_identity: AuthorizedIdentityEntries,
-    /// Peer address observed by the receiving socket at request acceptance
-    /// time. `None` for receivers without a real socket.
-    peer_addr: Option<SocketAddr>,
+    /// Request-scoped message metadata.
+    metadata: Metadata,
     /// Active flow_metric accumulator (nanoseconds).
     ///
     /// `Some(ns)` when a message is inside a flow_metric range (between
@@ -419,9 +90,7 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
-            transport_headers: TransportHeaders::default(),
-            authorized_identity: AuthorizedIdentityEntries::default(),
-            peer_addr: None,
+            metadata: Metadata::default(),
             flow_compute_ns: None,
             signal: None,
         }
@@ -742,27 +411,40 @@ impl Context {
         });
     }
 
+    /// Returns the request-scoped message metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Returns this context with the given message metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
-        (!self.transport_headers.is_empty()).then_some(&self.transport_headers)
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
+        self.metadata.transport_headers()
     }
 
     /// Takes and returns the captured transport headers, if any.
     #[must_use]
     pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
-        (!self.transport_headers.is_empty()).then(|| std::mem::take(&mut self.transport_headers))
+        self.metadata.take_transport_headers()
     }
 
     /// Set the transport headers for this context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.transport_headers = headers;
+        self.metadata.set_transport_headers(headers);
     }
 
     /// Returns the authorization-derived context entries, if any.
     #[must_use]
     pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
-        (!self.authorized_identity.is_empty()).then_some(&self.authorized_identity)
+        self.metadata.authorized_identity_entries()
     }
 
     fn capture_authorized_identity(
@@ -770,19 +452,39 @@ impl Context {
         policy: &AuthorizedIdentityPolicy,
         identity: &AuthorizedIdentity,
     ) {
-        self.authorized_identity =
-            AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
+        self.metadata.capture_authorized_identity(policy, identity);
+    }
+
+    /// Materializes selected composite snapshots exactly once.
+    pub fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        self.metadata.materialize_context(plan);
+    }
+
+    /// Returns the materialized composite snapshots, if any.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        self.metadata.materialized_context()
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.metadata.resolve_materialized_context(plan, projection)
     }
 
     /// Returns the peer address observed by the receiving socket, if any.
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
-        self.peer_addr
+        self.metadata.peer_addr()
     }
 
     /// Set the peer address for this context.
     pub fn set_peer_addr(&mut self, addr: SocketAddr) {
-        self.peer_addr = Some(addr);
+        self.metadata.set_peer_addr(addr);
     }
 
     /// Merge peer addresses from a set of contributing inputs.
@@ -824,8 +526,8 @@ impl Context {
     }
 
     /// Clone the request-scoped metadata (transport headers, authorized
-    /// identity entries, and peer address) and leave the Ack/Nack routing state
-    /// behind.
+    /// identity entries, materialized entries, and peer address) and leave the
+    /// Ack/Nack routing state behind.
     ///
     /// Frames are not copied: a processor that splits a batch parks the inbound
     /// context and subscribes each outbound batch separately, so copied frames
@@ -837,9 +539,7 @@ impl Context {
     pub fn clone_detached(&self) -> Self {
         Self {
             stack: Vec::new(),
-            transport_headers: self.transport_headers.clone(),
-            authorized_identity: self.authorized_identity.clone(),
-            peer_addr: self.peer_addr,
+            metadata: self.metadata.clone(),
             flow_compute_ns: None,
             signal: None,
         }
@@ -847,59 +547,6 @@ impl Context {
 }
 
 // Frame is defined in otel_arrow_dfe_engine::control (imported above).
-
-/// Incremental builder applying the same merge rule as
-/// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
-/// peer addresses.
-///
-/// Use when contributing inputs are observed one-at-a-time as part of an
-/// existing pass over the input list (e.g. a processor's flush loop). Push
-/// each input's `peer_addr` exactly once with [`PeerAddrMerger::push`], then
-/// call [`PeerAddrMerger::finish`] to obtain the merged result.
-///
-/// Modeled as an enum so illegal states (e.g. a peer address present
-/// alongside a poisoned flag) cannot be constructed.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum PeerAddrMerger {
-    /// No inputs pushed yet.
-    #[default]
-    Empty,
-    /// Every input pushed so far agreed on this address.
-    Single(SocketAddr),
-    /// At least one input was peerless or distinct from a prior agreed
-    /// address. The merge stays in this state regardless of later pushes.
-    Poisoned,
-}
-
-impl PeerAddrMerger {
-    /// Create an empty merger. `finish` on an unused merger returns `None`.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self::Empty
-    }
-
-    /// Fold one contributing input's `peer_addr` into the running merge.
-    pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
-        *self = match (*self, peer_addr) {
-            (Self::Empty, None) => Self::Poisoned,
-            (Self::Empty, Some(addr)) => Self::Single(addr),
-            (Self::Single(_), None) => Self::Poisoned,
-            (Self::Single(existing), Some(addr)) if existing == addr => Self::Single(existing),
-            (Self::Single(_), Some(_)) => Self::Poisoned,
-            (Self::Poisoned, _) => Self::Poisoned,
-        };
-    }
-
-    /// Return the merged peer address, or `None` if no inputs were pushed or
-    /// the merge was poisoned by a peerless or distinct contributor.
-    #[must_use]
-    pub const fn finish(self) -> Option<SocketAddr> {
-        match self {
-            Self::Single(addr) => Some(addr),
-            Self::Empty | Self::Poisoned => None,
-        }
-    }
-}
 
 impl otel_arrow_dfe_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
@@ -961,6 +608,11 @@ impl FlowMetricAccumulation for OtapPdata {
 }
 
 impl OtapPdata {
+    /// Materializes selected composites.
+    pub(crate) fn materialize_context(&mut self, plan: &ContextMaterializationPlan) {
+        self.context.materialize_context(plan);
+    }
+
     /// Returns `true` if a flow_metric accumulator is currently active.
     #[must_use]
     fn has_active_flow_metric(&self) -> bool {
@@ -968,11 +620,120 @@ impl OtapPdata {
     }
 }
 
+pub(crate) fn materialize_context(pdata: &mut OtapPdata, plan: &ContextMaterializationPlan) {
+    pdata.materialize_context(plan);
+}
+
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
+}
+
+/// Owned capability proving that pdata is available as native Arrow records.
+#[derive(Clone, Debug)]
+pub struct OtapArrowPdata {
+    context: Context,
+    records: OtapArrowRecords,
+}
+
+impl OtapArrowPdata {
+    /// Constructs native pdata from its delivery context and records.
+    #[must_use]
+    pub const fn new(context: Context, records: OtapArrowRecords) -> Self {
+        Self { context, records }
+    }
+
+    /// Borrows the delivery context.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Returns a mutable delivery context.
+    pub const fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
+    /// Borrows native records.
+    #[must_use]
+    pub const fn records(&self) -> &OtapArrowRecords {
+        &self.records
+    }
+
+    /// Returns mutable native records.
+    pub const fn records_mut(&mut self) -> &mut OtapArrowRecords {
+        &mut self.records
+    }
+
+    /// Returns the signal represented by the native records.
+    #[must_use]
+    pub fn signal_type(&self) -> SignalType {
+        self.records.signal_type()
+    }
+
+    /// Splits delivery context and native records without cloning.
+    #[must_use]
+    pub fn into_parts(self) -> (Context, OtapArrowRecords) {
+        (self.context, self.records)
+    }
+
+    /// Converts back to dynamically represented pipeline pdata.
+    #[must_use]
+    pub fn into_pdata(self) -> OtapPdata {
+        OtapPdata::new(self.context, self.records.into())
+    }
+}
+
+impl From<OtapArrowPdata> for OtapPdata {
+    fn from(value: OtapArrowPdata) -> Self {
+        value.into_pdata()
+    }
+}
+
+/// A failed codec conversion carrying the exact original pdata for Nack or retry.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct OtapPdataDecodeError(Box<OtapPdataDecodeErrorInner>);
+
+#[derive(thiserror::Error)]
+#[error("{source}")]
+struct OtapPdataDecodeErrorInner {
+    #[source]
+    source: CodecError,
+    pdata: OtapPdata,
+}
+
+// Neither retained telemetry nor delivery context belongs in diagnostics.
+impl fmt::Debug for OtapPdataDecodeErrorInner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OtapPdataDecodeErrorInner")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OtapPdataDecodeError {
+    /// Returns the codec or conversion error.
+    #[must_use]
+    pub const fn error(&self) -> &CodecError {
+        &self.0.source
+    }
+
+    /// Borrows the exact original pdata retained for recovery.
+    #[must_use]
+    pub const fn pdata(&self) -> &OtapPdata {
+        &self.0.pdata
+    }
+
+    /// Splits the error and recoverable original pdata.
+    #[must_use]
+    pub fn into_parts(self) -> (CodecError, OtapPdata) {
+        let inner = *self.0;
+        (inner.source, inner.pdata)
+    }
 }
 
 /* -------- Signal type -------- */
@@ -1009,12 +770,6 @@ impl OtapPdata {
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
         self.payload.signal_type()
-    }
-
-    /// Returns the format of signal represented by this `OtapPdata` instance.
-    #[must_use]
-    pub const fn signal_format(&self) -> SignalFormat {
-        self.payload.signal_format()
     }
 
     /// True if the payload is empty. By definition, we can skip sending an
@@ -1056,10 +811,11 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers, authorized identity entries, and peer address are
-    /// **preserved** because they represent request-scoped metadata (tenant ID,
-    /// verified identity, trace context, originating peer) that should survive
-    /// cross-pipeline hops.
+    /// Transport headers, authorized identity entries, materialized context,
+    /// and peer address are **preserved** because they represent request-scoped
+    /// metadata that should survive cross-pipeline hops. Materialized entries
+    /// retain declaration provenance, so a destination plan accepts them only
+    /// when its declaration is identical.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
@@ -1194,9 +950,22 @@ impl OtapPdata {
         self.context.has_ack_or_nack_subscribers()
     }
 
+    /// Returns the request-scoped message metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
+        self.context.metadata()
+    }
+
+    /// Returns this pdata with the given message metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.context = self.context.with_metadata(metadata);
+        self
+    }
+
     /// Returns a reference to the captured transport headers, if any.
     #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
+    pub fn transport_headers(&self) -> Option<&TransportHeadersData> {
         self.context.transport_headers()
     }
 
@@ -1204,6 +973,22 @@ impl OtapPdata {
     #[must_use]
     pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
         self.context.authorized_identity_entries()
+    }
+
+    /// Returns selected composite snapshots materialized for this pdata.
+    #[must_use]
+    pub fn materialized_context(&self) -> Option<&MaterializedContext> {
+        self.context.materialized_context()
+    }
+
+    /// Resolves an existing materialized composite projection.
+    #[must_use]
+    pub fn resolve_materialized_context<'a>(
+        &'a self,
+        plan: &'a ContextMaterializationPlan,
+        projection: &'a ContextProjection,
+    ) -> Option<MaterializedContextProjection<'a>> {
+        self.context.resolve_materialized_context(plan, projection)
     }
 
     pub(crate) fn capture_authorized_identity(
@@ -1330,6 +1115,331 @@ impl_consumer_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPda
 impl_consumer_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
 impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
 
+/* -------- Pdata codec effect handler extensions -------- */
+
+/// Representation-independent pdata operations supplied by an effect handler.
+///
+/// Codec state belongs to the pipeline runtime. These methods are async at the
+/// node boundary so codecs that need an offloaded or asynchronous executor can
+/// be added later without storing codec state in nodes. The current operations
+/// scope their synchronous state borrow entirely before returning.
+#[allow(async_fn_in_trait)]
+pub trait PdataEffectHandlerExtension: CodecEffectHandler {
+    /// Resolves an output plan once while starting the consuming node.
+    fn resolve_encoding_plan(
+        &self,
+        encoding: &PdataEncoding,
+        policy: EncodePolicy,
+    ) -> Result<EncodingPlan, CodecError> {
+        EncodingPlan::resolve(self.codec_service().registry(), encoding, policy)
+    }
+
+    /// Resolves the encodings a read-only node accepts for direct borrowed access.
+    ///
+    /// Other encodings fall back to native OTAP when obtaining a view. Resolve
+    /// this set once during startup, or on first use when startup access is unavailable.
+    fn resolve_accepted_encodings(
+        &self,
+        encodings: &[PdataEncoding],
+    ) -> Result<AcceptedEncodings, CodecError> {
+        let codecs = encodings
+            .iter()
+            .map(|encoding| self.codec_service().registry().resolve(encoding))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(AcceptedEncodings::accept_encoded(codecs))
+    }
+
+    /// Obtains owned native pdata, keeping delivery context and records together.
+    ///
+    /// Native input moves directly without cloning or creating a codec. Encoded
+    /// input is decoded only when needed. Failure returns the exact original
+    /// pdata; success retains no original payload for later processing failures.
+    /// Use [`Self::prepare_otap_work`] when that later recovery is required.
+    async fn materialize_otap(
+        &self,
+        pdata: OtapPdata,
+    ) -> Result<OtapArrowPdata, OtapPdataDecodeError>;
+
+    /// Obtains owned native records when the caller manages context separately.
+    ///
+    /// Native records move directly; encoded input is decoded only when needed.
+    /// Failure returns the exact original payload. Success retains no snapshot.
+    async fn materialize_otap_payload(
+        &self,
+        payload: OtapPayload,
+    ) -> Result<OtapArrowRecords, PdataPayloadDecodeError>;
+
+    /// Obtains native working records and separately owned delivery context.
+    ///
+    /// Unlike [`Self::materialize_otap`], this retains an original payload snapshot
+    /// for later processing failures when RETURN_DATA is requested. Without it,
+    /// native records still move directly without cloning or creating a codec.
+    /// A decode failure always returns the exact input, regardless of RETURN_DATA.
+    /// The caller explicitly forwards an output or reports Ack/Nack; no codec
+    /// state remains borrowed while the working records are used.
+    async fn prepare_otap_work(
+        &self,
+        pdata: OtapPdata,
+    ) -> Result<(PdataDelivery, OtapArrowRecords), OtapPdataDecodeError> {
+        let (delivery, payload) = pdata.into_work();
+        match self.materialize_otap_payload(payload).await {
+            Ok(records) => Ok((delivery, records)),
+            Err(error) => {
+                let (source, payload) = error.into_parts();
+                Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                    source,
+                    pdata: delivery.with_payload(payload),
+                })))
+            }
+        }
+    }
+
+    /// Applies a synchronous, fallible update without exposing snapshot bookkeeping.
+    ///
+    /// Processing failures recover the original payload only when RETURN_DATA is
+    /// requested; decoding failures always recover it. The caller chooses how to
+    /// report failures. No codec state is borrowed while the callback runs, and
+    /// no Ack/Nack is sent automatically. For asynchronous work, use
+    /// [`Self::prepare_otap_work`] and keep its delivery owner until work completes.
+    async fn update_otap<R, E>(
+        &self,
+        pdata: OtapPdata,
+        update: impl FnOnce(&mut OtapArrowRecords) -> Result<R, E>,
+    ) -> Result<(OtapArrowPdata, R), OtapPdataUpdateError<E>> {
+        let (delivery, mut records) = self
+            .prepare_otap_work(pdata)
+            .await
+            .map_err(OtapPdataUpdateError::decode)?;
+        match update(&mut records) {
+            Ok(value) => {
+                let (context, _) = delivery.into_pdata().into_parts();
+                Ok((OtapArrowPdata::new(context, records), value))
+            }
+            Err(error) => Err(OtapPdataUpdateError::update(error, delivery.into_pdata())),
+        }
+    }
+
+    /// Obtains a read-only view using the consumer's accepted encodings.
+    ///
+    /// Accepted encoded bytes and existing native records are borrowed. Other
+    /// encodings are decoded through runtime-owned codec state into temporary
+    /// native OTAP records, leaving the original payload unchanged.
+    async fn view<'a>(
+        &self,
+        payload: &'a OtapPayload,
+        accepted_encodings: &AcceptedEncodings,
+    ) -> Result<PdataView<'a>, CodecError>;
+
+    /// Encodes inside a scope that cannot cross an await point.
+    async fn with_encoded<R>(
+        &self,
+        payload: &mut OtapPayload,
+        plan: &EncodingPlan,
+        consume: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, CodecError>;
+
+    /// Encodes to owned bytes suitable for asynchronous delivery.
+    async fn encode_owned(
+        &self,
+        payload: &mut OtapPayload,
+        plan: &EncodingPlan,
+    ) -> Result<bytes::Bytes, CodecError>;
+
+    /// Prepares one payload for a startup-resolved batching plan.
+    async fn prepare_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
+
+    /// Merges or splits prepared payloads through a batching plan.
+    async fn batch(
+        &self,
+        plan: &BatchPlan,
+        signal: SignalType,
+        inputs: Vec<OtapPayload>,
+    ) -> Result<BatchingOutput, CodecError>;
+
+    /// Converts a flushed working batch to the plan's output representation.
+    async fn finish_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), CodecError>;
+}
+
+/// Processor capability for algorithms that always require mutable native OTAP.
+///
+/// Implementors only receive typed Arrow pdata. The adapter owns conversion
+/// and the permanent Nack policy for malformed encoded input.
+#[async_trait(?Send)]
+pub trait NativePdataProcessor {
+    /// Processes one successfully materialized native batch.
+    async fn process_native(
+        &mut self,
+        pdata: OtapArrowPdata,
+        effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error>;
+
+    /// Processes a control message without forcing pdata conversion.
+    async fn process_control(
+        &mut self,
+        _control: NodeControlMsg<OtapPdata>,
+        _effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Declares runtime services required by the native processor.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
+    }
+}
+
+/// Runs a [`NativePdataProcessor`] behind the dynamic pdata boundary.
+pub struct NativeProcessorAdapter;
+
+impl NativeProcessorAdapter {
+    /// Converts pdata, permanently Nacks codec failures, and invokes the
+    /// processor only after native access has been established.
+    pub async fn process<P: NativePdataProcessor>(
+        processor: &mut P,
+        msg: otel_arrow_dfe_engine::message::Message<OtapPdata>,
+        effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        match msg {
+            otel_arrow_dfe_engine::message::Message::Control(control) => {
+                processor.process_control(control, effect_handler).await
+            }
+            otel_arrow_dfe_engine::message::Message::PData(pdata) => {
+                match effect_handler.materialize_otap(pdata).await {
+                    Ok(pdata) => processor.process_native(pdata, effect_handler).await,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await
+                    }
+                }
+            }
+        }
+    }
+}
+
+macro_rules! impl_pdata_effect_handler_ext {
+    ($handler:ty) => {
+        impl PdataEffectHandlerExtension for $handler {
+            async fn materialize_otap(
+                &self,
+                pdata: OtapPdata,
+            ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
+                let (context, payload) = pdata.into_parts();
+                match payload
+                    .try_into_otap_cooperative(self.codec_service(), tokio::task::yield_now)
+                    .await
+                {
+                    Ok(records) => Ok(OtapArrowPdata::new(context, records)),
+                    Err(error) => {
+                        let (source, payload) = error.into_parts();
+                        Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                            source,
+                            pdata: OtapPdata::new(context, payload),
+                        })))
+                    }
+                }
+            }
+
+            async fn materialize_otap_payload(
+                &self,
+                payload: OtapPayload,
+            ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
+                payload
+                    .try_into_otap_cooperative(self.codec_service(), tokio::task::yield_now)
+                    .await
+            }
+
+            async fn view<'a>(
+                &self,
+                payload: &'a OtapPayload,
+                accepted_encodings: &AcceptedEncodings,
+            ) -> Result<PdataView<'a>, CodecError> {
+                payload
+                    .view_cooperative(
+                        self.codec_service(),
+                        accepted_encodings,
+                        tokio::task::yield_now,
+                    )
+                    .await
+            }
+
+            async fn with_encoded<R>(
+                &self,
+                payload: &mut OtapPayload,
+                plan: &EncodingPlan,
+                consume: impl FnOnce(&[u8]) -> R,
+            ) -> Result<R, CodecError> {
+                payload
+                    .with_encoded_output_cooperative(
+                        self.codec_service(),
+                        plan,
+                        |output| consume(output.as_ref()),
+                        tokio::task::yield_now,
+                    )
+                    .await
+            }
+
+            async fn encode_owned(
+                &self,
+                payload: &mut OtapPayload,
+                plan: &EncodingPlan,
+            ) -> Result<bytes::Bytes, CodecError> {
+                payload
+                    .with_encoded_output_cooperative(
+                        self.codec_service(),
+                        plan,
+                        |output| output.into_bytes(),
+                        tokio::task::yield_now,
+                    )
+                    .await
+            }
+
+            async fn prepare_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.prepare_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
+            }
+
+            async fn batch(
+                &self,
+                plan: &BatchPlan,
+                signal: SignalType,
+                inputs: Vec<OtapPayload>,
+            ) -> Result<BatchingOutput, CodecError> {
+                plan.batch(signal, inputs, self.codec_service())
+            }
+
+            async fn finish_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), CodecError> {
+                plan.finish_cooperative(payload, self.codec_service(), tokio::task::yield_now)
+                    .await
+            }
+        }
+    };
+}
+
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>);
+
 /* --------  effect handler extensions (shared, local) -------- */
 
 /// Forward-path flow_metric accumulation for non-overlapping ranges.
@@ -1419,13 +1529,15 @@ impl FlowMetricHook for OtapPdata {
 ///   $trait_name   - `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      - fully-qualified EffectHandler type
 ///   $id_method    - `processor_id` or `receiver_id`
-///   $hook         - `with_hook` (processors: invokes `before_processor_send`)
-///                   or `no_hook` (receivers: no per-send bookkeeping)
-macro_rules! maybe_processor_send_hook {
-    (with_hook, $handler:expr, $data:expr) => {
+///   $before_send  - `processor_flow_metrics` invokes `before_processor_send`
+///                   or `receiver_materialization` materializes configured context
+macro_rules! before_message_source_send {
+    (processor_flow_metrics, $handler:expr, $data:expr) => {
         $data.before_processor_send($handler);
     };
-    (no_hook, $handler:expr, $data:expr) => {};
+    (receiver_materialization, $handler:expr, $data:expr) => {
+        $handler.materialize_context($data);
+    };
 }
 
 macro_rules! impl_message_source_ext {
@@ -1434,7 +1546,7 @@ macro_rules! impl_message_source_ext {
         $trait_name:ident,
         $handler:ty,
         $id_method:ident,
-        $hook:ident,
+        $before_send:ident,
         $completion_from_output:expr
     ) => {
         #[$async_attr]
@@ -1448,7 +1560,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -1461,7 +1573,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -1478,7 +1590,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -1495,7 +1607,7 @@ macro_rules! impl_message_source_ext {
                     self.$id_method().index,
                     $completion_from_output,
                 );
-                maybe_processor_send_hook!($hook, self, &mut data);
+                before_message_source_send!($before_send, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -1507,7 +1619,7 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook,
+    processor_flow_metrics,
     false
 );
 impl_message_source_ext!(
@@ -1515,7 +1627,7 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook,
+    receiver_materialization,
     true
 );
 impl_message_source_ext!(
@@ -1523,7 +1635,7 @@ impl_message_source_ext!(
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook,
+    processor_flow_metrics,
     false
 );
 impl_message_source_ext!(
@@ -1531,7 +1643,7 @@ impl_message_source_ext!(
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook,
+    receiver_materialization,
     true
 );
 
@@ -1571,7 +1683,11 @@ mod test {
     };
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+    use otel_arrow_dfe_config::context::policy::{
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
+        ContextScope,
+    };
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -1583,6 +1699,7 @@ mod test {
     use otel_arrow_dfe_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
     use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::node::NodeId;
+    use otel_arrow_dfe_engine::pdata_context::{ContextValueCardinality, ContextValueKind};
     use otel_arrow_dfe_engine::shared::exporter::EffectHandler as SharedExporterEffectHandler;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
@@ -1592,15 +1709,335 @@ mod test {
     use std::cell::Cell;
     use std::collections::HashMap;
     use std::mem::size_of;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
 
-    /// Scenario: queued OTAP pdata includes optional authorization-derived context.
-    /// Guarantees: the 64-bit queued-message layout reflects only one additional
-    /// pointer for the optional trusted context collection.
+    fn materialization_plan(
+        parts: Vec<ContextEntryPart>,
+    ) -> (ContextMaterializationPlan, ContextProjection) {
+        let declaration = ContextEntryDeclaration {
+            scope: ContextScope::Engine,
+            name: ContextEntryName::try_from("request").expect("valid composite name"),
+            definition: ContextEntryDefinition(parts),
+        };
+        let plan = ContextMaterializationPlan::compile(&[declaration]).expect("plan compiles");
+        let projection = plan
+            .layout()
+            .resolve_composite(
+                &ContextEntryName::try_from("request").expect("valid composite name"),
+            )
+            .expect("projection resolves");
+        (plan, projection)
+    }
+
+    /// Scenario: Queued and native-capability pdata are built for a 64-bit target.
+    /// Guarantees: Unified transport and materialized context storage keeps pdata compact.
     #[test]
     #[cfg(target_pointer_width = "64")]
-    fn otap_pdata_layout_is_stable() {
-        assert_eq!(size_of::<OtapPdata>(), 160);
+    fn legacy_otap_pdata_layout_is_stable() {
+        assert_eq!(size_of::<OtapPdata>(), 152);
+        assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
+        assert_eq!(size_of::<PdataDelivery>(), size_of::<OtapPdata>());
+    }
+
+    /// Scenario: An effect handler materializes malformed encoded pdata with delivery context.
+    /// Guarantees: Diagnostics omit telemetry and context; recovery preserves peer address,
+    /// codec identity, bytes, signal, and item count.
+    #[tokio::test]
+    async fn encoded_conversion_failure_preserves_delivery_ownership() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataFormat};
+
+        let peer = "127.0.0.1:4317".parse().expect("peer address");
+        let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+        let pointer = bytes.as_ptr();
+        let handler = delivery_handler();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .expect("OTLP codec");
+        let payload = OtapPayload::from_encoded(
+            codec
+                .admit(SignalType::Logs, bytes)
+                .expect("lazy admission"),
+        );
+        let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9);
+        let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+
+        let error = handler
+            .materialize_otap(pdata)
+            .await
+            .expect_err("malformed OTLP must fail");
+        assert_eq!(error.to_string(), error.error().to_string());
+        for diagnostic in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!diagnostic.contains("SECRET_TELEMETRY_VALUE"));
+            assert!(!diagnostic.contains("127.0.0.1"));
+        }
+        let (_, recovered) = error.into_parts();
+        assert_eq!(recovered.peer_addr(), Some(peer));
+        assert_eq!(
+            recovered.payload_ref().format(),
+            PdataFormat::encoded(codec)
+        );
+        assert_eq!(recovered.payload_ref().known_item_count(), Some(9));
+        assert_eq!(
+            recovered.payload_ref().encoded_bytes().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(recovered.signal_type(), SignalType::Logs);
+    }
+
+    fn delivery_handler() -> LocalExporterEffectHandler<OtapPdata> {
+        let (_rx, metrics) = MetricsReporter::create_new_and_receiver(1);
+        LocalExporterEffectHandler::new(
+            otel_arrow_dfe_engine::testing::test_node("delivery-test"),
+            metrics,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        )
+    }
+
+    fn delivery_inputs(handler: &LocalExporterEffectHandler<OtapPdata>) -> [OtapPayload; 3] {
+        let adapted = create_test_pdata().payload();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let encoded = codec
+            .admit(
+                adapted.signal_type(),
+                adapted.encoded_bytes().unwrap().clone(),
+            )
+            .unwrap();
+        [adapted, encoded.into(), create_test_otap_pdata().payload()]
+    }
+
+    /// Scenario: OTLP adapters, admitted encoded, and native inputs prepare work or delivery ownership.
+    /// Guarantees: only RETURN_DATA retains input, context and measurement caches survive,
+    /// and encoded snapshots share the original byte buffer without codec creation.
+    #[test]
+    fn delivery_retention_preserves_input_and_caches() {
+        let handler = delivery_handler();
+        for return_data in [false, true] {
+            for mut payload in delivery_inputs(&handler) {
+                let count = payload.num_items();
+                let size = payload.num_bytes();
+                let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
+                let format = payload.format();
+                let pdata = OtapPdata::new_default(payload)
+                    .test_subscribe_to(
+                        Interests::NACKS
+                            | if return_data {
+                                Interests::RETURN_DATA
+                            } else {
+                                Interests::empty()
+                            },
+                        TestCallData::default().into(),
+                        777,
+                    )
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let expected_context = pdata.context.clone();
+                let (delivery, mut work) = pdata.into_work();
+                assert_eq!(delivery.context(), &expected_context);
+                assert_eq!(work.num_items(), count);
+                assert_eq!(work.num_bytes(), size);
+                assert_eq!(work.encoded_bytes().map(|bytes| bytes.as_ptr()), pointer);
+                // Use the same delivery entry point as already-prepared exporters.
+                let mut returned = delivery.into_pdata().into_delivery().into_pdata();
+                assert_eq!(returned.context, expected_context);
+                if return_data {
+                    assert_eq!(returned.payload_ref().format(), format);
+                    assert_eq!(returned.num_items(), count);
+                    assert_eq!(returned.num_bytes(), size);
+                    assert_eq!(
+                        returned
+                            .payload_ref()
+                            .encoded_bytes()
+                            .map(|bytes| bytes.as_ptr()),
+                        pointer
+                    );
+                } else {
+                    assert!(returned.is_empty());
+                    assert_eq!(returned.signal_type(), work.signal_type());
+                }
+            }
+        }
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: a native batch without RETURN_DATA enters recoverable processing.
+    /// Guarantees: its Arrow container moves directly, no codec is created, and success
+    /// forwards the original context with the updated records and callback result.
+    #[tokio::test]
+    async fn native_update_moves_records_without_snapshot() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let handler = delivery_handler();
+        let pdata = create_test_otap_pdata();
+        let pointer = pdata
+            .payload_ref()
+            .otap_ref()
+            .unwrap()
+            .get(ArrowPayloadType::Logs)
+            .unwrap() as *const arrow::record_batch::RecordBatch;
+        let schema_owners = Arc::strong_count(
+            &pdata
+                .payload_ref()
+                .otap_ref()
+                .unwrap()
+                .get(ArrowPayloadType::Logs)
+                .unwrap()
+                .schema(),
+        );
+        let (updated, value) = handler
+            .update_otap(pdata, |records| {
+                // A retained native snapshot would add a schema owner even if
+                // the working records themselves were moved without cloning.
+                assert_eq!(
+                    Arc::strong_count(&records.get(ArrowPayloadType::Logs).unwrap().schema()),
+                    schema_owners
+                );
+                assert_eq!(
+                    records.get(ArrowPayloadType::Logs).unwrap() as *const _,
+                    pointer
+                );
+                Ok::<_, std::io::Error>(17)
+            })
+            .await
+            .unwrap();
+        assert_eq!(value, 17);
+        assert_eq!(
+            updated.records().get(ArrowPayloadType::Logs).unwrap() as *const _,
+            pointer
+        );
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: an update removes records and then fails for each storage representation.
+    /// Guarantees: RETURN_DATA recovers unmodified input and caches; without it only context
+    /// and signal survive, and neither Debug nor Display prints telemetry or peer addresses.
+    #[tokio::test]
+    async fn failed_update_recovers_input_after_partial_mutation() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let handler = delivery_handler();
+        for return_data in [false, true] {
+            for mut payload in delivery_inputs(&handler) {
+                let count = payload.num_items();
+                let size = payload.num_bytes();
+                let format = payload.format();
+                let pointer = payload.encoded_bytes().map(|bytes| bytes.as_ptr());
+                let pdata = OtapPdata::new_default(payload)
+                    .test_subscribe_to(
+                        Interests::NACKS
+                            | if return_data {
+                                Interests::RETURN_DATA
+                            } else {
+                                Interests::empty()
+                            },
+                        TestCallData::default().into(),
+                        777,
+                    )
+                    .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let context = pdata.context.clone();
+                let error = handler
+                    .update_otap(pdata, |records| {
+                        drop(records.remove(ArrowPayloadType::Logs));
+                        Err::<(), _>(std::io::Error::other("update failed"))
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(!format!("{error:?}").contains("127.0.0.1"));
+                assert_eq!(error.to_string(), "update failed");
+                let (cause, mut returned) = error.into_parts();
+                assert!(matches!(cause, OtapPdataUpdateCause::Update(_)));
+                assert_eq!(returned.context, context);
+                if return_data {
+                    assert_eq!(returned.num_items(), count);
+                    assert_eq!(returned.num_bytes(), size);
+                    assert_eq!(returned.payload_ref().format(), format);
+                    assert_eq!(
+                        returned
+                            .payload_ref()
+                            .encoded_bytes()
+                            .map(|bytes| bytes.as_ptr()),
+                        pointer
+                    );
+                    if let Some(records) = returned.payload_ref().otap_ref() {
+                        assert!(records.get(ArrowPayloadType::Logs).is_some());
+                    }
+                } else {
+                    assert!(returned.is_empty());
+                    assert_eq!(returned.signal_type(), SignalType::Logs);
+                }
+            }
+        }
+    }
+
+    /// Scenario: malformed OTLP from an adapter or admission enters an update without RETURN_DATA.
+    /// Guarantees: decoding never calls the updater and recovers exact bytes, cached count,
+    /// signal and context; the shared decoder remains usable for the next valid batch.
+    #[tokio::test]
+    async fn update_decode_failure_recovers_exact_input() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        let handler = delivery_handler();
+        let codec = handler
+            .codec_service()
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            let bytes = Bytes::from_static(b"\x0a\xff\xffSECRET_TELEMETRY_VALUE");
+            let adapted = match signal {
+                SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes.clone()),
+                SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes.clone()),
+                SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
+            };
+            for payload in [
+                OtapPayload::from(adapted),
+                codec.admit(signal, bytes.clone()).unwrap().into(),
+            ] {
+                let pdata = OtapPdata::new_default(
+                    otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 9),
+                )
+                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777)
+                .with_peer_addr("127.0.0.1:1234".parse().unwrap());
+                let context = pdata.context.clone();
+                let format = pdata.payload_ref().format();
+                let error = handler
+                    .update_otap(pdata, |_| -> Result<(), std::io::Error> {
+                        panic!("decode failure must not run the update")
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(matches!(error.error(), OtapPdataUpdateCause::Decode(_)));
+                assert!(!format!("{error:?}").contains("SECRET_TELEMETRY_VALUE"));
+                let (_, returned) = error.into_parts();
+                assert_eq!(returned.context, context);
+                assert_eq!(returned.payload_ref().format(), format);
+                assert_eq!(returned.payload_ref().encoded_bytes(), Some(&bytes));
+                assert_eq!(
+                    returned.payload_ref().encoded_bytes().unwrap().as_ptr(),
+                    bytes.as_ptr()
+                );
+                assert_eq!(returned.payload_ref().known_item_count(), Some(9));
+                assert_eq!(returned.signal_type(), signal);
+                assert_eq!(
+                    returned.peer_addr(),
+                    Some("127.0.0.1:1234".parse().unwrap())
+                );
+            }
+            let valid = OtapPdata::new_default(codec.admit(signal, Bytes::new()).unwrap().into());
+            let _ = handler
+                .update_otap(valid, |_| Ok::<_, std::io::Error>(()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(handler.codec_service().test_instance_count().unwrap(), 1);
     }
 
     fn create_test() -> (TestCallData, OtapPdata) {
@@ -1608,10 +2045,12 @@ mod test {
     }
 
     fn create_test_otap_pdata() -> OtapPdata {
-        use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+        use otel_arrow_dfe_pdata_codec::CodecService;
 
         let payload = create_test_pdata().into_parts().1;
-        let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
+        let records = payload
+            .try_into_otap(&CodecService::new().expect("valid codec registry"))
+            .expect("OTAP conversion");
         OtapPdata::new_default(records.into())
     }
 
@@ -2232,6 +2671,324 @@ mod test {
 
         let sent = rx.recv().await.expect("message received");
         assert_eq!(sent.get_source_node(), Some(2));
+    }
+
+    fn assert_materialized_uuid(
+        sent: &OtapPdata,
+        plan: &ContextMaterializationPlan,
+        projection: &ContextProjection,
+        expected_source: Option<usize>,
+    ) {
+        assert_eq!(sent.get_source_node(), expected_source);
+        let resolved = sent
+            .resolve_materialized_context(plan, projection)
+            .expect("context was materialized");
+        resolved.visit_members(|member| {
+            let value = member.values().values()[0].as_str().expect("UUID is text");
+            assert_eq!(value.len(), 36);
+            assert_eq!(value.as_bytes()[14], b'7');
+        });
+    }
+
+    /// Scenario: a local receiver uses every base and source-tagged send variant.
+    /// Guarantees: default, named-port, blocking, and try-send paths materialize UUID-v7.
+    #[tokio::test]
+    async fn local_receiver_send_paths_materialize_context() {
+        let (default_tx, default_rx) = LocalChannel::<OtapPdata>::new(4);
+        let (named_tx, named_rx) = LocalChannel::<OtapPdata>::new(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert(
+            "default".into(),
+            Sender::Local(LocalSender::mpsc(default_tx)),
+        );
+        let _ = senders.insert("named".into(), Sender::Local(LocalSender::mpsc(named_tx)));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = LocalReceiverEffectHandler::new(
+            NodeId {
+                index: 2,
+                name: "recv_local".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(2), Some(2)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a shared receiver uses every base and source-tagged send variant.
+    /// Guarantees: production-style shared paths materialize UUID-v7 before delivery.
+    #[tokio::test]
+    async fn shared_receiver_send_paths_materialize_context() {
+        let (default_tx, mut default_rx) = mpsc::channel::<OtapPdata>(4);
+        let (named_tx, mut named_rx) = mpsc::channel::<OtapPdata>(4);
+        let senders = HashMap::from([
+            ("default".into(), SharedSender::mpsc(default_tx)),
+            ("named".into(), SharedSender::mpsc(named_tx)),
+        ]);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = SharedReceiverEffectHandler::new(
+            NodeId {
+                index: 3,
+                name: "recv_shared".into(),
+            },
+            senders,
+            Some("default".into()),
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (plan, projection) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        handler.set_context_materializer(plan.clone(), materialize_context);
+        handler.set_source_tagging(SourceTagging::Enabled);
+
+        handler
+            .send_message(create_test_pdata())
+            .await
+            .expect("send succeeds");
+        handler
+            .try_send_message(create_test_pdata())
+            .expect("try-send succeeds");
+        handler
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("source-tagged send succeeds");
+        handler
+            .try_send_message_with_source_node(create_test_pdata())
+            .expect("source-tagged try-send succeeds");
+        handler
+            .send_message_to("named", create_test_pdata())
+            .await
+            .expect("named-port send succeeds");
+        handler
+            .try_send_message_to("named", create_test_pdata())
+            .expect("named-port try-send succeeds");
+        handler
+            .send_message_with_source_node_to("named", create_test_pdata())
+            .await
+            .expect("source-tagged named-port send succeeds");
+        handler
+            .try_send_message_with_source_node_to("named", create_test_pdata())
+            .expect("source-tagged named-port try-send succeeds");
+
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = default_rx.recv().await.expect("default message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+        for expected_source in [None, None, Some(3), Some(3)] {
+            let sent = named_rx.recv().await.expect("named-port message received");
+            assert_materialized_uuid(&sent, &plan, &projection, expected_source);
+        }
+    }
+
+    /// Scenario: a composite combines trusted identity, a header condition, and a constant.
+    /// Guarantees: pdata-backed source resolution materializes the composite only when all gates pass.
+    #[test]
+    fn materializes_mixed_pdata_sources() {
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("sub").expect("valid claim name"),
+                store_as: Some(ContextEntryName::try_from("customer").expect("valid member name")),
+            },
+            ContextEntryPart::TransportHeaderMatch {
+                name: ContextEntryName::try_from("environment").expect("valid header name"),
+                value: "production".to_owned(),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "sub",
+                "store_as": "sub"
+            }]))
+            .expect("valid identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("customer-42");
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(
+            ContextEntryName::try_from("environment").expect("valid header name"),
+            b"production",
+        ));
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut values = Vec::new();
+        resolved.visit_members(|member| {
+            values.push((
+                member.name().as_str().to_owned(),
+                member.values().values()[0]
+                    .as_str()
+                    .expect("member is text")
+                    .to_owned(),
+            ));
+        });
+        assert_eq!(
+            values,
+            [
+                ("customer".to_owned(), "customer-42".to_owned()),
+                ("route".to_owned(), "dedicated".to_owned()),
+            ]
+        );
+    }
+
+    /// Scenario: a selected authorized identity claim is a present empty multi-valued list.
+    /// Guarantees: materialization retains the zero-value member instead of omitting its composite.
+    #[test]
+    fn materializes_empty_multi_valued_identity_claim() {
+        let member_name = ContextEntryName::try_from("access_groups").expect("valid member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::AuthorizedIdentity {
+                name: ContextEntryName::try_from("groups").expect("valid claim name"),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("route").expect("valid member name"),
+                value: "dedicated".to_owned(),
+            },
+        ]);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{
+                "claim": "groups",
+                "store_as": "groups"
+            }]))
+            .expect("valid identity policy");
+        let identity =
+            AuthorizedIdentity::new().with_claim_values("groups", std::iter::empty::<&str>());
+        let mut pdata = create_test_pdata();
+        pdata.capture_authorized_identity(&identity_policy, &identity);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_empty_groups = false;
+        resolved.visit_members(|member| {
+            if member.name() == &member_name {
+                found_empty_groups = true;
+                assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+                assert!(member.values().values().is_empty());
+            }
+        });
+        assert!(found_empty_groups);
+    }
+
+    /// Scenario: repeated captured binary headers retain their complete source representation.
+    /// Guarantees: materialization preserves kind, original name, order, bytes, and cardinality.
+    #[test]
+    fn materializes_repeated_binary_header_fidelity() {
+        let header_name =
+            ContextEntryName::try_from("custom-bin").expect("valid stored header name");
+        let member_name =
+            ContextEntryName::try_from("payload").expect("valid materialized member name");
+        let (plan, projection) = materialization_plan(vec![
+            ContextEntryPart::TransportHeader {
+                name: header_name.clone(),
+                store_as: Some(member_name.clone()),
+            },
+            ContextEntryPart::Constant {
+                name: ContextEntryName::try_from("source").expect("valid constant member name"),
+                value: "test".to_owned(),
+            },
+        ]);
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::captured(
+            header_name.clone(),
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x00, 0xff],
+        ));
+        headers.push(TransportHeader::captured(
+            header_name,
+            "X-Custom-Bin",
+            true,
+            ValueKind::Binary,
+            [0x01, 0xfe],
+        ));
+        let mut pdata = create_test_pdata();
+        pdata.set_transport_headers(headers);
+
+        pdata.context.materialize_context(&plan);
+
+        let resolved = pdata
+            .resolve_materialized_context(&plan, &projection)
+            .expect("composite is present");
+        let mut found_header = false;
+        resolved.visit_members(|member| {
+            if member.name() != &member_name {
+                return;
+            }
+            found_header = true;
+            assert_eq!(member.name(), &member_name);
+            assert_eq!(member.values().cardinality(), ContextValueCardinality::Many);
+            let values = member.values().values();
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0].kind(), ContextValueKind::Binary);
+            assert_eq!(values[0].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[0].bytes(), [0x00, 0xff]);
+            assert_eq!(values[1].kind(), ContextValueKind::Binary);
+            assert_eq!(values[1].original_name(), Some("X-Custom-Bin"));
+            assert_eq!(values[1].bytes(), [0x01, 0xfe]);
+        });
+        assert!(found_header, "materialized header member is present");
     }
 
     #[tokio::test]
@@ -2914,9 +3671,9 @@ mod test {
     /// Scenario: a context carrying transport headers, authorized identity
     /// entries, a peer address, Ack/Nack subscribers, an active flow_metric
     /// accumulator and a captured signal is detached for a split output.
-    /// Guarantees: request-scoped metadata is copied while routing and metric
-    /// state is left behind, so outputs retain trusted identity without
-    /// re-Acking the upstream node.
+    /// Guarantees: request-scoped metadata and materialized values are copied
+    /// while routing and metric state is left behind, so outputs retain stable
+    /// context without re-Acking the upstream node.
     #[test]
     fn clone_detached_keeps_request_metadata_and_drops_routing_state() {
         let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
@@ -2941,6 +3698,15 @@ mod test {
         .expect("valid authorized identity policy");
         let identity = AuthorizedIdentity::new().with_subject("customer-42");
         pdata.capture_authorized_identity(&identity_policy, &identity);
+        let (materialization_plan, _) = materialization_plan(vec![ContextEntryPart::Randomness {
+            name: ContextEntryName::try_from("id").expect("valid member name"),
+            value: ContextRandomnessKind::Uuid7,
+        }]);
+        pdata.context.materialize_context(&materialization_plan);
+        let materialized = pdata
+            .materialized_context()
+            .expect("randomness materialized")
+            .clone();
         pdata.start_flow_metric();
         pdata.add_flow_compute(42);
 
@@ -2953,7 +3719,12 @@ mod test {
 
         let detached = context.clone_detached();
 
-        assert_eq!(detached.transport_headers(), Some(&headers));
+        assert_eq!(
+            detached
+                .transport_headers()
+                .expect("transport headers retained"),
+            &headers
+        );
         let authorized = detached
             .authorized_identity_entries()
             .expect("authorized identity retained");
@@ -2963,6 +3734,7 @@ mod test {
                 .and_then(|entry| entry.value().as_str()),
             Some("customer-42")
         );
+        assert_eq!(detached.materialized_context(), Some(&materialized));
         assert_eq!(detached.peer_addr(), Some(addr));
         assert!(
             !detached.has_ack_or_nack_subscribers(),
@@ -2979,185 +3751,6 @@ mod test {
         // processor's slot map and Acks upstream once its outbounds settle.
         assert!(context.has_ack_or_nack_subscribers());
         assert_eq!(context.signal(), Some(SignalType::Logs));
-    }
-
-    /// Scenario: an identity contains one selected multi-valued claim while
-    /// another configured claim is absent.
-    /// Guarantees: claim cardinality is preserved and missing claims do not
-    /// create empty context entries.
-    #[test]
-    fn authorized_identity_capture_preserves_many_and_omits_missing() {
-        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
-            {"claim": "groups", "store_as": "access_groups"},
-            {"claim": "missing", "store_as": "missing_entry"}
-        ]))
-        .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new().with_claim_values("groups", ["reader", "writer"]);
-        let mut pdata = create_test_pdata();
-
-        pdata.capture_authorized_identity(&policy, &identity);
-
-        let entries = pdata
-            .authorized_identity_entries()
-            .expect("selected claim captured");
-        assert_eq!(entries.len(), 1);
-        let groups = entries
-            .get("access_groups")
-            .expect("groups destination exists")
-            .value();
-        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader", "writer"]);
-        assert!(groups.is_many());
-        assert!(entries.get("missing_entry").is_none());
-    }
-
-    /// Scenario: one claim is encoded as `One` and another as one-element `Many`.
-    /// Guarantees: packed storage preserves cardinality instead of inferring it from count.
-    #[test]
-    fn authorized_identity_capture_preserves_single_value_cardinality() {
-        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
-            {"claim": "sub", "store_as": "subject"},
-            {"claim": "groups", "store_as": "groups"}
-        ]))
-        .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new()
-            .with_subject("reader")
-            .with_claim_values("groups", ["reader"]);
-        let mut pdata = create_test_pdata();
-
-        pdata.capture_authorized_identity(&policy, &identity);
-
-        let entries = pdata
-            .authorized_identity_entries()
-            .expect("selected claims captured");
-        let subject = entries.get("subject").expect("subject entry").value();
-        let groups = entries.get("groups").expect("groups entry").value();
-        assert_eq!(subject.as_str(), Some("reader"));
-        assert!(!subject.is_many());
-        assert_eq!(groups.as_str(), None);
-        assert!(groups.is_many());
-        assert_eq!(groups.values().collect::<Vec<_>>(), ["reader"]);
-    }
-
-    /// Scenario: equal claims occupy different offsets in identities with different unrelated data.
-    /// Guarantees: claim and entry equality use cardinality and values, not packed storage identity.
-    #[test]
-    fn authorized_claim_equality_is_value_based() {
-        let subject_first: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
-            {"claim": "sub", "store_as": "subject"},
-            {"claim": "groups", "store_as": "groups"}
-        ]))
-        .expect("valid authorized identity policy");
-        let groups_first: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
-            {"claim": "groups", "store_as": "groups"},
-            {"claim": "sub", "store_as": "subject"}
-        ]))
-        .expect("valid authorized identity policy");
-        let left_identity = AuthorizedIdentity::new()
-            .with_subject("reader")
-            .with_claim_values("groups", ["left-group"]);
-        let right_identity = AuthorizedIdentity::new()
-            .with_subject("reader")
-            .with_claim_values("groups", ["right-group"]);
-
-        let left = AuthorizedIdentityEntries::capture(&subject_first, &left_identity)
-            .expect("left identity captured");
-        let right = AuthorizedIdentityEntries::capture(&groups_first, &right_identity)
-            .expect("right identity captured");
-        let left_subject = left.get("subject").expect("left subject");
-        let right_subject = right.get("subject").expect("right subject");
-
-        assert_eq!(left_subject.value(), right_subject.value());
-        assert_eq!(left_subject, right_subject);
-
-        let one_reader = left_subject.value();
-        let many_reader_identity =
-            AuthorizedIdentity::new().with_claim_values("groups", ["reader"]);
-        let many_reader_entries =
-            AuthorizedIdentityEntries::capture(&subject_first, &many_reader_identity)
-                .expect("multi-valued identity captured");
-        let many_reader = many_reader_entries
-            .get("groups")
-            .expect("groups entry")
-            .value();
-        assert_ne!(one_reader, many_reader);
-    }
-
-    /// Scenario: a packed authorized identity descriptor is corrupted below its declared count.
-    /// Guarantees: iteration detects the violated decode invariant instead of omitting it silently.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "in-bounds packed authorized identity entry must decode")]
-    fn authorized_identity_decode_failure_fails_fast() {
-        let policy: AuthorizedIdentityPolicy =
-            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
-                .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new().with_subject("reader");
-        let mut entries =
-            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
-        let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
-            .expect("packed storage is uniquely owned");
-        packed.bytes[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
-
-        let _ = entries.iter().next();
-    }
-
-    /// Scenario: a packed authorized identity descriptor has an invalid cardinality flag.
-    /// Guarantees: decoding rejects values outside the encoded single-or-many domain.
-    #[test]
-    #[should_panic(expected = "in-bounds packed authorized identity entry must decode")]
-    fn authorized_identity_invalid_cardinality_fails_fast() {
-        let policy: AuthorizedIdentityPolicy =
-            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
-                .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new().with_subject("reader");
-        let mut entries =
-            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
-        let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
-            .expect("packed storage is uniquely owned");
-        packed.bytes[16] = 2;
-
-        let _ = entries.iter().next();
-    }
-
-    fn corrupt_first_authorized_identity_value(entries: &mut AuthorizedIdentityEntries) {
-        let packed = Arc::get_mut(entries.packed.as_mut().expect("packed storage is present"))
-            .expect("packed storage is uniquely owned");
-        let value_at = packed.entry_count * AUTHORIZED_ENTRY_LEN;
-        packed.bytes[value_at..value_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    }
-
-    /// Scenario: a single-valued authorized claim has a corrupted value descriptor.
-    /// Guarantees: scalar access detects the violated decode invariant instead of returning `None`.
-    #[test]
-    #[should_panic(expected = "in-bounds packed authorized identity value must decode")]
-    fn authorized_identity_scalar_value_decode_failure_fails_fast() {
-        let policy: AuthorizedIdentityPolicy =
-            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
-                .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new().with_subject("reader");
-        let mut entries =
-            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
-        corrupt_first_authorized_identity_value(&mut entries);
-
-        let value = entries.get("subject").expect("subject entry").value();
-        let _ = value.as_str();
-    }
-
-    /// Scenario: a multi-valued authorized claim has a corrupted value descriptor.
-    /// Guarantees: iteration detects the violated decode invariant instead of omitting the value.
-    #[test]
-    #[should_panic(expected = "in-bounds packed authorized identity value must decode")]
-    fn authorized_identity_iterated_value_decode_failure_fails_fast() {
-        let policy: AuthorizedIdentityPolicy =
-            serde_json::from_value(serde_json::json!([{"claim": "groups", "store_as": "groups"}]))
-                .expect("valid authorized identity policy");
-        let identity = AuthorizedIdentity::new().with_claim_values("groups", ["reader", "writer"]);
-        let mut entries =
-            AuthorizedIdentityEntries::capture(&policy, &identity).expect("captured identity");
-        corrupt_first_authorized_identity_value(&mut entries);
-
-        let value = entries.get("groups").expect("groups entry").value();
-        let _ = value.values().next();
     }
 
     /// Scenario: pdata carries authorized identity entries captured from
@@ -3749,48 +4342,6 @@ mod test {
 
         // Distinct Somes -> None (refuse to misattribute).
         assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
-    }
-
-    #[test]
-    fn peer_addr_merger_matches_merge_peer_addr() {
-        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
-        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
-
-        // Empty.
-        let m = PeerAddrMerger::new();
-        assert_eq!(m.finish(), None);
-
-        // Single Some.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        assert_eq!(m.finish(), Some(a));
-
-        // All identical.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(a));
-        m.push(Some(a));
-        assert_eq!(m.finish(), Some(a));
-
-        // Any None poisons subsequent pushes.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(None);
-        m.push(Some(a));
-        assert_eq!(m.finish(), None);
-
-        // Distinct Somes.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(b));
-        assert_eq!(m.finish(), None);
-
-        // After conflict, further identical pushes do not "heal" the result.
-        let mut m = PeerAddrMerger::new();
-        m.push(Some(a));
-        m.push(Some(b));
-        m.push(Some(a));
-        assert_eq!(m.finish(), None);
     }
 
     /// Scenario: OTLP PData is cloned before and after its item count is measured.

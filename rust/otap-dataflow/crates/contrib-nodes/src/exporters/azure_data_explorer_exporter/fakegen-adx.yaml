@@ -1,0 +1,67 @@
+# ADX Exporter with Fake Data Generator
+#
+# Uses the built-in traffic generator for quick self-contained testing of the
+# ADX Exporter without needing an external telemetry source.
+#
+# Usage:
+#   cargo run --release --features azure-data-explorer -- \
+#     --config crates/contrib-nodes/src/exporters/azure_data_explorer_exporter/fakegen-adx.yaml \
+#     --num-cores 1
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine:
+  telemetry:
+    logs:
+      level: "info,otel_arrow_dfe_engine=debug"
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure-data-explorer-auth:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              scope: "https://example.kusto.windows.net/.default"
+              method: "dev"
+        nodes:
+          fake-data-generator:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: synthetic
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 10
+                max_signal_count: 100
+                max_batch_size: 10
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+
+          azure-data-explorer-exporter:
+            type: "urn:microsoft:exporter:azure_data_explorer"
+            capabilities:
+              bearer_token_provider: azure-data-explorer-auth
+            config:
+              # Cluster URI. Do not use the ingest-prefixed Data Ingestion URI.
+              cluster_uri: "https://example.kusto.windows.net"
+              db_name: "oteldb"
+              tables:
+                logs:
+                  name: "OTELLogs"
+                  mapping: "OTELLogsMapping"
+              gzip_compression_level: 6
+              max_row_bytes: 921600
+              max_in_flight: 4
+
+        connections:
+          - from: fake-data-generator
+            to: azure-data-explorer-exporter

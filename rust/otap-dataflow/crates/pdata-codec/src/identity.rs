@@ -9,6 +9,37 @@ use otel_arrow_dfe_config::SignalType;
 
 use crate::{CodecError, CodecRegistry, ResolvedCodec};
 
+/// A complete encoded batch constructed by a codec, with an established item count.
+///
+/// Codec extensions implement this on an opaque value returned by their own
+/// builder. Keep its fields private: receivers should append messages through
+/// that builder, not supply arbitrary bytes and a claimed count. Use
+/// [`ResolvedCodec::admit`] instead for bytes received from an external source.
+///
+/// # Contract
+///
+/// The bytes must be independently decodable using [`Self::ENCODING`] for the
+/// reported signal. The count must equal the codec's primary-signal item count,
+/// including its documented treatment of invalid records, and be less than
+/// `usize::MAX`. Counts are trusted just like a registered codec counter; this
+/// trait is an extension contract, not a security boundary against faulty codecs.
+///
+/// [`ResolvedCodec::admit_built`] checks identity, signal support, and count range,
+/// then moves the bytes and caches the count without scanning or decoding them.
+/// The trait is statically dispatched and adds no payload allocation or storage.
+/// A known count is not a decode-validation certificate: later materialization
+/// still uses the selected decoder and may reject malformed record contents.
+pub trait EncodedPdataBatch: Sized {
+    /// Byte-compatible encoding emitted by this codec-owned builder.
+    const ENCODING: PdataEncoding;
+
+    /// Primary signal represented by the constructed batch.
+    fn signal_type(&self) -> SignalType;
+
+    /// Moves the finished bytes and their established primary-signal item count.
+    fn into_parts(self) -> (Bytes, usize);
+}
+
 /// Stable identity of an independently decodable byte representation.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct PdataEncoding(Cow<'static, str>);

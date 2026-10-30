@@ -22,11 +22,10 @@ use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::OtapPayload;
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::Message;
 use prost::bytes::Buf;
 use tokio::sync::oneshot;
@@ -211,11 +210,13 @@ impl Decoder for OtlpBytesDecoder {
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         let buf = src.chunk();
         let bytes = Bytes::copy_from_slice(buf);
-        let result = match self.signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes),
-        };
+        // SAFETY: PipelineRuntimeServices validates the immutable global
+        // registry before starting receivers; the built-in OTLP codec
+        // is always registered and cannot disappear at runtime.
+        let result = otel_arrow_dfe_pdata_codec::builtins::resolve_otlp()
+            .expect("validated OTLP codec")
+            .admit(self.signal, bytes)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
         src.advance(buf.len());
         Ok(Some(OtapPdata::new(Context::default(), result.into())))
     }
@@ -507,4 +508,18 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
 
 impl NamedService for TraceServiceServer {
     const NAME: &'static str = super::TRACE_SERVICE_NAME;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: the original gRPC decoder receives each OTLP signal's framed bytes.
+    /// Guarantees: admission preserves encoded storage and signal without parsing protobuf.
+    #[tokio::test]
+    async fn decoder_admits_encoded_otlp_for_all_signals() {
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            super::super::assert_encoded_decoder(OtlpBytesDecoder::new(signal), signal).await;
+        }
+    }
 }

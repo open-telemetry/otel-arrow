@@ -11,6 +11,7 @@ use std::hint::black_box;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_otap::compression::CompressionMethod;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::batching::make_item_batches;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
@@ -22,10 +23,10 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otel_arrow_dfe_pdata::{OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_pdata_codec::{
-    CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation, EncodePolicy, EncodingPlan,
-    InspectionPlan, PdataEncoding,
+    AcceptedEncodings, CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation,
+    EncodePolicy, EncodingPlan, PdataEncoding,
 };
 
 #[cfg(not(windows))]
@@ -270,12 +271,19 @@ fn legacy_representation_paths(c: &mut Criterion) {
         let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
         let otap_records: OtapArrowRecords = otlp_to_otap(&message);
 
+        let forward_service = CodecService::new().expect("valid codec registry");
+        let forward_plan = EncodingPlan::resolve(
+            forward_service.registry(),
+            &PdataEncoding::OTLP,
+            EncodePolicy::default(),
+        )
+        .expect("OTLP encoding plan");
         _ = group.bench_function(BenchmarkId::new("OTLP/forward", record_count), |b| {
             b.iter_batched(
                 || OtapPayload::from(otlp_bytes.clone()),
-                |payload| {
-                    let forwarded: OtlpProtoBytes = payload
-                        .try_into_with_default()
+                |mut payload| {
+                    let forwarded = payload
+                        .encode_bytes(&forward_service, &forward_plan)
                         .expect("matching OTLP forwarding");
                     black_box(forwarded)
                 },
@@ -283,12 +291,12 @@ fn legacy_representation_paths(c: &mut Criterion) {
             )
         });
 
+        let decode_service = CodecService::new().expect("valid codec registry");
         _ = group.bench_function(BenchmarkId::new("OTLP/decode", record_count), |b| {
             b.iter_batched(
                 || OtapPayload::from(otlp_bytes.clone()),
                 |payload| {
-                    let records: OtapArrowRecords =
-                        payload.try_into_with_default().expect("OTLP decode");
+                    let records = payload.try_into_otap(&decode_service).expect("OTLP decode");
                     black_box(records)
                 },
                 BatchSize::SmallInput,
@@ -307,12 +315,13 @@ fn legacy_representation_paths(c: &mut Criterion) {
             )
         });
 
+        let native_service = CodecService::new().expect("valid codec registry");
         _ = group.bench_function(BenchmarkId::new("OTAP/native_move", record_count), |b| {
             b.iter_batched(
                 || OtapPayload::from(otap_records.clone()),
                 |payload| {
-                    let records: OtapArrowRecords = payload
-                        .try_into_with_default()
+                    let records = payload
+                        .try_into_otap(&native_service)
                         .expect("native payload move");
                     black_box(records)
                 },
@@ -383,7 +392,7 @@ fn direct_codec_paths(c: &mut Criterion) {
         let encoded = codec
             .admit(SignalType::Logs, encoded)
             .expect("OTLP admission");
-        let view_plan = InspectionPlan::accept_encoded([codec]);
+        let accepted_encodings = AcceptedEncodings::accept_encoded([codec]);
         let encoding_plan = EncodingPlan::resolve(
             service.registry(),
             &PdataEncoding::OTLP,
@@ -396,7 +405,13 @@ fn direct_codec_paths(c: &mut Criterion) {
         });
 
         _ = group.bench_function(BenchmarkId::new("OTLP/view", record_count), |b| {
-            b.iter(|| black_box(service.view(&encoded, &view_plan).expect("OTLP codec view")))
+            b.iter(|| {
+                black_box(
+                    service
+                        .view(&encoded, &accepted_encodings)
+                        .expect("OTLP codec view"),
+                )
+            })
         });
 
         _ = group.bench_function(

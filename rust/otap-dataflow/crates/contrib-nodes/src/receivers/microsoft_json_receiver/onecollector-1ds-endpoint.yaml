@@ -1,0 +1,949 @@
+# ============================================================
+# OneCollector / 1DS Common Schema 4.0 endpoint configuration
+# ============================================================
+#
+# Loaded from the pipeline config via:
+#   endpoints:
+#     "/OneCollector/1.0":
+#       config_file: "onecollector-1ds-endpoint.yaml"
+
+name: "OneCollector / 1DS Common Schema 4.0"
+
+# -- Size limits -------------------------------------------------------------
+# Per-endpoint body limit: 3 MiB (OneCollector protocol maximum).
+max_request_body_size: 3145728    # 3 MiB
+# Per-event limit: 2 MiB (OneCollector single-event maximum).
+max_event_size: 2097152           # 2 MiB
+
+# -- HTTP behaviour ----------------------------------------------------------
+allowed_methods:
+  - POST
+  - GET
+
+accepted_content_types:
+  - "application/x-json-stream"
+  - "application/json"
+
+# POST body is newline-delimited JSON (one event per line).
+body_format: line_separated_json
+
+# Preserve unmapped fields, including nested exception details, in the body.
+unmapped:
+  mode: body
+
+# GET query-string key=value pairs are treated as fields of a single event.
+get_format: event_fields
+
+# -- Response format ---------------------------------------------------------
+response_format: one_collector
+
+# GET beacon (t.js) behaviour:
+# Query string key=value pairs are treated as fields of a single event
+# and processed through the field mapping rules below.  This is NOT the
+# same as POST, where query params are protocol headers.
+
+# -- CORS --------------------------------------------------------------------
+cors:
+  allow_credentials: true          # default: true
+  max_age_seconds: 3600            # default: 3600
+  # The <max-age> token is replaced with the max_age_seconds value.
+  # default: "no-cache, no-store, max-age=<max-age>"
+  cache_control: "no-cache, no-store, max-age=<max-age>"
+
+  allow_headers: >-
+    AuthMsaDeviceTicket, AuthXToken, Content-Encoding, Content-Type,
+    Cache-Control, Client-Id, SDK-Name, SDK-Version, apikey, x-apikey,
+    client-version, upload-time, time-delta-to-apply-millis,
+    client-time-epoch-millis,
+    NoResponseBody, Sec-CH-UA, Sec-CH-UA-Arch, Sec-CH-UA-Bitness,
+    Sec-CH-UA-Full-Version, Sec-CH-UA-Full-Version-List, Sec-CH-UA-Mobile,
+    Sec-CH-UA-Model, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version,
+    Sec-CH-UA-WoW64
+
+  expose_headers: >-
+    kill-tokens, kill-events, kill-duration-seconds,
+    kill-duration, time-delta-millis
+
+  extra_response_headers:
+    accept-ch: >-
+      Sec-CH-UA, Sec-CH-UA-Full-Version, Sec-CH-UA-Full-Version-List,
+      Sec-CH-UA-Mobile, Sec-CH-UA-Model, Sec-CH-UA-Platform,
+      Sec-CH-UA-Platform-Version
+
+# -- iKey filtering -----------------------------------------------------------
+# Uncomment to enable per-endpoint iKey filtering.
+# Inline rules:
+#   ikey_filter:
+#     keys:
+#       "o:bad-key-guid":
+#         action: reject
+#       "o:browser-key":
+#         action: accept
+#         require_origin: true
+#         allowed_origins:
+#           - "https://myapp.example.com"
+#       "o:legacy-key":
+#         action: accept
+#         remap_ikey: "o:new-key"
+#       "*":
+#         action: accept
+#
+# Or reference an external file:
+#   ikey_filter:
+#     filter_file: "ikey-rules.yaml"
+
+# -- Environment variable resource attributes ----------------------------------
+# Maps process environment variables to OTel resource attribute keys.
+# Resolved at endpoint compile time; unset/empty vars are silently skipped.
+# Useful for Azure Container Apps, Kubernetes, or any platform that injects
+# metadata via environment variables.
+env_resource_attrs:
+  CONTAINER_APP_NAME: "ms.container.app.name"
+  CONTAINER_APP_REVISION: "ms.container.app.revision"
+  CONTAINER_APP_REPLICA_NAME: "ms.container.app.replica_name"
+  #CONTAINER_APP_ENV_DNS_SUFFIX: "ms.container.app.env_dns_suffix"
+  #CONTAINER_APP_HOSTNAME: "ms.container.app.hostname"
+  #CONTAINER_APP_PORT: "ms.container.app.port"
+
+# -- Query-string -> header promotion -----------------------------------------
+# Maps lowercased QS parameter names to their canonical header names.
+# Matched QS params are removed from event data and made available to
+# header_mappings and protocol checks (Content-Type, Content-Encoding, etc.).
+query_string_headers:
+  content-type: "Content-Type"
+  content-encoding: "Content-Encoding"
+  noresponsebody: "NoResponseBody"
+  apikey: "apikey"
+  sdk-version: "SDK-Version"
+  client-id: "Client-Id"
+  upload-time: "upload-time"
+
+# -- Header -> log field mappings ---------------------------------------------
+# Protocol parameters may arrive as HTTP headers or as query-string parameters.
+# The `query_string_headers` map below tells the receiver which QS keys should
+# be promoted to virtual headers (so header_mappings and protocol checks can
+# find them).  Remaining QS params are treated as event data for GET requests.
+header_mappings:
+  - header: "apikey"
+    target:
+      kind: resource
+      key: "ms.iKey"
+  - header: "SDK-Version"
+    target:
+      kind: resource
+      key: "ms.sdk.version"
+  - header: "Client-Id"
+    target:
+      kind: attribute
+      key: "cs.client.id"
+  - header: "upload-time"
+    target:
+      kind: attribute
+      key: "cs.upload.time"
+
+# -- JSON field -> OTel log mapping rules -------------------------------------
+# Validation is derived from the Common Schema 4.0 JSON Schema.
+# - `expected_type` enforces the schema-declared type (rejects on mismatch).
+# - `max_length` caps string byte length; `on_length_exceeded` controls
+#   whether the value is truncated (default) or the event is rejected.
+rules:
+  # ===== Core required fields ==============================================
+  - path: "name"
+    target:
+      kind: event_name
+    validate:
+      expected_type: string
+      max_length: 1024
+      on_validation_failure: reject
+
+  - path: "time"
+    target:
+      kind: timestamp
+    validate:
+      expected_type: string    # RFC 3339 date-time string
+      on_validation_failure: reject
+
+  - path: "ver"
+    target:
+      kind: attribute
+      key: "cs.ver"
+    validate:
+      expected_type: string
+      max_length: 8
+
+  # ===== Optional top-level fields =========================================
+  - path: "iKey"
+    target:
+      kind: resource
+      key: "ms.iKey"
+    validate:
+      expected_type: string
+      max_length: 128
+
+  - path: "data.baseType"
+    target:
+      kind: attribute
+      key: "cs.baseType"
+    validate:
+      expected_type: string
+      max_length: 256
+
+  # ===== Extensions (ext.*) ================================================
+  # Extension groups are nested children under "ext".  Flattened encoding
+  # (e.g. "ext.dt.traceId" as a top-level key) is also supported at runtime.
+  - path: "ext"
+    children:
+      # -- Distributed tracing (dt) ----------------------------------------
+      - path: "dt"
+        allowed_keys: [traceId, spanId, traceFlags]
+        children:
+          - path: "traceId"
+            target: { kind: trace_id }
+            validate: { expected_type: string, max_length: 32 }
+          - path: "spanId"
+            target: { kind: span_id }
+            validate: { expected_type: string, max_length: 16 }
+          - path: "traceFlags"
+            target: { kind: trace_flags }
+            validate: { expected_type: integer }
+
+      # -- Application (app) -----------------------------------------------
+      - path: "app"
+        allowed_keys: [id, ver, name, locale, is1P, asId, sesId, userId, expId, env]
+        children:
+          - path: "id"
+            target: { kind: attribute, key: "cs.ext.app.id" }
+            validate: { expected_type: string, max_length: 512 }
+          - path: "ver"
+            target: { kind: attribute, key: "cs.ext.app.ver" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "name"
+            target: { kind: attribute, key: "cs.ext.app.name" }
+            validate: { expected_type: string, max_length: 512 }
+          - path: "locale"
+            target: { kind: attribute, key: "cs.ext.app.locale" }
+            validate: { expected_type: string, max_length: 64 }
+          - path: "is1P"
+            target: { kind: attribute, key: "cs.ext.app.is1P" }
+            validate: { expected_type: integer }
+          - path: "asId"
+            target: { kind: attribute, key: "cs.ext.app.asId" }
+            validate: { expected_type: integer }
+          - path: "sesId"
+            target:
+              kind: resource
+              key: "session.id"
+            validate: { expected_type: string, max_length: 256 }
+            also:
+              - target: { kind: attribute, key: "cs.ext.app.sesId" }
+          - path: "userId"
+            target: { kind: attribute, key: "cs.ext.app.userId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "expId"
+            target: { kind: attribute, key: "cs.ext.app.expId" }
+            validate: { expected_type: string, max_length: 1024 }
+          - path: "env"
+            target: { kind: attribute, key: "cs.ext.app.env" }
+            validate: { expected_type: string, max_length: 256 }
+
+      # -- Device (device) -------------------------------------------------
+      - path: "device"
+        allowed_keys: [id, deviceClass, make, model, localId, authId, authSecId, authIdEnt, orgId, orgAuthId, orgCountry]
+        children:
+          - path: "id"
+            target: { kind: attribute, key: "cs.ext.device.id" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "deviceClass"
+            target: { kind: attribute, key: "cs.ext.device.deviceClass" }
+            validate: { expected_type: string, max_length: 128 }
+          - path: "make"
+            target: { kind: attribute, key: "cs.ext.device.make" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "model"
+            target: { kind: attribute, key: "cs.ext.device.model" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "localId"
+            target: { kind: attribute, key: "cs.ext.device.localId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "authId"
+            target: { kind: attribute, key: "cs.ext.device.authId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "authSecId"
+            target: { kind: attribute, key: "cs.ext.device.authSecId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "authIdEnt"
+            target: { kind: attribute, key: "cs.ext.device.authIdEnt" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "orgId"
+            target: { kind: attribute, key: "cs.ext.device.orgId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "orgAuthId"
+            target: { kind: attribute, key: "cs.ext.device.orgAuthId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "orgCountry"
+            target: { kind: attribute, key: "cs.ext.device.orgCountry" }
+            validate: { expected_type: string, max_length: 64 }
+
+      # -- OS (os) ----------------------------------------------------------
+      - path: "os"
+        allowed_keys: [name, ver, locale, bootId, expId, build]
+        children:
+          - path: "name"
+            target: { kind: attribute, key: "cs.ext.os.name" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "ver"
+            target: { kind: attribute, key: "cs.ext.os.ver" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "locale"
+            target: { kind: attribute, key: "cs.ext.os.locale" }
+            validate: { expected_type: string, max_length: 64 }
+          - path: "bootId"
+            target: { kind: attribute, key: "cs.ext.os.bootId" }
+            validate: { expected_type: integer }
+          - path: "expId"
+            target: { kind: attribute, key: "cs.ext.os.expId" }
+            validate: { expected_type: string, max_length: 1024 }
+          - path: "build"
+            target: { kind: attribute, key: "cs.ext.os.build" }
+            validate: { expected_type: string, max_length: 256 }
+
+      # -- Cloud (cloud) ----------------------------------------------------
+      - path: "cloud"
+        allowed_keys: [id, role, roleInstance, roleVer, env, deploymentRing]
+        children:
+          - path: "id"
+            target: { kind: attribute, key: "cs.ext.cloud.id" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "role"
+            target: { kind: attribute, key: "cs.ext.cloud.role" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "roleInstance"
+            target: { kind: attribute, key: "cs.ext.cloud.roleInstance" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "roleVer"
+            target: { kind: attribute, key: "cs.ext.cloud.roleVer" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "env"
+            target: { kind: attribute, key: "cs.ext.cloud.env" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "deploymentRing"
+            target: { kind: attribute, key: "cs.ext.cloud.deploymentRing" }
+            validate: { expected_type: string, max_length: 128 }
+
+      # -- User (user) ------------------------------------------------------
+      - path: "user"
+        allowed_keys: [id, localId, authId, locale]
+        children:
+          - path: "id"
+            target: { kind: attribute, key: "cs.ext.user.id" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "localId"
+            target: { kind: attribute, key: "cs.ext.user.localId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "authId"
+            target: { kind: attribute, key: "cs.ext.user.authId" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "locale"
+            target: { kind: attribute, key: "cs.ext.user.locale" }
+            validate: { expected_type: string, max_length: 64 }
+
+      # -- Web (web) --------------------------------------------------------
+      - path: "web"
+        allowed_keys: [browser, browserVer, browserLang, screenRes, domain, userConsent, isManual]
+        children:
+          - path: "browser"
+            target: { kind: attribute, key: "cs.ext.web.browser" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "browserVer"
+            target: { kind: attribute, key: "cs.ext.web.browserVer" }
+            validate: { expected_type: string, max_length: 128 }
+          - path: "browserLang"
+            target: { kind: attribute, key: "cs.ext.web.browserLang" }
+            validate: { expected_type: string, max_length: 64 }
+          - path: "screenRes"
+            target: { kind: attribute, key: "cs.ext.web.screenRes" }
+            validate: { expected_type: string, max_length: 32 }
+          - path: "domain"
+            target: { kind: attribute, key: "cs.ext.web.domain" }
+            validate: { expected_type: string, max_length: 512 }
+          - path: "userConsent"
+            target: { kind: attribute, key: "cs.ext.web.userConsent" }
+            validate: { expected_type: boolean }
+          - path: "isManual"
+            target: { kind: attribute, key: "cs.ext.web.isManual" }
+            validate: { expected_type: boolean }
+
+      # -- Location (loc) ---------------------------------------------------
+      - path: "loc"
+        allowed_keys: [id, country, tz]
+        children:
+          - path: "id"
+            target: { kind: attribute, key: "cs.ext.loc.id" }
+            validate: { expected_type: integer }
+          - path: "country"
+            target: { kind: attribute, key: "cs.ext.loc.country" }
+            validate: { expected_type: string, max_length: 64 }
+          - path: "tz"
+            target: { kind: attribute, key: "cs.ext.loc.tz" }
+            validate: { expected_type: string, max_length: 64 }
+
+      # -- Network (net) ----------------------------------------------------
+      - path: "net"
+        allowed_keys: [provider, cost, type]
+        children:
+          - path: "provider"
+            target: { kind: attribute, key: "cs.ext.net.provider" }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "cost"
+            target: { kind: attribute, key: "cs.ext.net.cost" }
+            validate: { expected_type: string, max_length: 64 }
+          - path: "type"
+            target: { kind: attribute, key: "cs.ext.net.type" }
+            validate: { expected_type: string, max_length: 64 }
+
+      # -- SDK (sdk) --------------------------------------------------------
+      - path: "sdk"
+        allowed_keys: [ver, epoch, seq, installId]
+        children:
+          - path: "ver"
+            target:
+              kind: scope
+              field: name_version
+              split: dash_semver
+            also:
+              - target: { kind: resource, key: "telemetry.sdk.name" }
+                transform: { kind: dash_semver_name }
+              - target: { kind: resource, key: "telemetry.sdk.version" }
+                transform: { kind: dash_semver_version }
+            validate: { expected_type: string, max_length: 256 }
+          - path: "epoch"
+            target: { kind: attribute, key: "cs.ext.sdk.epoch" }
+            validate: { expected_type: string, max_length: 128 }
+          - path: "seq"
+            target: { kind: attribute, key: "cs.ext.sdk.seq" }
+            validate: { expected_type: integer }
+          - path: "installId"
+            target: { kind: attribute, key: "cs.ext.sdk.installId" }
+            validate: { expected_type: string, max_length: 256 }
+
+      # -- Privacy (privacy) ------------------------------------------------
+      - path: "privacy"
+        allowed_keys: [dataType, isRequired, dataCategory, product]
+        children:
+          - path: "dataType"
+            target: { kind: attribute, key: "cs.ext.privacy.dataType" }
+            validate: { expected_type: integer }
+          - path: "isRequired"
+            target: { kind: attribute, key: "cs.ext.privacy.isRequired" }
+            validate: { expected_type: boolean }
+          - path: "dataCategory"
+            target: { kind: attribute, key: "cs.ext.privacy.dataCategory" }
+            validate: { expected_type: integer }
+          - path: "product"
+            target: { kind: attribute, key: "cs.ext.privacy.product" }
+            validate: { expected_type: integer }
+
+      # -- Correlation vector (mscv) ----------------------------------------
+      - path: "mscv"
+        allowed_keys: [cV]
+        children:
+          - path: "cV"
+            target: { kind: attribute, key: "cs.ext.mscv.cV" }
+            validate: { expected_type: string, max_length: 256 }
+
+      # -- Catch-all for unknown extension fields ---------------------------
+      # Wildcards in children work too: "*" under "ext" flattens to "ext.*",
+      # and "*" under that flattens to "ext.*.*".
+      - path: "*"
+        children:
+          - path: "*"
+            target: { kind: attribute, prefix: "cs.ext." }
+            validate: { expected_type: string_coerce, max_length: 4096 }
+
+  # ===== Common baseData fields (fallback for events without overrides) =====
+  - path: "data"
+    children:
+      - path: "baseData"
+        children:
+          - path: "properties"
+            children:
+              - path: "*"
+                target: { kind: attribute, prefix: "cs.baseData.prop." }
+                validate: { expected_type: string_coerce, max_length: 8192 }
+          - path: "measurements"
+            children:
+              - path: "*"
+                target: { kind: attribute, prefix: "cs.baseData.meas." }
+                validate: { expected_type: float }
+          - path: "metrics"
+            target: { kind: attribute, key: "cs.baseData.metrics" }
+            validate: { expected_type: string_coerce, max_length: 32768 }
+
+  # No baseData catch-all: retain unhandled children, including exceptions,
+  # as structured body data rather than truncating JSON-string attributes.
+  # Remaining unmatched children of data (Part C) flow to the log body as JSON.
+
+# -- Per-event-name overrides ------------------------------------------------
+# Keys are event name patterns: exact strings or globs ending in `*`.
+# Override rules are merged with the base rules above: matching paths are
+# replaced, new paths are added, unmentioned base paths are kept.
+#
+# Part B events (Common Schema 4.0):
+#   Logs:    Audit, Exception, Ms.Web.ContentUpdate, Ms.Web.PageAction,
+#            Ms.Web.PageView, Ms.Web.PageViewPerformance, Ms.Web.Span
+#   Metrics: MetricStream
+#   Traces:  Span
+#
+# Part C (data.*) fields are freeform per-application and flow to the log body.
+event_overrides:
+
+  "SDKPerfTest":
+    rules:
+      - path: "data.baseData.testName"
+        target: { kind: attribute, key: "test.case.name" }
+        validate: { expected_type: string_coerce, max_length: 32768 }
+
+  # =========================================================================
+  # Glob: All Ms.Web.* events -- shared requirements & baseData fields
+  # =========================================================================
+  "Ms.Web.*":
+    rules:
+      # Mark top-level fields required (metadata-only overlay on base rules).
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "ver"
+        required: { on_missing: default, default_value: "4.0" }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "http.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "duration"
+                target: { kind: attribute, key: "cs.baseData.duration" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "referrerUri"
+                target: { kind: attribute, key: "http.referrer" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "measurements"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.meas." }
+                    validate: { expected_type: float }
+              - path: "metrics"
+                target: { kind: attribute, key: "cs.baseData.metrics" }
+                validate: { expected_type: string_coerce, max_length: 32768 }
+
+  # =========================================================================
+  # Ms.Web.PageView -- page-level telemetry
+  # =========================================================================
+  "Ms.Web.PageView":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "http.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "duration"
+                target: { kind: attribute, key: "cs.baseData.duration" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "referrerUri"
+                target: { kind: attribute, key: "http.referrer" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "isLoggedIn"
+                target: { kind: attribute, key: "cs.baseData.isLoggedIn" }
+                validate: { expected_type: boolean }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "measurements"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.meas." }
+                    validate: { expected_type: float }
+
+  # =========================================================================
+  # Ms.Web.PageViewPerformance -- page view with navigation timing
+  # =========================================================================
+  "Ms.Web.PageViewPerformance":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "http.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "duration"
+                target: { kind: attribute, key: "cs.baseData.duration" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "perfTotal"
+                target: { kind: attribute, key: "perf.total_ms" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "networkConnect"
+                target: { kind: attribute, key: "perf.network_connect_ms" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "sentRequest"
+                target: { kind: attribute, key: "perf.sent_request_ms" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "receivedResponse"
+                target: { kind: attribute, key: "perf.received_response_ms" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "domProcessing"
+                target: { kind: attribute, key: "perf.dom_processing_ms" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "measurements"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.meas." }
+                    validate: { expected_type: float }
+
+  # =========================================================================
+  # Ms.Web.PageAction -- user interaction (click, scroll, etc.)
+  # =========================================================================
+  "Ms.Web.PageAction":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "actionType"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.actionType" }
+                validate: { expected_type: string, max_length: 4 }
+              - path: "targetUri"
+                target: { kind: attribute, key: "cs.baseData.targetUri" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "pageName"
+                target: { kind: attribute, key: "cs.baseData.pageName" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "content"
+                target: { kind: attribute, key: "cs.baseData.content" }
+                validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "contentVer"
+                target: { kind: attribute, key: "cs.baseData.contentVer" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "behavior"
+                target: { kind: attribute, key: "cs.baseData.behavior" }
+                validate: { expected_type: integer }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+
+  # =========================================================================
+  # Ms.Web.ContentUpdate -- content change tracking
+  # =========================================================================
+  "Ms.Web.ContentUpdate":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "http.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "content"
+                target: { kind: attribute, key: "cs.baseData.content" }
+                validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "contentVer"
+                target: { kind: attribute, key: "cs.baseData.contentVer" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+
+  # =========================================================================
+  # Ms.Web.Span -- web-originated distributed trace span
+  # =========================================================================
+  "Ms.Web.Span":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "http.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "duration"
+                target: { kind: attribute, key: "cs.baseData.duration" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "responseCode"
+                target: { kind: attribute, key: "http.status_code" }
+                validate: { expected_type: string_coerce, max_length: 16 }
+              - path: "success"
+                target: { kind: attribute, key: "cs.baseData.success" }
+                validate: { expected_type: boolean }
+              - path: "source"
+                target: { kind: attribute, key: "cs.baseData.source" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "target"
+                target: { kind: attribute, key: "cs.baseData.target" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "type"
+                target: { kind: attribute, key: "cs.baseData.type" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "measurements"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.meas." }
+                    validate: { expected_type: float }
+
+  # =========================================================================
+  # Exception -- runtime exception (Part B / Logs)
+  # =========================================================================
+  "Exception":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "severityLevel"
+                target: { kind: attribute, key: "cs.baseData.severityLevel" }
+                validate: { expected_type: integer }
+              - path: "problemId"
+                target: { kind: attribute, key: "cs.baseData.problemId" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "typeName"
+                target: { kind: attribute, key: "exception.type" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "message"
+                target: { kind: attribute, key: "exception.message" }
+                validate: { expected_type: string, max_length: 32768 }
+              - path: "assembly"
+                target: { kind: attribute, key: "cs.baseData.assembly" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "method"
+                target: { kind: attribute, key: "cs.baseData.method" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "outerType"
+                target: { kind: attribute, key: "cs.baseData.outerType" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "outerMessage"
+                target: { kind: attribute, key: "cs.baseData.outerMessage" }
+                validate: { expected_type: string, max_length: 32768 }
+              - path: "innermostType"
+                target: { kind: attribute, key: "cs.baseData.innermostType" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "innermostMessage"
+                target: { kind: attribute, key: "cs.baseData.innermostMessage" }
+                validate: { expected_type: string, max_length: 32768 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "measurements"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.meas." }
+                    validate: { expected_type: float }
+              # baseData.exceptions (array of stack frames) flows to the log
+              # body because it is a complex nested structure.
+
+  # =========================================================================
+  # Audit -- audit log events (Part B / Logs)
+  # =========================================================================
+  "Audit":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "operationName"
+                target: { kind: attribute, key: "cs.baseData.operationName" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "operationId"
+                target: { kind: attribute, key: "cs.baseData.operationId" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "resultType"
+                target: { kind: attribute, key: "cs.baseData.resultType" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "resultDescription"
+                target: { kind: attribute, key: "cs.baseData.resultDescription" }
+                validate: { expected_type: string, max_length: 8192 }
+              - path: "callerIpAddress"
+                target: { kind: attribute, key: "cs.baseData.callerIpAddress" }
+                validate: { expected_type: string, max_length: 64 }
+              - path: "identity"
+                target: { kind: attribute, key: "cs.baseData.identity" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "category"
+                target: { kind: attribute, key: "cs.baseData.category" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+
+  # =========================================================================
+  # Span -- distributed trace span (Part B / Traces)
+  # =========================================================================
+  "Span":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "cs.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "duration"
+                target: { kind: attribute, key: "cs.baseData.duration" }
+                validate: { expected_type: string_coerce, max_length: 64 }
+              - path: "success"
+                target: { kind: attribute, key: "cs.baseData.success" }
+                validate: { expected_type: boolean }
+              - path: "responseCode"
+                target: { kind: attribute, key: "http.status_code" }
+                validate: { expected_type: string_coerce, max_length: 16 }
+              - path: "url"
+                target: { kind: attribute, key: "http.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "source"
+                target: { kind: attribute, key: "cs.baseData.source" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "target"
+                target: { kind: attribute, key: "cs.baseData.target" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "type"
+                target: { kind: attribute, key: "cs.baseData.type" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "data"
+                target: { kind: attribute, key: "cs.baseData.data" }
+                validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
+              - path: "measurements"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.meas." }
+                    validate: { expected_type: float }
+
+  # =========================================================================
+  # MetricStream -- pre-aggregated or raw metrics (Part B / Metrics)
+  # =========================================================================
+  "MetricStream":
+    rules:
+      - path: "name"
+        required: { on_missing: reject }
+      - path: "time"
+        required: { on_missing: reject }
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "metricName"
+                target: { kind: attribute, key: "cs.baseData.metricName" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "namespace"
+                target: { kind: attribute, key: "cs.baseData.namespace" }
+                validate: { expected_type: string, max_length: 256 }
+              - path: "value"
+                target: { kind: attribute, key: "cs.baseData.value" }
+                validate: { expected_type: float }
+              - path: "count"
+                target: { kind: attribute, key: "cs.baseData.count" }
+                validate: { expected_type: integer }
+              - path: "min"
+                target: { kind: attribute, key: "cs.baseData.min" }
+                validate: { expected_type: float }
+              - path: "max"
+                target: { kind: attribute, key: "cs.baseData.max" }
+                validate: { expected_type: float }
+              - path: "stdDev"
+                target: { kind: attribute, key: "cs.baseData.stdDev" }
+                validate: { expected_type: float }
+              - path: "aggType"
+                target: { kind: attribute, key: "cs.baseData.aggType" }
+                validate: { expected_type: string, max_length: 64 }
+              - path: "properties"
+                children:
+                  - path: "*"
+                    target: { kind: attribute, prefix: "cs.baseData.prop." }
+                    validate: { expected_type: string_coerce, max_length: 8192 }
