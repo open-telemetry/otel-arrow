@@ -117,8 +117,13 @@ From `rust\otap-dataflow`, run:
     --http-admin-bind 127.0.0.1:0
 ```
 
-On Linux, use `./target/debug/df_engine` with the same arguments and a
-shell-appropriate line continuation.
+On Linux, run from `rust/otap-dataflow` with forward-slash paths:
+
+```sh
+./target/debug/df_engine \
+    --config configs/sql-server-console.yaml \
+    --http-admin-bind 127.0.0.1:0
+```
 
 **The console demonstrates collection and feedback, not durable delivery.**
 Stop the previous receiver before starting a replacement. If shutdown is
