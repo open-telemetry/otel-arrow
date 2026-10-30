@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/open-telemetry/weaver/v0.25.1/schemas/semconv.schema.v2.json
+file_format: definition/2
+attributes:
+  - key: destination.address
+    type: string
+    stability: development
+    brief: "Destination address - domain name if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name."
+    note: >
+      When observed from the source side, and when communicating through an intermediary, `destination.address` SHOULD represent
+      the destination address behind any intermediaries, for example proxies, if it's available.
+    examples: ['destination.example.com', '10.1.2.80', '/tmp/my.sock']
+  - key: destination.port
+    type: int
+    stability: development
+    brief: 'Destination port number'
+    examples: [3389, 2888]

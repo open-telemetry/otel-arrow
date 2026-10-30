@@ -1,0 +1,96 @@
+file_format: definition/2
+
+attribute_groups:
+  # Attributes shared by all spans reported by the FaaS instance itself: the generic
+  # incoming span and the trigger-specific ones. Kept as a group rather than modeling
+  # the trigger-specific spans as refinements of `faas.server`, because individual FaaS
+  # systems refine each of those spans on their own.
+  - id: faas.attributes.server
+    visibility: internal
+    attributes:
+      - ref: faas.trigger
+        requirement_level: required
+      - ref: faas.coldstart
+      - ref: faas.invocation_id
+      - ref: cloud.resource_id
+
+spans:
+  - type: faas.server
+    kind: server
+    requirement_level: recommended
+    stability: development
+    brief: >
+      This span represents the server (incoming) side of a FaaS invocation.
+    name:
+      note: &faas_span_name >
+        Span name SHOULD be set to the function name being executed, see
+        [Function name](/docs/faas/faas-spans.md#function-name).
+    attributes:
+      - ref_group: faas.attributes.server
+
+  - type: faas.datasource.server
+    kind: server
+    requirement_level: recommended
+    stability: development
+    brief: >
+      This span represents the server side of a FaaS invocation triggered in response
+      to some data source operation such as a database or filesystem read/write.
+    name:
+      note: *faas_span_name
+    attributes:
+      - ref_group: faas.attributes.server
+      - ref: faas.trigger
+        note: MUST be set to `datasource`.
+        examples: ['datasource']
+      - ref: faas.document.collection
+        requirement_level: required
+      - ref: faas.document.operation
+        requirement_level: required
+      - ref: faas.document.time
+      - ref: faas.document.name
+
+  - type: faas.timer.server
+    kind: server
+    requirement_level: recommended
+    stability: development
+    brief: >
+      This span represents the server side of a FaaS invocation triggered by a timer.
+    name:
+      note: *faas_span_name
+    attributes:
+      - ref_group: faas.attributes.server
+      - ref: faas.trigger
+        note: MUST be set to `timer`.
+        examples: ['timer']
+      - ref: faas.time
+      - ref: faas.cron
+
+  - type: faas.client
+    kind: client
+    requirement_level: recommended
+    stability: development
+    brief: >
+      This span represents an outgoing call to a FaaS service.
+    name:
+      note: >
+        Span name SHOULD be set to the name of the invoked function
+        (see `faas.invoked_name`).
+    note: |
+      The values reported by the client for the attributes listed below SHOULD be equal to
+      the corresponding [FaaS resource attributes][] and [Cloud resource attributes][],
+      which the invoked FaaS instance reports about itself, if it's instrumented.
+    attributes:
+      - ref: faas.invoked_name
+        requirement_level: required
+      - ref: faas.invoked_provider
+        requirement_level: required
+      - ref: faas.invoked_region
+        requirement_level:
+          conditionally_required: >
+            For some cloud providers, like AWS or GCP, the region in which a
+            function is hosted is essential to uniquely identify the function
+            and also part of its endpoint. Since it's part of the endpoint
+            being called, the region is always known to clients. In these cases,
+            `faas.invoked_region` MUST be set accordingly. If the region is
+            unknown to the client or not required for identifying the invoked
+            function, setting `faas.invoked_region` is optional.

@@ -10,3 +10,5 @@ config:
 # issue-link lines and multiple blank lines that cannot be controlled.
 ignores:
   - "**/CHANGELOG.md"
+  # Third-party content vendored verbatim from upstream.
+  - "rust/otap-dataflow/vendor/**"

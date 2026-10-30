@@ -817,6 +817,60 @@ mod tests {
         assert_eq!(context, first);
     }
 
+    /// Scenario: a fully formed arrival reaches stored-transport materialization again.
+    /// Guarantees: the complete plan reuses its storage without reading identity or regenerating randomness.
+    #[test]
+    fn complete_arrival_skips_stored_transport_materialization() {
+        use crate::capability::auth::AuthorizedIdentity;
+        use crate::pdata_context::{Arrival, ArrivalBinding, ArrivalHeaders};
+
+        struct UnexpectedRead;
+        impl ContextValueSource for UnexpectedRead {
+            fn values(&self, _: &ContextFieldLayout) -> Option<MaterializedContextValues> {
+                panic!("a complete plan must not read its inputs again")
+            }
+        }
+
+        let binding = ArrivalBinding {
+            header_capture: None,
+            authorized_identity_capture: Some(
+                serde_json::from_value(serde_json::json!([
+                    {"claim": "sub", "store_as": "tenant"}
+                ]))
+                .expect("identity policy"),
+            ),
+            materialization: ContextMaterializationPlan::compile(&[declaration(vec![
+                ContextEntryPart::AuthorizedIdentity {
+                    name: name("tenant"),
+                    store_as: None,
+                },
+                ContextEntryPart::Randomness {
+                    name: name("id"),
+                    value: ContextRandomnessKind::Uuid7,
+                },
+            ])])
+            .expect("materialization plan"),
+        };
+        let identity = AuthorizedIdentity::new().with_subject("verified");
+        let (metadata, _) = binding.form(&Arrival {
+            headers: ArrivalHeaders::Pairs(&[]),
+            identity: Some(&identity),
+            peer: None,
+        });
+        let mut context = metadata
+            .materialized_context()
+            .expect("formed context")
+            .clone();
+        let storage = Arc::clone(context.storage.as_ref().expect("formed storage"));
+
+        context.materialize_with_stored_transport(&binding.materialization, &UnexpectedRead);
+
+        assert!(Arc::ptr_eq(
+            &storage,
+            context.storage.as_ref().expect("unchanged storage")
+        ));
+    }
+
     /// Scenario: separately compiled plans contain the same randomness declaration.
     /// Guarantees: structural declaration provenance retains the generated UUID across plans.
     #[test]

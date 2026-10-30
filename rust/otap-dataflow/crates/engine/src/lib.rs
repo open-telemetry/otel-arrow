@@ -2023,7 +2023,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy)
         .with_authorized_identity_policy(authorized_identity_policy)
-        .with_context_materialization(context_materialization_plan, self.context_materializer);
+        .with_context_materialization(context_materialization_plan, self.context_materializer)
+        .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
@@ -2177,7 +2178,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_propagation_policy(propagation_policy);
+        .with_propagation_policy(propagation_policy)
+        .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
