@@ -22,6 +22,11 @@ requirements below.
 
 ## Getting Started
 
+For startup-only Azure Key Vault credentials, see the
+[AKV Basic Auth provider](../../../../contrib-extensions/src/azure_key_vault_user_pass_auth/README.md)
+and [complete AKV pipeline](../../../../../configs/sql-server-akv-console.yaml).
+The existing `basic_auth_provider` binding and verified TLS stay unchanged.
+
 See the [PowerShell demo](DEMO.md) for a short fixture setup, run, verification,
 and cleanup walkthrough.
 The complete pipeline is [`configs/sql-server-console.yaml`][example].

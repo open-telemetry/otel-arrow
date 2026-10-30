@@ -8300,6 +8300,7 @@ dependencies = [
  "minijinja",
  "otel-arrow-dfe-admin-api",
  "otel-arrow-dfe-config",
+ "otel-arrow-dfe-contrib-extensions",
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-controller",
  "otel-arrow-dfe-core-nodes",

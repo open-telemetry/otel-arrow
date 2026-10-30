@@ -402,6 +402,7 @@ geneva-certificate-auth = ["geneva", "otel-arrow-dfe-contrib-nodes/geneva-certif
 contrib-extensions = ["otel-arrow-dfe-contrib-extensions/contrib-extensions"]
 azure-identity-auth = ["otel-arrow-dfe-contrib-extensions/azure-identity-auth"]
 azure-key-vault-sasl-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-vault-sasl-auth"]
+azure-key-vault-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-vault-user-pass-auth"]
 flat-file-api-key-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-api-key-auth"]
 flat-file-sasl-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-sasl-auth"]
 flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]

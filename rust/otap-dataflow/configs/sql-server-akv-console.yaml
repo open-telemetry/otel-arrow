@@ -1,0 +1,74 @@
+# Replace endpoint, secret references, connection, and state path before running.
+# Build with sql-server,azure-key-vault-user-pass-auth,crypto-ring.
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          database-credentials:
+            type: urn:otel:extension:azure_key_vault_user_pass_auth
+            config:
+              vault_url: https://example-vault.vault.azure.net
+              username_secret:
+                name: sql-server-username
+              password_secret:
+                name: sql-server-password
+              identity:
+                method: managed_identity
+              startup_timeout: 30s
+        nodes:
+          database:
+            type: urn:otel:receiver:sql_server
+            capabilities:
+              basic_auth_provider: database-credentials
+            config:
+              source_id: sql-server-events
+              connection:
+                host: database.example.com
+                port: 1433
+                database: otap_fixture
+                tls:
+                  enabled: true
+                  trust_server_certificate: false
+              query:
+                statement: >
+                  SELECT ID, EVENT_TS, PAYLOAD FROM dbo.OTAP_SQL_EVENTS
+                  WHERE EVENT_TS > @last_timestamp
+                    OR (EVENT_TS = @last_timestamp AND ID > @last_id)
+                  ORDER BY EVENT_TS ASC, ID ASC
+                interval: 1m
+                timeout: 30s
+                fetch_size_rows: 100
+                max_rows_per_poll: 1000
+                max_batch_bytes: 4MiB
+              watermark:
+                mode: composite
+                timestamp:
+                  column: EVENT_TS
+                  bind: last_timestamp
+                  initial: "2026-01-01T00:00:00Z"
+                  timezone: UTC
+                tie_breaker:
+                  column: ID
+                  bind: last_id
+                  initial: 0
+              checkpoint:
+                directory: ./state/sql-server-akv
+                on_nack: rewind
+                on_permanent_nack: pause
+                nack_backoff: 1s
+                max_consecutive_failures: 5
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+        connections:
+          - from: database
+            to: console
