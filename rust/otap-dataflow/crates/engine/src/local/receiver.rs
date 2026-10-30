@@ -472,8 +472,9 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Handoff is not transactional: if a later snapshot fails or reaches the
     /// deadline, earlier accepted snapshots remain available to the collector.
-    /// The failing snapshot and any remaining snapshots are dropped; do not
-    /// retry the whole batch, which could duplicate the accepted prefix.
+    /// The terminal state is consumed; the failing snapshot and any remaining
+    /// snapshots are dropped. Do not retain cloned snapshots to retry the whole
+    /// batch, which could duplicate the accepted prefix.
     pub async fn report_terminal_metrics(
         &self,
         terminal: TerminalState,
@@ -530,7 +531,7 @@ mod tests {
 
     /// Scenario: A fatal-exit handoff encounters available, full, then closed standalone metrics channels.
     /// Guarantees: Accepted snapshots arrive once; full and closed reporters return explicit errors rather than successful handoffs.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn terminal_metrics_handoff_reports_full_and_closed_channels() {
         let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
         let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
@@ -545,7 +546,7 @@ mod tests {
             reporter,
             crate::testing::test_pipeline_runtime_services(),
         );
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_millis(100);
         handler
             .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
             .await
@@ -570,7 +571,7 @@ mod tests {
 
     /// Scenario: A multi-snapshot fatal-exit handoff fills a standalone channel after its first snapshot.
     /// Guarantees: Handoff returns an error without rolling back or duplicating the accepted prefix.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn terminal_metrics_handoff_preserves_accepted_prefix() {
         let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
         let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
@@ -589,7 +590,7 @@ mod tests {
             reporter,
             crate::testing::test_pipeline_runtime_services(),
         );
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_millis(100);
         assert!(matches!(
             handler
                 .report_terminal_metrics(TerminalState::new(deadline, snapshots))
