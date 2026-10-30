@@ -4,7 +4,8 @@
 //! Validation helpers for node configuration.
 //!
 //! These helpers are intended for use with the `validate_config` field on
-//! factory structs ([`ReceiverFactory`], [`ProcessorFactory`], [`ExporterFactory`]).
+//! factory structs (`ReceiverFactory`, `ProcessorFactory`, `ExporterFactory`) in
+//! the engine crate.
 //!
 //! **Scope:** `validate_config` performs *static* validation only -- it checks
 //! that the config value can be deserialized into the expected type. It does

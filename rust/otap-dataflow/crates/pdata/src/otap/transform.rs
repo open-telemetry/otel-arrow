@@ -164,8 +164,8 @@ where
 /// |   "a1"   |  str("b")  |  0        | <-- val != prev val -> no delta encoding -> parent id = 0
 /// |   "a2"   |  str("b")  |  0        | <-- key != prev val -> no delta encoding -> parent id = 0
 /// ...
-/// |   "a3"   | slice([0]) |  0        | <-- parent id = 0
-/// |   "a3"   | slice([0]) |  0        | <-- val type = slice -> no delta encoding -> parent id = 0
+/// |   "a3"   |`slice([0])`|  0        | <-- parent id = 0
+/// |   "a3"   |`slice([0])`|  0        | <-- val type = slice -> no delta encoding -> parent id = 0
 /// ...                                       (^ it would be same if value type = Map or Empty)
 /// ...
 /// |   "a4"   | str(null) |  0        | <-- parent id = 0

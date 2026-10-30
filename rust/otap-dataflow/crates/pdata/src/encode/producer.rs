@@ -318,7 +318,7 @@ impl Producer {
     ///
     /// This is useful when, for example, the producer is sending to multiple consumers who are
     /// opportunistically receiving OTAP batches without coordination of the stream state. If this
-    /// is called after producing a batch, all [`BatchArrowRecord`]s can be consumed independently.
+    /// is called after producing a batch, all [`BatchArrowRecords`] can be consumed independently.
     pub fn reset_streams(&mut self) -> Result<()> {
         for producer in self.stream_producers.iter_mut().flatten() {
             producer.producer.reset_stream(&self.ipc_write_options)?;

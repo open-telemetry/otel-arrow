@@ -341,7 +341,7 @@ pub trait OtapBatchStore:
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
-    /// Returns the payload type at the given index in [BatchArray]
+    /// Returns the payload type at the given index in [`Self::BatchArray`]
     #[must_use]
     fn payload_type_at_idx(index: usize) -> ArrowPayloadType {
         Self::allowed_payload_types()[index]
@@ -1043,7 +1043,7 @@ impl OtapBatchStore for Traces {
 }
 
 /// Return the child payload types for the given payload type
-/// TODO [JD]: This is pretty much made obsolete by payload_relations
+/// TODO(JD): This is pretty much made obsolete by payload_relations
 #[must_use]
 pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
     match payload_type {

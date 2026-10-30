@@ -168,7 +168,7 @@ impl DiskBudget {
         Self::new(u64::MAX, 0, RetentionPolicy::Backpressure)
     }
 
-    /// Creates a budget validated against a [`QuiverConfig`].
+    /// Creates a budget validated against a [`QuiverConfig`](crate::config::QuiverConfig).
     ///
     /// This is the recommended constructor for production use. It reads
     /// `segment_target_size` and `wal_max_size` directly from the config
