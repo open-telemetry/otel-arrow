@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{CompiledHeaderPropagationPolicy, ContextMaterializationPlan, Metadata};
+use super::{
+    CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextMaterializationPlan, HeadersRead,
+    Metadata, ValueRead,
+};
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
@@ -158,6 +161,9 @@ impl SinkBinding {
 pub struct NodeBindings {
     pub(super) arrival: Option<ArrivalBinding>,
     pub(super) sink: Option<SinkBinding>,
+    /// Sorted by selector and unique, as produced by sorted declarations.
+    pub(super) values: Box<[ValueRead]>,
+    pub(super) headers: Option<HeadersRead>,
 }
 
 impl NodeBindings {
@@ -171,6 +177,29 @@ impl NodeBindings {
     #[must_use]
     pub fn sink(&self) -> Option<&SinkBinding> {
         self.sink.as_ref()
+    }
+
+    /// Returns the read compiled for a selector this node declared.
+    ///
+    /// Call once during node construction with the same selector the node
+    /// returned from its context declarations. A selector the node did not
+    /// declare is a configuration error.
+    pub fn value(
+        &self,
+        selector: &ContextEntrySelector,
+    ) -> Result<&ValueRead, otel_arrow_dfe_config::error::Error> {
+        self.values
+            .binary_search_by(|read| read.selector().cmp(selector))
+            .map(|index| &self.values[index])
+            .map_err(|_| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!("context read {selector:?} was not declared by this node"),
+            })
+    }
+
+    /// Returns the all-captured header read, if declared.
+    #[must_use]
+    pub fn headers(&self) -> Option<&HeadersRead> {
+        self.headers.as_ref()
     }
 
     pub(crate) fn header_capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
@@ -549,6 +578,7 @@ mod tests {
         let bindings = Arc::new(NodeBindings {
             arrival: None,
             sink: Some(SinkBinding::new(policy.clone())),
+            ..Default::default()
         });
         macro_rules! check_handler {
             ($handler:expr) => {{
@@ -620,6 +650,7 @@ mod tests {
         let bindings = Arc::new(NodeBindings {
             arrival: Some(binding.clone()),
             sink: None,
+            ..Default::default()
         });
         let identity = AuthorizedIdentity::new().with_subject("verified");
         let arrival = Arrival {
