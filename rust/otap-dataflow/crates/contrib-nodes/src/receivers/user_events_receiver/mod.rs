@@ -35,13 +35,12 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use serde_json::Value;
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
 use self::decoder::DecodedUserEventsRecord;
-use self::metrics::UserEventsReceiverMetrics;
+use self::metrics::{UserEventsDropReason, UserEventsReceiverMetrics};
 use self::session::SessionInitError;
 use self::session::{RawUserEventsRecord, SessionDrainStats, UserEventsSession};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
@@ -257,7 +256,7 @@ struct UserEventsReceiver {
     /// Local pipeline CPU/shard assigned by the engine.
     cpu_id: usize,
     /// Receiver metric set shared with the local pipeline task.
-    metrics: Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
+    metrics: Rc<RefCell<UserEventsReceiverMetrics>>,
     /// Local admission state used to coordinate with memory limiting.
     admission_state: LocalReceiverAdmissionState,
 }
@@ -441,31 +440,29 @@ impl UserEventsReceiver {
     }
 }
 
-fn drop_batch(
-    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
-    builder: &mut ArrowRecordsBuilder,
-) {
+fn drop_batch(metrics: &Rc<RefCell<UserEventsReceiverMetrics>>, builder: &mut ArrowRecordsBuilder) {
     let dropped = u64::from(builder.len());
     if dropped == 0 {
         return;
     }
 
     *builder = ArrowRecordsBuilder::new();
-    metrics.borrow_mut().dropped_memory_pressure.add(dropped);
+    metrics
+        .borrow_mut()
+        .record_dropped(UserEventsDropReason::MemoryPressure, dropped);
 }
 
-fn add_dropped_send_error(
-    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
-    dropped: u64,
-) {
+fn add_dropped_send_error(metrics: &Rc<RefCell<UserEventsReceiverMetrics>>, dropped: u64) {
     if dropped > 0 {
-        metrics.borrow_mut().dropped_send_error.add(dropped);
+        metrics
+            .borrow_mut()
+            .record_dropped(UserEventsDropReason::SendError, dropped);
     }
 }
 
 async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
+    metrics: &Rc<RefCell<UserEventsReceiverMetrics>>,
     builder: &mut ArrowRecordsBuilder,
 ) -> Result<(), Error> {
     if builder.is_empty() {
@@ -497,10 +494,13 @@ async fn flush_batch(
 
     let mut guard = metrics.borrow_mut();
     if send_elapsed_ns > 0 {
-        guard.downstream_send_blocked_ns.add(send_elapsed_ns);
+        guard
+            .operational
+            .downstream_send_blocked_ns
+            .add(send_elapsed_ns);
     }
-    guard.forwarded_samples.add(item_count);
-    guard.flushed_batches.inc();
+    guard.operational.forwarded_samples.add(item_count);
+    guard.operational.flushed_batches.inc();
     Ok(())
 }
 
@@ -508,7 +508,7 @@ async fn process_drained_records(
     effect_handler: &local::EffectHandler<OtapPdata>,
     subscriptions: &[SubscriptionConfig],
     admission_state: &LocalReceiverAdmissionState,
-    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
+    metrics: &Rc<RefCell<UserEventsReceiverMetrics>>,
     builder: &mut ArrowRecordsBuilder,
     drained_records: &mut Vec<RawUserEventsRecord>,
     drain_stats: SessionDrainStats,
@@ -547,21 +547,31 @@ async fn process_drained_records(
 
     let mut metrics = metrics.borrow_mut();
     if drain_stats.lost_samples > 0 {
-        metrics.lost_perf_samples.add(drain_stats.lost_samples);
+        metrics
+            .operational
+            .lost_perf_samples
+            .add(drain_stats.lost_samples);
     }
     if drain_stats.dropped_pending_overflow > 0 {
-        metrics
-            .dropped_pending_overflow
-            .add(drain_stats.dropped_pending_overflow);
+        metrics.record_dropped(
+            UserEventsDropReason::PendingOverflow,
+            drain_stats.dropped_pending_overflow,
+        );
     }
     if received_samples > 0 {
-        metrics.received_samples.add(received_samples);
+        metrics.operational.received_samples.add(received_samples);
     }
     if dropped_memory_pressure > 0 {
-        metrics.dropped_memory_pressure.add(dropped_memory_pressure);
+        metrics.record_dropped(
+            UserEventsDropReason::MemoryPressure,
+            dropped_memory_pressure,
+        );
     }
     if dropped_no_subscription > 0 {
-        metrics.dropped_no_subscription.add(dropped_no_subscription);
+        metrics.record_dropped(
+            UserEventsDropReason::NoSubscription,
+            dropped_no_subscription,
+        );
     }
 
     Ok(())
@@ -639,8 +649,7 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                 ctrl = ctrl_chan.recv() => {
                     match ctrl {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            let mut metrics = self.metrics.borrow_mut();
-                            let _ = metrics_reporter.report(&mut metrics);
+                            let _ = self.metrics.borrow_mut().report(&mut metrics_reporter);
                         }
                         Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
                             self.admission_state.apply(update);
@@ -677,13 +686,13 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                                 flush_batch(&effect_handler, &self.metrics, &mut builder).await?;
                             }
                             effect_handler.notify_receiver_drained().await?;
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
+                            return Ok(TerminalState::new(deadline, snapshots));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
+                            return Ok(TerminalState::new(deadline, snapshots));
                         }
                         Err(error) => return Err(Error::ChannelRecvError(error)),
                         _ => {}
@@ -699,10 +708,14 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                 }
 
                 _ = retry_interval.tick(), if session.is_none() && late_registration_enabled => {
-                    self.metrics.borrow_mut().late_registration_retries.inc();
+                    self.metrics
+                        .borrow_mut()
+                        .operational
+                        .late_registration_retries
+                        .inc();
                     match UserEventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                         Ok(opened) => {
-                            self.metrics.borrow_mut().sessions_started.inc();
+                            self.metrics.borrow_mut().operational.sessions_started.inc();
                             otel_info!(
                                 "user_events_receiver.session_opened",
                                 node = node_name.as_str(),
@@ -774,7 +787,7 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
             if session.is_none() && !late_registration_enabled {
                 match UserEventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                     Ok(opened) => {
-                        self.metrics.borrow_mut().sessions_started.inc();
+                        self.metrics.borrow_mut().operational.sessions_started.inc();
                         session = Some(opened);
                     }
                     Err(error) => {
@@ -1144,7 +1157,7 @@ mod config_tests {
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
-    fn test_metrics() -> Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>> {
+    fn test_metrics() -> Rc<RefCell<UserEventsReceiverMetrics>> {
         let (pipeline_ctx, _) = test_pipeline_ctx();
         Rc::new(RefCell::new(UserEventsReceiverMetrics::register(
             &pipeline_ctx,
@@ -1254,10 +1267,16 @@ mod config_tests {
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
         assert!(drained_records.is_empty());
-        assert_eq!(metrics.received_samples.get(), 2);
-        assert_eq!(metrics.dropped_memory_pressure.get(), 2);
-        assert_eq!(metrics.lost_perf_samples.get(), 1);
-        assert_eq!(metrics.dropped_pending_overflow.get(), 1);
+        assert_eq!(metrics.operational.received_samples.get(), 2);
+        assert_eq!(
+            metrics.dropped_count(UserEventsDropReason::MemoryPressure),
+            2
+        );
+        assert_eq!(metrics.operational.lost_perf_samples.get(), 1);
+        assert_eq!(
+            metrics.dropped_count(UserEventsDropReason::PendingOverflow),
+            1
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1292,9 +1311,9 @@ mod config_tests {
 
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
-        assert_eq!(metrics.forwarded_samples.get(), 1);
-        assert_eq!(metrics.flushed_batches.get(), 1);
-        assert!(metrics.downstream_send_blocked_ns.get() > 0);
+        assert_eq!(metrics.operational.forwarded_samples.get(), 1);
+        assert_eq!(metrics.operational.flushed_batches.get(), 1);
+        assert!(metrics.operational.downstream_send_blocked_ns.get() > 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1330,9 +1349,9 @@ mod config_tests {
         }
 
         let metrics = metrics.borrow();
-        assert_eq!(metrics.forwarded_samples.get(), 0);
-        assert_eq!(metrics.flushed_batches.get(), 0);
-        assert_eq!(metrics.dropped_send_error.get(), 1);
+        assert_eq!(metrics.operational.forwarded_samples.get(), 0);
+        assert_eq!(metrics.operational.flushed_batches.get(), 0);
+        assert_eq!(metrics.dropped_count(UserEventsDropReason::SendError), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1365,9 +1384,9 @@ mod config_tests {
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
-        assert_eq!(metrics.received_samples.get(), 1);
-        assert_eq!(metrics.forwarded_samples.get(), 1);
-        assert_eq!(metrics.flushed_batches.get(), 1);
+        assert_eq!(metrics.operational.received_samples.get(), 1);
+        assert_eq!(metrics.operational.forwarded_samples.get(), 1);
+        assert_eq!(metrics.operational.flushed_batches.get(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1405,9 +1424,9 @@ mod config_tests {
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
         assert!(drained_records.is_empty());
-        assert_eq!(metrics.forwarded_samples.get(), 0);
-        assert_eq!(metrics.flushed_batches.get(), 0);
-        assert_eq!(metrics.dropped_send_error.get(), 3);
+        assert_eq!(metrics.operational.forwarded_samples.get(), 0);
+        assert_eq!(metrics.operational.flushed_batches.get(), 0);
+        assert_eq!(metrics.dropped_count(UserEventsDropReason::SendError), 3);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1445,9 +1464,9 @@ mod config_tests {
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
-        assert_eq!(metrics.received_samples.get(), 1);
-        assert_eq!(metrics.forwarded_samples.get(), 1);
-        assert_eq!(metrics.flushed_batches.get(), 1);
+        assert_eq!(metrics.operational.received_samples.get(), 1);
+        assert_eq!(metrics.operational.forwarded_samples.get(), 1);
+        assert_eq!(metrics.operational.flushed_batches.get(), 1);
     }
 
     #[test]

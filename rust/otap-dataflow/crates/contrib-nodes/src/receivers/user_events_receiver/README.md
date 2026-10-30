@@ -588,21 +588,25 @@ extra drain/flush; use graceful drain when minimizing buffered data loss matters
 
 ## Metrics
 
-The receiver reports these counters under `receiver.user_events`:
+The following tables list the telemetry emitted by this receiver.
 
-| Metric | Meaning |
-| --- | --- |
-| `received_samples` | Perf samples drained from the kernel/perf path. |
-| `forwarded_samples` | Log records successfully forwarded downstream. |
-| `downstream_send_blocked_ns` | Time spent waiting for downstream channel capacity. |
-| `dropped_memory_pressure` | Records or batches dropped because process memory pressure requested ingress shedding. |
-| `dropped_no_subscription` | Samples that did not map to a configured subscription index. This should normally stay zero. |
-| `dropped_pending_overflow` | Samples dropped before allocation because the adapter pending queue reached its configured event or byte cap. |
-| `dropped_send_error` | Records dropped because a downstream send failed. |
-| `lost_perf_samples` | Lost sample count reported by the perf ring. |
-| `late_registration_retries` | Late-registration retry attempts while waiting for tracepoints. |
-| `sessions_started` | Receiver perf sessions successfully opened. |
-| `flushed_batches` | Arrow log batches flushed downstream. |
+### Operational Metrics
+
+| Scope | Instrument | Unit | Attributes | Meaning |
+| --- | --- | --- | --- | --- |
+| `receiver.user_events` | `received_samples` | `{sample}` | None | Perf samples drained from the kernel/perf path. |
+| `receiver.user_events` | `forwarded_samples` | `{sample}` | None | Log records successfully forwarded downstream. |
+| `receiver.user_events` | `downstream_send_blocked_ns` | `ns` | None | Time spent waiting for downstream channel capacity. |
+| `receiver.user_events` | `lost_perf_samples` | `{sample}` | None | Lost sample count reported by the perf ring. |
+| `receiver.user_events` | `late_registration_retries` | `{retry}` | None | Late-registration retry attempts while waiting for tracepoints. |
+| `receiver.user_events` | `sessions_started` | `{session}` | None | Receiver perf sessions successfully opened. |
+| `receiver.user_events` | `flushed_batches` | `{batch}` | None | Arrow log batches flushed downstream. |
+
+### Drop Metrics
+
+| Scope | Instrument | Unit | Attributes | Meaning |
+| --- | --- | --- | --- | --- |
+| `receiver.user_events.drops` | `samples` | `{sample}` | `reason` | Records dropped by the receiver, partitioned by drop reason. Values: `memory_pressure` (dropped due to memory limiter shedding), `no_subscription` (unmatched tracepoint subscription index), `pending_overflow` (adapter queue capacity overflow), `send_error` (downstream channel send failure). |
 
 TODO: Add metrics for corrupt perf events and corrupt perf buffers once the
 underlying collection layer exposes those counters.
