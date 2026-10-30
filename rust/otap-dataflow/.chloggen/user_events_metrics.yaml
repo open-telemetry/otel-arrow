@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: "Migrate user_events receiver drop metrics to enum attributes"
+issues: [3530]
+subtext: |
+  Migration: Replace flat `dropped_{memory_pressure,no_subscription,pending_overflow,send_error}` with unified `receiver.user_events.drops.samples` counter keyed by `reason` attribute enum.
