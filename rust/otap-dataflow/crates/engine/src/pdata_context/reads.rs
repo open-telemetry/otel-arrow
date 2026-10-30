@@ -5,9 +5,9 @@
 
 use super::metadata::{AuthorizedClaimValue, AuthorizedIdentityEntry};
 use super::{
-    ContextDomain, ContextEntrySelector, ContextEntryTarget, ContextMaterializationPlan,
-    ContextNameMatching, ContextProjection, ContextValueCardinality, ContextValueKind,
-    MaterializedContextProjection, MaterializedContextValue, Metadata,
+    ContextDomain, ContextEntrySelector, ContextEntryTake, ContextEntryTarget,
+    ContextMaterializationPlan, ContextNameMatching, ContextProjection, ContextValueCardinality,
+    ContextValueKind, MaterializedContextProjection, MaterializedContextValue, Metadata,
 };
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{
@@ -134,7 +134,7 @@ impl ValueRead {
         };
         Some(Read {
             backend,
-            limit: self.selector.take.limit(),
+            take: self.selector.take,
         })
     }
 }
@@ -142,7 +142,7 @@ impl ValueRead {
 /// A present borrowed primitive or composite selection.
 pub struct Read<'a> {
     backend: ReadBackend<'a>,
-    limit: usize,
+    take: ContextEntryTake,
 }
 
 enum ReadBackend<'a> {
@@ -161,7 +161,7 @@ impl<'a> Read<'a> {
     /// capture order. Names and original wire names remain available regardless
     /// of the requested selector form. Values are limited by the selector's `take`.
     pub fn visit_members(self, mut visit: impl FnMut(ReadMember<'a>)) {
-        let limit = self.limit;
+        let take = self.take;
         match self.backend {
             ReadBackend::Headers { first, remaining } => visit(ReadMember {
                 name: first.name.as_str(),
@@ -170,9 +170,9 @@ impl<'a> Read<'a> {
                     first: Some(first),
                     remaining,
                 },
-                limit,
+                take,
             }),
-            ReadBackend::AuthorizedIdentity(entry) => visit(ReadMember::identity(entry, limit)),
+            ReadBackend::AuthorizedIdentity(entry) => visit(ReadMember::identity(entry, take)),
             ReadBackend::Composite(projection) => projection.visit_members(|member| {
                 visit(ReadMember {
                     name: member.name().as_str(),
@@ -181,7 +181,7 @@ impl<'a> Read<'a> {
                         name: member.name().as_str(),
                         values: member.values().values().iter(),
                     },
-                    limit,
+                    take,
                 });
             }),
         }
@@ -195,11 +195,11 @@ pub struct ReadMember<'a> {
     /// Source cardinality, including explicitly empty multi-valued claims.
     pub cardinality: ContextValueCardinality,
     values: ReadValues<'a>,
-    limit: usize,
+    take: ContextEntryTake,
 }
 
 impl<'a> ReadMember<'a> {
-    fn identity(entry: AuthorizedIdentityEntry<'a>, limit: usize) -> Self {
+    fn identity(entry: AuthorizedIdentityEntry<'a>, take: ContextEntryTake) -> Self {
         let claim = entry.value();
         Self {
             name: entry.name(),
@@ -213,7 +213,7 @@ impl<'a> ReadMember<'a> {
                 claim,
                 next: 0,
             },
-            limit,
+            take,
         }
     }
 
@@ -221,8 +221,15 @@ impl<'a> ReadMember<'a> {
     ///
     /// Yields no values for `Exists`, at most one for `First`, and all for `All`;
     /// unrequested values are never scanned.
-    pub fn values(self) -> impl Iterator<Item = ReadValue<'a>> {
-        self.values.take(self.limit)
+    pub fn values(mut self) -> impl Iterator<Item = ReadValue<'a>> {
+        std::iter::from_fn(move || match self.take {
+            ContextEntryTake::Exists => None,
+            ContextEntryTake::First => {
+                self.take = ContextEntryTake::Exists;
+                self.values.next()
+            }
+            ContextEntryTake::All => self.values.next(),
+        })
     }
 }
 
@@ -367,8 +374,8 @@ mod tests {
     use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
     use crate::pdata_context::{
         Arrival, ArrivalHeaders, CompiledContextBindings, ContextConsumerSelector,
-        ContextDeclaration, ContextEntrySelectorForm, ContextEntryTake, ContextRuntimeRequirements,
-        NodeBindings, NodeContextDeclarations, PreparedNodeContextDeclarations,
+        ContextDeclaration, ContextEntrySelectorForm, ContextRuntimeRequirements, NodeBindings,
+        NodeContextDeclarations, PreparedNodeContextDeclarations,
     };
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
@@ -436,7 +443,7 @@ mod tests {
     /// Guarantees: every take reports the same presence, and members yield no values, only the
     /// first value, or every value in capture order, respectively.
     #[test]
-    fn take_limits_values_without_changing_presence() {
+    fn takes_select_stored_values_without_changing_presence() {
         let selector = |take| ContextEntrySelector {
             target: ContextEntryTarget::Primitive {
                 domain: ContextDomain::TransportHeader,
@@ -473,6 +480,117 @@ mod tests {
                 .map(|value| value.bytes)
                 .collect::<Vec<_>>();
             assert_eq!(bytes, expected, "{take:?}");
+        }
+    }
+
+    /// Scenario: all take variants read empty or repeated claims directly and through a gated composite.
+    /// Guarantees: takes preserve claim presence and storage, select values in order, and cannot
+    /// bypass the composite's condition.
+    #[test]
+    fn takes_preserve_identity_presence_and_composite_gates() {
+        let selectors = [
+            ContextEntryTarget::Primitive {
+                domain: ContextDomain::AuthorizedIdentity,
+                name: name("roles"),
+                matching: ContextNameMatching::Exact,
+            },
+            ContextEntryTarget::Composite {
+                name: name("request"),
+            },
+        ]
+        .into_iter()
+        .flat_map(|target| {
+            [
+                ContextEntryTake::Exists,
+                ContextEntryTake::First,
+                ContextEntryTake::All,
+            ]
+            .map(|take| ContextEntrySelector {
+                target: target.clone(),
+                form: ContextEntrySelectorForm::Value,
+                take,
+            })
+        })
+        .collect::<Vec<_>>();
+        let bindings = compile(
+            [
+                consumes(selectors.clone()),
+                ContextDeclaration::HeaderCapture {
+                    policy: serde_json::from_value(serde_json::json!({
+                        "headers": [{"match_names": ["environment"]}]
+                    }))
+                    .expect("capture policy"),
+                },
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: serde_json::from_value(serde_json::json!([
+                        {"claim": "roles", "store_as": "roles"}
+                    ]))
+                    .expect("identity policy"),
+                },
+            ]
+            .into_iter()
+            .collect(),
+            &[ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name: name("request"),
+                definition: ContextEntryDefinition(vec![
+                    ContextEntryPart::AuthorizedIdentity {
+                        name: name("roles"),
+                        store_as: None,
+                    },
+                    ContextEntryPart::TransportHeaderMatch {
+                        name: name("environment"),
+                        value: "production".into(),
+                    },
+                ]),
+            }],
+        );
+        let arrival = bindings.arrival().expect("arrival");
+        for roles in [vec![], vec!["a".to_owned(), "b".to_owned()]] {
+            let identity =
+                AuthorizedIdentity::new().with_claim("roles", ClaimValue::Many(roles.clone()));
+            let (metadata, _) = arrival.form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
+                identity: Some(&identity),
+                peer: None,
+            });
+            let (mismatch, _) = arrival.form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
+                identity: Some(&identity),
+                peer: None,
+            });
+            for selector in &selectors {
+                let read = bindings.value(selector).expect("declared read");
+                let selected = read.read(&metadata).expect("present even for empty claims");
+                selected.visit_members(|member| {
+                    assert_eq!(member.cardinality, ContextValueCardinality::Many);
+                    let mut actual = member.values();
+                    match selector.take {
+                        ContextEntryTake::Exists => {}
+                        ContextEntryTake::First => {
+                            assert_eq!(
+                                actual.next().map(|value| value.bytes),
+                                roles.first().map(|role| role.as_bytes())
+                            );
+                        }
+                        ContextEntryTake::All => {
+                            for role in &roles {
+                                assert_eq!(
+                                    actual.next().expect("stored value").bytes,
+                                    role.as_bytes()
+                                );
+                            }
+                        }
+                    }
+                    assert!(actual.next().is_none());
+                    assert!(actual.next().is_none());
+                });
+                assert!(read.read(&Metadata::default()).is_none());
+                assert_eq!(
+                    read.read(&mismatch).is_some(),
+                    matches!(selector.target, ContextEntryTarget::Primitive { .. }),
+                );
+            }
         }
     }
 

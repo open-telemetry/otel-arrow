@@ -201,10 +201,11 @@ pub struct ContextEntrySelector {
     pub take: ContextEntryTake,
 }
 
-/// Specifies how many values a consumer takes from each selected member.
+/// Specifies which already-stored values a consumer reads from each selected member.
 ///
 /// Presence is independent of `take`: a read is present whenever its target
 /// is present, so `Exists` reads stop at the first match without yielding values.
+/// This does not change capture or storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextEntryTake {
     /// Presence only; members yield no values.
@@ -213,16 +214,6 @@ pub enum ContextEntryTake {
     First,
     /// Every value of each member, in source order.
     All,
-}
-
-impl ContextEntryTake {
-    const fn limit(self) -> usize {
-        match self {
-            Self::Exists => 0,
-            Self::First => 1,
-            Self::All => usize::MAX,
-        }
-    }
 }
 
 /// Specifies whether a consumer needs values, stored names, or original wire names.
