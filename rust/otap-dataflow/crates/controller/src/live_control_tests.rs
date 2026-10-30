@@ -1006,11 +1006,30 @@ fn test_runtime_with_topology(
     test_runtime_with_factory_and_topology(config, &TEST_PIPELINE_FACTORY, topology)
 }
 
-fn test_runtime_with_factory(
+pub(super) fn test_runtime_with_factory<PData>(
     config: &OtelDataflowSpec,
-    pipeline_factory: &'static PipelineFactory<()>,
-) -> Arc<ControllerRuntime<()>> {
-    test_runtime_with_factory_and_topology(config, pipeline_factory, NumaTopology::unknown())
+    pipeline_factory: &'static PipelineFactory<PData>,
+) -> Arc<ControllerRuntime<PData>>
+where
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + FlowMetricHook,
+{
+    let (log_filter, log_filter_handle) =
+        RuntimeLogFilter::new(config.engine.telemetry.logs.level.as_ref());
+    test_runtime_with_supplied_log_filter_and_topology(
+        config,
+        pipeline_factory,
+        NumaTopology::unknown(),
+        log_filter,
+        log_filter_handle,
+    )
+    .0
 }
 
 fn test_runtime_with_factory_and_topology(
@@ -1052,17 +1071,27 @@ fn test_runtime_with_log_filter_and_topology(
     )
 }
 
-fn test_runtime_with_supplied_log_filter_and_topology(
+fn test_runtime_with_supplied_log_filter_and_topology<PData>(
     config: &OtelDataflowSpec,
-    pipeline_factory: &'static PipelineFactory<()>,
+    pipeline_factory: &'static PipelineFactory<PData>,
     topology: NumaTopology,
     log_filter: RuntimeLogFilter,
     log_filter_handle: RuntimeLogFilterHandle,
 ) -> (
-    Arc<ControllerRuntime<()>>,
+    Arc<ControllerRuntime<PData>>,
     RuntimeLogFilterHandle,
     RuntimeLogFilter,
-) {
+)
+where
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + FlowMetricHook,
+{
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -1070,7 +1099,7 @@ fn test_runtime_with_supplied_log_filter_and_topology(
     let engine_event_reporter = observed_state_store.reporter(Default::default());
     let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(8);
     let declared_topics =
-        Controller::<()>::declare_topics(config).expect("declared topics should be valid");
+        Controller::<PData>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
     let context = pipeline_factory
@@ -1102,13 +1131,15 @@ fn test_runtime_with_supplied_log_filter_and_topology(
     )
 }
 
-struct ObservedStateRunner {
+pub(super) struct ObservedStateRunner {
     cancel: CancellationToken,
     join: Option<thread::JoinHandle<()>>,
 }
 
 impl ObservedStateRunner {
-    fn start(runtime: &ControllerRuntime<()>) -> Self {
+    pub(super) fn start<PData: 'static + Clone + Send + Sync + std::fmt::Debug>(
+        runtime: &ControllerRuntime<PData>,
+    ) -> Self {
         let cancel = CancellationToken::new();
         let store = runtime.observed_state_store.clone();
         let cancel_clone = cancel.clone();
