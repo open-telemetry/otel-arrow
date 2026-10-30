@@ -97,7 +97,8 @@ impl ValueRead {
     ///
     /// Missing values return `None`. An identity claim read retains the claim's
     /// cardinality, so an empty multi-valued claim is present. A composite read
-    /// retains the whole entry's presence gate and source cardinalities.
+    /// retains the whole entry's presence gate and source cardinalities. Each
+    /// member yields at most the number of values the selector's `take` requests.
     #[must_use]
     pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Option<Read<'a>> {
         let backend = match &self.backend {
@@ -131,13 +132,17 @@ impl ValueRead {
                 ReadBackend::Composite(metadata.resolve_materialized_context(plan, projection)?)
             }
         };
-        Some(Read { backend })
+        Some(Read {
+            backend,
+            limit: self.selector.take.limit(),
+        })
     }
 }
 
 /// A present borrowed primitive or composite selection.
 pub struct Read<'a> {
     backend: ReadBackend<'a>,
+    limit: usize,
 }
 
 enum ReadBackend<'a> {
@@ -154,8 +159,9 @@ impl<'a> Read<'a> {
     ///
     /// Primitive headers form one multi-valued member; duplicate values retain
     /// capture order. Names and original wire names remain available regardless
-    /// of the requested selector form.
+    /// of the requested selector form. Values are limited by the selector's `take`.
     pub fn visit_members(self, mut visit: impl FnMut(ReadMember<'a>)) {
+        let limit = self.limit;
         match self.backend {
             ReadBackend::Headers { first, remaining } => visit(ReadMember {
                 name: first.name.as_str(),
@@ -164,8 +170,9 @@ impl<'a> Read<'a> {
                     first: Some(first),
                     remaining,
                 },
+                limit,
             }),
-            ReadBackend::AuthorizedIdentity(entry) => visit(ReadMember::identity(entry)),
+            ReadBackend::AuthorizedIdentity(entry) => visit(ReadMember::identity(entry, limit)),
             ReadBackend::Composite(projection) => projection.visit_members(|member| {
                 visit(ReadMember {
                     name: member.name().as_str(),
@@ -174,6 +181,7 @@ impl<'a> Read<'a> {
                         name: member.name().as_str(),
                         values: member.values().values().iter(),
                     },
+                    limit,
                 });
             }),
         }
@@ -187,10 +195,11 @@ pub struct ReadMember<'a> {
     /// Source cardinality, including explicitly empty multi-valued claims.
     pub cardinality: ContextValueCardinality,
     values: ReadValues<'a>,
+    limit: usize,
 }
 
 impl<'a> ReadMember<'a> {
-    fn identity(entry: AuthorizedIdentityEntry<'a>) -> Self {
+    fn identity(entry: AuthorizedIdentityEntry<'a>, limit: usize) -> Self {
         let claim = entry.value();
         Self {
             name: entry.name(),
@@ -204,17 +213,21 @@ impl<'a> ReadMember<'a> {
                 claim,
                 next: 0,
             },
+            limit,
         }
     }
 
     /// Iterates raw values without flattening, joining, or decoding them.
+    ///
+    /// Yields no values for `Exists`, at most one for `First`, and all for `All`;
+    /// unrequested values are never scanned.
     pub fn values(self) -> impl Iterator<Item = ReadValue<'a>> {
-        self.values
+        self.values.take(self.limit)
     }
 }
 
 /// A borrowed value and its retained names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ReadValue<'a> {
     /// Stored primitive name or configured composite member alias.
     pub name: &'a str,
@@ -224,6 +237,17 @@ pub struct ReadValue<'a> {
     pub kind: ContextValueKind,
     /// Raw value bytes.
     pub bytes: &'a [u8],
+}
+
+impl std::fmt::Debug for ReadValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadValue")
+            .field("name", &self.name)
+            .field("original_name", &self.original_name)
+            .field("kind", &self.kind)
+            .field("byte_len", &self.bytes.len())
+            .finish()
+    }
 }
 
 impl<'a> From<TransportHeaderRef<'a>> for ReadValue<'a> {
@@ -240,7 +264,7 @@ impl<'a> From<TransportHeaderRef<'a>> for ReadValue<'a> {
     }
 }
 
-/// A borrowed stored transport header returned by an all-stored read.
+/// A borrowed stored transport header returned by an all-captured read.
 pub type HeaderValue<'a> = ReadValue<'a>;
 
 enum HeaderMatches<'a> {
@@ -308,11 +332,25 @@ impl<'a> Iterator for ReadValues<'a> {
     }
 }
 
-/// A declared all-stored read over existing transport-header storage.
+/// A declared all-captured read over existing transport-header storage.
+///
+/// Obtain this binding from [`super::NodeBindings::headers`].
+///
+/// Scenario: a node tries to construct an all-captured header read directly.
+/// Guarantees: nodes cannot create this binding without a compiled declaration.
+/// ```compile_fail
+/// use otel_arrow_dfe_engine::pdata_context::HeadersRead;
+///
+/// let _ = HeadersRead;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeadersRead;
+pub struct HeadersRead(());
 
 impl HeadersRead {
+    pub(super) const fn new() -> Self {
+        Self(())
+    }
+
     /// Iterates stored headers in capture order, preserving duplicates and binary bytes.
     pub fn read<'a>(&self, metadata: &'a Metadata) -> impl Iterator<Item = HeaderValue<'a>> {
         metadata
@@ -323,33 +361,14 @@ impl HeadersRead {
     }
 }
 
-/// A declared all-stored read over captured authorized-identity claims.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorizedIdentityRead;
-
-impl AuthorizedIdentityRead {
-    /// Visits captured claims in policy order, one member per claim.
-    ///
-    /// Each member retains its claim cardinality, including empty multi-valued claims.
-    pub fn visit_members<'a>(&self, metadata: &'a Metadata, mut visit: impl FnMut(ReadMember<'a>)) {
-        for entry in metadata
-            .authorized_identity_entries()
-            .into_iter()
-            .flat_map(|entries| entries.iter())
-        {
-            visit(ReadMember::identity(entry));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
     use crate::pdata_context::{
         Arrival, ArrivalHeaders, CompiledContextBindings, ContextConsumerSelector,
-        ContextDeclaration, ContextEntrySelectorForm, ContextRuntimeRequirements, NodeBindings,
-        NodeContextDeclarations, PreparedNodeContextDeclarations,
+        ContextDeclaration, ContextEntrySelectorForm, ContextEntryTake, ContextRuntimeRequirements,
+        NodeBindings, NodeContextDeclarations, PreparedNodeContextDeclarations,
     };
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
@@ -371,6 +390,7 @@ mod tests {
                 matching,
             },
             form: ContextEntrySelectorForm::Value,
+            take: ContextEntryTake::All,
         }
     }
 
@@ -410,6 +430,50 @@ mod tests {
             read.visit_members(|member| result.extend(member.values()));
         }
         result
+    }
+
+    /// Scenario: one repeated header is declared with `Exists`, `First`, and `All` takes.
+    /// Guarantees: every take reports the same presence, and members yield no values, only the
+    /// first value, or every value in capture order, respectively.
+    #[test]
+    fn take_limits_values_without_changing_presence() {
+        let selector = |take| ContextEntrySelector {
+            target: ContextEntryTarget::Primitive {
+                domain: ContextDomain::TransportHeader,
+                name: name("tenant"),
+                matching: ContextNameMatching::AsciiCaseInsensitive,
+            },
+            form: ContextEntrySelectorForm::Value,
+            take,
+        };
+        let takes = [
+            ContextEntryTake::Exists,
+            ContextEntryTake::First,
+            ContextEntryTake::All,
+        ];
+        let bindings = compile(
+            [consumes(takes.into_iter().map(selector).collect())]
+                .into_iter()
+                .collect(),
+            &[],
+        );
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(name("Tenant"), b"first"));
+        headers.push(TransportHeader::text(name("other"), b"ignored"));
+        headers.push(TransportHeader::text(name("tenant"), b"second"));
+        let mut metadata = Metadata::default();
+        metadata.set_transport_headers(headers);
+        let expected: [&[&[u8]]; 3] = [&[], &[b"first"], &[b"first", b"second"]];
+        for (take, expected) in takes.into_iter().zip(expected) {
+            let read = bindings.value(&selector(take)).expect("declared read");
+            assert!(read.read(&Metadata::default()).is_none());
+            assert!(read.read(&metadata).is_some());
+            let bytes = values(read.read(&metadata))
+                .into_iter()
+                .map(|value| value.bytes)
+                .collect::<Vec<_>>();
+            assert_eq!(bytes, expected, "{take:?}");
+        }
     }
 
     /// Scenario: consumers declare exact and case-insensitive reads of repeated mixed-case headers.
@@ -468,10 +532,10 @@ mod tests {
         }
     }
 
-    /// Scenario: all-stored reads see captured headers and a subsequently appended header.
+    /// Scenario: all-captured reads see captured headers and a subsequently appended header.
     /// Guarantees: the adapter matches legacy iteration without sorting, deduplication, or composites.
     #[test]
-    fn all_stored_matches_capture_and_overlay_iteration() {
+    fn all_captured_matches_capture_and_overlay_iteration() {
         let bindings = compile(
             [
                 ContextDeclaration::HeaderCapture {
@@ -484,12 +548,12 @@ mod tests {
                     .expect("capture policy"),
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored {
+                    selector: ContextConsumerSelector::AllCaptured {
                         domain: ContextDomain::TransportHeader,
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored {
+                    selector: ContextConsumerSelector::AllCaptured {
                         domain: ContextDomain::AuthorizedIdentity,
                     },
                 },
@@ -510,7 +574,7 @@ mod tests {
         let mut headers = metadata.take_transport_headers().expect("captured headers");
         headers.push(TransportHeader::text(name("partition"), b"produced"));
         metadata.set_transport_headers(headers);
-        let read = bindings.headers().expect("all stored read");
+        let read = bindings.headers().expect("all captured read");
         let expected = metadata
             .transport_headers()
             .expect("headers")
@@ -554,6 +618,7 @@ mod tests {
                     name: name("request"),
                 },
                 form: ContextEntrySelectorForm::Value,
+                take: ContextEntryTake::All,
             },
             ContextEntrySelector {
                 target: ContextEntryTarget::CompositeMember {
@@ -561,6 +626,7 @@ mod tests {
                     member: name("customer"),
                 },
                 form: ContextEntrySelectorForm::OriginalKeyValue,
+                take: ContextEntryTake::All,
             },
         ];
         let bindings = compile(
@@ -693,9 +759,9 @@ mod tests {
         }
     }
 
-    /// Scenario: a node reads identity claims by name and lists all stored claims and headers.
+    /// Scenario: a node reads identity claims by name alongside an all-captured header read.
     /// Guarantees: identity reads return captured claim values with their cardinality, never
-    /// header values, and both all-stored reads stay available when declared together.
+    /// header values, and the all-captured header read never yields identity claims.
     #[test]
     fn identity_reads_return_captured_claims() {
         let identity_read = |value: &str, matching| ContextEntrySelector {
@@ -705,6 +771,7 @@ mod tests {
                 matching,
             },
             form: ContextEntrySelectorForm::Value,
+            take: ContextEntryTake::All,
         };
         let bindings = compile(
             [
@@ -715,12 +782,7 @@ mod tests {
                     identity_read("roles", ContextNameMatching::Exact),
                 ]),
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored {
-                        domain: ContextDomain::AuthorizedIdentity,
-                    },
-                },
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored {
+                    selector: ContextConsumerSelector::AllCaptured {
                         domain: ContextDomain::TransportHeader,
                     },
                 },
@@ -795,42 +857,84 @@ mod tests {
         );
         assert!(exact.read(&Metadata::default()).is_none());
 
-        let mut stored = Vec::new();
-        bindings
-            .authorized_identity()
-            .expect("all stored identity")
-            .visit_members(&metadata, |member| {
-                stored.push((
-                    member.name,
-                    member.cardinality,
-                    member.values().map(|value| value.bytes).collect::<Vec<_>>(),
-                ));
-            });
-        assert_eq!(
-            stored,
-            vec![
-                (
-                    "subject",
-                    ContextValueCardinality::One,
-                    vec![b"verified".as_slice()]
-                ),
-                ("roles", ContextValueCardinality::Many, vec![]),
-                (
-                    "groups",
-                    ContextValueCardinality::Many,
-                    vec![b"a".as_slice(), b"b".as_slice()]
-                ),
-            ]
-        );
         assert_eq!(
             bindings
                 .headers()
-                .expect("all stored headers")
+                .expect("all captured headers")
                 .read(&metadata)
                 .map(|header| header.bytes)
                 .collect::<Vec<_>>(),
             vec![b"untrusted".as_slice()]
         );
+    }
+
+    /// Scenario: debug formatting is applied to primitive and composite reads of an identity claim.
+    /// Guarantees: diagnostics retain value metadata but omit both text and byte representations of claims.
+    #[test]
+    fn read_value_debug_redacts_identity_and_composite_payloads() {
+        let selectors = [
+            ContextEntrySelector {
+                target: ContextEntryTarget::Primitive {
+                    domain: ContextDomain::AuthorizedIdentity,
+                    name: name("subject"),
+                    matching: ContextNameMatching::Exact,
+                },
+                form: ContextEntrySelectorForm::Value,
+                take: ContextEntryTake::All,
+            },
+            ContextEntrySelector {
+                target: ContextEntryTarget::Composite {
+                    name: name("request"),
+                },
+                form: ContextEntrySelectorForm::Value,
+                take: ContextEntryTake::All,
+            },
+        ];
+        let bindings = compile(
+            [
+                consumes(selectors.to_vec()),
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: serde_json::from_value(serde_json::json!([
+                        {"claim": "sub", "store_as": "subject"}
+                    ]))
+                    .expect("identity policy"),
+                },
+            ]
+            .into_iter()
+            .collect(),
+            &[ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name: name("request"),
+                definition: ContextEntryDefinition(vec![ContextEntryPart::AuthorizedIdentity {
+                    name: name("subject"),
+                    store_as: Some(name("account")),
+                }]),
+            }],
+        );
+        let secret = "private-subject";
+        let identity = AuthorizedIdentity::new().with_subject(secret);
+        let (metadata, _) = bindings.arrival().expect("arrival").form(&Arrival {
+            headers: ArrivalHeaders::Pairs(&[]),
+            identity: Some(&identity),
+            peer: None,
+        });
+        for (selector, member_name) in selectors.iter().zip(["subject", "account"]) {
+            let selected = values(
+                bindings
+                    .value(selector)
+                    .expect("declared read")
+                    .read(&metadata),
+            );
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].bytes, secret.as_bytes());
+            assert_eq!(
+                format!("{:?}", selected[0]),
+                format!(
+                    "ReadValue {{ name: {member_name:?}, original_name: None, kind: Text, byte_len: {} }}",
+                    secret.len()
+                ),
+            );
+        }
     }
 
     /// Scenario: a node asks its bindings for a read it never declared.

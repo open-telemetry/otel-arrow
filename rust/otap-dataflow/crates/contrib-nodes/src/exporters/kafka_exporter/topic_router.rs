@@ -206,7 +206,8 @@ mod tests {
     }
 
     /// Scenario: Kafka declares topic routing and partitioning reads over mixed-case, repeated headers.
-    /// Guarantees: compiled adapters match the router's first match and the partitioner's stored iteration.
+    /// Guarantees: the first-value topic read yields exactly the router's first match, and the
+    /// all-captured read matches the partitioner's stored iteration.
     #[test]
     fn compiled_reads_match_kafka_header_consumers() {
         use super::super::exporter::KAFKA_EXPORTER_FACTORY;
@@ -214,8 +215,8 @@ mod tests {
         use otel_arrow_dfe_config::engine::OtelDataflowSpec;
         use otel_arrow_dfe_engine::PipelineFactory;
         use otel_arrow_dfe_engine::pdata_context::{
-            ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTarget,
-            ContextNameMatching, ReadValue,
+            ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
+            ContextEntryTarget, ContextNameMatching, ReadValue,
         };
 
         let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
@@ -263,6 +264,7 @@ mod tests {
                     matching: ContextNameMatching::AsciiCaseInsensitive,
                 },
                 form: ContextEntrySelectorForm::Value,
+                take: ContextEntryTake::First,
             })
             .expect("topic read");
         let signal = make_signal_config("fallback", Some("Topic"));
@@ -279,8 +281,11 @@ mod tests {
                 selected.visit_members(|member| values.extend(member.values()));
             }
             assert_eq!(
-                values.first().copied(),
-                TopicRouter::header_topic(&signal, &context).map(ReadValue::from),
+                values,
+                TopicRouter::header_topic(&signal, &context)
+                    .map(ReadValue::from)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
             );
             let legacy = context
                 .transport_headers()

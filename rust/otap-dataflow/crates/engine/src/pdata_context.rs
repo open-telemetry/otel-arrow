@@ -3,7 +3,7 @@
 
 //! Collects and compiles context declarations before runtime construction.
 //!
-//! Primitive reads, writes, and all-stored selections always specify a source domain.
+//! Primitive reads, writes, and all-captured selections always specify a source domain.
 //! Composite selections instead name the composite and optionally its member; the
 //! definition supplies each member's value source (a domain-backed field, configured
 //! constant, or random generator) and the entire entry's presence gate.
@@ -36,9 +36,7 @@ pub use metadata::{
 pub use propagation::CompiledHeaderPropagationPolicy;
 #[doc(hidden)]
 pub use propagation::PreparedHeaderPropagationPolicy;
-pub use reads::{
-    AuthorizedIdentityRead, HeaderValue, HeadersRead, Read, ReadMember, ReadValue, ValueRead,
-};
+pub use reads::{HeaderValue, HeadersRead, Read, ReadMember, ReadValue, ValueRead};
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -199,6 +197,32 @@ pub struct ContextEntrySelector {
     pub target: ContextEntryTarget,
     /// Representation applied to selected value members, excluding condition-only fields.
     pub form: ContextEntrySelectorForm,
+    /// Number of values the consumer takes from each selected member.
+    pub take: ContextEntryTake,
+}
+
+/// Specifies how many values a consumer takes from each selected member.
+///
+/// Presence is independent of `take`: a read is present whenever its target
+/// is present, so `Exists` reads stop at the first match without yielding values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ContextEntryTake {
+    /// Presence only; members yield no values.
+    Exists,
+    /// The first value of each member, in source order.
+    First,
+    /// Every value of each member, in source order.
+    All,
+}
+
+impl ContextEntryTake {
+    const fn limit(self) -> usize {
+        match self {
+            Self::Exists => 0,
+            Self::First => 1,
+            Self::All => usize::MAX,
+        }
+    }
 }
 
 /// Specifies whether a consumer needs values, stored names, or original wire names.
@@ -212,7 +236,12 @@ pub enum ContextEntrySelectorForm {
     OriginalKeyValue,
 }
 
-/// Selects named entries or all stored primitives within one source domain.
+/// Selects named entries or all captured primitives within one source domain.
+///
+/// This is the compiled counterpart of user-configured context selection
+/// (for example `PropagationSelectorType`). Selection vocabulary added here
+/// must remain expressible in configuration; the operation applied to a
+/// selection (read, hash, propagate, export) is chosen by the binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextConsumerSelector {
     /// Selects named context entries in order.
@@ -221,7 +250,7 @@ pub enum ContextConsumerSelector {
         entries: Box<[ContextEntrySelector]>,
     },
     /// Selects every primitive in one domain using its stored name.
-    AllStored {
+    AllCaptured {
         /// Source authority domain.
         domain: ContextDomain,
     },
@@ -308,7 +337,7 @@ impl ContextDeclaration {
                 }
             }
             Self::Consumes {
-                selector: ContextConsumerSelector::AllStored { .. },
+                selector: ContextConsumerSelector::AllCaptured { .. },
             }
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
@@ -506,7 +535,7 @@ impl PreparedNodeContextDeclarations {
                     }
                     ContextDeclaration::Produces { .. }
                     | ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllStored { .. },
+                        selector: ContextConsumerSelector::AllCaptured { .. },
                     }
                     | ContextDeclaration::HeaderCapture { .. }
                     | ContextDeclaration::AuthorizedIdentityCapture { .. } => {}
@@ -682,7 +711,6 @@ impl CompiledNodeState {
         let mut authorized_identity_capture = None;
         let mut values = Vec::new();
         let mut headers = None;
-        let mut authorized_identity = None;
         for declaration in prepared.declarations {
             match declaration {
                 ContextDeclaration::Consumes { selector } => {
@@ -692,11 +720,10 @@ impl CompiledNodeState {
                                 values.push(ValueRead::compile(entry, materialization_plan)?);
                             }
                         }
-                        ContextConsumerSelector::AllStored { domain } => match domain {
-                            ContextDomain::TransportHeader => headers = Some(HeadersRead),
-                            ContextDomain::AuthorizedIdentity => {
-                                authorized_identity = Some(AuthorizedIdentityRead);
-                            }
+                        ContextConsumerSelector::AllCaptured { domain } => match domain {
+                            ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
+                            // Identity claims are read only through explicit named reads.
+                            ContextDomain::AuthorizedIdentity => {}
                         },
                     }
                     component_declarations.push(ContextDeclaration::Consumes { selector });
@@ -737,7 +764,6 @@ impl CompiledNodeState {
                     values.into_boxed_slice()
                 },
                 headers,
-                authorized_identity,
             }),
         })
     }
@@ -1150,6 +1176,7 @@ mod tests {
                         } else {
                             ContextEntrySelectorForm::Value
                         },
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -1433,6 +1460,7 @@ groups:
                                 matching,
                             },
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::All,
                         }]),
                     },
                 }]
@@ -1607,7 +1635,11 @@ groups:
     ) -> NodeContextDeclarations {
         [ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
-                entries: Box::new([ContextEntrySelector { target, form }]),
+                entries: Box::new([ContextEntrySelector {
+                    target,
+                    form,
+                    take: ContextEntryTake::All,
+                }]),
             },
         }]
         .into_iter()
@@ -1659,7 +1691,7 @@ groups:
         }
     }
 
-    /// Scenario: same-name sources are declared in different domains for reads, writes, and all-stored.
+    /// Scenario: same-name sources are declared in different domains for reads, writes, and all-captured.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
     fn declaration_domains_are_part_of_binding_identity() {
@@ -1674,11 +1706,12 @@ groups:
                         entries: Box::new([ContextEntrySelector {
                             target: primitive_target(domain, "id"),
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::All,
                         }]),
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored { domain },
+                    selector: ContextConsumerSelector::AllCaptured { domain },
                 },
             ]
         };
@@ -2131,6 +2164,7 @@ groups:
                                     matching: ContextNameMatching::Exact,
                                 },
                                 form: ContextEntrySelectorForm::OriginalKeyValue,
+                                take: ContextEntryTake::All,
                             })
                             .into(),
                     },
@@ -2185,6 +2219,7 @@ groups:
                             matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -2198,6 +2233,7 @@ groups:
                             matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::Value,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -2263,6 +2299,7 @@ groups:
                                 matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::OriginalKeyValue,
+                            take: ContextEntryTake::All,
                         }]
                         .into_boxed_slice(),
                     },
@@ -2276,6 +2313,7 @@ groups:
                                 matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::All,
                         }]
                         .into_boxed_slice(),
                     },
@@ -2295,6 +2333,7 @@ groups:
                             matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -2312,6 +2351,7 @@ groups:
                             matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },

@@ -23,7 +23,7 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
     ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
+    ContextEntryTake, ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
@@ -157,25 +157,31 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
             }
         }
 
-        [require_key_names, require_key_value_names, deny_names]
-            .into_iter()
-            .filter(|names| !names.is_empty())
-            .map(|names| ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: names
-                        .into_iter()
-                        .map(|name| ContextEntrySelector {
-                            target: ContextEntryTarget::Primitive {
-                                domain: ContextDomain::TransportHeader,
-                                name,
-                                matching: ContextNameMatching::Exact,
-                            },
-                            form: ContextEntrySelectorForm::Value,
-                        })
-                        .collect(),
-                },
-            })
-            .collect()
+        // Key and deny checks need presence only; value checks scan every duplicate.
+        [
+            (require_key_names, ContextEntryTake::Exists),
+            (require_key_value_names, ContextEntryTake::All),
+            (deny_names, ContextEntryTake::Exists),
+        ]
+        .into_iter()
+        .filter(|(names, _)| !names.is_empty())
+        .map(|(names, take)| ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: names
+                    .into_iter()
+                    .map(|name| ContextEntrySelector {
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name,
+                            matching: ContextNameMatching::Exact,
+                        },
+                        form: ContextEntrySelectorForm::Value,
+                        take,
+                    })
+                    .collect(),
+            },
+        })
+        .collect()
     }
 }
 
@@ -336,7 +342,7 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
-    fn entries(names: &[&str]) -> Box<[ContextEntrySelector]> {
+    fn entries(names: &[&str], take: ContextEntryTake) -> Box<[ContextEntrySelector]> {
         names
             .iter()
             .map(|name| ContextEntrySelector {
@@ -346,20 +352,22 @@ mod tests {
                     matching: ContextNameMatching::Exact,
                 },
                 form: ContextEntrySelectorForm::Value,
+                take,
             })
             .collect()
     }
 
-    fn consumes(names: &[&str]) -> ContextDeclaration {
+    fn consumes(names: &[&str], take: ContextEntryTake) -> ContextDeclaration {
         ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
-                entries: entries(names),
+                entries: entries(names, take),
             },
         }
     }
 
     /// Scenario: validation config declares required keys, matching values, and forbidden headers.
-    /// Guarantees: compiled reads preserve exact-case lookup, duplicate-value matching, and missing-header results.
+    /// Guarantees: compiled presence reads match key and deny checks without yielding values;
+    /// all-value reads preserve exact-case lookup and duplicate-value matching.
     #[test]
     fn compiled_reads_match_validation_header_checks() {
         use crate::validation_types::transport_headers::{
@@ -418,21 +426,18 @@ mod tests {
             if let Some(headers) = &stored {
                 metadata.set_transport_headers(headers.clone());
             }
-            for (name, selector) in ["Tenant", "tenant", "missing"]
-                .into_iter()
-                .zip(entries(&["Tenant", "tenant", "missing"]))
-            {
+            for (name, selector) in ["Tenant", "tenant", "missing"].into_iter().zip(entries(
+                &["Tenant", "tenant", "missing"],
+                ContextEntryTake::Exists,
+            )) {
                 let name = context_name(name);
                 let selected = bindings
                     .value(&selector)
-                    .expect("declared read")
+                    .expect("declared presence read")
                     .read(&metadata);
                 let present = selected.is_some();
-                let mut matches_value = false;
                 if let Some(selected) = selected {
-                    selected.visit_members(|member| {
-                        matches_value |= member.values().any(|value| value.bytes == b"acme");
-                    });
+                    selected.visit_members(|member| assert_eq!(member.values().count(), 0));
                 }
                 assert_eq!(
                     present,
@@ -448,14 +453,28 @@ mod tests {
                         std::slice::from_ref(&name)
                     ),
                 );
-                assert_eq!(
-                    matches_value,
-                    validate_transport_header_require_key_values(
-                        std::slice::from_ref(&stored),
-                        &[TransportHeaderKeyValue::new(name, "acme")],
-                    ),
-                );
             }
+            let selector = entries(&["Tenant"], ContextEntryTake::All)
+                .into_vec()
+                .pop()
+                .expect("one selector");
+            let mut matches_value = false;
+            if let Some(selected) = bindings
+                .value(&selector)
+                .expect("declared value read")
+                .read(&metadata)
+            {
+                selected.visit_members(|member| {
+                    matches_value |= member.values().any(|value| value.bytes == b"acme");
+                });
+            }
+            assert_eq!(
+                matches_value,
+                validate_transport_header_require_key_values(
+                    std::slice::from_ref(&stored),
+                    &[TransportHeaderKeyValue::new(context_name("Tenant"), "acme")],
+                ),
+            );
         }
     }
 
@@ -489,9 +508,9 @@ mod tests {
         assert_eq!(
             decls,
             [
-                consumes(&["x-request-id", "x-tenant-id"]),
-                consumes(&["x-tenant-id"]),
-                consumes(&["x-secret"]),
+                consumes(&["x-request-id", "x-tenant-id"], ContextEntryTake::Exists),
+                consumes(&["x-tenant-id"], ContextEntryTake::All),
+                consumes(&["x-secret"], ContextEntryTake::Exists),
             ]
             .into_iter()
             .collect()
@@ -518,7 +537,9 @@ mod tests {
                 .expect("validation exporter should declare context")
                 .declarations)(&config)
             .unwrap(),
-            [consumes(&["X-Secret"])].into_iter().collect()
+            [consumes(&["X-Secret"], ContextEntryTake::Exists)]
+                .into_iter()
+                .collect()
         );
     }
 

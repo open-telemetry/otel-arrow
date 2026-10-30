@@ -53,7 +53,7 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
     ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
+    ContextEntryTake, ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
@@ -377,13 +377,14 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                                         matching: ContextNameMatching::AsciiCaseInsensitive,
                                     },
                                     form: ContextEntrySelectorForm::Value,
+                                    take: ContextEntryTake::First,
                                 }]
                                 .into_boxed_slice(),
                             },
                         });
                 let partition = signal.partition_by_transport_headers().then_some(
                     ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllStored {
+                        selector: ContextConsumerSelector::AllCaptured {
                             domain: ContextDomain::TransportHeader,
                         },
                     },
@@ -1842,12 +1843,13 @@ pub mod test_support {
                                 matching: ContextNameMatching::AsciiCaseInsensitive,
                             },
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::First,
                         }]
                         .into_boxed_slice(),
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored {
+                    selector: ContextConsumerSelector::AllCaptured {
                         domain: ContextDomain::TransportHeader,
                     },
                 },
