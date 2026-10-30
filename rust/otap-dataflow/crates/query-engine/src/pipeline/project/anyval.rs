@@ -969,7 +969,7 @@ fn default_attrs_values_column(attr_type: AttributeValueType, num_rows: usize) -
             None,
         )),
         AttributeValueType::Int => Arc::new(DictionaryArray::new(
-            UInt8Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
+            UInt16Array::new(ScalarBuffer::from(vec![0; num_rows]), None),
             Arc::new(Int64Array::new(ScalarBuffer::from(vec![0]), None)),
         )),
         AttributeValueType::Str => Arc::new(DictionaryArray::new(
