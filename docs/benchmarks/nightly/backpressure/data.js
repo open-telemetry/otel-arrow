@@ -1,162 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793297305274,
+  "lastUpdate": 1793326464783,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Laurent Quérel",
-            "username": "lquerel",
-            "email": "l.querel@f5.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "48b3bbc76d8522f8891f5ebb53c4a0602a368efc",
-          "message": "Introduce `max_in_flight`  in the ClickHouse exporter (#3709)\n\n# Change Summary\n\nAdds configurable, bounded concurrency to the df_engine ClickHouse\nexporter.\n\nThe new `max_in_flight` setting controls how many ClickHouse HTTP insert\nrequests may execute concurrently. It defaults to 10, enabling\nconcurrent inserts without requiring additional configuration.\n\nThe exporter applies backpressure when the configured limit is reached\nand drains accepted requests during shutdown. Concurrent requests may\ncomplete out of order.\n\nUsers who require serialized insertion behavior can set:\n\n```yaml\nexporter:\n  type: urn:otel:exporter:clickhouse\n  config:\n    endpoint: http://clickhouse:8123\n    max_in_flight: 1\n```\n\n## Performance impact\n\nThe change was benchmarked against the serialized implementation using:\n\n- 8,192-log input batches\n- synchronous ClickHouse inserts\n- `max_in_flight: 1` for the baseline\n- `max_in_flight: 10` for this change and the new default\n- one df_engine core\n- six ClickHouse cores\n- twelve traffic-generator cores\n- ClickHouse 25.6\n- three 60-second repetitions per scenario\n\nMedian ClickHouse written throughput under maximum offered load:\n\n| Input path | Serialized baseline | New default | Gain |\n| --- | --- | --- | --- |\n| DFE OTAP | 180,271 logs/s | 682,597 logs/s | +278.6% / 3.79x |\n| DFE OTLP | 179,810 logs/s | 437,543 logs/s | +143.3% / 2.43x |\n\nAt a fixed offered load of approximately 100,000 logs/s, written\nthroughput remained unchanged, as expected. DFE CPU usage decreased by\napproximately 1.0% for OTAP and 9.8% for OTLP.\n\nThese results indicate that the new default can provide up to\napproximately 3.8x OTAP throughput and 2.4x OTLP throughput when\nserialized synchronous inserts are the bottleneck. The actual gain\ndepends on the workload, ClickHouse capacity, and insertion latency.\n\nConcurrent inserts drive ClickHouse harder and increased memory\nconsumption during the saturation runs. Operators can reduce\n`max_in_flight` when ClickHouse resource consumption or insertion\nordering is more important than maximum throughput.\n\n## What issue does this PR close?\n\n- Related to #3512\n- Implements the bounded-concurrency follow-up identified by the\nClickHouse exporter benchmarks in #3512\n\n## How are these changes tested?\n\nAutomated tests cover:\n\n- defaulting `max_in_flight` to 10\n- accepting an explicitly configured concurrency limit\n- rejecting a zero concurrency limit\n- enforcing the configured bound\n- applying backpressure before admitting another request\n- draining all accepted writes during shutdown\n- preserving completed row counts\n\nThe full workspace check passed.\n\n## Are there any user-facing changes?\n\nYes. The ClickHouse exporter now allows up to ten concurrent inserts by\ndefault.\n\nThe new `max_in_flight` positive integer setting can be used to tune\nthis limit. Values greater than one improve throughput by overlapping\nsynchronous HTTP inserts, but inserts may complete out of order and can\nplace more load on ClickHouse.\n\nSet `max_in_flight: 1` to retain serialized insertion behavior.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry\n- [ ] This PR is a chore (indicated in title)\n- [ ] This is a documentation-only PR.",
-          "timestamp": "2026-08-12T06:43:42Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/48b3bbc76d8522f8891f5ebb53c4a0602a368efc"
-        },
-        "date": 1786557510885,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.89993856999419,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.27356982765284,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.659114583333334,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.65625,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98328.32186652886,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98328.32186652886,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003058,
-            "unit": "seconds",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3219298.407056833,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3028845.7668744354,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 32.74029644710827,
-            "unit": "bytes/log",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.82484267822151,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.24830906024836,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.079296875,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.90625,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98322.38857779543,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98322.38857779543,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001797,
-            "unit": "seconds",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3142352.655649909,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1168434.7359177612,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 31.959685897618236,
-            "unit": "bytes/log",
-            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -15400,6 +15246,160 @@ window.BENCHMARK_DATA = {
             "value": 32.368603968216426,
             "unit": "bytes/log",
             "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1c442d89def5d78783a34edec2f588a5819f251e",
+          "message": "chore(deps): update module github.com/axiomhq/hyperloglog to v0.3.0 (#4599)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n|\n[github.com/axiomhq/hyperloglog](https://redirect.github.com/axiomhq/hyperloglog)\n| `v0.2.6` → `v0.3.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2faxiomhq%2fhyperloglog/v0.3.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2faxiomhq%2fhyperloglog/v0.2.6/v0.3.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>axiomhq/hyperloglog (github.com/axiomhq/hyperloglog)</summary>\n\n###\n[`v0.3.0`](https://redirect.github.com/axiomhq/hyperloglog/releases/tag/v0.3.0)\n\n[Compare\nSource](https://redirect.github.com/axiomhq/hyperloglog/compare/v0.2.6...v0.3.0)\n\n#### Upgrade notes\n\nThe binary format does not change. v0.3.0 decodes sketches that v0.1.0\nto v0.2.6 encoded, and v0.2.6 decodes sketches that v0.3.0 encodes.\n\n##### Code changes for callers\n\n- Match errors with `errors.Is`. Do not compare errors with `==` or by\ntheir text.\n- When you append an encoded sketch to a larger buffer, frame it.\n\n##### Behavior changes\n\n- `UnmarshalBinary`, `MarshalBinary`, `AppendBinary`, and `Merge` wrap\nthe errors that they return. `err == ErrorTooShort` is always false.\n- `Merge` wraps `ErrorPrecisionMismatch` when the precisions differ. The\nerror message includes both precisions.\n- `UnmarshalBinary` rejects trailing bytes with `ErrorInvalidData`. It\nalso rejects unknown versions, invalid precisions, out-of-range\nregisters, and malformed sparse lists.\n- If `UnmarshalBinary` returns an error, the receiver does not change.\nThe sketch that it decodes does not share memory with the input buffer.\n- `Insert` and `InsertHash` on a zero-value `Sketch` give it precision\n14 and the sparse representation, the same as `New`. In v0.2.6, they\npanicked.\n- `Merge` into a zero-value `Sketch` copies the other sketch, and\n`Estimate` on a zero-value `Sketch` returns 0. In v0.2.6, both panicked.\n- `Merge` with a zero-value argument does nothing. In v0.2.6, it\nreturned an error.\n- `MarshalBinary` and `AppendBinary` on a zero-value `Sketch` return an\nerror that wraps `ErrorInvalidPrecision`. In v0.2.6, they returned an\n8-byte header with precision 0.\n- `Estimate` converts a sparse sketch to dense when its sparse list\ngrows past the register count. In v0.2.6, calls to `Estimate` between\nsmall batches of inserts let the sparse list grow without limit.\n- A sketch that v0.2.6 saved with such an oversized sparse list can give\na different estimate after v0.3.0 decodes it. In tests, the difference\nwas 1.1% or less.\n\n##### Additions\n\n- `Sketch.Reset` clears a sketch and keeps its representation and\nallocated storage.\n- `ErrorInvalidVersion`, `ErrorInvalidPrecision`, `ErrorInvalidData`,\nand `ErrorPrecisionMismatch` are sentinel errors to match with\n`errors.Is`.\n\n#### What's Changed\n\n- fix ut logic error in TestHLL_Merge_Complex. by\n[@&#8203;CodeZHXS](https://redirect.github.com/CodeZHXS) in\n[#&#8203;59](https://redirect.github.com/axiomhq/hyperloglog/pull/59)\n- Add runnable examples to replace demo directory by\n[@&#8203;lukasmalkmus](https://redirect.github.com/lukasmalkmus) in\n[#&#8203;56](https://redirect.github.com/axiomhq/hyperloglog/pull/56)\n- allow compiler to inline hash function by\n[@&#8203;mgartner](https://redirect.github.com/mgartner) in\n[#&#8203;64](https://redirect.github.com/axiomhq/hyperloglog/pull/64)\n- Feature: Adding support for Reset by\n[@&#8203;MovieStoreGuy](https://redirect.github.com/MovieStoreGuy) in\n[#&#8203;62](https://redirect.github.com/axiomhq/hyperloglog/pull/62)\n- Harden UnmarshalBinary validation by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;65](https://redirect.github.com/axiomhq/hyperloglog/pull/65)\n- Harden sketch API and decoding by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;66](https://redirect.github.com/axiomhq/hyperloglog/pull/66)\n- docs: fix project name reference, spelling, and period in\nContributing.md by\n[@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) in\n[#&#8203;67](https://redirect.github.com/axiomhq/hyperloglog/pull/67)\n- Add CI and release automation by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;68](https://redirect.github.com/axiomhq/hyperloglog/pull/68)\n- Fix unbounded sparse growth, a uint32 underflow in Estimate, and\nbenchmark measurement by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;69](https://redirect.github.com/axiomhq/hyperloglog/pull/69)\n- docs: fix H1 heading level and fork clone URL placeholder in\nContributing.md by\n[@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) in\n[#&#8203;70](https://redirect.github.com/axiomhq/hyperloglog/pull/70)\n- docs: fix verb parallelism, missing trailing period, and article in\nREADME.md by\n[@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) in\n[#&#8203;71](https://redirect.github.com/axiomhq/hyperloglog/pull/71)\n- .github/workflows: publish releases with goreleaser by\n[@&#8203;lukasmalkmus](https://redirect.github.com/lukasmalkmus) in\n[#&#8203;74](https://redirect.github.com/axiomhq/hyperloglog/pull/74)\n\n#### New Contributors\n\n- [@&#8203;CodeZHXS](https://redirect.github.com/CodeZHXS) made their\nfirst contribution in\n[#&#8203;59](https://redirect.github.com/axiomhq/hyperloglog/pull/59)\n- [@&#8203;lukasmalkmus](https://redirect.github.com/lukasmalkmus) made\ntheir first contribution in\n[#&#8203;56](https://redirect.github.com/axiomhq/hyperloglog/pull/56)\n- [@&#8203;MovieStoreGuy](https://redirect.github.com/MovieStoreGuy)\nmade their first contribution in\n[#&#8203;62](https://redirect.github.com/axiomhq/hyperloglog/pull/62)\n- [@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) made\ntheir first contribution in\n[#&#8203;67](https://redirect.github.com/axiomhq/hyperloglog/pull/67)\n\n**Full Changelog**:\n<https://github.com/axiomhq/hyperloglog/compare/v0.2.6...v0.3.0>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xODguMiIsInVwZGF0ZWRJblZlciI6IjQ0LjE4OC4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-30T01:01:44Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1c442d89def5d78783a34edec2f588a5819f251e"
+        },
+        "date": 1793326463468,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.008678719401359558,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.84473659489738,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.32613861386139,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.827994791666665,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.2734375,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98319.57103748032,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98328.10391700668,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003191,
+            "unit": "seconds",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3192677.655008231,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3027037.535412687,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.46963510760864,
+            "unit": "bytes/log",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.008677213452756405,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.77584215395571,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.16670377241806,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.474739583333335,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.34765625,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98336.69251769535,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98328.15963333395,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003157,
+            "unit": "seconds",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3116417.44643156,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1141738.8315476335,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 31.69404835860542,
+            "unit": "bytes/log",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Egress Bytes Per Log"
           }
         ]
       }
