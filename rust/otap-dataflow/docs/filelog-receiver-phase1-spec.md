@@ -1289,12 +1289,35 @@ that bounded window before the associated delta can become emit-ready. This
 allows an advance shorter than 64 bytes to combine newly read bytes with the
 required pre-resume bytes without rereading mutable path content after Ack.
 
-Recovery validates the guard from the reopened handle before seeking past the
-guarded frontier. Failure to read the window or a digest mismatch is exact-locator
-identity-evidence mismatch and follows `identity.on_recovery_mismatch` without
-inheriting progress. The guard materially reduces same-locator reuse and
-in-place replacement ambiguity but cannot distinguish a replacement that
-reproduces the checked locator, prefix, size bound, and frontier window while
+Recovery must validate the guard from the reopened handle before resuming at the
+saved offset. Apply these rules:
+
+| Read result | Required handling |
+| --- | --- |
+| Complete window with a different digest | Apply `identity.on_recovery_mismatch`; do not inherit the old progress. |
+| EOF before the required window is complete | Apply `identity.on_recovery_mismatch`; do not inherit the old progress. |
+| Successful partial read | Continue the bounded read until the window is complete, EOF is reached, a read error occurs, or cancellation is requested. |
+
+An I/O error while reading the prefix or frontier window is not mismatch
+evidence. Preserve the entire saved record, including file ID, epoch, offset,
+prefix and frontier guard, and return the original source error. Regardless of
+`identity.on_recovery_mismatch`, do not reset, supersede or quarantine the record
+solely because of that error. Repeated errors do not change this rule.
+
+Retry or termination must follow [Failure containment](#failure-containment).
+Do not assume every source error is temporary. Environmental retries require
+bounded backoff and rate-limited health reporting, including for persistent
+unreadability. Keep the record's tracked slot. Do not resume from its saved
+offset or advance its progress until continuity validates.
+
+Retry `Interrupted` only within a finite per-operation budget, checking
+cancellation between attempts. On exhaustion, return the source error for the
+same failure handling. Cancellation preserves saved state and does not permit
+admission. Failed checkpoint file or directory syncs remain terminal.
+
+The guard materially reduces same-locator reuse and in-place replacement
+ambiguity but cannot distinguish a replacement that reproduces the checked
+locator, prefix, size bound, and frontier window while
 changing unchecked bytes between the sampled regions. Phase 1 states that residual
 ambiguity rather than claiming that native locators or hashes are permanent
 identity.
@@ -1311,7 +1334,8 @@ The following conditions never inherit an old offset:
 - the candidate has a changed runtime locator, even with an equal full
   fingerprint;
 - an exact-locator fingerprint prefix fails;
-- an exact-locator committed-frontier guard fails or cannot be read;
+- an exact-locator committed-frontier digest differs, or EOF prevents reading
+  its complete required window;
 - committed progress exceeds current size;
 - exact-locator identity evidence changed while it was observed; or
 - a native locator appears reused after a `RotatedFinalized` record.

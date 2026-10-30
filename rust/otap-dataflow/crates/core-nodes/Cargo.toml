@@ -151,6 +151,7 @@ bench = []
 dev-tools = []
 
 [dev-dependencies]
+otel-arrow-dfe-filelog-checkpoint = { workspace = true, features = ["test-utils"] }
 libtest-mimic.workspace = true
 serde_yaml.workspace = true
 arrow-ipc.workspace = true
@@ -255,3 +256,8 @@ harness = false
 name = "filelog_scan"
 harness = false
 path = "benches/filelog_scan/main.rs"
+
+[[bench]]
+name = "filelog_identity"
+harness = false
+path = "benches/filelog_identity/main.rs"

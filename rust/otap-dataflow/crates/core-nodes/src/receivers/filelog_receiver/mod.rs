@@ -18,3 +18,7 @@ pub mod source;
 /// Bounded Linux scanning and reconciliation without receiver wiring.
 #[cfg(target_os = "linux")]
 pub mod discovery;
+
+/// Linux file identity and local ownership admission.
+#[cfg(target_os = "linux")]
+pub mod identity;

@@ -1102,3 +1102,31 @@ fn independent_keep_failed_mutation_is_rejected() {
         .expect("exact keep-failed");
     assert_eq!(state.get(&stored.file_id), Some(&stored));
 }
+
+/// Scenario: Ordinary progress updates a dense table, followed by removal and registration.
+/// Guarantees: Progress preserves positions; fresh traversal after structural changes covers every live record exactly once.
+#[test]
+fn positional_traversal_preserves_progress_and_covers_mutations() {
+    let records = vec![record(1), record(2), record(3)];
+    let mut state = state(&records);
+    let positions: Vec<_> = (0..3)
+        .map(|n| state.record_at(n).unwrap().file_id)
+        .collect();
+    apply(
+        &mut state,
+        vec![Operation::UpdateProgress(progress(&records[0], 11))],
+    );
+    for (position, id) in positions.iter().enumerate() {
+        assert_eq!(state.record_at(position).unwrap().file_id, *id);
+    }
+    apply(
+        &mut state,
+        vec![removal(&records[1], true), registration(&record(4))],
+    );
+    let mut visited: Vec<_> = (0..state.records().len())
+        .map(|n| state.record_at(n).unwrap().file_id)
+        .collect();
+    visited.sort();
+    assert_eq!(visited, vec![id(1), id(3), id(4)]);
+    assert!(state.record_at(3).is_none());
+}
