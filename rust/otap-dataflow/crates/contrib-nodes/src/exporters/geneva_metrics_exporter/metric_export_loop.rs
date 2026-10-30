@@ -353,6 +353,15 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
         let mut shutdown_drain_deadline: Option<Instant> = None;
 
         loop {
+            if let Some(deadline) = shutdown_drain_deadline {
+                self.finish_shutdown_work(
+                    in_flight.take(),
+                    pending_completion.take(),
+                    deadline,
+                    &effect_handler,
+                )
+                .await?;
+            }
             let has_in_flight = in_flight.is_some();
             let has_pending_completion = pending_completion.is_some();
             let accepting_pdata = self.auth.is_ready()
@@ -909,6 +918,146 @@ mod tests {
         assert_eq!(
             metric_value(terminal.metrics(), "success", "items"),
             &MetricValue::U64(2)
+        );
+    }
+
+    /// Scenario: A split input starts during shutdown draining while upstream remains open.
+    /// Guarantees: The shared drain deadline cancels the active packet and prevents later packets without waiting for another inbox message.
+    #[tokio::test]
+    async fn shutdown_bounds_split_publication_while_upstream_remains_open() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+            AnyValue, KeyValue, any_value,
+        };
+
+        let server = MockServer::start().await;
+        // Real HTTP delays exercise cancellation against the local mock server;
+        // paused Tokio time cannot safely drive the server's socket I/O.
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(4)))
+            .with_priority(1)
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(8)))
+            .with_priority(2)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let points = (0..21_000)
+            .map(|index| NumberDataPoint {
+                attributes: vec![KeyValue {
+                    key: "dimension".to_owned(),
+                    value: Some(AnyValue {
+                        value: Some(any_value::Value::StringValue(format!(
+                            "{index:08}{}",
+                            "x".repeat(1_016)
+                        ))),
+                    }),
+                }],
+                time_unix_nano: 1_700_000_000_000_000_000,
+                value: Some(number_data_point::Value::AsDouble(12.5)),
+                ..Default::default()
+            })
+            .collect();
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: "temperature".to_owned(),
+                        data: Some(metric::Data::Gauge(Gauge {
+                            data_points: points,
+                        })),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let split_data = OtapPdata::new_default(
+            OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
+                .expect("split input should serialize"),
+        );
+        assert!(
+            prepare_publication(&split_data, &mapping_config())
+                .expect("split input should prepare")
+                .publications
+                .len()
+                > 1
+        );
+
+        let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
+        let exporter = exporter_with_timeout(&server.uri(), Duration::from_secs(10), provider);
+        let (effect_handler, _completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+        pdata_tx
+            .send_async(metrics_pdata(1))
+            .await
+            .expect("first input should be buffered");
+        pdata_tx
+            .send_async(split_data)
+            .await
+            .expect("split input should be buffered");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "drain split input".to_owned(),
+            })
+            .await
+            .expect("shutdown should be queued");
+
+        let driver = async {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if server
+                        .received_requests()
+                        .await
+                        .expect("request recording should be enabled")
+                        .len()
+                        == 2
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the split input's first packet should start");
+            let (snapshots, reporter) = MetricsReporter::create_new_and_receiver(8);
+            control_tx
+                .send_async(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: reporter,
+                })
+                .await
+                .expect("telemetry should be queued while upstream remains open");
+            let mut collected = Vec::new();
+            for _ in 0..4 {
+                collected.push(
+                    snapshots
+                        .recv_async()
+                        .await
+                        .expect("shared snapshot should arrive"),
+                );
+            }
+            assert_eq!(
+                metric_value(&collected, "failure", "messages"),
+                &MetricValue::U64(1),
+                "the split publication must expire before inbox processing resumes"
+            );
+            drop(pdata_tx);
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("shutdown work should respect its shared local budget");
+        assert_eq!(
+            result.expect("shutdown should succeed").deadline(),
+            deadline
         );
     }
 
