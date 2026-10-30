@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793360467906,
+  "lastUpdate": 1793388244914,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -76387,6 +76387,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "100889614+juanjosalco@users.noreply.github.com",
+            "name": "Juan Salazar",
+            "username": "juanjosalco"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1759f0fba1c455efe3952a0ff160214ea825a12b",
+          "message": "feat(extensions): add Azure Key Vault Basic Auth provider (#4592)\n\n# Change summary\n\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdd the opt-in `azure_key_vault_user_pass_auth` extension, implementing\nthe existing `BasicAuthProvider` capability with startup-only\nusername/password acquisition from Azure Key Vault.\n\n- Reuse the shared Azure identity and Key Vault acquisition layer\nintroduced by #4501.\n- Retrieve and validate both secrets, construct `BasicAuthCredential`\ndirectly, and publish only a complete pair before signaling readiness.\n- Cache the successful pair for the extension instance's lifetime. No\ninline/file fallback, polling, rotation, or refresh on database\nreconnect.\n- Move the existing shared Basic Auth capability implementation into the\ngeneric background provider and extend feature gates so the new\nextension builds independently.\n- Add provider/lifecycle coverage, real database factory-binding tests,\nthree complete pipeline examples, documentation, component\nmetadata/inventory, telemetry, and a changelog entry.\n- Isolate the shared AKV diagnostic-capture test in a child process to\nprevent parallel-test interference with tracing's global callsite cache,\nwithout changing production logging or weakening assertions.\n\nOracle, PostgreSQL, and SQL Server use their existing\n`basic_auth_provider` bindings. No functional database receiver changes\nor capability-interface changes are included.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4533\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\n### Automated checks\n\n**Current Windows evidence at `5ea0451`:** test builds used\nprocess-local `AWS_LC_SYS_PREBUILT_NASM=1` for the existing AWS-LC\ndevelopment dependency. Normal suite runs retain parallel execution.\nRepeated runs were bounded and declared in advance, not retries until a\npass.\n\n| Command | Result |\n| --- | --- |\n| `cargo check --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,crypto-ring --quiet` | PASS |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,crypto-ring --lib\ncommon::azure_key_vault::tests::sdk_and_operational_telemetry_redact_sensitive_material\n-- --exact --nocapture` | PASS: 1 isolated test after the fix |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,crypto-ring --lib\ncommon::azure_key_vault::tests::sdk_and_operational_telemetry_redact_sensitive_material\n--quiet -- --exact` | PASS: 1 test in each of 3 additional runs |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,crypto-ring --lib --quiet` | PASS: 42\ntests in each of 5 normal-parallel runs |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,azure-key-vault-sasl-auth,azure-identity-auth,flat-file-user-pass-auth,crypto-ring\n--lib --quiet` | PASS: 101 tests in each of 4 runs |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features azure-key-vault-sasl-auth,crypto-ring\n--lib --quiet` | PASS: 40 tests |\n| `cargo test --locked -p otel-arrow-dfe --no-default-features\n--features\nazure-key-vault-user-pass-auth,oracle,postgresql,sql-server,crypto-ring\n--test akv_database_bindings --quiet` | PASS: 3 offline factory/binding\ntests, not live database connections |\n| `cargo clippy --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,azure-key-vault-sasl-auth,azure-identity-auth,flat-file-user-pass-auth,crypto-ring\n--all-targets --quiet -- -D warnings` | PASS |\n| `cargo fmt --all -- --check` | PASS |\n| `git diff --check` | PASS; run from the repository root |\n\nAll fixed targeted test runs above had zero ignored tests. Repetition\nsupports reliability; it is not proof that every repository test passes.\n\n\n| Command | Result at the earlier revision |\n| --- | --- |\n| `cargo check --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features azure-key-vault-user-pass-auth` |\nReported PASS; independent, backend-neutral compilation |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,crypto-ring --lib` | Reported PASS |\n| `cargo test --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,azure-key-vault-sasl-auth,azure-identity-auth,flat-file-user-pass-auth,crypto-ring\n--lib` | Reported PASS |\n| `cargo clippy --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,azure-key-vault-sasl-auth,azure-identity-auth,flat-file-user-pass-auth,crypto-ring\n--all-targets -- -D warnings` | Reported PASS |\n| `cargo check --locked -p otel-arrow-dfe-contrib-extensions\n--no-default-features --features\nazure-key-vault-user-pass-auth,crypto-openssl` | Reported PASS;\ncompilation, not a live OpenSSL E2E run |\n| `cargo fmt --all -- --check` | Reported PASS |\n\n### Manual live qualification\n\nOperator-reported runs used the real engine, a private Azure Key Vault,\nand the Azure Linux VM's system-assigned managed identity. These live\nruns predate the test-only fix and have not been repeated at the current\ntip.\n\n| Database | Smoke and acknowledged checkpoint restart/resume | Database\ntransport |\n| --- | --- | --- |\n| PostgreSQL | PASS: expected initial rows, checkpoint advancement, then\nonly the new row after restart | Verified TLS |\n| SQL Server | PASS: exact initial rows, acknowledged ID 3, clean\nshutdown, then only ID 4 after restart | Verified TLS |\n| Oracle | PASS: exact initial rows, acknowledged ID 3, clean shutdown,\nthen only ID 4 after restart | Verified Oracle native encryption: AES256\nwith SHA256 integrity; not certificate-based TLS |\n\nAKV access used HTTPS throughout. Console feedback and checkpoint\nadvancement were exercised; these runs do not establish durable\ndownstream delivery.\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nEnable `azure-key-vault-user-pass-auth` and configure\n`urn:otel:extension:azure_key_vault_user_pass_auth` with the vault\nendpoint,\nusername/password secret references, Azure identity, and startup\ntimeout.\nBind compatible consumers through `basic_auth_provider`.\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-10-30T18:34:45Z",
+          "tree_id": "59fd2ac8da3aee9d527b6d3579e4a956c86d74f5",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1759f0fba1c455efe3952a0ff160214ea825a12b"
+        },
+        "date": 1793388227590,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
             "unit": "MB"
           },
           {
