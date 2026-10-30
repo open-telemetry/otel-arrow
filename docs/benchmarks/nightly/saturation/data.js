@@ -1,888 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793326481265,
+  "lastUpdate": 1793385264774,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Laurent Quérel",
-            "username": "lquerel",
-            "email": "l.querel@f5.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "fcd8b2ae31030836252a389c3c14f71e20185e38",
-          "message": "feat(console): add actionable exporter metrics (#3741)\n\n# Change Summary\n\nRefactors the Console Exporter's internal instrumentation to use bounded\nenum-based attributes and measurement metric sets.\n\nThe exporter now:\n- Reports terminal export results through\n`exporter.pdata.exports.messages`, partitioned by `signal` and\n`outcome`.\n- Reports actionable failures through\n`exporter.console.failures.messages`, partitioned by the fixed output\n`format`, `signal`, and bounded `error.type`.\n- Classifies failures as OTLP view creation, OTAP view creation,\nunsupported signal, formatting, or stdout write failures.\n- Reports metrics during periodic collection and includes touched\nbuckets in terminal shutdown snapshots.\n- Preserves the existing best-effort ACK behavior, including when\nconsole formatting or output fails.\n- Avoids duplicating input-volume metrics already provided by\nengine-owned channel instrumentation.\n\n## What issue does this PR close?\n\n* Related to #3300\n\n## How are these changes tested?\n\n- Added unit tests verifying that successful and failed exports are\nisolated by signal and outcome.\n- Added unit tests verifying actionable failure classification and\ndeterministic attribute ordering.\n- Added terminal snapshot tests verifying that only touched buckets are\nemitted and that they are drained exactly once.\n- `cargo xtask check` \n\n## Are there any user-facing changes?\n\nYes. The Console Exporter now exposes bounded internal telemetry for\nterminal export outcomes and actionable failure reasons:\n\n- `exporter.pdata.exports.messages{signal,outcome}`\n- `exporter.console.failures.messages{format,signal,error.type}`\n\nConsole output and ACK behavior are unchanged.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
-          "timestamp": "2026-08-13T01:26:54Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/fcd8b2ae31030836252a389c3c14f71e20185e38"
-        },
-        "date": 1786588582931,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 78.82797545702522,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 80.1173548087347,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 31.441927083333333,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 33.25390625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 108709.82002052407,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 108709.82002052407,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002675,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 11955153.925808132,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 11830560.204183007,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 109.97308176529992,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.7245630621910095,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 87.12743147307955,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 88.09322600619195,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 52.52942708333333,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 54.59375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 248261.4772224856,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 246462.6663405123,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.057453,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 27002406.951978777,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 26882883.562380757,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 109.55982645530706,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -3.587924003601074,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 86.7326102353616,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 89.83168365770776,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 221.62278645833334,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 227.65234375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 13429113.389935004,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 13910939.771069149,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.011658,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 76872904.400622,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 76713465.99921568,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.52607556827297,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.03730703517794609,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.23158503154781,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.65956834532375,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 57.25247395833333,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 58.1640625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 2538761.272245511,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 2537814.135640521,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.004016,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 13780339.261738032,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 13661527.071494889,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.4300033513920045,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.7010141611099243,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 86.76033203806735,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 88.23651850127996,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 99.58229166666666,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 105.375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 469531.0426278568,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 477517.83170755865,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003087,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 52292862.13268976,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 52020899.036994174,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 109.50975787793186,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.24724552035331726,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 85.78607531096559,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 90.05653596789132,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 210.35950520833333,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 217.41015625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 907536.1333761142,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 905292.2909826468,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.011345,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 99673399.96070433,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 99108620.26495855,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 110.10079391321685,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.1674524545669556,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 89.34762260196113,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 91.1909873104302,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.570833333333333,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.16015625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 266047.0320660906,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 262941.05946683924,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003105,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 8492539.195830831,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8147239.4587769965,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 32.29826187302583,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.1704531908035278,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 90.40309893432217,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 91.22830673896203,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 24.655338541666666,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 25.078125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 271921.3454730442,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 268738.6336034118,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.004175,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 8694565.479059627,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8350698.237298551,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 32.35323988396302,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.8267784118652344,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.20599327014126,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.55104505341383,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 43.121875,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 44.2734375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 1905772.8443372878,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 1870958.5972346293,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003021,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 21979146.710040186,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 21878789.2189512,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 11.747532383948244,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.5135677456855774,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.20386708858855,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.6238068709378,
-            "unit": "%",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 44.05078125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 46.90625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 1897365.1811031671,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 1907109.4362357855,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.004997,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 22069678.679015953,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 21986246.61537709,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 11.572318955422213,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.0443420447409153,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 95.47408977292449,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.10978571981124,
-            "unit": "%",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 474.64609375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 498.3984375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 1962836.8252695084,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 1961966.4633333369,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002624,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 218202060.63708794,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 217913622.96471527,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 111.21599921048984,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.019435569643974304,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 99.95455194257691,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.42960785830304,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 99.45703125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 101.2265625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 4916861.208874981,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 4915905.588862254,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.007115,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 26599005.431737576,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 26436052.009901904,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.410804774607906,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.2269839644432068,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 94.967108448888,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.04057156097939,
-            "unit": "%",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 227.8578125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 233.81640625,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 8897224.783121921,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 8917420.055547398,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.009292,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 49332896.83035795,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 49091322.150207184,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 5.532193899475294,
-            "unit": "bytes/log",
-            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -87998,6 +87118,886 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 109.64927510672398,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "66beb81c61088782dca5d7b112845a136ae4e0e1",
+          "message": "chore(deps): update go patches and stable minors (#4598)\n\n> [!NOTE]\n> This PR body was truncated due to platform limits.\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n|\n[github.com/HdrHistogram/hdrhistogram-go](https://redirect.github.com/HdrHistogram/hdrhistogram-go)\n| `v1.2.0` → `v1.4.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fHdrHistogram%2fhdrhistogram-go/v1.4.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fHdrHistogram%2fhdrhistogram-go/v1.2.0/v1.4.0?slim=true)\n|\n|\n[github.com/apache/arrow-go/v18](https://redirect.github.com/apache/arrow-go)\n| `v18.6.0` → `v18.8.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fapache%2farrow-go%2fv18/v18.8.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fapache%2farrow-go%2fv18/v18.6.0/v18.8.0?slim=true)\n|\n|\n[github.com/dustin/go-humanize](https://redirect.github.com/dustin/go-humanize)\n| `v1.0.1` → `v1.1.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fdustin%2fgo-humanize/v1.1.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fdustin%2fgo-humanize/v1.0.1/v1.1.0?slim=true)\n|\n|\n[github.com/fxamacker/cbor/v2](https://redirect.github.com/fxamacker/cbor)\n| `v2.9.6` → `v2.10.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2ffxamacker%2fcbor%2fv2/v2.10.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2ffxamacker%2fcbor%2fv2/v2.9.6/v2.10.0?slim=true)\n|\n|\n[github.com/klauspost/compress](https://redirect.github.com/klauspost/compress)\n| `v1.18.7` → `v1.20.3` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fklauspost%2fcompress/v1.20.3?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fklauspost%2fcompress/v1.18.7/v1.20.3?slim=true)\n|\n|\n[github.com/stretchr/testify](https://redirect.github.com/stretchr/testify)\n| `v1.11.1` → `v1.12.1` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2fstretchr%2ftestify/v1.12.1?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2fstretchr%2ftestify/v1.11.1/v1.12.1?slim=true)\n|\n|\n[go.opentelemetry.io/collector/pdata](https://redirect.github.com/open-telemetry/opentelemetry-collector)\n| `v1.60.0` → `v1.70.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/go.opentelemetry.io%2fcollector%2fpdata/v1.70.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/go.opentelemetry.io%2fcollector%2fpdata/v1.60.0/v1.70.0?slim=true)\n|\n|\n[go.opentelemetry.io/otel](https://redirect.github.com/open-telemetry/opentelemetry-go)\n| `v1.44.0` → `v1.47.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/go.opentelemetry.io%2fotel/v1.47.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/go.opentelemetry.io%2fotel/v1.44.0/v1.47.0?slim=true)\n|\n|\n[go.opentelemetry.io/otel/metric](https://redirect.github.com/open-telemetry/opentelemetry-go)\n| `v1.44.0` → `v1.47.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/go.opentelemetry.io%2fotel%2fmetric/v1.47.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/go.opentelemetry.io%2fotel%2fmetric/v1.44.0/v1.47.0?slim=true)\n|\n| [google.golang.org/grpc](https://redirect.github.com/grpc/grpc-go) |\n`v1.83.2` → `v1.85.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/google.golang.org%2fgrpc/v1.85.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/google.golang.org%2fgrpc/v1.83.2/v1.85.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>HdrHistogram/hdrhistogram-go\n(github.com/HdrHistogram/hdrhistogram-go)</summary>\n\n###\n[`v1.4.0`](https://redirect.github.com/HdrHistogram/hdrhistogram-go/releases/tag/v1.4.0):\nVersion 1.4.0\n\n[Compare\nSource](https://redirect.github.com/HdrHistogram/hdrhistogram-go/compare/v1.3.0...v1.4.0)\n\n#### Version 1.4.0\n\n- **New: `PackedHistogram`**, a sparse histogram for keeping many\nlightly populated histograms in memory: about 0.3 KB instead of 184 KB\neach at a typical latency configuration (see below).\n- **Faster:** asking for several percentiles in one call is 3.4 to 5.7x\nfaster; single queries are unchanged and recording is within 4%.\n- **Fixed:** a number of silent correctness and decoding problems,\nincluding hangs and panics on malformed input.\n- **Behaviour changes:** some of those fixes change results for inputs\nthat were already wrong, such as hostile streams, overflowing totals and\nnegative values. Read [Behaviour changes](#behaviour-changes) before\nupgrading.\n- **Compatibility:** nothing exported was removed or changed signature.\n`Snapshot` gained a field, so unkeyed literals such as `Snapshot{1,\n1000, 3, counts}` no longer compile; use field names.\n\n![hdrhistogram-go 1.4.0 against v1.3.0: asking for several percentiles\nat once is 4 to 6x faster, single queries are unchanged, recording is\nwithin\n4%](https://raw.githubusercontent.com/redis-performance/hdr-agent-workspace/e8d2f5f6ecd2c7bb6aea659a76ea2a3e1ecc33f9/experiments/GO-BENCH-1.3.0-VS-TIP-186f8b9-2026-10-08/charts/speedup.png)\n\n##### Highlight: `PackedHistogram`\n\n`New` allocates the full counts array up front: about 184 KB at a\ntypical latency configuration (`New(1, 3600000000, 3)`), however few\nvalues are recorded. Services that keep **many sparsely populated\nhistograms** (per endpoint, per tenant, per connection, or a ring of\nper-second slices) pay that for every one. `PackedHistogram` stores only\nthe populated buckets, each count in 1, 2, 4 or 8 bytes as needed:\n\n| Populated buckets | `Histogram` | `PackedHistogram` |\n| ----------------- | ----------: | ----------------: |\n| 10                |      184 KB |          \\~0.3 KB |\n| 100               |      184 KB |          \\~0.8 KB |\n| 1,600             |      184 KB |           \\~10 KB |\n\nFor one thousand histograms with ten populated buckets each, that is\n179.7 MB dense against 273 KB packed\n([#&#8203;75](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/75)).\n\n- **Same model as `Histogram`:** the same constructor arguments and\nbucket layout, and the same queries: `RecordValue(s)`,\n`RecordCorrectedValue`, `ValueAtPercentile`, `ValueAtPercentilesSlice`,\n`Min`, `Max`, `Mean`, `StdDev`, `CountAtValue`, `TotalCount`, plus\n`Clone`, geometry getters, and interval start/end times and tags.\n- **Wire-compatible:** `Encode` writes the standard V2 compressed\nformat, byte-for-byte the same as the dense encoder on equivalent data.\n`DecodePacked` reads V2 streams from Go, Java and C writers, including\nshifted Java histograms and streams from hdrhistogram-go v1.2.0 and\nearlier. `HistogramLogWriter.OutputIntervalPackedHistogram` writes\npacked intervals to logs directly.\n- **Built for rolling windows:** record into a dense histogram, keep\ncompleted slices packed, and aggregate on demand with `MergeFrom` (dense\ninto packed), `MergeInto` (packed into dense), `Merge` (packed into\npacked), `Reset` (keeps storage), `Compact` (shrinks it) and\n`ForEachBucket`.\n- **The trade-off is recording speed:** recording is a binary search,\nand a new bucket costs O(populated). A last-hit cache skips the search\nwhen consecutive records land in the same bucket\n([#&#8203;117](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/117)).\nKeep the dense `Histogram` for hot recording paths and for histograms\nthat fill most buckets.\n- **Hardened before release:** two dedicated fuzz targets (hostile\ndecoding, and a differential against the dense histogram) run in CI and\nnightly, alongside multi-agent adversarial reviews of every packed PR.\n\n```go\nh := hdrhistogram.NewPacked(1, 3600000000, 3)\nh.RecordValue(1234)\np99 := h.ValueAtPercentile(99)\nencoded, err := h.Encode() // standard V2, same bytes as Histogram.Encode\n```\n\nGuides: the [README\nsection](https://redirect.github.com/HdrHistogram/hdrhistogram-go#packed-histograms)\n(memory, costs and a rolling-window example) and the [C/Java\ncompatibility\nguide](https://redirect.github.com/HdrHistogram/hdrhistogram-go/blob/master/PACKED_COMPATIBILITY.md).\n\n##### Update Urgency: High\n\n**High**: contains fixes for decoders that hung or panicked on malformed\ninput\n([#&#8203;80](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/80)),\nfor totals that silently wrapped past `MaxInt64`\n([#&#8203;114](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/114),\n[#&#8203;109](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/109)),\nfor negative values recorded as huge positive ones\n([#&#8203;103](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/103)),\nand for wrong percentiles at very large counts\n([#&#8203;108](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/108)).\nAnyone decoding untrusted streams or logs, or recording very large\nweighted counts, should update.\n\n##### API Additions\n\n- `PackedHistogram`, `NewPacked` and `DecodePacked`\n([#&#8203;75](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/75));\nsee [Highlight](#highlight-packedhistogram)\n- `PackedHistogram` rolling-window support: `Reset`, `ForEachBucket`,\n`MergeInto` (packed into dense) and `MergeFrom` (dense into packed)\n([#&#8203;81](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/81)),\nand packed-to-packed `Merge` and `Compact`\n([#&#8203;82](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/82))\n- `PackedHistogram` parity with the dense type: `Mean`, `StdDev`,\n`RecordCorrectedValue`, geometry getters, `Clone`, interval start/end\ntime and tag, `EncodeV2`, and\n`HistogramLogWriter.OutputIntervalPackedHistogram` with\n`...WithLogOptions`\n([#&#8203;105](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/105))\n- `Histogram.Clone`, a deep copy of geometry, counts, total, tag and\ntimes; use `w.Merge().Clone()` to keep a windowed result\n([#&#8203;112](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/112))\n- `Snapshot.Validate`, which rejects negative counts, counts outside the\ngeometry, sums past `MaxInt64` and unrepresentable geometry before\n`Import`; `Snapshot.IntegerToDoubleConversionRatio` carries the V2\nconversion ratio\n([#&#8203;112](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/112),\n[#&#8203;105](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/105))\n- `Histogram.EncodeV2`\n([#&#8203;105](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/105))\n\n##### Performance\n\nFleet microbenchmarks, one pinned core, interleaved with v1.3.0 (7\nrepetitions, medians; four percentiles on a 1M-sample lognormal\nhistogram):\n\n| Benchmark | Intel Xeon (Sapphire Rapids) | AMD EPYC (Zen 5) | AWS\nGraviton (Neoverse V2) |\n| ------------------------------------------------- |\n---------------------------: | --------------------------: |\n---------------------------: |\n| `ValueAtPercentiles` (four percentiles, one call) | 8.09 to 1.70 us\n(**4.76x**) | 4.73 to 1.12 us (**4.23x**) | 11.34 to 2.00 us (**5.66x**)\n|\n| `ValueAtPercentilesSlice` (sorted input) | 5.12 to 1.53 us (**3.35x**)\n| 3.59 to 0.98 us (**3.66x**) | 7.35 to 1.78 us (**4.13x**) |\n| `ValueAtPercentile` (one percentile) | unchanged | unchanged |\nunchanged |\n| `RecordValue` | 3.0 to 3.2 ns | 2.2 to 2.2 ns | 3.4 to 3.5 ns |\n\n- `ValueAtPercentiles` resolves all percentiles in one blocked\nskip-scan: sum eight counts at once and skip blocks that cannot reach\nthe next target\n([#&#8203;115](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/115))\n- `ValueAtPercentilesSlice` uses the same scan, and allocates once\ninstead of four times with Go 1.27\n([#&#8203;116](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/116));\nits figures compare the code before and after the change in the same\nsession\n- `RecordValue` is about 0.1 to 0.2 ns slower on Intel and Arm (0.96x),\nin line with the cost\n[#&#8203;114](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/114)\nmeasured for its new check that stops the total wrapping; there is no\nmeasurable change on AMD\n- `PackedHistogram` skips its binary search when a record lands in the\nsame bucket as the previous one\n([#&#8203;117](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/117)).\nMeasured in August on earlier code: bursty writes 30 to 59% faster,\nrandom (low-locality) writes 2.4 to 9.4% slower; not yet re-measured on\nthis release\n\n##### Correctness & Security Fixes\n\n- Decoders and `New` no longer loop forever on a header whose lowest\nvalue is too large for its precision, and dense `Decode` no longer\npanics on a `MinInt64` zero-run or allocates tens of MB before rejecting\na small stream\n([#&#8203;80](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/80))\n- Java zero-digit streams decode with their exact geometry; boundary\nmaxima such as `New(1, 2048, 3).RecordValue(2048)` now record, and real\nJava/C streams of that shape decode; negative values are rejected\ninstead of recorded as huge positive ones; merge `dropped` totals\nsaturate instead of wrapping\n([#&#8203;103](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/103),\nfixes\n[#&#8203;84](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/84),\n[#&#8203;85](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/85),\n[#&#8203;86](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/86),\n[#&#8203;90](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/90))\n- Percentile ranks are bounded for very large counts, so P100 reaches\nthe real maximum; a windowed histogram with `(1<<53)+3` observations\nreturned 0 before\n([#&#8203;108](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/108))\n- Dense `RecordValues`, `Merge` and `PackedHistogram.MergeInto` no\nlonger let the total wrap past `MaxInt64`\n([#&#8203;114](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/114),\nfixes\n[#&#8203;113](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/113))\n- Dense `Decode` rejects streams whose counts sum past `MaxInt64`, where\nit used to return an empty histogram without an error\n([#&#8203;109](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/109),\nfixes\n[#&#8203;107](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/107))\n- `DecodePacked` reads streams written by hdrhistogram-go v1.2.0 and\nearlier and shifted Java streams, which it used to reject\n([#&#8203;109](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/109),\nfixes\n[#&#8203;106](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/106))\n- `Import` stores negative counts as 0, so the total and the counts\nagree; `Histogram` ownership and `WindowedHistogram.Merge` lifetime are\ndocumented\n([#&#8203;112](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/112),\nfixes\n[#&#8203;110](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/110),\n[#&#8203;111](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/111))\n\n##### Behaviour changes\n\n| Area | Before | Now | PR |\n|\n--------------------------------------------------------------------------------\n| ------------------------------------- |\n--------------------------------------------------------- |\n------------------------------------------------------------------ |\n| `New` and `Import` with a geometry that cannot be represented | hung\nforever | panic (`New` has no error return) |\n[#&#8203;80](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/80)\n|\n| Decoding a hostile header, `MinInt64` zero-run or oversized payload |\nhang, panic or large allocation | an error; some error messages for\ninvalid streams changed |\n[#&#8203;80](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/80)\n|\n| Recording a negative value, dense or packed | recorded as a huge\npositive value | error, histogram unchanged |\n[#&#8203;103](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/103)\n|\n| Recording a value equal to the highest trackable value at some\ngeometries | error | recorded |\n[#&#8203;103](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/103)\n|\n| Decoding a zero-digit (Java) stream | decoded with one digit, wrong\nvalues | exact geometry |\n[#&#8203;103](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/103)\n|\n| `RecordValue`, `RecordValues`, `RecordCorrectedValue` past a total of\n`MaxInt64` | succeeded and corrupted the histogram | error; `Merge`\ncounts these as dropped |\n[#&#8203;114](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/114)\n|\n| Dense `Decode` of counts summing past `MaxInt64` | empty histogram, no\nerror | error; `nil` histogram on any payload error |\n[#&#8203;109](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/109)\n|\n| `DecodePacked` of pre-v1.3.0 Go and shifted Java streams | rejected |\ndecoded |\n[#&#8203;109](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/109)\n|\n| `Import` of negative counts | stored, total excluded them | stored as\n0 |\n[#&#8203;112](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/112)\n|\n| Unkeyed `Snapshot{...}` literals | compiled | compile error (new\nfield); use field names |\n[#&#8203;105](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/105)\n|\n| P100 with very large counts | could be 0 | the real maximum |\n[#&#8203;108](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/108)\n|\n\n##### Maintenance & Testing\n\n- Nightly native fuzzing of every `Fuzz*` target with a persisted corpus\n([#&#8203;76](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/76)),\nClusterFuzzLite registration and corpus handling\n([#&#8203;78](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/78),\n[#&#8203;79](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/79));\nten fuzz targets now run in CI, including two for `PackedHistogram`\n- New regression tests for each fix above, each shown to fail on the\nprevious code\n\n**Full Changelog**:\n<https://github.com/HdrHistogram/hdrhistogram-go/compare/v1.3.0...v1.4.0>\n\n###\n[`v1.3.0`](https://redirect.github.com/HdrHistogram/hdrhistogram-go/releases/tag/v1.3.0):\nVersion 1.3.0\n\n[Compare\nSource](https://redirect.github.com/HdrHistogram/hdrhistogram-go/compare/v1.2.0...v1.3.0)\n\n#### Version 1.3.0\n\nThis release is backward compatible with no breaking API changes. It\nadds a new\nbatch percentile API, delivers large read-path performance gains, and\nfixes\nseveral silent correctness and interop bugs. A native fuzzing suite was\nadded to\nharden decoding against malformed input.\n\n##### Update Urgency: High\n\n**High** — Contains correctness fixes (Mean/StdDev overflow,\n0th-percentile ==\nmin, empty-histogram and negative-clamp contracts) and hardening of\nDecode/log\nreader against malformed input. Users doing percentile queries or\ndecoding\nuntrusted logs should update.\n\n##### API Additions\n\n- `ValueAtPercentilesSlice` — ordered `[]int64` batch percentile lookup,\nno map alloc\n([#&#8203;63](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/63))\n\n##### Performance\n\n- Blocked prefix-sum skip-scan: +50% read, write-path bounds-check\nelision +5%\n([#&#8203;64](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/64))\n- Flat `counts[]` scan in `ValueAtPercentiles` batch: +303%\n([#&#8203;58](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/58))\n- Flat `counts[]` scan in `ValueAtPercentile`: +133%\n([#&#8203;57](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/57))\n- Range over `counts[]` in percentile scans to elide bounds checks: +72%\nread\n([#&#8203;62](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/62))\n- Single unsigned bounds check in `RecordValues`: +7%\n([#&#8203;59](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/59))\n\n##### Correctness & Security Fixes\n\n- Mean/StdDev int64 overflow, wire offset, base-time casing\n([#&#8203;66](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/66))\n- Percentile: reach first recorded entry (0th percentile == min) across\nall APIs\n([#&#8203;68](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/68))\n- Percentile edge-case contracts: empty histogram\n([#&#8203;60](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/60)),\nnegative clamp, map phantom key\n([#&#8203;67](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/67))\n- Reject negative count in `RecordValues`\n([#&#8203;74](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/74))\n- Reset: clear tag and start/end time, not just counts\n([#&#8203;69](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/69))\n- log: decode final interval line lacking a trailing newline\n([#&#8203;72](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/72))\n- Harden Decode/log-reader against malformed input + native fuzzing\n([#&#8203;65](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/65))\n- Make it harder for Mean() and StdDev() to overflow\n([#&#8203;21](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/21))\n\n##### Maintenance & Testing\n\n- Remove dead benchmark fill loop that panics for b.N > 1e6\n([#&#8203;70](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/70))\n- Pin golden values for logV2 reader fixtures\n([#&#8203;73](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/73))\n- Extended coverage: zigzag byte-lengths, bucket overflow guard,\ncorrected-value + merge edges\n([#&#8203;71](https://redirect.github.com/HdrHistogram/hdrhistogram-go/issues/71))\n\n**Full Changelog**:\n<https://github.com/HdrHistogram/hdrhistogram-go/compare/v1.2.0...v1.3.0>\n\n</details>\n\n<details>\n<summary>apache/arrow-go (github.com/apache/arrow-go/v18)</summary>\n\n###\n[`v18.8.0`](https://redirect.github.com/apache/arrow-go/releases/tag/v18.8.0):\nApache Arrow Go 18.8.0\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-go/compare/v18.7.0...v18.8.0)\n\n#### What's Changed\n\n- feat(parquet/schema): Wire up logical type functionality for writing\ngeo types by [@&#8203;C-Loftus](https://redirect.github.com/C-Loftus) in\n[#&#8203;960](https://redirect.github.com/apache/arrow-go/pull/960)\n- chore: Bump actions/setup-go from 6.5.0 to 7.0.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;961](https://redirect.github.com/apache/arrow-go/pull/961)\n- chore: Bump actions/checkout from 7.0.0 to 7.0.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;963](https://redirect.github.com/apache/arrow-go/pull/963)\n- chore(dev/release): filter out non numeric go releases (rc's and\nbeta's) when finding latest go by\n[@&#8203;raulcd](https://redirect.github.com/raulcd) in\n[#&#8203;968](https://redirect.github.com/apache/arrow-go/pull/968)\n- ci: fix release workflow discussions by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;980](https://redirect.github.com/apache/arrow-go/pull/980)\n- chore: Bump modernc.org/sqlite from 1.53.0 to 1.54.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;964](https://redirect.github.com/apache/arrow-go/pull/964)\n- chore: Bump google.golang.org/grpc from 1.82.0 to 1.82.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;965](https://redirect.github.com/apache/arrow-go/pull/965)\n- chore: Bump github.com/klauspost/compress from 1.19.0 to 1.19.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;966](https://redirect.github.com/apache/arrow-go/pull/966)\n- chore: Bump actions/setup-python from 6.3.0 to 7.0.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;962](https://redirect.github.com/apache/arrow-go/pull/962)\n- ci: fix lint on release workflow by\n[@&#8203;zeroshade](https://redirect.github.com/zeroshade) in\n[#&#8203;982](https://redirect.github.com/apache/arrow-go/pull/982)\n- fix: remove superfluous struct field index compare by\n[@&#8203;Willem-J-an](https://redirect.github.com/Willem-J-an) in\n[#&#8203;970](https://redirect.github.com/apache/arrow-go/pull/970)\n- fix(ipc): reject truncated message frames by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;991](https://redirect.github.com/apache/arrow-go/pull/991)\n- fix(internal/utils): handle reader reset and short peeks by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;987](https://redirect.github.com/apache/arrow-go/pull/987)\n- fix(arrow/ipc): propagate CLI stream errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;986](https://redirect.github.com/apache/arrow-go/pull/986)\n- fix(arrow/flight): avoid blocking after stream cancellation by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;989](https://redirect.github.com/apache/arrow-go/pull/989)\n- fix(parquet/variant): handle empty metadata keys by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;985](https://redirect.github.com/apache/arrow-go/pull/985)\n- fix(flight/flightsql/example): propagate row iteration errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;990](https://redirect.github.com/apache/arrow-go/pull/990)\n- fix(parquet): reject truncated scalar bit reads by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;944](https://redirect.github.com/apache/arrow-go/pull/944)\n- fix: Fix arm64 assembly stack frame manipulation by\n[@&#8203;nsrip-dd](https://redirect.github.com/nsrip-dd) in\n[#&#8203;984](https://redirect.github.com/apache/arrow-go/pull/984)\n- fix(arrow/array): support zero-column tables by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;988](https://redirect.github.com/apache/arrow-go/pull/988)\n- docs(parquet): Add thrift generation contribution info by\n[@&#8203;C-Loftus](https://redirect.github.com/C-Loftus) in\n[#&#8203;971](https://redirect.github.com/apache/arrow-go/pull/971)\n- fix(array): reject mismatched known null counts during full validation\nby [@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;993](https://redirect.github.com/apache/arrow-go/pull/993)\n- fix(arrow/array): `Resize(0)` on non-empty builder causes memory leak\nby [@&#8203;serramatutu](https://redirect.github.com/serramatutu) in\n[#&#8203;995](https://redirect.github.com/apache/arrow-go/pull/995)\n- feat(parquet/pqarrow): Read support for extension types / geo by\n[@&#8203;C-Loftus](https://redirect.github.com/C-Loftus) in\n[#&#8203;969](https://redirect.github.com/apache/arrow-go/pull/969)\n- fix(array): validate run-end encoded invariants by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;992](https://redirect.github.com/apache/arrow-go/pull/992)\n- fix(array): validate binary_view and string_view payloads by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;994](https://redirect.github.com/apache/arrow-go/pull/994)\n- fix(parquet): wrap DELTA_BINARY_PACKED deltas at the physical type\nwidth by [@&#8203;tom-eon](https://redirect.github.com/tom-eon) in\n[#&#8203;1027](https://redirect.github.com/apache/arrow-go/pull/1027)\n- fix(arrow/compute): use is_null/is_not_null in expressions by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;997](https://redirect.github.com/apache/arrow-go/pull/997)\n- fix(arrow/ipc): reject NaN minSpaceSavings values by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;998](https://redirect.github.com/apache/arrow-go/pull/998)\n- fix(arrow/tensor): default nil dimension names to empty strings by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;999](https://redirect.github.com/apache/arrow-go/pull/999)\n- fix(arrow/scalar): allow null extension scalars to keep null storage\nby [@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1000](https://redirect.github.com/apache/arrow-go/pull/1000)\n- fix(arrow/scalar): handle nil child values in run-end scalars by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1001](https://redirect.github.com/apache/arrow-go/pull/1001)\n- fix(arrow/array): ignore zero-count union appends by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1026](https://redirect.github.com/apache/arrow-go/pull/1026)\n- fix(arrow/csv): preserve decimal precision by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1022](https://redirect.github.com/apache/arrow-go/pull/1022)\n- fix(parquet/metadata): compare bloom filter caps in bits by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;996](https://redirect.github.com/apache/arrow-go/pull/996)\n- fix(parquet/pqarrow): reject timestamp coercion overflow by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1008](https://redirect.github.com/apache/arrow-go/pull/1008)\n- fix(parquet/file): reject records starting with nonzero repetition\nlevels by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1009](https://redirect.github.com/apache/arrow-go/pull/1009)\n- fix(parquet/variant): reject truncated scalar values by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1017](https://redirect.github.com/apache/arrow-go/pull/1017)\n- fix(parquet/encoding): reject invalid delta byte prefixes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1014](https://redirect.github.com/apache/arrow-go/pull/1014)\n- fix(parquet/metadata): preserve infinite floating-point statistics by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1007](https://redirect.github.com/apache/arrow-go/pull/1007)\n- fix(parquet/encoding): bound lazy dictionary growth by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1011](https://redirect.github.com/apache/arrow-go/pull/1011)\n- fix(parquet/encoding): respect declared RLE payload lengths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1015](https://redirect.github.com/apache/arrow-go/pull/1015)\n- fix(parquet/encoding): validate delta binary packed headers by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1012](https://redirect.github.com/apache/arrow-go/pull/1012)\n- fix(parquet/encoding): reject invalid delta length payloads by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1013](https://redirect.github.com/apache/arrow-go/pull/1013)\n- fix(parquet/pqarrow): preserve INT96 timestamps across units by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1006](https://redirect.github.com/apache/arrow-go/pull/1006)\n- fix(parquet/pqarrow): Change interface name for arrow type on read for\nextension types by\n[@&#8203;C-Loftus](https://redirect.github.com/C-Loftus) in\n[#&#8203;1028](https://redirect.github.com/apache/arrow-go/pull/1028)\n- chore: Bump docker/login-action from 4.4.0 to 4.5.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1030](https://redirect.github.com/apache/arrow-go/pull/1030)\n- fix(arrow/csv): respect timestamp timezones by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1025](https://redirect.github.com/apache/arrow-go/pull/1025)\n- fix(parquet/compress): avoid closing caller streams for uncompressed\nwrappers by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1003](https://redirect.github.com/apache/arrow-go/pull/1003)\n- fix(parquet/compress): allocate uncompressed output for short\ndestinations by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1004](https://redirect.github.com/apache/arrow-go/pull/1004)\n- fix(internal/utils): keep byteReader position after failed seeks by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1005](https://redirect.github.com/apache/arrow-go/pull/1005)\n- fix(parquet/file): count repeated skips in logical rows by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1002](https://redirect.github.com/apache/arrow-go/pull/1002)\n- fix(parquet/metadata): reject malformed fixed-width statistics by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1010](https://redirect.github.com/apache/arrow-go/pull/1010)\n- fix(arrow/array): skip empty table chunks by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1023](https://redirect.github.com/apache/arrow-go/pull/1023)\n- fix(arrow/scalar): reject negative array lengths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1024](https://redirect.github.com/apache/arrow-go/pull/1024)\n- fix(arrow/array): validate fixed-size list child lengths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1019](https://redirect.github.com/apache/arrow-go/pull/1019)\n- fix(parquet/pqarrow): calculate large decimal widths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1034](https://redirect.github.com/apache/arrow-go/pull/1034)\n- fix(parquet/schema): reject invalid fixed lengths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1035](https://redirect.github.com/apache/arrow-go/pull/1035)\n- fix(parquet/encoding): reject truncated plain boolean data by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1031](https://redirect.github.com/apache/arrow-go/pull/1031)\n- fix(parquet/metadata): return page index decode errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1032](https://redirect.github.com/apache/arrow-go/pull/1032)\n- fix(parquet/metadata): validate adaptive bloom options by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1033](https://redirect.github.com/apache/arrow-go/pull/1033)\n- fix(tmpl): report generated output write errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1037](https://redirect.github.com/apache/arrow-go/pull/1037)\n- fix(arrow/array): propagate embedded pointer nullability by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1038](https://redirect.github.com/apache/arrow-go/pull/1038)\n- fix(flight/flightsql/driver): convert Date32 values by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1039](https://redirect.github.com/apache/arrow-go/pull/1039)\n- fix(arrow/scalar): support same-width time casts by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1040](https://redirect.github.com/apache/arrow-go/pull/1040)\n- fix(arrow/scalar): use duration type for units by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1041](https://redirect.github.com/apache/arrow-go/pull/1041)\n- fix(arrow/array): validate union child upper bound by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1043](https://redirect.github.com/apache/arrow-go/pull/1043)\n- chore: Bump google.golang.org/grpc from 1.82.1 to 1.83.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1092](https://redirect.github.com/apache/arrow-go/pull/1092)\n- chore: Bump docker/login-action from 4.5.1 to 4.6.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1093](https://redirect.github.com/apache/arrow-go/pull/1093)\n- refactor(arrow/avro): migrate from hamba/avro to twmb/avro by\n[@&#8203;prochac](https://redirect.github.com/prochac) in\n[#&#8203;830](https://redirect.github.com/apache/arrow-go/pull/830)\n- fix(arrow/array): validate struct child lengths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1021](https://redirect.github.com/apache/arrow-go/pull/1021)\n- fix(arrow/cdata): validate imported schema topology by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1046](https://redirect.github.com/apache/arrow-go/pull/1046)\n- fix(parquet/metadata): validate row-group ordinals in\nPageIndexReader.WillNeed by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1057](https://redirect.github.com/apache/arrow-go/pull/1057)\n- fix(arrow/flight): limit descriptors to next payload by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1042](https://redirect.github.com/apache/arrow-go/pull/1042)\n- fix(parquet): propagate nonce generation failures by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1045](https://redirect.github.com/apache/arrow-go/pull/1045)\n- fix(parquet/metadata): reject negative row-group indices in Subset by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1055](https://redirect.github.com/apache/arrow-go/pull/1055)\n- fix(parquet/metadata): use default writer properties when props is nil\nby [@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1058](https://redirect.github.com/apache/arrow-go/pull/1058)\n- fix(parquet/metadata): return schema initialization errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1056](https://redirect.github.com/apache/arrow-go/pull/1056)\n- fix(parquet/pqarrow): propagate level builder errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1049](https://redirect.github.com/apache/arrow-go/pull/1049)\n- fix(arrow/flight/session): clone option values by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1044](https://redirect.github.com/apache/arrow-go/pull/1044)\n- fix(parquet/variant): validate metadata offset tables by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1063](https://redirect.github.com/apache/arrow-go/pull/1063)\n- fix(arrow/csv): release Reader record builders by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1059](https://redirect.github.com/apache/arrow-go/pull/1059)\n- fix(parquet/pqarrow): release partially constructed field readers by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1061](https://redirect.github.com/apache/arrow-go/pull/1061)\n- fix(arrow/array): make dictionary suffix null indexes relative by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1064](https://redirect.github.com/apache/arrow-go/pull/1064)\n- fix(parquet/pqarrow): prefer stored schema extension type on read by\n[@&#8203;twuebi](https://redirect.github.com/twuebi) in\n[#&#8203;1051](https://redirect.github.com/apache/arrow-go/pull/1051)\n- fix(arrow/flight/flightsql): avoid double-retaining parameter readers\nby [@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1066](https://redirect.github.com/apache/arrow-go/pull/1066)\n- fix(flightsql): isolate example SQLite databases by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1067](https://redirect.github.com/apache/arrow-go/pull/1067)\n- fix(arrow): return an owned slice from Schema.FieldsByName by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1069](https://redirect.github.com/apache/arrow-go/pull/1069)\n- fix(arrow/ipc): return errors for malformed file record batches by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1062](https://redirect.github.com/apache/arrow-go/pull/1062)\n- fix(flight): return Unauthenticated for invalid unary auth tokens by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1070](https://redirect.github.com/apache/arrow-go/pull/1070)\n- fix(arrow/array): always release JSON reader builder by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1065](https://redirect.github.com/apache/arrow-go/pull/1065)\n- fix(flight): accept case-insensitive authorization schemes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1071](https://redirect.github.com/apache/arrow-go/pull/1071)\n- fix(parquet): reject short page writes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1050](https://redirect.github.com/apache/arrow-go/pull/1050)\n- fix(parquet/file): close file on OpenParquetFile errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1053](https://redirect.github.com/apache/arrow-go/pull/1053)\n- fix(parquet): reject truncated footer signatures by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1074](https://redirect.github.com/apache/arrow-go/pull/1074)\n- fix(arrow/ipc): reject non-dictionary initial messages by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1054](https://redirect.github.com/apache/arrow-go/pull/1054)\n- feat(flightsql): allow configuring the driver memory allocator by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1076](https://redirect.github.com/apache/arrow-go/pull/1076)\n- fix(arrow): avoid retains on invalid chunk construction by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1078](https://redirect.github.com/apache/arrow-go/pull/1078)\n- fix(parquet): row-align V1 pages with offset indexes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1075](https://redirect.github.com/apache/arrow-go/pull/1075)\n- fix(arrow/array): clean up partial table construction by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1077](https://redirect.github.com/apache/arrow-go/pull/1077)\n- fix(parquet_reader): propagate batch read errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1081](https://redirect.github.com/apache/arrow-go/pull/1081)\n- fix(arrow): isolate schemas created by AddField by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1079](https://redirect.github.com/apache/arrow-go/pull/1079)\n- fix(arrow/util): avoid protobuf map schema goroutines by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1082](https://redirect.github.com/apache/arrow-go/pull/1082)\n- fix(array): format date arrays in String by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1068](https://redirect.github.com/apache/arrow-go/pull/1068)\n- fix(parquet): report initialized row-group columns correctly by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1072](https://redirect.github.com/apache/arrow-go/pull/1072)\n- fix(parquet): serialize column chunk file offsets by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1073](https://redirect.github.com/apache/arrow-go/pull/1073)\n- fix(arrow/util): release protobuf record builders by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1084](https://redirect.github.com/apache/arrow-go/pull/1084)\n- fix(arrow/util): release protobuf enum dictionaries by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1083](https://redirect.github.com/apache/arrow-go/pull/1083)\n- fix(arrow/avro): stop reader workers before reuse by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1048](https://redirect.github.com/apache/arrow-go/pull/1048)\n- fix(parquet): restore Arrow duration units from schema metadata by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1095](https://redirect.github.com/apache/arrow-go/pull/1095)\n- fix(compute): round negative HalfToOdd ties correctly by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1094](https://redirect.github.com/apache/arrow-go/pull/1094)\n- perf(arrow/bitutil): add SetBitSwap/ClearBitSwap, use in\nbuilder.SetNull by\n[@&#8203;tom-eon](https://redirect.github.com/tom-eon) in\n[#&#8203;1090](https://redirect.github.com/apache/arrow-go/pull/1090)\n- chore: Bump modernc.org/sqlite from 1.54.0 to 1.55.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1091](https://redirect.github.com/apache/arrow-go/pull/1091)\n- fix(array): compare sparse union slices at relative offsets by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1096](https://redirect.github.com/apache/arrow-go/pull/1096)\n- fix(arrow/ipc): make writer failures terminal by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1047](https://redirect.github.com/apache/arrow-go/pull/1047)\n- feat(parquet): add WithDictionaryCostFallback writer property by\n[@&#8203;tom-eon](https://redirect.github.com/tom-eon) in\n[#&#8203;1036](https://redirect.github.com/apache/arrow-go/pull/1036)\n- fix(parquet/pqarrow): release extension arrays after chunking by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1060](https://redirect.github.com/apache/arrow-go/pull/1060)\n- fix(parquet/encoding): read ahead in the streaming value buffer by\n[@&#8203;joechenrh](https://redirect.github.com/joechenrh) in\n[#&#8203;937](https://redirect.github.com/apache/arrow-go/pull/937)\n- fix(parquet/variant): preserve metadata keys when cloning by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1080](https://redirect.github.com/apache/arrow-go/pull/1080)\n- test(arrow/util): cover zero-field protobuf records by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1085](https://redirect.github.com/apache/arrow-go/pull/1085)\n- fix(arrow/scalar): preserve metadata in FromScalar by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1100](https://redirect.github.com/apache/arrow-go/pull/1100)\n- fix(arrow/scalar): preserve binary cast target types by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1101](https://redirect.github.com/apache/arrow-go/pull/1101)\n- fix(arrow/scalar): support boolean identity casts by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1102](https://redirect.github.com/apache/arrow-go/pull/1102)\n- fix(arrow/util): handle invalid protobuf Any values by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1086](https://redirect.github.com/apache/arrow-go/pull/1086)\n- fix(arrow/array): avoid copying initialized extension refcounts by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1089](https://redirect.github.com/apache/arrow-go/pull/1089)\n- fix(parquet): preserve dictionary index types by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1098](https://redirect.github.com/apache/arrow-go/pull/1098)\n- fix(parquet_reader): propagate statistics decoding errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1087](https://redirect.github.com/apache/arrow-go/pull/1087)\n- fix(arrow/array): avoid panics cleaning partial tables by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1103](https://redirect.github.com/apache/arrow-go/pull/1103)\n- fix(arrow/ipc): release reader state on schema errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1112](https://redirect.github.com/apache/arrow-go/pull/1112)\n- fix(arrow/scalar): format extension values from storage scalars by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1111](https://redirect.github.com/apache/arrow-go/pull/1111)\n- fix(arrow/array): isolate table columns from caller slices by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1105](https://redirect.github.com/apache/arrow-go/pull/1105)\n- fix(arrow/scalar): preserve exact decimal string casts by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1107](https://redirect.github.com/apache/arrow-go/pull/1107)\n- fix(arrow/tensor): validate typed constructor data by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1104](https://redirect.github.com/apache/arrow-go/pull/1104)\n- fix(arrow/scalar): format interval scalars in String by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1115](https://redirect.github.com/apache/arrow-go/pull/1115)\n- fix(arrow/array): preserve rows for empty-schema JSON input by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1117](https://redirect.github.com/apache/arrow-go/pull/1117)\n- fix(arrow/util): return protobuf record conversion errors by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1088](https://redirect.github.com/apache/arrow-go/pull/1088)\n- fix(arrow/scalar): validate FromScalar destinations by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1106](https://redirect.github.com/apache/arrow-go/pull/1106)\n- fix(arrow/scalar): use wide offsets for large binary scalars by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1108](https://redirect.github.com/apache/arrow-go/pull/1108)\n- fix(arrow/scalar): apply timestamp zones when casting to dates by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1110](https://redirect.github.com/apache/arrow-go/pull/1110)\n- fix(arrow/ipc): validate file block framing and lengths by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1097](https://redirect.github.com/apache/arrow-go/pull/1097)\n- fix(arrow/scalar): release partial children after failed struct\nextraction by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1118](https://redirect.github.com/apache/arrow-go/pull/1118)\n- fix(arrow/ipc): return errors for invalid record indexes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1120](https://redirect.github.com/apache/arrow-go/pull/1120)\n- fix(parquet): read null fixed-size-list parents by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1099](https://redirect.github.com/apache/arrow-go/pull/1099)\n- fix(arrow/scalar): release partial children after failed struct\nconversion by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1114](https://redirect.github.com/apache/arrow-go/pull/1114)\n- chore: Bump github.com/klauspost/compress from 1.19.1 to 1.19.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1166](https://redirect.github.com/apache/arrow-go/pull/1166)\n- chore: Bump github.com/pierrec/lz4/v4 from 4.1.27 to 4.1.28 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1168](https://redirect.github.com/apache/arrow-go/pull/1168)\n- chore: Bump modernc.org/sqlite from 1.55.0 to 1.56.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1165](https://redirect.github.com/apache/arrow-go/pull/1165)\n- chore: Bump github.com/twmb/avro from 1.5.0 to 1.7.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1167](https://redirect.github.com/apache/arrow-go/pull/1167)\n- fix(parquet/metadata): return error for missing column metadata by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1137](https://redirect.github.com/apache/arrow-go/pull/1137)\n- fix(arrow/array): widen dictionary index bounds checks by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1129](https://redirect.github.com/apache/arrow-go/pull/1129)\n- fix(compute/exprs): avoid empty field reference panic by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1130](https://redirect.github.com/apache/arrow-go/pull/1130)\n- fix(compute): handle odd temporal multiples by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1119](https://redirect.github.com/apache/arrow-go/pull/1119)\n- fix(arrow/csv): preserve first row during headerless inference by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1145](https://redirect.github.com/apache/arrow-go/pull/1145)\n- fix(arrow/array): bound table reader batches by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1146](https://redirect.github.com/apache/arrow-go/pull/1146)\n- fix(arrow/extensions): compare JSON storage types semantically by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1150](https://redirect.github.com/apache/arrow-go/pull/1150)\n- fix(arrow/ipc): preserve minSpaceSavings in stream writer by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1143](https://redirect.github.com/apache/arrow-go/pull/1143)\n- fix(parquet/compress): honor LZ4 raw destination contract by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1147](https://redirect.github.com/apache/arrow-go/pull/1147)\n- fix(arrow): reject duplicate union type codes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1131](https://redirect.github.com/apache/arrow-go/pull/1131)\n- fix(parquet/metadata): handle invalid row-group column indexes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1125](https://redirect.github.com/apache/arrow-go/pull/1125)\n- fix(compute/exec): handle missing validity buffers by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1136](https://redirect.github.com/apache/arrow-go/pull/1136)\n- fix(compute/exec): report ListView buffer counts by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1133](https://redirect.github.com/apache/arrow-go/pull/1133)\n- fix(arrow): include KeysSorted in map equality by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1134](https://redirect.github.com/apache/arrow-go/pull/1134)\n- fix(compute): reject non-array-like filters by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1135](https://redirect.github.com/apache/arrow-go/pull/1135)\n- fix(memory): handle zero-length checked reallocations by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1132](https://redirect.github.com/apache/arrow-go/pull/1132)\n- fix(parquet/pqarrow): validate reader indexes by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1124](https://redirect.github.com/apache/arrow-go/pull/1124)\n- fix(arrow/csv): validate custom converter row counts by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1148](https://redirect.github.com/apache/arrow-go/pull/1148)\n- fix(parquet/encoding): honor BufferWriter offsets by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n[#&#8203;1144](https://redirect.github.com/apache/arrow-go/pull/1144)\n- fix(flightsql): stop row streaming after close by\n[@&#8203;fallintoplace](https://redirect.github.com/fallintoplace) in\n\n> [!IMPORTANT]\n> ✂ PR body was truncated to here.\n\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xODguMiIsInVwZGF0ZWRJblZlciI6IjQ0LjE4OC4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-30T14:29:33Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/66beb81c61088782dca5d7b112845a136ae4e0e1"
+        },
+        "date": 1793385263743,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.6398636102676392,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 80.61868532342905,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 82.451213908724,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 31.311067708333333,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 32.453125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 107708.23701759701,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 109474.5053422934,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004473,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11993551.618239807,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11903509.758890467,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 109.55565938151196,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.020097019150853157,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 110.86206648656129,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 123.6055943622706,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 219.883203125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 225.94921875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 3692623.8137990288,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3691881.706449062,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.023661,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 20069907.631702077,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 42034221.67418071,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.436227167474925,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 2 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 1.4889596700668335,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 94.78893600606368,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 95.86056453483876,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 475.39231770833334,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 501.9375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1950419.379336445,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1921378.4217164128,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.013448,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 213879640.5817529,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 213638295.24038666,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 111.31572945983704,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.14968229830265045,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 92.47972567839902,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 93.07637825717158,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 24.471223958333333,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 25,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 279333.9735363531,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 279752.0870720105,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002841,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 8855394.031805983,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8507780.660173746,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 31.654434197398967,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.08492053300142288,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 94.24583892568134,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.47256735831527,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 23.591276041666667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 24.53125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 281337.45776500256,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 281576.3710495294,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.005035,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 8932345.815319302,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8570851.96892816,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 31.722639872179112,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -3.431807041168213,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 108.78033195600045,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 112.16577653283535,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 212.57578125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 227.9609375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 7305668.243209607,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 7556384.685588237,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002383,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 40775591.73125556,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 76974376.25610079,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.39617732922253,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 4 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -5.08962869644165,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 88.30583894160114,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 90.1542424951267,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 186.35377604166666,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 195.71484375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 12247592.827510955,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 12870949.822082397,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001932,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 68171289.37350693,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 80446765.19785887,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.296523591176387,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 8 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.04974299296736717,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 89.09503681784531,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 90.74865281344852,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 48.941796875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 51.09765625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 257298.2962297088,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 257170.3083522939,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.005683,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 28099544.281957984,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 27959486.484518792,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 109.26434105862961,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.048363883048295975,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 102.12556540060802,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 110.18426102456793,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 114.06614583333334,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 119.7734375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1446737.2872479258,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1446037.5888878487,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002999,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 16576411.870711071,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 29330408.676426727,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 11.463334008806807,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 2.0560250282287598,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 106.57318047583249,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 119.54788335769793,
+            "unit": "%",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 113.00651041666667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 118.79296875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1377384.615376924,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1349065.243654323,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.005851,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 15758373.338603938,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 30633452.588645656,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 11.680957175887169,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - Max Throughput OTAP/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 1.804389238357544,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 111.64818434100057,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 139.99935262994086,
+            "unit": "%",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 116.44010416666667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 123.875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1723168.5620043247,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1692075.895232301,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.005403,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 9408538.747082708,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 21097129.01654258,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 5.560352684884169,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation OTAP - 1 Core(s)/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 3.249562978744507,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 85.89024874502311,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 88.31947696139477,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 201.74596354166667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 215.0546875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 912706.5739728152,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 883047.598115999,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.023111,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 98550273.87444831,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 98040651.33445714,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 111.60244825387379,
+            "unit": "bytes/log",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.09898624569177628,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 89.82728355907284,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 92.92175851393189,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 94.921484375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 99.078125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 499976.74284774234,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 500471.6510479876,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003047,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 54837674.045284815,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 54683172.830239154,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 109.57198860405926,
             "unit": "bytes/log",
             "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Egress Bytes Per Log"
           }
