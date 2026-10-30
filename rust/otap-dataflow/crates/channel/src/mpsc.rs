@@ -318,11 +318,10 @@ impl<T> Receiver<T> {
         let mut state = self.channel.state.borrow_mut();
 
         if let Some(value) = state.buffer.pop_front() {
-            // Wake one sender if channel was full
-            if state.buffer.len() == state.capacity - 1 {
-                // Wake one live waiter (FIFO) to avoid thundering-herd wakeups.
-                state.wake_one_sender_waiter();
-            }
+            // Wake one sender since the channel now surely has capacity for any waiting senders.
+            // Only one live waiter is awoken at a time (FIFO) to avoid thundering-herd wakeups.
+            state.wake_one_sender_waiter();
+
             Ok(value)
         } else if state.is_closed {
             Err(RecvError::Closed)
@@ -686,6 +685,109 @@ mod tests {
             pending_sender_2.await.unwrap();
             consumer.await.unwrap();
             assert_eq!(*received.borrow(), vec![1, 2, 3]); // Wake the sender in FIFO order. We should receive 1 -> 2 -> 3 and not 1 -> 3 -> 2
+        });
+
+        rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
+    }
+
+    /// Scenario: channel is full and multiple senders are blocked waiting to send
+    /// Guarantees: the senders become unblocked
+    #[test]
+    fn test_all_blocked_senders_woken() {
+        let rt = create_test_runtime();
+        let local = tokio::task::LocalSet::new();
+
+        let handle = local.spawn_local(async {
+            let (tx, rx) = Channel::new(2);
+
+            // Fill the buffer to capacity.
+            tx.send(10).expect("send 10 must succeed");
+            tx.send(20).expect("send 20 must succeed");
+
+            // Sender A: will block because the channel is full.
+            let tx_a = tx.clone();
+            let sender_a = tokio::task::spawn_local(async move {
+                tx_a.send_async(30).await.expect("sender A must complete");
+            });
+
+            // wait for sender A to become blocked
+            timeout(Duration::from_millis(2000), async {
+                loop {
+                    tokio::task::yield_now().await;
+                    let num_parked = tx
+                        .channel
+                        .state
+                        .borrow()
+                        .sender_waiters
+                        .as_ref()
+                        .map(|waiters| waiters.queue.len())
+                        .unwrap_or_default();
+                    if num_parked > 0 {
+                        break;
+                    };
+                }
+            })
+            .await
+            .unwrap();
+
+            // Sender B: will also block because the channel is still full.
+            let tx_b = tx.clone();
+            let sender_b = tokio::task::spawn_local(async move {
+                tx_b.send_async(40).await.expect("sender B must complete");
+            });
+
+            // wait for sender B to become blocked
+            timeout(Duration::from_millis(2000), async {
+                loop {
+                    tokio::task::yield_now().await;
+                    let num_parked = tx
+                        .channel
+                        .state
+                        .borrow()
+                        .sender_waiters
+                        .as_ref()
+                        .map(|waiters| waiters.queue.len())
+                        .unwrap_or_default();
+                    if num_parked > 1 {
+                        break;
+                    };
+                }
+            })
+            .await
+            .unwrap();
+
+            // Drain first two items items
+            let v1 = rx.try_recv().expect("first try_recv must succeed");
+            let v2 = rx.try_recv().expect("second try_recv must succeed");
+            assert_eq!(v1, 10);
+            assert_eq!(v2, 20);
+
+            // call recv() to try to get values from both waiting senders. simulates the receiver
+            // continuously being polled like it would be in a downstream component.
+            let mut result = timeout(Duration::from_millis(2000), async {
+                let mut received = Vec::new();
+                // We expect 2 more values (30 from A, 40 from B).
+                for _ in 0..2 {
+                    match rx.recv().await {
+                        Ok(v) => {
+                            received.push(v);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                received
+            })
+            .await
+            .unwrap();
+
+            // assert we got the results we expected
+            result.sort_unstable();
+            assert_eq!(result, vec![30, 40]);
+
+            // assert clean exit on the now unblocked sender tasks
+            sender_a.await.expect("sender A task must not panic");
+            sender_b.await.expect("sender B task must not panic");
         });
 
         rt.block_on(local);

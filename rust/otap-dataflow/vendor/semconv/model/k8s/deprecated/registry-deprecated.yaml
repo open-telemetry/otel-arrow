@@ -1,0 +1,14 @@
+groups:
+  - id: registry.k8s.deprecated
+    type: attribute_group
+    display_name: Deprecated Kubernetes Attributes
+    brief: "Describes deprecated K8s attributes."
+    attributes:
+      - id: k8s.pod.labels
+        type: template[string]
+        examples: ['my-app']
+        brief: "Deprecated, use `k8s.pod.label` instead."
+        stability: development
+        deprecated:
+          reason: renamed
+          renamed_to: k8s.pod.label

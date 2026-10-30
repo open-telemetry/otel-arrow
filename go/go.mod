@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
 	github.com/apache/arrow-go/v18 v18.6.0
-	github.com/axiomhq/hyperloglog v0.2.6
+	github.com/axiomhq/hyperloglog v0.3.0
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/fxamacker/cbor/v2 v2.9.6
@@ -50,9 +50,9 @@ require (
 	go.opentelemetry.io/collector/featuregate v1.60.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

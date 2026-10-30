@@ -36,6 +36,7 @@ bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = { workspace = true, optional = true }
 thiserror.workspace = true
 crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
@@ -51,7 +52,6 @@ rustls-pki-types = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
-humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -73,6 +73,7 @@ regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 
@@ -102,7 +103,6 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
 windows-sys = { workspace = true, optional = true, features = [
-    "Win32_Globalization",
     "Win32_System_Performance",
 ] }
 
@@ -120,6 +120,7 @@ contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
     "kafka",
+    "microsoft-json",
     "user-events",
     "windows-perf-counters",
     "windows-event-forwarding",
@@ -178,7 +179,7 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
-# Independently opt-in adapter; the production connector and factory are deferred.
+# SQL Server remains independently opt-in and uses platform-native TLS.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
     "dep:sqlparser",
@@ -187,8 +188,11 @@ sql-server = [
     "dep:humantime-serde",
     "dep:secrecy",
     "dep:tiberius",
+    "dep:tokio-util",
+    "tokio-util/compat",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
+microsoft-json = ["dep:humantime-serde", "dep:serde_yaml"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
 # receiver's remaining optional dependencies land with the receiver itself.
 windows-event-forwarding = [
@@ -210,7 +214,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
-windows-perf-counters = ["dep:humantime", "dep:humantime-serde", "dep:windows-sys"]
+windows-perf-counters = ["dep:humantime-serde", "dep:windows-sys"]
 
 # Processors.
 condense-attributes = []
@@ -227,11 +231,16 @@ resource-validator = []
 # Exporters.
 azure-data-explorer = [
     "dep:chrono",
+    "dep:http",
+    "dep:httpdate",
     "dep:humantime-serde",
     "dep:itoa",
+    "dep:rand",
     "dep:reqwest",
     "dep:ryu",
     "dep:sysinfo",
+    "dep:urlencoding",
+    "dep:uuid",
 ]
 azure-monitor = [
     "dep:opentelemetry-proto",
@@ -282,6 +291,7 @@ aws = [
 ]
 
 [dev-dependencies]
+rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true
 chrono.workspace = true

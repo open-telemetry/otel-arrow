@@ -30,6 +30,15 @@
     "attributes": {}
   },
   {
+    "id": "urn:microsoft:receiver:json",
+    "category": "Receiver",
+    "description": "Browser-focused HTTP receiver for unauthenticated Microsoft Common Schema JSON telemetry",
+    "attributes": {
+      "auth": "NONE",
+      "protocol": "HTTP"
+    }
+  },
+  {
     "id": "urn:otel:controller:main",
     "category": "Controller",
     "description": "Pipeline controller managing pipeline lifecycle, dynamic re-configuration, and health monitoring",
@@ -306,6 +315,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:sql_server",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:receiver:syslog_cef",
     "category": "Receiver",
     "description": null,
@@ -330,9 +345,21 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:windows_perf_counters",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:safety:memory_limiter",
     "category": "Safety",
     "description": "Engine memory pressure monitor and shedding controller",
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:azure_key_vault_sasl_auth",
+    "category": "Extension",
+    "description": null,
     "attributes": {}
   }
 ]

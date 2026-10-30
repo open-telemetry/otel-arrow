@@ -1,0 +1,8 @@
+type: sql_server
+status:
+  class: receiver
+  codeowners:
+    active:
+      - athomas9195
+      - bendu
+      - juanjosalco

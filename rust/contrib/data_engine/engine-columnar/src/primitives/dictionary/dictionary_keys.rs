@@ -1,7 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::{array::*, buffer::NullBuffer, datatypes::*};
+use std::marker::PhantomData;
+
+use arrow::{
+    array::*,
+    buffer::{MutableBuffer, NullBuffer},
+    datatypes::*,
+};
+
+use crate::DictionaryValueError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DictionaryKeyArray {
@@ -322,6 +330,127 @@ fn get_bool_array_value_index_for_key_index(
     (key_index < array.len() && !array.is_null(key_index))
         .then(|| unsafe { array.value_unchecked(key_index) })
         .map(|b| b as usize)
+}
+
+pub(crate) struct DictionaryKeyArrayBuilder<K: ArrowDictionaryKeyType> {
+    key_length: usize,
+    key_bit_length: usize,
+    key_buffer: MutableBuffer,
+    null_buffer: Option<MutableBuffer>,
+    marker: PhantomData<K>,
+}
+
+impl<K: ArrowDictionaryKeyType> DictionaryKeyArrayBuilder<K> {
+    pub fn new(key_length: usize) -> DictionaryKeyArrayBuilder<K> {
+        let key_bit_length = arrow::util::bit_util::ceil(key_length, 8);
+
+        Self {
+            key_length,
+            key_bit_length,
+            key_buffer: MutableBuffer::from_len_zeroed(size_of::<K::Native>() * key_length),
+            null_buffer: None,
+            marker: Default::default(),
+        }
+    }
+
+    pub fn get_writer(&mut self) -> DictionaryKeyArrayWriter<'_, K> {
+        DictionaryKeyArrayWriter {
+            key_bit_length: self.key_bit_length,
+            key_builder: self.key_buffer.typed_data_mut::<K::Native>().as_mut_ptr(),
+            null_buffer: &mut self.null_buffer,
+        }
+    }
+
+    pub fn has_nulls(&self) -> bool {
+        self.null_buffer.is_some()
+    }
+
+    pub fn finish(self) -> PrimitiveArray<K> {
+        PrimitiveArray::<K>::new(
+            self.key_buffer.into(),
+            self.null_buffer
+                .and_then(|v| NullBufferBuilder::new_from_buffer(v, self.key_length).build()),
+        )
+    }
+}
+
+pub(crate) struct DictionaryKeyArrayWriter<'a, K: ArrowDictionaryKeyType> {
+    key_bit_length: usize,
+    key_builder: *mut K::Native,
+    null_buffer: &'a mut Option<MutableBuffer>,
+}
+
+impl<K: ArrowDictionaryKeyType> DictionaryKeyArrayWriter<'_, K> {
+    pub fn get_typed_value_index(value_index: usize) -> Result<K::Native, DictionaryValueError> {
+        <K as ArrowPrimitiveType>::Native::from_usize(value_index).ok_or(
+            DictionaryValueError::KeyOverflow {
+                value_index,
+                key_data_type: K::DATA_TYPE,
+            },
+        )
+    }
+
+    /// Returns an error if the value index cannot be represented by the key type.
+    ///
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
+    pub unsafe fn set_value_index_unchecked(
+        &mut self,
+        key_index: usize,
+        value_index: usize,
+    ) -> Result<(), DictionaryValueError> {
+        let value_index = Self::get_typed_value_index(value_index)?;
+
+        unsafe { self.set_value_index_typed_unchecked(key_index, value_index) };
+        Ok(())
+    }
+
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
+    pub unsafe fn set_value_index_typed_unchecked(
+        &mut self,
+        key_index: usize,
+        value_index: K::Native,
+    ) {
+        unsafe { *self.key_builder.add(key_index) = value_index }
+    }
+
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is *[undefined behavior]*.
+    pub unsafe fn set_null_unchecked(&mut self, key_index: usize) {
+        unsafe {
+            ensure_null_buffer_and_push_null(self.null_buffer, key_index, self.key_bit_length)
+        }
+    }
+}
+
+pub(crate) unsafe fn ensure_null_buffer_and_push_null(
+    null_buffer: &mut Option<MutableBuffer>,
+    index: usize,
+    key_bit_length: usize,
+) {
+    if let Some(buffer) = null_buffer {
+        let ptr = buffer.typed_data_mut::<u8>().as_mut_ptr();
+
+        let i = index / 8;
+        let b = 1 << (index % 8);
+
+        unsafe { *ptr.add(i) &= !b };
+    } else {
+        let mut buffer = MutableBuffer::new(key_bit_length).with_bitset(key_bit_length, true);
+
+        let ptr = buffer.typed_data_mut::<u8>().as_mut_ptr();
+
+        let i = index / 8;
+        let b = 1 << (index % 8);
+
+        unsafe { *ptr.add(i) &= !b };
+
+        *null_buffer = Some(buffer);
+    }
 }
 
 #[cfg(test)]

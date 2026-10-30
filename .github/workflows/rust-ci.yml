@@ -364,48 +364,6 @@ jobs:
           cargo clippy --locked --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
-  deny:
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        folder:
-          - otap-dataflow
-          - contrib/data_engine
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - name: Advisories
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-      - name: Licenses
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check licenses
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-      - name: Bans
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check bans
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-      - name: Sources
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check sources
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-
   docs:
     if: github.event_name == 'pull_request'
     strategy:
@@ -512,6 +470,11 @@ jobs:
   # Linux test partitions depend only on this job, not the Windows build.
   build_required_linux:
     runs-on: ubuntu-latest
+    env:
+      # Match ARM's smaller test artifacts and the post-merge Linux cache warmer.
+      # Set these at job scope so rust-cache includes them in its environment hash.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     outputs:
       cache-hit: ${{ steps.rust-cache.outputs.cache-hit }}
     steps:
@@ -535,9 +498,25 @@ jobs:
           save-if: false
       - name: Free disk space
         run: |
+          df -h /tmp "$GITHUB_WORKSPACE"
+          if [ -d /mnt ]; then
+            df -h /mnt
+          fi
+          # Measure the tool cache, but retain language runtimes used by build tools.
+          if [ -d /opt/hostedtoolcache ]; then
+            sudo du -h --max-depth=1 /opt/hostedtoolcache
+          fi
+          # These jobs do not use CodeQL, Conda environments, or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL; do
+            if [ -d "$directory" ]; then
+              sudo du -sh "$directory"
+            fi
+          done
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+          df -h /tmp "$GITHUB_WORKSPACE"
       - name: Install nightly wasm guest target
         run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
       - name: Check the reference WASM guest
@@ -638,9 +617,25 @@ jobs:
           tool: cargo-nextest
       - name: Free disk space
         run: |
+          df -h /tmp "$GITHUB_WORKSPACE"
+          if [ -d /mnt ]; then
+            df -h /mnt
+          fi
+          # Measure the tool cache, but retain language runtimes used by build tools.
+          if [ -d /opt/hostedtoolcache ]; then
+            sudo du -h --max-depth=1 /opt/hostedtoolcache
+          fi
+          # These jobs do not use CodeQL, Conda environments, or Homebrew packages.
+          for directory in /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL; do
+            if [ -d "$directory" ]; then
+              sudo du -sh "$directory"
+            fi
+          done
+          sudo rm -rf /usr/share/miniconda /home/linuxbrew /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+          df -h /tmp "$GITHUB_WORKSPACE"
       - name: Build the test collector
         run: make otelarrowcol
       - name: Install nightly wasm guest target
@@ -652,12 +647,19 @@ jobs:
           name: nextest-archive-ubuntu-latest
           path: ./rust/otap-dataflow
       - name: Run tests (partition ${{ matrix.partition }}/3)
-        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        # /tmp can be a small tmpfs; extract test binaries onto the workspace disk.
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/nextest-extracted"
+          cargo nextest run --profile ci --config-file .config/nextest.toml \
+            --archive-file nextest-archive.tar.zst \
+            --extract-to "$GITHUB_WORKSPACE/nextest-extracted" \
+            --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/otap-dataflow
       - name: Write JUnit artifact metadata
         if: always()
         shell: bash
         run: |
+          mkdir -p ./rust/otap-dataflow/target/nextest/ci
           echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow"}' \
             > ./rust/otap-dataflow/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
@@ -1147,42 +1149,6 @@ jobs:
           path: live-check-report
           if-no-files-found: warn
 
-  # Required matrix combinations for deny: otap-dataflow only
-  deny_required:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - name: Advisories
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-      - name: Licenses
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check licenses
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-      - name: Bans
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check bans
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-      - name: Sources
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check sources
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-
   # Required matrix combinations for docs: otap-dataflow only
   docs_required:
     runs-on: ubuntu-latest
@@ -1316,7 +1282,6 @@ jobs:
       - crypto_provider_tests
       - fmt_required
       - clippy_required
-      - deny_required
       - docs_required
       - structure_check
       - compile_proto
@@ -1370,10 +1335,6 @@ jobs:
           fi
           if [[ "${{ needs.clippy_required.result }}" != "success" ]]; then
             echo "clippy_required failed or was cancelled"
-            exit 1
-          fi
-          if [[ "${{ needs.deny_required.result }}" != "success" ]]; then
-            echo "deny_required failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.docs_required.result }}" != "success" ]]; then

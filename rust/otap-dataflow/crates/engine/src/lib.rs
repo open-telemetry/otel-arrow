@@ -59,7 +59,6 @@ pub mod admission;
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
-pub mod context_declaration;
 pub mod error;
 pub mod exporter;
 pub mod extension;
@@ -67,6 +66,7 @@ mod extension_lifecycle;
 mod extension_monitor;
 mod forced_shutdown;
 pub mod inventory;
+pub mod pdata_context;
 pub use otel_arrow_dfe_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
@@ -161,7 +161,7 @@ pub struct ReceiverFactory<PData> {
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, otel_arrow_dfe_config::error::Error>,
     /// Optional context declarations derived from the node configuration.
-    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
+    pub context_declarations: Option<pdata_context::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -209,7 +209,7 @@ pub struct ProcessorFactory<PData> {
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ProcessorWrapper<PData>, otel_arrow_dfe_config::error::Error>,
     /// Optional context declarations derived from the node configuration.
-    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
+    pub context_declarations: Option<pdata_context::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -257,7 +257,7 @@ pub struct ExporterFactory<PData> {
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ExporterWrapper<PData>, otel_arrow_dfe_config::error::Error>,
     /// Optional context declarations derived from the node configuration.
-    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
+    pub context_declarations: Option<pdata_context::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -722,12 +722,12 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
     extension_factories: &'static [ExtensionFactory],
-    context_materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
+    context_materializer: Option<fn(&mut PData, &pdata_context::ContextMaterializationPlan)>,
 }
 
 fn validate_context_materialization_support<PData>(
-    plan: Option<&context_declaration::ContextMaterializationPlan>,
-    materializer: Option<fn(&mut PData, &context_declaration::ContextMaterializationPlan)>,
+    plan: Option<&pdata_context::ContextMaterializationPlan>,
+    materializer: Option<fn(&mut PData, &pdata_context::ContextMaterializationPlan)>,
 ) -> Result<(), Error> {
     if plan.is_some() && materializer.is_none() {
         return Err(Error::ConfigError(Box::new(
@@ -765,7 +765,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     #[must_use]
     pub const fn with_context_materializer(
         mut self,
-        materialize: fn(&mut PData, &context_declaration::ContextMaterializationPlan),
+        materialize: fn(&mut PData, &pdata_context::ContextMaterializationPlan),
     ) -> Self {
         self.context_materializer = Some(materialize);
         self
@@ -2023,7 +2023,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy)
         .with_authorized_identity_policy(authorized_identity_policy)
-        .with_context_materialization(context_materialization_plan, self.context_materializer);
+        .with_context_materialization(context_materialization_plan, self.context_materializer)
+        .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
@@ -2177,7 +2178,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_propagation_policy(propagation_policy);
+        .with_propagation_policy(propagation_policy)
+        .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
@@ -2710,7 +2712,7 @@ fn stable_hash64(value: &str) -> u64 {
 mod test {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
     };
     use otel_arrow_dfe_config::policy::{
@@ -2719,7 +2721,7 @@ mod test {
     };
     use std::time::Duration;
 
-    fn materialize_unit(_: &mut (), _: &context_declaration::ContextMaterializationPlan) {}
+    fn materialize_unit(_: &mut (), _: &pdata_context::ContextMaterializationPlan) {}
 
     /// Scenario: receiver construction sees every plan/materializer compatibility combination.
     /// Guarantees: only a present plan without a registered materializer fails configuration.
@@ -2733,7 +2735,7 @@ mod test {
                 value: "dedicated".to_owned(),
             }]),
         };
-        let plan = context_declaration::ContextMaterializationPlan::compile(&[declaration])
+        let plan = pdata_context::ContextMaterializationPlan::compile(&[declaration])
             .expect("plan compiles");
 
         assert!(validate_context_materialization_support::<()>(None, None).is_ok());
