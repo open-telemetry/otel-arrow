@@ -175,6 +175,25 @@ impl TestProducer {
             .map_err(|(e, _msg)| TestError::Produce(e.to_string()))
     }
 
+    /// Produces a record with a null (absent) value to `topic`, so the consumer
+    /// observes `payload() == None` -- distinct from an empty `Some(&[])` value.
+    ///
+    /// Building the [`FutureRecord`] without a `.payload(...)` call is the only
+    /// way to send a genuinely null value (the fluent [`SendRecord`] always
+    /// carries a byte slice).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Produce`] if delivery fails or times out.
+    pub(crate) async fn send_null_value(&self, topic: &str, key: &[u8]) -> Result<(), TestError> {
+        let record = FutureRecord::<[u8], [u8]>::to(topic).key(key);
+        self.inner
+            .send(record, Timeout::After(self.message_timeout))
+            .await
+            .map(|_delivery| ())
+            .map_err(|(e, _msg)| TestError::Produce(e.to_string()))
+    }
+
     /// Produces `payload` to a specific partition of `topic`.
     ///
     /// # Errors
