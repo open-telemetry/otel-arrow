@@ -10,7 +10,7 @@ use thiserror::Error;
 const CONTENT_TYPE: &str = "application/x-mepacket";
 const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct MetricsPublisher {
     client: Client,
     endpoint: String,
@@ -206,28 +206,26 @@ mod tests {
     /// Guarantees: HTTP 400 responses are classified as permanent.
     #[tokio::test]
     async fn classifies_client_error_as_permanent() {
-        for status in [400] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .respond_with(ResponseTemplate::new(status))
-                .mount(&server)
-                .await;
-            let publisher = MetricsPublisher::new(&server.uri(), Duration::from_secs(1))
-                .expect("valid endpoint");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        let publisher =
+            MetricsPublisher::new(&server.uri(), Duration::from_secs(1)).expect("valid endpoint");
 
-            let error = publisher
-                .publish(
-                    "example-account",
-                    vec![6, 0],
-                    reqwest::header::AUTHORIZATION,
-                    authorization_header(),
-                )
-                .await
-                .expect_err("publication should fail");
+        let error = publisher
+            .publish(
+                "example-account",
+                vec![6, 0],
+                reqwest::header::AUTHORIZATION,
+                authorization_header(),
+            )
+            .await
+            .expect_err("publication should fail");
 
-            assert!(!error.is_retryable(), "HTTP {status} should be permanent");
-            assert!(!error.is_unauthorized());
-        }
+        assert!(!error.is_retryable(), "HTTP 400 should be permanent");
+        assert!(!error.is_unauthorized());
     }
 
     /// Scenario: A bearer credential is rejected, the endpoint is throttled, or the service is unavailable.

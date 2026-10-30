@@ -1,21 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::otlp_to_geneva::ScopeAttributes;
 use serde::Deserialize;
 use std::time::Duration;
 
 fn default_timeout() -> Duration {
     Duration::from_secs(30)
-}
-
-/// Scope attribute selection for one instrumentation scope name.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ScopeAttributes {
-    /// Instrumentation scope name, or `*` for all scopes.
-    pub name: String,
-    /// Attribute keys to include, or `*` for all attributes.
-    pub keys: Vec<String>,
 }
 
 /// Authentication applied to Geneva metrics publication requests.
@@ -109,14 +100,7 @@ impl From<&Config> for super::otlp_to_geneva::Config {
             metric_namespace: config.metric_namespace.clone(),
             resource_attributes: config.resource_attributes.clone(),
             honor_resource_attributes: config.honor_resource_attributes,
-            scope_attributes: config
-                .scope_attributes
-                .iter()
-                .map(|selection| super::otlp_to_geneva::ScopeAttributes {
-                    name: selection.name.clone(),
-                    keys: selection.keys.clone(),
-                })
-                .collect(),
+            scope_attributes: config.scope_attributes.clone(),
             honor_scope_attributes: config.honor_scope_attributes,
             disable_exemplars: config.disable_exemplars,
         }

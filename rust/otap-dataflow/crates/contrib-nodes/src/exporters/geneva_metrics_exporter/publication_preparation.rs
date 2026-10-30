@@ -84,7 +84,6 @@ pub(super) enum PrepareError {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{AuthConfig, ExporterConfig};
     use super::*;
     use bytes::Bytes;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -171,48 +170,12 @@ mod tests {
     #[test]
     fn prepares_otlp_metric_publication() {
         let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                resource: None,
-                scope_metrics: vec![ScopeMetrics {
-                    scope: None,
-                    metrics: vec![Metric {
-                        name: "temperature".to_string(),
-                        description: String::new(),
-                        unit: String::new(),
-                        metadata: Vec::new(),
-                        data: Some(metric::Data::Gauge(Gauge {
-                            data_points: vec![NumberDataPoint {
-                                attributes: Vec::new(),
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_700_000_000_000_000_000,
-                                exemplars: Vec::new(),
-                                flags: 0,
-                                value: Some(number_data_point::Value::AsDouble(12.5)),
-                            }],
-                        })),
-                    }],
-                    schema_url: String::new(),
-                }],
-                schema_url: String::new(),
-            }],
+            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 0)])],
         };
         let data = metrics_pdata(request);
-        let config = ExporterConfig {
-            endpoint: "https://example.test/metrics".to_string(),
-            monitoring_account: "example-account".to_string(),
-            metric_namespace: "example-namespace".to_string(),
-            timeout: std::time::Duration::from_secs(30),
-            auth: AuthConfig::Bearer,
-            resource_attributes: Vec::new(),
-            honor_resource_attributes: false,
-            scope_attributes: Vec::new(),
-            honor_scope_attributes: false,
-            disable_exemplars: false,
-        };
 
-        let mapping_config = (&config).into();
         let prepared =
-            prepare_publication(&data, &mapping_config).expect("publication should prepare");
+            prepare_publication(&data, &mapping_config()).expect("publication should prepare");
 
         assert_eq!(prepared.publications.len(), 1);
         assert!(!prepared.publications[0].bytes.is_empty());
@@ -226,46 +189,11 @@ mod tests {
     #[test]
     fn reports_rejected_data_points_during_preparation() {
         let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                resource: None,
-                scope_metrics: vec![ScopeMetrics {
-                    scope: None,
-                    metrics: vec![Metric {
-                        name: "temperature".to_string(),
-                        description: String::new(),
-                        unit: String::new(),
-                        metadata: Vec::new(),
-                        data: Some(metric::Data::Gauge(Gauge {
-                            data_points: vec![NumberDataPoint {
-                                attributes: Vec::new(),
-                                start_time_unix_nano: 0,
-                                time_unix_nano: 1_700_000_000_000_000_000,
-                                exemplars: Vec::new(),
-                                flags: 1,
-                                value: Some(number_data_point::Value::AsDouble(12.5)),
-                            }],
-                        })),
-                    }],
-                    schema_url: String::new(),
-                }],
-                schema_url: String::new(),
-            }],
+            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 1)])],
         };
         let data = metrics_pdata(request);
-        let config = ExporterConfig {
-            endpoint: "https://example.test/metrics".to_string(),
-            monitoring_account: "example-account".to_string(),
-            metric_namespace: "example-namespace".to_string(),
-            timeout: std::time::Duration::from_secs(30),
-            auth: AuthConfig::Bearer,
-            resource_attributes: Vec::new(),
-            honor_resource_attributes: false,
-            scope_attributes: Vec::new(),
-            honor_scope_attributes: false,
-            disable_exemplars: false,
-        };
 
-        let prepared = prepare_publication(&data, &(&config).into())
+        let prepared = prepare_publication(&data, &mapping_config())
             .expect("invalid points should not reject the request");
 
         assert!(prepared.publications.is_empty());

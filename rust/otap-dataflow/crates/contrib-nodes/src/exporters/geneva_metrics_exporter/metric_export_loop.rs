@@ -617,30 +617,23 @@ mod tests {
 
     fn metrics_pdata_with_format(call_id: usize, native: bool) -> OtapPdata {
         let point = NumberDataPoint {
-            attributes: Vec::new(),
-            start_time_unix_nano: 0,
             time_unix_nano: 1_700_000_000_000_000_000,
-            exemplars: Vec::new(),
-            flags: 0,
             value: Some(number_data_point::Value::AsDouble(12.5)),
+            ..Default::default()
         };
         let request = ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {
-                resource: None,
                 scope_metrics: vec![ScopeMetrics {
-                    scope: None,
                     metrics: vec![Metric {
                         name: "temperature".to_string(),
-                        description: String::new(),
-                        unit: String::new(),
-                        metadata: Vec::new(),
                         data: Some(metric::Data::Gauge(Gauge {
                             data_points: vec![point],
                         })),
+                        ..Default::default()
                     }],
-                    schema_url: String::new(),
+                    ..Default::default()
                 }],
-                schema_url: String::new(),
+                ..Default::default()
             }],
         };
         let message = OtlpProtoMessage::Metrics(request.into());

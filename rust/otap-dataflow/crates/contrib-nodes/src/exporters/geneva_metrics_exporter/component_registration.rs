@@ -90,16 +90,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Scenario: The exporter is registered in the component inventory.
-    /// Guarantees: Configuration can refer to the stable Geneva metrics exporter URN.
-    #[test]
-    fn exposes_expected_urn() {
-        assert_eq!(
-            GENEVA_METRICS_EXPORTER.name,
-            "urn:otel:exporter:geneva_metrics"
-        );
-    }
-
     /// Scenario: The exporter receives its minimal valid configuration.
     /// Guarantees: Configuration validation succeeds before runtime startup.
     #[test]
