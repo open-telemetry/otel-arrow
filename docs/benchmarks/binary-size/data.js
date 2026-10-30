@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793395059125,
+  "lastUpdate": 1793399072498,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -76710,6 +76710,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 118.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "cb8c33d0a4eb1532db89d72e5285d2c2fe61f13a",
+          "message": "fix(channel): protect waiting MPSC sends with coalesced reservations (#4602)\n\n# Change summary\n\n@albertlockett, your fix in #4569 addresses an important bug (senders\ncould in some situations remain asleep even though the queue had room)\nbut I noticed that the new wakeup behavior can introduce a different\nproblem: a busy producer can repeatedly take the space that another\nproducer was woken to use.\n\nFor example, with a queue of capacity 2:\n- The queue is full, and producers A and B are waiting\n- The receiver removes both items and wakes both producers\n- A runs first, sends two items, and waits again\n- B runs, finds the queue full, and goes back to waiting\n\nIf this ordering repeats, B keeps waking up without ever sending, even\nthough the queue continues processing A's items.\n\nThis follow-up reserves capacity for a sender before waking it, so\nanother producer cannot take its slot. It also limits wakeups and passes\navailable capacity between waiting senders to preserve batching\nperformance.\n\nThe main tradeoff is that, after a partial drain, a later sender may\ndepend on an already-notified sender running or being canceled. I've\ndocumented and tested that behavior.\n\nI'd appreciate your thoughts on whether this is in your opinion the\nright balance for our channel usage.\n\n## Related issue\n\n* Follow-up to #4569 and #4568.\n\n## Validation\n\n* All tests passed\n* Eleven new deterministic tests cover protected admission,\npartial-drain handoff, cancellation, stale waiter keys, waker\nreplacement, shutdown, retained grants, adverse producer polling order,\nand seeded accounting/data conservation.\n\nThe production implementation matches the previously benchmarked\nprototype (excluding comments and whitespace). On Apple M4 Max / macOS /\nRust 1.98.1 / Tokio 1.54.1, 24 matched channel microbenchmark groups\nmeasured median ns/message:\n\n| Workload | Current main | This implementatio |\n|---|---:|---:|---:|\n| 16 producers, 16 slots | 146.23 | 52.07 |\n| 16 producers, 256 slots | 16.86 | 10.82 |\n\n\n## User-facing changes\n\nWe should avoid the kinds of blocking described in the introduction.",
+          "timestamp": "2026-10-30T21:30:23Z",
+          "tree_id": "112264e313bd2125de5682403e53caed5460f380",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cb8c33d0a4eb1532db89d72e5285d2c2fe61f13a"
+        },
+        "date": 1793399054342,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 74.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.26,
             "unit": "MB"
           },
           {
