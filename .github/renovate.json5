@@ -6,7 +6,7 @@
     // currently enforces 1.25.0 compatibility
     "go": "1.25.0",
     // keep pip-compile refreshes aligned with CI/runtime interpreter
-    "python": "==3.14"
+    "python": "=3.15.2"
   },
   // Cross-reference dependencies against the OSV database (https://osv.dev)
   // and surface resolved CVE/GHSA/RUSTSEC advisories in PR bodies.
