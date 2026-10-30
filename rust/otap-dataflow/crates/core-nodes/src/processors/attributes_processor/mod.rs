@@ -47,6 +47,10 @@ use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::control::NackMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::local::processor as local;
@@ -60,7 +64,7 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,
     opaque_string::OpaqueString,
-    pdata::{OtapPdata, PdataEffectHandlerExtension},
+    pdata::{Context, OtapPdata, PdataEffectHandlerExtension},
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -79,7 +83,15 @@ use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
+mod enrichment;
+#[cfg(test)]
+mod enrichment_tests;
 mod metrics;
+mod plan;
+
+pub use enrichment::ConfiguredValue;
+pub use plan::{ActionSignal, ScopedAction};
+use plan::{CompiledTransform, signal_index};
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
@@ -106,24 +118,24 @@ pub enum Action {
     Insert {
         /// The attribute key to insert.
         key: String,
-        /// The value to insert.
-        value: LiteralValue,
+        /// Existing literal value or nested dynamic source configuration.
+        value: ConfiguredValue,
     },
 
     /// Upsert an attribute: insert if key doesn't exist, or update value if it does.
     Upsert {
         /// The attribute key to upsert.
         key: String,
-        /// The value to upsert.
-        value: LiteralValue,
+        /// Existing literal value or nested dynamic source configuration.
+        value: ConfiguredValue,
     },
 
     /// Update an existing attribute without inserting missing keys.
     Update {
         /// The attribute key to update.
         key: String,
-        /// The value to use for existing attributes.
-        value: LiteralValue,
+        /// Existing literal value or nested dynamic source configuration.
+        value: ConfiguredValue,
     },
 
     /// Hash an existing scalar attribute value using SHA-256.
@@ -176,11 +188,35 @@ const fn default_hash_algorithm() -> HashAlgorithm {
 pub struct Config {
     /// List of actions to apply in order.
     #[serde(default)]
-    pub actions: Vec<Action>,
+    pub actions: Vec<ScopedAction>,
 
     /// Attribute domains to apply transforms to. Defaults to ["signal"].
     #[serde(default)]
     pub apply_to: Option<Vec<String>>,
+}
+
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        let entries = [SignalType::Logs, SignalType::Metrics, SignalType::Traces]
+            .into_iter()
+            .flat_map(|signal| plan::effective_value_actions(&self.actions, signal))
+            .filter_map(|(_, _, value)| match value {
+                ConfiguredValue::Dynamic { source } => Some(source),
+                _ => None,
+            })
+            .flat_map(enrichment::context_entries)
+            .collect::<BTreeSet<_>>();
+        if entries.is_empty() {
+            return NodeContextDeclarations::default();
+        }
+        [ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: entries.into_iter().collect(),
+            },
+        }]
+        .into_iter()
+        .collect()
+    }
 }
 
 /// Processor that applies attribute transformations to OTAP attribute batches.
@@ -190,7 +226,7 @@ pub struct Config {
 /// signal-specific attributes) for logs, metrics, and traces telemetry.
 pub struct AttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
-    transform: AttributesTransform,
+    plans: [CompiledTransform; 3],
     // Pre-computed flags for domain lookup
     has_resource_domain: bool,
     has_scope_domain: bool,
@@ -199,6 +235,7 @@ pub struct AttributesProcessor {
     metrics: metrics::AttributesProcessorMetrics,
     // Opt-in compute-duration timing
     compute_duration: ComputeDuration,
+    pipeline_ctx: PipelineContext,
 }
 
 impl AttributesProcessor {
@@ -223,45 +260,9 @@ impl AttributesProcessor {
         pipeline_ctx: PipelineContext,
         config: Config,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let mut renames = BTreeMap::new();
-        let mut deletes = BTreeSet::new();
-        let mut inserts = BTreeMap::new();
-        let mut upserts = BTreeMap::new();
-        let mut updates = BTreeMap::new();
-        let mut hashes = BTreeMap::new();
-
-        for action in config.actions {
-            match action {
-                Action::Delete { key } => {
-                    let _ = deletes.insert(key);
-                }
-                Action::Rename {
-                    source_key,
-                    destination_key,
-                } => {
-                    let _ = renames.insert(source_key, destination_key);
-                }
-                Action::Insert { key, value } => {
-                    let _ = inserts.insert(key, value);
-                }
-                Action::Upsert { key, value } => {
-                    let _ = upserts.insert(key, value);
-                }
-                Action::Update { key, value } => {
-                    let _ = updates.insert(key, value);
-                }
-                Action::Hash {
-                    key,
-                    algorithm,
-                    salt,
-                } => match algorithm {
-                    HashAlgorithm::Sha256 => {
-                        let _ = hashes.insert(key, HashSpec::sha256(salt.into_inner()));
-                    }
-                },
-                // Unsupported actions are ignored for now
-                Action::Unsupported => {}
-            }
+        let plans = compile_config(&config)?;
+        if !config.context_declarations().is_empty() {
+            config.validate_context_declarations(&pipeline_ctx)?;
         }
 
         let domains = parse_apply_to(config.apply_to.as_ref());
@@ -271,70 +272,15 @@ impl AttributesProcessor {
         let has_scope_domain = domains.contains(&ApplyDomain::Scope);
         let has_signal_domain = domains.contains(&ApplyDomain::Signal);
 
-        // TODO: Optimize action composition into a valid AttributesTransform that
-        // still reflects the user's intended semantics. Consider:
-        // - detecting and collapsing simple rename chains (e.g., a->b, b->c => a->c)
-        // - detecting cycles or duplicate destinations and falling back to serial
-        //   application of transforms when a composed map would be invalid.
-        // For now, we compose a single transform and let transform_attributes
-        // enforce validity (which may error for conflicting maps).
-        let transform = AttributesTransform {
-            rename: if renames.is_empty() {
-                None
-            } else {
-                Some(RenameTransform::new(renames))
-            },
-            delete: if deletes.is_empty() {
-                None
-            } else {
-                Some(DeleteTransform::new(deletes))
-            },
-            insert: if inserts.is_empty() {
-                None
-            } else {
-                Some(InsertTransform::new(inserts))
-            },
-            upsert: if upserts.is_empty() {
-                None
-            } else {
-                Some(UpsertTransform::new(upserts))
-            },
-            update: if updates.is_empty() {
-                None
-            } else {
-                Some(UpdateTransform::new(updates))
-            },
-            hash: if hashes.is_empty() {
-                None
-            } else {
-                Some(HashTransform::new(hashes))
-            },
-        };
-
-        transform.validate().map_err(|e| {
-            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                error: format!("Invalid attribute transform configuration: {e}"),
-            }
-        })?;
-
         Ok(Self {
-            transform,
+            plans,
             has_resource_domain,
             has_scope_domain,
             has_signal_domain,
             metrics: metrics::AttributesProcessorMetrics::new(&pipeline_ctx),
             compute_duration: ComputeDuration::new(&pipeline_ctx),
+            pipeline_ctx,
         })
-    }
-
-    #[inline]
-    const fn is_noop(&self) -> bool {
-        self.transform.rename.is_none()
-            && self.transform.delete.is_none()
-            && self.transform.insert.is_none()
-            && self.transform.upsert.is_none()
-            && self.transform.update.is_none()
-            && self.transform.hash.is_none()
     }
 
     #[allow(clippy::result_large_err)]
@@ -342,13 +288,10 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
+        dynamic: &AttributesTransform,
     ) -> Result<SmallVec<[(metrics::TargetDomain, u64, u64, u64, u64, u64, u64); 3]>, EngineError>
     {
         let mut per_domain = SmallVec::new();
-
-        if self.is_noop() {
-            return Ok(per_domain);
-        }
 
         // Helper closure to aggregate stats across a slice of payload types.
         let mut apply_domain =
@@ -360,16 +303,23 @@ impl AttributesProcessor {
                 let mut updated = 0u64;
                 let mut hashed = 0u64;
                 for &payload_ty in payloads {
-                    let stats =
-                        apply_attribute_transform(records, payload_ty, &self.transform, true)?
-                            .unwrap_or_default();
-                    deleted += stats.deleted_entries;
-                    renamed += stats.renamed_entries;
-                    inserted += stats.inserted_entries;
-                    upserted += stats.upserted_entries;
-                    updated += stats.updated_entries;
-                    hashed += stats.hashed_entries;
+                    // Config validation guarantees disjoint keys, including rename endpoints.
+                    for transform in [&self.plans[signal_index(signal)].transform, dynamic] {
+                        if plan::is_noop(transform) {
+                            continue;
+                        }
+                        let stats =
+                            apply_attribute_transform(records, payload_ty, transform, true)?
+                                .unwrap_or_default();
+                        deleted += stats.deleted_entries;
+                        renamed += stats.renamed_entries;
+                        inserted += stats.inserted_entries;
+                        upserted += stats.upserted_entries;
+                        updated += stats.updated_entries;
+                        hashed += stats.hashed_entries;
+                    }
                 }
+
                 Ok((deleted, renamed, inserted, upserted, updated, hashed))
             };
 
@@ -397,6 +347,25 @@ impl AttributesProcessor {
     }
 }
 
+fn compile_config(config: &Config) -> Result<[CompiledTransform; 3], ConfigError> {
+    for action in &config.actions {
+        action.validate()?;
+    }
+    Ok([
+        CompiledTransform::new(&config.actions, SignalType::Logs)?,
+        CompiledTransform::new(&config.actions, SignalType::Metrics)?,
+        CompiledTransform::new(&config.actions, SignalType::Traces)?,
+    ])
+}
+
+fn validate_config(value: &Value) -> Result<(), ConfigError> {
+    let config: Config =
+        serde_json::from_value(value.clone()).map_err(|error| ConfigError::InvalidUserConfig {
+            error: error.to_string(),
+        })?;
+    compile_config(&config).map(|_| ())
+}
+
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for AttributesProcessor {
     async fn process(
@@ -406,6 +375,34 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(control_msg) => match control_msg {
+                otel_arrow_dfe_engine::control::NodeControlMsg::Config { config } => {
+                    let replacement = serde_json::from_value::<Config>(config)
+                        .map_err(|error| ConfigError::InvalidUserConfig {
+                            error: error.to_string(),
+                        })
+                        .and_then(|config| {
+                            let plans = compile_config(&config)?;
+                            if !config.context_declarations().is_empty() {
+                                config.validate_context_declarations(&self.pipeline_ctx)?;
+                            }
+                            Ok((config, plans))
+                        });
+                    match replacement {
+                        Ok((config, plans)) => {
+                            self.plans = plans;
+                            let domains = parse_apply_to(config.apply_to.as_ref());
+                            self.has_resource_domain = domains.contains(&ApplyDomain::Resource);
+                            self.has_scope_domain = domains.contains(&ApplyDomain::Scope);
+                            self.has_signal_domain = domains.contains(&ApplyDomain::Signal);
+                        }
+                        Err(error) => {
+                            otel_arrow_dfe_telemetry::otel_warn!(
+                                "attributes_processor.reconfigure_error", message = %error
+                            );
+                        }
+                    }
+                    Ok(())
+                }
                 otel_arrow_dfe_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
@@ -415,9 +412,41 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
                 _ => Ok(()),
             },
-            Message::PData(pdata) => {
-                // Fast path: no actions to apply
-                if self.is_noop() {
+            Message::PData(mut pdata) => {
+                let signal = pdata.signal_type();
+                if self.plans[signal_index(signal)].is_noop() {
+                    return effect_handler
+                        .send_message_with_source_node(pdata)
+                        .await
+                        .map_err(Into::into);
+                }
+                let interests = effect_handler.node_interests();
+                let started = interests
+                    .contains(otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION)
+                    .then(std::time::Instant::now);
+                let resolved = self.plans[signal_index(signal)].resolve(pdata.context_mut());
+                let resolution_elapsed = started.map(|start| start.elapsed());
+                let dynamic = match resolved {
+                    Ok(dynamic) => dynamic,
+                    Err(error) => {
+                        if let Some(elapsed) = resolution_elapsed {
+                            self.compute_duration.record_elapsed(
+                                interests,
+                                elapsed,
+                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                            );
+                        }
+                        self.metrics.record_transform_outcome(
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                        );
+                        return effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await;
+                    }
+                };
+                if plan::is_noop(&self.plans[signal_index(signal)].transform)
+                    && plan::is_noop(&dynamic)
+                {
                     let res = effect_handler
                         .send_message_with_source_node(pdata)
                         .await
@@ -425,9 +454,16 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     return res;
                 }
 
-                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
-                    Ok(arrow_pdata) => arrow_pdata,
+                let (delivery, mut records) = match effect_handler.prepare_otap_work(pdata).await {
+                    Ok(work) => work,
                     Err(error) => {
+                        if let Some(elapsed) = resolution_elapsed {
+                            self.compute_duration.record_elapsed(
+                                interests,
+                                elapsed,
+                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                            );
+                        }
                         let (error, pdata) = error.into_parts();
                         effect_handler
                             .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
@@ -435,13 +471,20 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         return Ok(());
                     }
                 };
-                let signal = arrow_pdata.signal_type();
-                let (context, mut records) = arrow_pdata.into_parts();
-
                 // Apply transform across selected domains and record per-(action, domain) stats.
-                let result = effect_handler.timed(&self.compute_duration, || {
-                    self.apply_transform_with_stats(&mut records, signal)
-                });
+                let started = resolution_elapsed.map(|_| std::time::Instant::now());
+                let result = self.apply_transform_with_stats(&mut records, signal, &dynamic);
+                if let (Some(elapsed), Some(start)) = (resolution_elapsed, started) {
+                    self.compute_duration.record_elapsed(
+                        interests,
+                        elapsed + start.elapsed(),
+                        if result.is_ok() {
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Success
+                        } else {
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure
+                        },
+                    );
+                }
                 match result {
                     Ok(domain_stats) => {
                         for (domain, deleted, renamed, inserted, upserted, updated, hashed) in
@@ -492,12 +535,17 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         self.metrics.record_transform_outcome(
                             otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
                         );
-                        return Err(e);
+                        return effect_handler
+                            .notify_nack(NackMsg::new_permanent(
+                                e.to_string(),
+                                delivery.into_pdata(),
+                            ))
+                            .await;
                     }
                 }
 
                 effect_handler
-                    .send_message_with_source_node(OtapPdata::new(context, records.into()))
+                    .send_message_with_source_node(delivery.with_payload(records.into()))
                     .await
                     .map_err(|e| e.into())
             }
@@ -577,9 +625,9 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        context_declarations: None,
+        context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+        validate_config,
     };
 
 // Per-domain payload slices used by apply_transform_with_stats.
@@ -670,10 +718,10 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let parsed = AttributesProcessor::from_config(pipeline_ctx, &cfg).expect("config parse");
-        assert!(parsed.transform.rename.is_some());
-        assert!(parsed.transform.delete.is_some());
-        assert!(parsed.transform.update.is_some());
-        assert!(parsed.transform.hash.is_some());
+        assert!(parsed.plans[0].transform.rename.is_some());
+        assert!(parsed.plans[0].transform.delete.is_some());
+        assert!(parsed.plans[0].transform.update.is_some());
+        assert!(parsed.plans[0].transform.hash.is_some());
         // default apply_to should include Signal
         assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified

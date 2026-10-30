@@ -17,6 +17,17 @@ use serde_json::Value;
 use std::ops::Add;
 use std::time::Instant;
 
+/// Captures verified identity claims for tests without running receiver authorization.
+#[must_use]
+pub fn with_authorized_identity(
+    mut pdata: OtapPdata,
+    policy: &otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy,
+    identity: &otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity,
+) -> OtapPdata {
+    pdata.capture_authorized_identity(policy, identity);
+    pdata
+}
+
 /// Consume frames to locate the most recent subscriber with ACKS
 /// interest in test scenarios, simulating the runtime control manager.
 #[must_use]

@@ -58,6 +58,26 @@ pub struct ComputeDuration {
 }
 
 impl ComputeDuration {
+    /// Records one outcome for synchronous compute accumulated across segments.
+    ///
+    /// Callers must exclude asynchronous waits from `elapsed` and record only
+    /// once the final outcome is known. Prefer `timed` for a single segment.
+    pub fn record_elapsed(
+        &self,
+        interests: Interests,
+        elapsed: std::time::Duration,
+        outcome: Outcome,
+    ) {
+        if interests.contains(Interests::NODE_LOCAL_DURATION) {
+            let acc = if outcome == Outcome::Success {
+                &self.acc_success
+            } else {
+                &self.acc_failed
+            };
+            acc.borrow_mut().record(elapsed.as_secs_f64());
+        }
+    }
+
     /// Register a new compute-duration metric set on the given pipeline.
     #[must_use]
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
@@ -132,6 +152,24 @@ mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+    /// Scenario: two synchronous segments are recorded together after the outcome is known.
+    /// Guarantees: each enabled recording adds one sample with the exact total and final outcome.
+    #[test]
+    fn record_elapsed_combines_segments_and_respects_interests() {
+        let (ctx, _) = test_pipeline_ctx();
+        let cd = ComputeDuration::new(&ctx);
+        let elapsed = std::time::Duration::from_millis(2) + std::time::Duration::from_millis(3);
+        cd.record_elapsed(Interests::empty(), elapsed, Outcome::Success);
+        assert_eq!(cd.acc_success.borrow().get().count(), 0);
+        cd.record_elapsed(Interests::NODE_LOCAL_DURATION, elapsed, Outcome::Success);
+        cd.record_elapsed(Interests::NODE_LOCAL_DURATION, elapsed, Outcome::Failure);
+        for acc in [&cd.acc_success, &cd.acc_failed] {
+            let (count, sum, _, _) = acc.borrow().get().summary();
+            assert_eq!(count, 1);
+            assert_eq!(sum, 0.005);
+        }
+    }
 
     /// Scenario: timed processor compute succeeds twice and fails once.
     /// Guarantees: duration observations are accumulated in the corresponding outcome buckets.

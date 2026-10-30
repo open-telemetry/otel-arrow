@@ -1028,6 +1028,7 @@ mod tests {
             store_as: store_as.map(context_name),
             sensitive: false,
             value_kind: None,
+            transform: Default::default(),
         }
     }
 

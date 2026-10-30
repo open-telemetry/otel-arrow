@@ -444,6 +444,7 @@ fn capture_policy(header_count: usize, producer: ProducerCase) -> HeaderCaptureP
                 store_as,
                 sensitive: false,
                 value_kind: None,
+                transform: Default::default(),
             }
         })
         .collect();
