@@ -1134,39 +1134,31 @@ fn create_geneva_client(
     capabilities: &Capabilities,
 ) -> Result<GenevaClient, ConfigError> {
     validate_geneva_client_prerequisites(config, node_config, ensure_crypto_provider)?;
-    match &config.auth {
-        AuthConfig::AgentFed => {
-            let client_config = config.to_agent_fed_geneva_client_config();
-            let source = resolve_agent_fed_source(capabilities)?;
-            GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(|error| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("Failed to initialize agent-fed Geneva client: {error}"),
-                }
-            })
-        }
+    if matches!(&config.auth, AuthConfig::AgentFed) {
+        let client_config = config.to_agent_fed_geneva_client_config();
+        let source = resolve_agent_fed_source(capabilities)?;
+        return GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(
+            |error| ConfigError::InvalidUserConfig {
+                error: format!("Failed to initialize agent-fed Geneva client: {error}"),
+            },
+        );
+    }
+
+    let (auth_method, client_kind) = match &config.auth {
         AuthConfig::ExternalToken { resource } => {
             let provider = resolve_gcs_token_provider(capabilities, resource.clone())?;
             let auth_method = AuthMethod::ExternalToken {
                 resource: resource.clone(),
                 provider: Arc::new(provider),
             };
-            let client_config = config.to_geneva_client_config(auth_method);
-            GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
-                error: format!("Failed to initialize external-token Geneva client: {error}"),
-            })
+            (auth_method, "external-token Geneva client")
         }
-        AuthConfig::Certificate { .. }
-        | AuthConfig::SystemManagedIdentity { .. }
-        | AuthConfig::UserManagedIdentity { .. }
-        | AuthConfig::UserManagedIdentityByArmResourceId { .. }
-        | AuthConfig::WorkloadIdentity { .. } => {
-            let client_config =
-                config.to_geneva_client_config(config.auth.configured_auth_method()?);
-            GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
-                error: format!("Failed to initialize Geneva client: {error}"),
-            })
-        }
-    }
+        auth => (auth.configured_auth_method()?, "Geneva client"),
+    };
+    let client_config = config.to_geneva_client_config(auth_method);
+    GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
+        error: format!("Failed to initialize {client_kind}: {error}"),
+    })
 }
 
 #[derive(Debug)]

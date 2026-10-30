@@ -48,8 +48,9 @@ impl ManagedIdentityExecution {
         }
     }
 
-    async fn get_token(&self, scope: String) -> Result<AccessToken, Error> {
+    async fn get_token(&self, scope: &str) -> Result<AccessToken, Error> {
         let mut credential = Arc::clone(&self.credential).lock_owned().await;
+        let scope = scope.to_owned();
         let credential_factory = Arc::clone(&self.credential_factory);
         let runtime = Handle::current();
         // Acquire admission before submitting work, then retain it inside the
@@ -73,21 +74,17 @@ fn acquire_managed_identity_token(
     cached: &mut Option<Arc<dyn TokenCredential>>,
     scope: &str,
 ) -> Result<AccessToken, Error> {
-    let credential = match cached {
-        Some(credential) => Arc::clone(credential),
-        None => {
-            let credential = {
-                let _context = runtime.enter();
-                credential_factory()?
-            };
-            *cached = Some(Arc::clone(&credential));
-            credential
-        }
-    };
+    runtime.block_on(async {
+        let credential = match cached {
+            Some(credential) => credential,
+            None => cached.insert(credential_factory()?),
+        };
 
-    runtime
-        .block_on(credential.get_token(&[scope], Some(TokenRequestOptions::default())))
-        .map_err(|source| Error::TokenAcquisition { source })
+        credential
+            .get_token(&[scope], Some(TokenRequestOptions::default()))
+            .await
+            .map_err(|source| Error::TokenAcquisition { source })
+    })
 }
 
 impl Auth {
@@ -172,7 +169,7 @@ impl BackgroundProviderSource<BearerToken> for Auth {
                 .await
                 .map_err(|source| Error::TokenAcquisition { source })?,
             CredentialExecution::ManagedIdentity(execution) => {
-                execution.get_token(self.scope.clone()).await?
+                execution.get_token(&self.scope).await?
             }
         };
 
