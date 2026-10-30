@@ -9,6 +9,8 @@
 //! constant, or random generator) and the entire entry's presence gate.
 //! Original wire names are supported only for transport-header values.
 
+/// Runtime context policies shared independently of compiler bookkeeping.
+mod bindings;
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
 /// Materializes selected composites at runtime.
@@ -19,6 +21,10 @@ mod metadata;
 mod propagation;
 
 use PreparedHeaderPropagationPolicy as HeaderPropagationPolicy;
+pub use bindings::{
+    Arrival, ArrivalBinding, ArrivalHeaders, ClaimRef, Claims, NodeBindings, PropagatedValue,
+    SinkBinding,
+};
 pub use layout::*;
 pub use materialization::*;
 pub use metadata::{
@@ -427,24 +433,20 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledContextBindings {
     /// Compiled node bindings indexed first by pipeline, then by node.
-    by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeBindings>>,
+    by_pipeline: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeState>>,
     /// Selected composite materialization plans indexed by pipeline.
     materialization_by_pipeline: HashMap<PipelineKey, ContextMaterializationPlan>,
 }
 
 /// Stores one node's component declarations, selected composites, and engine context policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CompiledNodeBindings {
+struct CompiledNodeState {
     /// Declarations supplied by the component factory.
     component_declarations: NodeContextDeclarations,
     /// Selected composite definitions, including the whole presence gate for member selections.
     composites: Box<[ConfigContextEntryDeclaration]>,
-    /// Receiver header capture policy compiled for the engine requirements.
-    header_capture: Option<CompiledHeaderCapturePolicy>,
-    /// Exporter header propagation policy resolved from node or pipeline config.
-    header_propagation: Option<CompiledHeaderPropagationPolicy>,
-    /// Receiver authorized identity claim projection policy.
-    authorized_identity_capture: Option<AuthorizedIdentityPolicy>,
+    /// Runtime bindings shared with node construction without compiler bookkeeping.
+    bindings: Arc<NodeBindings>,
 }
 
 /// Declarations indexed by pipeline and node identifiers.
@@ -454,6 +456,8 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
+    /// Whether this node can form arrival metadata, even without capture policies.
+    receiver: bool,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
     /// Selected composite definitions in canonical order with their full presence gates.
@@ -512,6 +516,7 @@ impl PreparedNodeContextDeclarations {
             },
         )?;
         Ok(Self {
+            receiver: false,
             declarations,
             composites,
             requirements,
@@ -648,7 +653,7 @@ fn original_name_key(name: &ContextEntryName) -> Box<str> {
     name.as_str().to_ascii_lowercase().into()
 }
 
-impl CompiledNodeBindings {
+impl CompiledNodeState {
     /// Compiles header capture and separates component declarations from engine policies.
     fn compile(
         prepared: PreparedNodeContextDeclarations,
@@ -682,18 +687,34 @@ impl CompiledNodeBindings {
         Ok(Self {
             component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
-            header_capture,
-            header_propagation,
-            authorized_identity_capture,
+            bindings: Arc::new(NodeBindings {
+                arrival: (prepared.receiver
+                    || header_capture.is_some()
+                    || authorized_identity_capture.is_some())
+                .then_some(ArrivalBinding {
+                    header_capture,
+                    authorized_identity_capture,
+                    materialization: materialization_plan.clone(),
+                }),
+                sink: header_propagation.map(|policy| SinkBinding { policy }),
+            }),
         })
     }
 
     /// Returns whether the node has no component declarations or engine context policies.
     fn is_empty(&self) -> bool {
-        self.component_declarations.is_empty()
-            && self.header_capture.is_none()
-            && self.header_propagation.is_none()
-            && self.authorized_identity_capture.is_none()
+        self.component_declarations.is_empty() && self.bindings.is_empty()
+    }
+
+    /// Compares the existing live-update inputs without adding adapter-derived state.
+    fn bindings_match(&self, other: &Self) -> bool {
+        self.component_declarations == other.component_declarations
+            && self.composites == other.composites
+            && self.bindings.header_capture_policy() == other.bindings.header_capture_policy()
+            && self.bindings.authorized_identity_policy()
+                == other.bindings.authorized_identity_policy()
+            && self.bindings.header_propagation_policy()
+                == other.bindings.header_propagation_policy()
     }
 }
 
@@ -733,7 +754,7 @@ impl CompiledContextBindings {
                     .map(|(node, declarations)| {
                         Ok((
                             node,
-                            CompiledNodeBindings::compile(
+                            CompiledNodeState::compile(
                                 declarations,
                                 requirements,
                                 &materialization,
@@ -764,17 +785,23 @@ impl CompiledContextBindings {
         self.materialization_by_pipeline.get(pipeline)
     }
 
+    /// Returns the shared runtime bindings compiled for one node.
+    #[must_use]
+    pub fn node_bindings(
+        &self,
+        pipeline: &PipelineKey,
+        node: &ConfigNodeId,
+    ) -> Option<&Arc<NodeBindings>> {
+        Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
+    }
+
     /// Returns the node's compiled header capture policy.
     pub(crate) fn header_capture_policy(
         &self,
         pipeline: &PipelineKey,
         node: &ConfigNodeId,
     ) -> Option<&CompiledHeaderCapturePolicy> {
-        self.by_pipeline
-            .get(pipeline)?
-            .get(node)?
-            .header_capture
-            .as_ref()
+        self.node_bindings(pipeline, node)?.header_capture_policy()
     }
 
     /// Returns the node's header propagation policy.
@@ -783,11 +810,8 @@ impl CompiledContextBindings {
         pipeline: &PipelineKey,
         node: &ConfigNodeId,
     ) -> Option<&CompiledHeaderPropagationPolicy> {
-        self.by_pipeline
-            .get(pipeline)?
-            .get(node)?
-            .header_propagation
-            .as_ref()
+        self.node_bindings(pipeline, node)?
+            .header_propagation_policy()
     }
 
     /// Returns the node's authorized identity claim projection policy.
@@ -796,11 +820,8 @@ impl CompiledContextBindings {
         pipeline: &PipelineKey,
         node: &ConfigNodeId,
     ) -> Option<&AuthorizedIdentityPolicy> {
-        self.by_pipeline
-            .get(pipeline)?
-            .get(node)?
-            .authorized_identity_capture
-            .as_ref()
+        self.node_bindings(pipeline, node)?
+            .authorized_identity_policy()
     }
 
     /// Compares one pipeline's bindings while ignoring nodes without context declarations.
@@ -827,7 +848,7 @@ impl CompiledContextBindings {
                     node.is_empty()
                         || candidate
                             .and_then(|nodes| nodes.get(node_id))
-                            .is_some_and(|candidate_node| candidate_node == node)
+                            .is_some_and(|candidate_node| candidate_node.bindings_match(node))
                 })
     }
 
@@ -918,9 +939,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     .into_iter()
                     .chain(wrapper_declarations)
                     .collect();
-                let declarations =
+                let mut declarations =
                     PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
                         .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
+                declarations.receiver = node_config.kind() == NodeKind::Receiver;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
             let _ = declarations.insert(pipeline_key, declarations_by_node);
@@ -1289,6 +1311,189 @@ groups:
         let requirements = ContextRuntimeRequirements::compile(&declarations);
         CompiledContextBindings::compile(declarations, &requirements)
             .expect("test bindings compile")
+    }
+
+    /// Scenario: compiled policies are accessed through a node binding and a cloned compiler snapshot.
+    /// Guarantees: existing policy accessors borrow the same stored policies and snapshot clones share them.
+    #[test]
+    fn node_bindings_share_existing_policies() {
+        let compiled = compiled_bindings(
+            [
+                ContextDeclaration::HeaderCapture {
+                    policy: HeaderCapturePolicy::default(),
+                },
+                ContextDeclaration::HeaderPropagation {
+                    policy: HeaderPropagationPolicy::default(),
+                },
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: serde_json::from_value(serde_json::json!([
+                        {"claim": "sub", "store_as": "tenant"}
+                    ]))
+                    .expect("identity policy"),
+                },
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let pipeline = pipeline("group", "pipeline");
+        let node = ConfigNodeId::from("node");
+        let bindings = compiled
+            .node_bindings(&pipeline, &node)
+            .expect("node bindings");
+        let cloned = compiled.clone();
+        assert!(Arc::ptr_eq(
+            bindings,
+            cloned
+                .node_bindings(&pipeline, &node)
+                .expect("cloned bindings"),
+        ));
+        assert!(std::ptr::eq(
+            compiled
+                .header_capture_policy(&pipeline, &node)
+                .expect("capture accessor"),
+            bindings
+                .arrival()
+                .expect("arrival")
+                .header_capture
+                .as_ref()
+                .expect("stored capture policy"),
+        ));
+        assert!(std::ptr::eq(
+            compiled
+                .header_propagation_policy(&pipeline, &node)
+                .expect("propagation accessor"),
+            &bindings.sink().expect("sink").policy,
+        ));
+        assert!(std::ptr::eq(
+            compiled
+                .authorized_identity_policy(&pipeline, &node)
+                .expect("identity accessor"),
+            bindings
+                .arrival()
+                .expect("arrival")
+                .authorized_identity_capture
+                .as_ref()
+                .expect("stored identity policy"),
+        ));
+    }
+
+    /// Scenario: arrival adapters add pipeline materialization without changing legacy declarations or policies.
+    /// Guarantees: live-update comparison still ignores policy-free receivers and adapter-derived plans.
+    #[test]
+    fn arrival_adapters_preserve_live_update_inputs() {
+        let compiled = test_pipeline_factory()
+            .compile_initial_context(&resolve_conditional_pipeline(
+                "[{type: constant, name: route, value: fixed}]",
+                "tenant:route",
+            ))
+            .expect("context compiles");
+        let key = pipeline("default", "main");
+        let receiver = ConfigNodeId::from("receiver");
+        let mut without_receiver = compiled.bindings.as_ref().clone();
+        let removed = without_receiver
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .remove(&receiver)
+            .expect("receiver");
+        assert!(removed.bindings.arrival().is_some());
+        assert!(
+            compiled
+                .bindings
+                .pipeline_bindings_match(&without_receiver, &key)
+        );
+        assert!(without_receiver.pipeline_bindings_match(&compiled.bindings, &key));
+
+        let current = compiled_bindings(
+            [ContextDeclaration::HeaderCapture {
+                policy: HeaderCapturePolicy::default(),
+            }]
+            .into_iter()
+            .collect(),
+        );
+        let mut changed = current.clone();
+        let key = pipeline("group", "pipeline");
+        let node = changed
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .get_mut(&ConfigNodeId::from("node"))
+            .expect("node");
+        Arc::make_mut(&mut node.bindings).set_materialization_plan(
+            compiled
+                .bindings
+                .context_materialization_plan(&pipeline("default", "main"))
+                .expect("materialization plan")
+                .clone(),
+        );
+        assert!(current.pipeline_bindings_match(&changed, &key));
+        assert!(changed.pipeline_bindings_match(&current, &key));
+    }
+
+    /// Scenario: node contexts share names across groups and pipelines, or reference unknown nodes.
+    /// Guarantees: lookup uses the full pipeline/node key, shares the selected binding, and returns None for misses.
+    #[test]
+    fn node_bindings_lookup_uses_current_pipeline_and_node() {
+        use crate::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+
+        let keys = [
+            ("group", "pipeline", "node"),
+            ("other", "pipeline", "node"),
+            ("group", "other", "node"),
+            ("group", "pipeline", "other"),
+        ];
+        let mut declarations = ContextDeclarationsByPipeline::new();
+        for (group, pipeline_id, node) in keys {
+            _ = declarations
+                .entry(pipeline(group, pipeline_id))
+                .or_default()
+                .insert(
+                    node.into(),
+                    PreparedNodeContextDeclarations::new(NodeContextDeclarations::default(), &[])
+                        .expect("empty declarations"),
+                );
+        }
+        let requirements = ContextRuntimeRequirements::compile(&declarations);
+        let compiled = Arc::new(
+            CompiledContextBindings::compile(declarations, &requirements)
+                .expect("bindings compile"),
+        );
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        for (group, pipeline_id, node) in keys.into_iter().chain([
+            ("missing", "pipeline", "node"),
+            ("group", "missing", "node"),
+            ("group", "pipeline", "missing"),
+        ]) {
+            let mut context =
+                controller.pipeline_context_with(group.into(), pipeline_id.into(), 0, 1, 0);
+            context.set_compiled_context_bindings(Arc::clone(&compiled));
+            let context = context.with_node_context(
+                node.into(),
+                "urn:otel:processor:test".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            );
+            let pipeline = pipeline(group, pipeline_id);
+            let node_id = ConfigNodeId::from(node);
+            let expected = compiled
+                .by_pipeline
+                .get(&pipeline)
+                .and_then(|nodes| nodes.get(&node_id))
+                .map(|state| &state.bindings);
+            match (
+                context.node_bindings(),
+                compiled.node_bindings(&pipeline, &node_id),
+                expected,
+            ) {
+                (Some(actual), Some(lookup), Some(expected)) => {
+                    assert!(Arc::ptr_eq(&actual, expected));
+                    assert!(Arc::ptr_eq(lookup, expected));
+                }
+                (None, None, None) => {}
+                _ => panic!("unexpected binding for {group}/{pipeline_id}/{node}"),
+            }
+        }
     }
 
     /// Derives runtime requirements from one test node's declarations.
