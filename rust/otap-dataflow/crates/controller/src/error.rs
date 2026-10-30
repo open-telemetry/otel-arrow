@@ -79,6 +79,10 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>, // ToDo : Use a more specific error type if possible
     },
 
+    /// Global shutdown closed admission before this pipeline could launch.
+    #[error("Pipeline launch cancelled because engine shutdown has started")]
+    PipelineLaunchCancelled,
+
     /// A console writer stopped on an I/O error and queued output was abandoned.
     ///
     /// Reported through the run result because a dead writer may have no console
