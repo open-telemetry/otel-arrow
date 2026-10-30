@@ -1,7 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: "Enable verified TLS by default for the PostgreSQL receiver, with optional private CA files and an explicit plaintext opt-out."
-issues: [4166]
-subtext: |
-  Build with one crypto-* feature. Platform roots and connection.tls.ca_file are verified; transient TLS I/O retries without advancing checkpoints.
-  Set connection.tls.enabled=false only for isolated development databases that do not support TLS.

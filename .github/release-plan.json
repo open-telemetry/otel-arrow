@@ -1,24 +1,23 @@
 {
   "schema_version": 1,
-  "base_sha": "f3215c1c0d729d9de2442116c073fc79455a2bf6",
-  "branch": "otelbot/release-go-v0.60.1-rust-v0.62.0",
-  "summary": "Go v0.60.1 and Rust v0.62.0",
+  "base_sha": "78a4efdffec8e1cdbc46352e8a554a2ba7f74eaa",
+  "branch": "otelbot/release-rust-v0.63.0",
+  "summary": "Rust v0.63.0",
   "go": {
-    "target": "go",
-    "has_changes": true,
-    "impact": "patch",
-    "entry_count": 1,
-    "last_tag": "go/v0.60.0",
-    "last_version": "0.60.0",
-    "next_version": "0.60.1"
+    "has_changes": false,
+    "impact": null,
+    "entry_count": 0,
+    "last_tag": "",
+    "last_version": "",
+    "next_version": null
   },
   "rust": {
     "target": "rust",
     "has_changes": true,
     "impact": "minor",
-    "entry_count": 30,
-    "last_tag": "rust/otap-dataflow/v0.61.0",
-    "last_version": "0.61.0",
-    "next_version": "0.62.0"
+    "entry_count": 27,
+    "last_tag": "rust/otap-dataflow/v0.62.0",
+    "last_version": "0.62.0",
+    "next_version": "0.63.0"
   }
 }
