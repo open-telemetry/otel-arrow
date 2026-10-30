@@ -94,17 +94,52 @@ steps:
         post:
           - record_event:
               name: observation_stop
-  # Stop the load generator from sending traffic.
+  # Stop the load generator from sending traffic. Its process (and /metrics
+  # endpoint) stays up, so its final count remains scrapeable.
   - name: Stop Load
     action:
       component_action:
         phase: stop
         target: load-generator
-  # Wait for all items in-flight to transit and ensure metrics are updated.
-  - name: Wait For Drain and Reset
+  # Wait for all items in-flight to reach the engine.
+  - name: Wait For Load Generator Drain
     action:
       wait:
         delay_seconds: 3
+  # The collector has no pipeline drain endpoint. Stopping its container sends
+  # SIGTERM, which flushes in-flight data to the backend before it exits.
+  - name: Stop Monitoring Collector
+    action:
+      component_action:
+        phase: stop_monitoring
+        target: go-collector
+  - name: Destroy Collector
+    action:
+      component_action:
+        phase: destroy
+        target: go-collector
+  # Drain and remove the backend pipeline group. Deleting the group (rather than
+  # calling groups/shutdown) keeps the engine process and its admin endpoint
+  # alive, so the final counts remain scrapeable for
+  # engine.telemetry.metric_unregister_grace_period.
+  - name: Stop Backend Pipelines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8087/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
+  # Let a few scrapes observe the final post-drain counts.
+  - name: Wait For Final Metrics
+    action:
+      wait:
+        delay_seconds: {{final_metrics_wait_secs | default(3)}}
   # Stop monitoring all components.
   - name: Stop Monitoring All
     action:
@@ -113,7 +148,22 @@ steps:
         targets:
           - backend-service
           - load-generator
-          - go-collector
+  # Shut down the (now empty) engines so the processes exit gracefully.
+  - name: Shutdown Engines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
   # Stop all running components.
   - name: Destroy All
     action:
@@ -121,7 +171,6 @@ steps:
         phase: destroy
         targets:
           - load-generator
-          - go-collector
           - backend-service
   # Run the report
   - name: Run Report
