@@ -1,0 +1,117 @@
+groups:
+  - id: metric.faas.invoke_duration
+    type: metric
+    metric_name: faas.invoke_duration
+    annotations:
+      code_generation:
+        metric_value_type: double
+    stability: development
+    brief: "Measures the duration of the function's logic execution."
+    instrument: histogram
+    unit: "s"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.init_duration
+    type: metric
+    metric_name: faas.init_duration
+    annotations:
+      code_generation:
+        metric_value_type: double
+    stability: development
+    brief: "Measures the duration of the function's initialization, such as a cold start."
+    instrument: histogram
+    unit: "s"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.coldstarts
+    type: metric
+    metric_name: faas.coldstarts
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    brief: "Number of invocation cold starts."
+    instrument: counter
+    unit: "{coldstart}"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.errors
+    type: metric
+    metric_name: faas.errors
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    brief: "Number of invocation errors."
+    instrument: counter
+    unit: "{error}"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.invocations
+    type: metric
+    metric_name: faas.invocations
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    brief: "Number of successful invocations."
+    instrument: counter
+    unit: "{invocation}"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.timeouts
+    type: metric
+    metric_name: faas.timeouts
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    brief: "Number of invocation timeouts."
+    instrument: counter
+    unit: "{timeout}"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.mem_usage
+    type: metric
+    metric_name: faas.mem_usage
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    brief: "Distribution of max memory usage per invocation."
+    instrument: histogram
+    unit: "By"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.cpu_usage
+    type: metric
+    metric_name: faas.cpu_usage
+    annotations:
+      code_generation:
+        metric_value_type: double
+    stability: development
+    brief: "Distribution of CPU usage per invocation."
+    instrument: histogram
+    unit: "s"
+    attributes:
+      - ref: faas.trigger
+
+  - id: metric.faas.net_io
+    type: metric
+    metric_name: faas.net_io
+    annotations:
+      code_generation:
+        metric_value_type: int
+    stability: development
+    brief: "Distribution of net I/O usage per invocation."
+    instrument: histogram
+    unit: "By"
+    attributes:
+      - ref: faas.trigger

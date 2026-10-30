@@ -1,41 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::receivers::syslog_cef_receiver::arrow_records_encoder::{
+    KnownAttributeKey, SyslogAttributesBuilder,
+};
 use crate::receivers::syslog_cef_receiver::parser::{
     cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
-use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
-
-// Common attribute key constants for both RFC5424 and RFC3164 messages
-const SYSLOG_FACILITY: &str = "syslog.facility";
-const SYSLOG_SEVERITY: &str = "syslog.severity";
-const SYSLOG_HOST_NAME: &str = "syslog.host_name";
-
-// Attribute key constants for RFC5424 messages
-const SYSLOG_VERSION: &str = "syslog.version";
-const SYSLOG_APP_NAME: &str = "syslog.app_name";
-const SYSLOG_PROCESS_ID: &str = "syslog.process_id";
-const SYSLOG_PROCESS_ID_STR: &str = "syslog.process_id_str";
-const SYSLOG_MSG_ID: &str = "syslog.msg_id";
-const SYSLOG_STRUCTURED_DATA: &str = "syslog.structured_data";
-const SYSLOG_MESSAGE: &str = "syslog.message";
-
-// Attribute key constants for RFC3164 messages
-const SYSLOG_TAG: &str = "syslog.tag";
-const SYSLOG_CONTENT: &str = "syslog.content";
-
-// Attribute key constants for CEF messages
-const CEF_VERSION: &str = "cef.version";
-const CEF_DEVICE_VENDOR: &str = "cef.device_vendor";
-const CEF_DEVICE_PRODUCT: &str = "cef.device_product";
-const CEF_DEVICE_VERSION: &str = "cef.device_version";
-const CEF_DEVICE_EVENT_CLASS_ID: &str = "cef.device_event_class_id";
-const CEF_NAME: &str = "cef.name";
-const CEF_SEVERITY: &str = "cef.severity";
-
-// Attribute key constant for detected input format
-const INPUT_FORMAT: &str = "input.format";
 
 /// Decodes a fixed-width ASCII field without allocating or accepting signs.
 #[inline]
@@ -237,7 +209,7 @@ impl ParsedSyslogMessage<'_> {
     #[must_use]
     pub(crate) fn add_attributes_to_arrow(
         &self,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count: u16 = match self {
             ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg) => {
@@ -268,7 +240,7 @@ impl ParsedSyslogMessage<'_> {
         };
 
         // Always emit the detected input format attribute
-        log_attributes_arrow_records.append_key(INPUT_FORMAT);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::InputFormat);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(self.format().as_bytes());
@@ -281,27 +253,27 @@ impl ParsedSyslogMessage<'_> {
     fn add_rfc5424_attributes(
         &self,
         msg: &Rfc5424Message<'_>,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count = 3; // version, facility, and severity are always present
 
-        log_attributes_arrow_records.append_key(SYSLOG_VERSION);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::Version);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.version.into());
 
-        log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::Facility);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.priority.facility.into());
 
-        log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::Severity);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.priority.severity.into());
 
         if let Some(hostname) = msg.hostname {
-            log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::HostName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(hostname);
@@ -309,7 +281,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(appname) = msg.app_name {
-            log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::AppName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(appname);
@@ -318,7 +290,7 @@ impl ParsedSyslogMessage<'_> {
 
         if let Some(proc_id) = msg.proc_id {
             // Always store the original string value (per RFC 5424: PROCID = 1*128PRINTUSASCII)
-            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID_STR);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::ProcessIdStr);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(proc_id);
@@ -329,7 +301,7 @@ impl ParsedSyslogMessage<'_> {
                 .unwrap_or_default()
                 .parse::<i64>()
             {
-                log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+                log_attributes_arrow_records.append_known_key(KnownAttributeKey::ProcessId);
                 log_attributes_arrow_records
                     .any_values_builder
                     .append_int(proc_id_int);
@@ -338,7 +310,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(msg_id) = msg.msg_id {
-            log_attributes_arrow_records.append_key(SYSLOG_MSG_ID);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::MessageId);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(msg_id);
@@ -346,7 +318,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(structured_data) = &msg.structured_data {
-            log_attributes_arrow_records.append_key(SYSLOG_STRUCTURED_DATA);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::StructuredData);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(structured_data);
@@ -354,7 +326,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(message) = msg.message {
-            log_attributes_arrow_records.append_key(SYSLOG_MESSAGE);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Message);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(message);
@@ -367,19 +339,19 @@ impl ParsedSyslogMessage<'_> {
     fn add_rfc3164_attributes(
         &self,
         msg: &Rfc3164Message<'_>,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count = 0;
 
         // Only add facility and severity if they were present in the original message
         if let Some(priority) = msg.priority.as_ref() {
-            log_attributes_arrow_records.append_key(SYSLOG_FACILITY);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Facility);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_int(priority.facility.into());
             attributes_count += 1;
 
-            log_attributes_arrow_records.append_key(SYSLOG_SEVERITY);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Severity);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_int(priority.severity.into());
@@ -387,7 +359,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(hostname) = msg.hostname {
-            log_attributes_arrow_records.append_key(SYSLOG_HOST_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::HostName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(hostname);
@@ -395,7 +367,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(tag) = msg.tag {
-            log_attributes_arrow_records.append_key(SYSLOG_TAG);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Tag);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(tag);
@@ -403,7 +375,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(app_name) = msg.app_name {
-            log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::AppName);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(app_name);
@@ -413,7 +385,7 @@ impl ParsedSyslogMessage<'_> {
         if let Some(proc_id) = msg.proc_id {
             // RFC 3164 proc_id is always numeric (parser filters to numeric-only),
             // so we store only as integer
-            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::ProcessId);
             log_attributes_arrow_records.any_values_builder.append_int(
                 std::str::from_utf8(proc_id)
                     .unwrap_or_default()
@@ -424,7 +396,7 @@ impl ParsedSyslogMessage<'_> {
         }
 
         if let Some(content) = msg.content {
-            log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
+            log_attributes_arrow_records.append_known_key(KnownAttributeKey::Content);
             log_attributes_arrow_records
                 .any_values_builder
                 .append_str(content);
@@ -437,41 +409,41 @@ impl ParsedSyslogMessage<'_> {
     fn add_cef_attributes(
         &self,
         msg: &CefMessage<'_>,
-        log_attributes_arrow_records: &mut StrKeysAttributesRecordBatchBuilder<u16>,
+        log_attributes_arrow_records: &mut SyslogAttributesBuilder,
     ) -> u16 {
         let mut attributes_count = 7; // version, device_vendor, device_product, device_version, device_event_class_id, name, and severity are always present
 
-        log_attributes_arrow_records.append_key(CEF_VERSION);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefVersion);
         log_attributes_arrow_records
             .any_values_builder
             .append_int(msg.version.into());
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_VENDOR);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceVendor);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_vendor);
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_PRODUCT);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceProduct);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_product);
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_VERSION);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceVersion);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_version);
 
-        log_attributes_arrow_records.append_key(CEF_DEVICE_EVENT_CLASS_ID);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefEventClassId);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.device_event_class_id);
 
-        log_attributes_arrow_records.append_key(CEF_NAME);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefName);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.name);
 
-        log_attributes_arrow_records.append_key(CEF_SEVERITY);
+        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefSeverity);
         log_attributes_arrow_records
             .any_values_builder
             .append_str(msg.severity);

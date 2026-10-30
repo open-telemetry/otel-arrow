@@ -576,6 +576,16 @@ benchmark hardware are intentionally not normative. Linux cases gate the
 initial Phase 1 release. macOS and Windows cases gate enabling those platforms,
 while their semantic and format definitions remain normative from version 1.
 
+### Discovery evidence qualification
+
+Cases below distinguish coverage, presence, policy, and identity evidence under
+the [discovery rules](filelog-receiver-phase1-spec.md#complete-and-incomplete-inventories).
+Implementations must demonstrate these behaviors using controlled rename
+schedules and injected lookup failures. Operator limitations are described in
+[Discovery policies and trade-offs](filelog-receiver.md#discovery-policies-and-trade-offs).
+
+### Required cases
+
 | Area | Scenario | Required observation |
 | --- | --- | --- |
 | Configuration | Empty includes | Rejected before startup |
@@ -624,8 +634,61 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Identity-reconciliation or checkpoint-recovery formula equals its named provisional ceiling | Accepted if representable |
 | Configuration | A formula exceeds its named provisional ceiling or any admission arithmetic overflows | Rejected with actionable knobs |
 | Configuration | Framer, reader, batch, or carry-over formula has no named provisional ceiling | Checked and reported; no invented per-model limit |
+| Discovery | Required target exclusion checks cannot be completed, even though a locator was obtained | No admission or content read through that observation; pass incomplete; uncertainty alone does not revoke another validated reader |
+| Discovery | Unresolved target has zero link count or a name ending in `" (deleted)"` | No implicit exception to exclusion checks or completeness rules |
+| Discovery | Positively excluded target lacks read permission | Exclusion is decided before read-open; no read-open failure manufactured for an already excluded target |
+| Discovery | Candidate lookup returns `ENOENT`, including a missing component of a followed target | Record a miss without admission; detected environment or traversal failure still invalidates the pass |
+| Discovery | A subdirectory vanishes during traversal, listing fails, or resumption is ambiguous | Pass incomplete; no disappearance confirmation |
+| Discovery | Exclusion prefix is absent | Continue only if the full policy remains evaluable; otherwise no dependent admission and pass incomplete |
+| Discovery | Ordinary leaf-candidate link loop or nesting limit | Candidate rejected, no eligible name or locator presence; unrelated coverage intact; no claim of physical absence |
+| Discovery | Directory traversal cycle, fixed-prefix failure, or required pinned-target policy failure | Pass incomplete; candidate-loop rejection does not bypass magic-link or exclusion policy |
+| Discovery | Persistent link loop under a followed recursive include requires unresolved subtree traversal | Coverage failure each pass; diagnostic identifies the link; discovery-based finalization and retention aging blocked receiver-wide; qualified resident-unlink handling remains available |
+| Discovery | A final symlink is dangling or cyclic but is not followed under `follow_symlinks: false` | Not admitted; the unattempted target resolution does not itself make the pass incomplete |
+| Discovery | Tracked file is now observed only through a lexically excluded name | Required locator evidence supports exclusion and presence accounting without read-open; evidence failures follow the operation-specific outcomes, never proof of disappearance |
+| Discovery | A persistent resolution failure spans retention deadlines | Bounded reason remains observable; no fabricated absence or capacity-driven checkpoint removal |
+| Discovery | Policy passed and locator presence is known, but content access fails | No admission or cancellation; presence blocks discovery-derived confirmation for that locator without invalidating unrelated coverage |
+| Discovery | Bind-mount alias contains an excluded `x.secret` and allowed `x.log` under a `*.secret` exclusion | Full root mapping excludes only `x.secret`; no whole-subtree rejection |
+| Discovery | Target path fills its bounded buffer, is unreachable, or verification detects a rename/intermediate symlink substitution | No admission from truncated or inconsistent evidence; policy failure reported |
+| Discovery | A live name ends in `" (deleted)"` | Apply normal path verification; no filename-text rejection |
+| Discovery | Root or tracked-binding-parent identity changes | Clear pending confirmations and absence history; block negative conclusions receiver-wide until expected environment returns or receiver recreation; bounded diagnostic identifies the changed directory |
+| Discovery | Receiver recreated after operator verifies the environment | Fresh discovery baseline and absence history; checkpoints/progress unchanged; sync-failure block not bypassed |
+| Rotation | A file moves into an already visited directory and is missed once, then is validated in a later pass | Pending disappearance cancels before permanent EOF; no terminal framing or finalization |
+| Rotation | Still-linked resident file stays unseen | Permanent EOF requires a complete later pass started after the first missing pass finished, plus EOF inactivity; neither condition alone suffices |
+| Rotation | Reappearance was delivered before permanent-EOF confirmation | Process ordered observation before the cutoff; an empty-channel check is not sufficient serialization |
+| Rotation | Reappearance occurs after permanent-EOF confirmation but before finalization append | Do not cancel terminal framing; preserve presence and block competing admission without invalidating unrelated coverage |
+| Rotation | Qualified resident handle reports zero links while discovery or root-change handling is stalled | Independent unlink handling starts without discovery confirmation or its coverage dependency; fresh resident unlink evidence is rechecked before permanent EOF; other finalization conditions still apply |
+| Rotation | Zero-link evidence comes from an unqualified filesystem backend | No unlink shortcut based on that count; preserve the ordinary path |
+| Resource | Resident pool is full of readers awaiting confirmation, with adequate OS descriptor headroom | Discovery directory and shared transient probes still progress; no pinned-reader eviction |
+| Resource | Actual `EMFILE` or `ENFILE` prevents a required probe | Backoff and diagnostic; unfinished pass cannot confirm; pinned readers preserved |
+| Performance | Steady state after warm-up: unchanged paths/bindings, no rotation, both idle and continuously appended files | Compare identical workloads/configuration against a stated baseline; report p50/p99 append-to-emission and read/control latency, scan time, allocation count/bytes and retained/peak heap across many passes; no heap growth with pass count or rotation-only allocations; resolve material regressions |
+| Qualification | Pod-directory churn in symlink and direct-path deployments | Release qualification records confirmation delay, incomplete-pass frequency, pinned-handle pressure, and delayed admission |
+| Discovery | Excluded alias and another validated eligible name identify the same locator | Reject excluded name without revoking the eligible reader |
+| Discovery | Excluded name encountered during normal traversal identifies a retained locator | Metadata lookup may preserve presence without read-open; no recursive search of pruned excluded subtrees |
+| Discovery | Root absent at startup, including with recovered records | Pass incomplete receiver-wide for discovery-based finalization and retention; positive reading and qualified unlink handling remain available; first successful validation establishes identity; bounded diagnostic identifies the absent root |
+| Discovery | Unresolved symlink might lead to a subtree required by the include pattern | Coverage failure; unknown target kind is not a rejected leaf candidate |
+| Discovery | Established root unavailable or replaced | Coverage failure or identity-change block; never an empty successful scan; bounded diagnostic identifies the root |
+| Discovery | Binding parent returns `ENOENT` with otherwise valid root/traversal context | Classify absence by context, not as a replacement directory identity |
+| Rotation | A confirming pass is followed by coverage failure before permanent EOF | Invalidate confirmation; one qualifying pass started after the failed pass finishes can replace it |
+| Rotation | Validated reappearance cancels, followed by another miss | New pending-disappearance sequence required |
+| Rotation | Failure or locator presence arrives during an unfinished pass before the cutoff | Process it immediately for confirmation validity; do not wait for pass completion |
+| Rotation | File is renamed to an inspected excluded name, with no other eligible name | Excluded handling, no D17 solely for exclusion, durable state remains Active |
+| Rotation | Pending disappearance meets Excluded preconditions before permanent EOF | Exclusion handling replaces pending disappearance without D17; after cutoff the observation preserves presence only |
+| Rotation | File moves into a pruned excluded subtree that discovery does not inspect | No promise of exclusion detection; collection may continue after the move (exclusion/privacy limitation), and eventual retention can remove state |
+| Discovery | Excluded name identifies an active locator whose distinguished binding remains validated and eligible | Do not revoke the reader |
+| Discovery | Excluded name identifies an active locator; binding is positively ineligible and no other validated eligible name is known | Prompt exclusion handling without waiting for complete discovery, under unresolved-delta ordering |
+| Discovery | Excluded name identifies an active locator but its binding is truncated, inaccessible, or unstable | No inference of ineligibility; complete-pass fallback required; reading continues until revocation is authorized |
+| Discovery | Locator changes between stability probes | Pass incomplete; inconsistent observation does not become locator presence |
+| Discovery | Excluded leaf-name lookup returns ENOENT or hits an ordinary link loop | Apply the same contextual miss/rejection rules as nonexcluded lookups; no automatic pass-wide failure |
+| Rotation | Unverifiable alias repeatedly reports presence for a qualified resident handle with fresh zero-link evidence | Presence does not block independent unlink confirmation; it still blocks retention aging; validated eligible sighting can cancel before cutoff |
+| Discovery | Incomplete pass has validated positive evidence or a successful exclusion binding check | Observed, metadata Updated, and fast-path Excluded transitions remain available; no Disappeared or predecessor binding reselection from partial coverage; uncontested new replacements use the explicit supersession rule |
+| Discovery | Only an earlier-pass eligible alias is known during exclusion binding check | Revalidate it before using it to prevent revocation; do not infer current eligibility from stale evidence |
 | Discovery | New growing file | Admitted without waiting for close |
-| Discovery | Exclude overlaps include | Excluded |
+| Discovery | Linux verification syscall unavailable or blocked by container policy | VerificationUnavailable; no admission or unrestricted fallback |
+| Discovery | Exclusion-root mapping fails while a candidate can be pinned | Root failure is distinguishable from candidate policy failure; original path and errno retained; pass incomplete |
+| Discovery | Tmpfs or another unqualified backend requires directory replay | Matching prefix permits positive progress but not complete coverage; no disappearance or retention absence from that pass |
+| Discovery | Stable traversal repeatedly exceeds its work budget | Limit is observable; the same undiscovered tail is not treated as absent; persistent exhaustion identifies the need to change scope or budget |
+| Performance | Native paths of 255, 256, 257 bytes and longer, including non-UTF-8 names | Byte fidelity and truncation rejection preserved; repeated syscall conversions reuse bounded storage without per-path heap allocations |
+| Discovery | Exclude overlaps include | Excluded; lexical rejection may precede pinning while preserving required retained-state evidence; no read-open required |
 | Discovery | Lexical alias maps to excluded target | Excluded |
 | Discovery | `follow_symlinks: false` final symlink | Not admitted |
 | Discovery | `follow_symlinks: true` allowed target | Admitted once |
@@ -649,6 +712,13 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | One locator has many matched aliases | One deterministic distinguished binding retained; aliases do not grow durable state |
 | Discovery | A lexically smaller alias appears while the distinguished binding still names the locator | Existing binding remains stable; no false rebound |
 | Discovery | Distinguished binding is truncated | Kind, full length, digest, and suffix preserve bounded path comparison |
+| Rotation | New file first observed at a tracked predecessor's comparable binding during an incomplete pass, with `start_at: end` | Preserve replacement context; uncontested new identity starts at zero without waiting for a complete pass, subject to ordinary admission checks; predecessor path becomes historical evidence and its progress stays unchanged |
+| Rotation | Unrelated incompleteness persists across repeated move/create rotations with capacity available | Each stable uncontested replacement can be admitted at zero without complete-pass binding reselection; historical paths are not duplicate live claims |
+| Rotation | Replacement-path assignment forms a tracked swap/cycle or observations are unstable/non-unique | Preserve existing state and defer conflicting binding work; do not fall back to start-at-end |
+| Rotation | A later complete pass reconciles an already admitted replacement, or recovery sees equal historical advisory paths | Revalidate live path ownership; preserve replacement progress and reconcile historical evidence without duplicate registration or offset reset |
+| Recovery | Two records share an AdvisoryPath after incomplete-pass rotation | Runtime live binding resolves by validated locator, without dual assignment or a persisted supersession flag; next complete pass reconciles the predecessor rebound without resetting replacement progress |
+| Discovery | Incomplete pass observes the predecessor at a new alias after its old path was superseded | Updated metadata preserves the historical AdvisoryPath; only authorized binding reconciliation may publish a replacement path |
+| Rotation | That incomplete-pass replacement matches its own existing durable record | Apply normal identity/lifecycle validation to its own state; do not reset its offset or inherit predecessor progress |
 | Discovery | Distinguished binding unavailable or incomparable for a tracked predecessor | Only its possible new replacement uses offset-zero fallback; unrelated first admission still follows `start_at` |
 | Discovery | Rebound invalidates A's binding and A's new minimum was another identity's prior binding | Freeze and resolve all prior rebounds before reselection; conflict makes inventory incomplete without dual assignment |
 | Discovery | Traversal error | No false removal |
@@ -728,11 +798,11 @@ while their semantic and format definitions remain normative from version 1.
 | Reader | Reopen same identity | Exact revalidation and deterministic reread |
 | Reader | Reopen mismatch | No read under old identity |
 | Reader | Removed resident identity | Descriptor pinned through finalization |
-| Reader | Complete reconciliation proves an evicted, descriptor-free identity disappeared | Report capture limitation; release logical reader and lease; keep durable `Active` state unchanged; begin absence evidence |
+| Reader | Complete reconciliation observes neither an eligible name nor presence for an evicted identity | Report capture limitation; release logical reader and lease; keep durable `Active` state unchanged; begin absence evidence |
 | Reader | Exact locator reappears after descriptor-free disappearance containment | Reconnect existing durable progress after full validation; `start_at` does not apply |
 | Reader | Descriptor-free record reaches retention with no other veto | Ordinary retention eligibility; no stale reader, lease, or rotation wait blocks removal |
 | Reader | Descriptor-free record with retention disabled | Durable `Active` record continues consuming one tracked slot without retaining runtime resources |
-| Reader | Reopen fails transiently without complete disappearance proof | Bounded environmental retry; no detach, progress change, or absence evidence |
+| Reader | Reopen fails transiently without a complete missing-file observation | Bounded environmental retry; no detach, progress change, or absence evidence |
 | Decoding | UTF-8/ASCII/UTF-16LE/UTF-16BE/raw | Expected body and source offsets |
 | Decoding | Matching initial BOM | Stripped body; frame owns BOM |
 | Decoding | Conflicting BOM | Configured decode-error policy |
@@ -845,6 +915,7 @@ while their semantic and format definitions remain normative from version 1.
 | Nack | Supervisor restarts after explicit `fail` during persistent outage | Checkpoint/source reconstruction can duplicate; repeated failure can restart-loop without progress |
 | Nack | Free-form diagnostic text changes | No control-flow change; text is diagnostic only |
 | Nack | Typed local `NoRoute` before accepted publication | Consumes attempt, retains exact batch, uses bounded backoff, then applies `on_retry_exhaustion` at exhaustion; no fabricated Ack |
+| Checkpoint | Reappearance races a finalization append that has begun or has unresolved outcome | No cancellation by assuming rollback; pending-write and sync-failure protocol retained |
 | Checkpoint | Crash before registration sync | File was never eligible to read |
 | Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
@@ -993,6 +1064,7 @@ while their semantic and format definitions remain normative from version 1.
 | Lifecycle | Direct Shutdown | Immediate forced path handled |
 | Lifecycle | Delivery pause lasts through drain deadline, workers cooperate | Delivery drain reports timeout with unchanged unacknowledged progress; workers receive their separate termination budget and exit without process-fatal escalation |
 | Lifecycle | Repeated Shutdown during worker cancellation | First worker deadline remains fixed; no extra allowance per command |
+| Resource | Discovery competes with sustained reader reopens on a stable tree within the work budget, with bounded permit holds | Fair handoff allows both complete discovery passes and reader progress; cancellation stays responsive; the shared two-descriptor allowance is never exceeded |
 | Resource | More hot/backlogged files than slots, with complete records and validated clean boundaries | Holders yield at a valid completed-record boundary after the source-byte service allowance, discarding only replayable later read-ahead; queued readers progress without waiting for EOF |
 | Resource | Saturated slots with many short complete records | Process a source-byte allowance per admission rather than one record; counter survives Ack waits, evidence/read-ahead bytes do not count, and turns remain bounded |
 | Resource | All holders reach EOF with no unfinished state before using their service allowance, while readers wait | Holders release empty buffer capacity and slots without waiting for more bytes; eligible FIFO waiters are admitted |
@@ -1026,8 +1098,8 @@ while their semantic and format definitions remain normative from version 1.
 | Retention | Failure before filtered `checkpoint.db` replacement | Previous generation and unfiltered live table remain authoritative |
 | Retention | Crash after filtered `checkpoint.db` publication | Recovery observes the complete vetted removal set omitted from the authoritative snapshot |
 | Retention | Recovery sees a record absent whose persisted last-seen time is older than retention | Absence age begins at the first complete post-recovery inventory; persisted time alone cannot authorize removal |
-| Retention | Permanently absent record restarts repeatedly before one continuous retention interval elapses | Each recovery resets runtime absence proof; removal may be deferred indefinitely and no cross-restart wall-clock bound is claimed |
-| Retention | Previously absent record is observed, or its relevant inventory becomes incomplete | Runtime absence proof is cleared; uncertain time does not accrue toward removal |
+| Retention | Permanently absent record restarts repeatedly before one continuous retention interval elapses | Each recovery resets runtime absence evidence; removal may be deferred indefinitely and no cross-restart wall-clock bound is claimed |
+| Retention | Previously absent record is observed, or its relevant inventory becomes incomplete | Runtime absence evidence is cleared; uncertain time does not accrue toward removal |
 | Retention | Age-eligible record remains vetoed in an otherwise quiet namespace | No expired-deadline or identical-compaction loop; record is parked until a relevant veto transition |
 | Retention | Last veto clears for an already age-eligible record | One immediate bounded maintenance pass is scheduled and capacity is reclaimed if all checks still pass |
 | Platform | Unix directory-sync fault | Publication guarantee validated |
@@ -1166,7 +1238,8 @@ be selected. No finite admission deadline is promised.
 ### Example 18: Move/create
 
 `app.log` locator A is renamed to `app.log.1`; a new `app.log` locator B appears.
-Resident A remains pinned and is read through EOF plus `rotate_wait`. B receives its own
+Resident A remains pinned. If no eligible alias remains, its terminal handling
+waits for a later qualifying pass and EOF inactivity. B receives its own
 identity at offset zero and never inherits A's offset, even when
 `start_at: end` is configured. This remains true with include `app.log*`: the
 matched-path binding for `app.log` rebounds from A to B even though A remains
@@ -1177,7 +1250,7 @@ identity.
 
 ### Example 19: Evicted rotation
 
-A's descriptor was evicted before unlink. Discovery proves disappearance, but the
+A's descriptor was evicted before unlink. A complete reconciliation observes no presence for A, but the
 unlinked identity cannot be reopened by path. The receiver reports the late-write
 capture limitation and does not pretend A reached a lossless EOF. After resolving any
 existing source delta, it removes A's logical reader, releases A's runtime lease,
@@ -1185,7 +1258,7 @@ discards volatile framing state, and removes A from rotation-finalization state.
 durable record remains `Active` and byte-for-byte unchanged, and ordinary absence
 tracking begins from this complete reconciliation. The record can later expire through
 retention or reconnect if the exact locator becomes observable and passes full
-validation. A temporary reopen failure without complete disappearance proof retries
+validation. A temporary reopen failure without a complete missing-file observation retries
 instead and does not detach A.
 
 ### Example 20: Copytruncate gap
@@ -1253,7 +1326,8 @@ cancels workers and retry waits, and leaves all unacknowledged progress unchange
 ### Example 29: D17 terminal emission
 
 A rotated UTF-8 file ends with a nonempty unterminated newline record. Idle
-flush is disabled. After the same handle remains at EOF through `rotate_wait`,
+flush is disabled. After permanent EOF is confirmed under the rotation policy
+(including the qualifying-pass or validated-unlink path and EOF inactivity),
 D17 makes the pending frame terminally eligible. The receiver emits it with
 terminal-unterminated evidence and advances only after aggregate Ack. It never
 reports the frame as LF-completed. If malformed input encounters

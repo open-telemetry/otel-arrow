@@ -319,7 +319,7 @@ impl CompiledHeaderPropagationPolicy {
         self.materialized_headers(materialized).into_iter()
     }
 
-    fn materialized_headers<'a>(
+    pub(super) fn materialized_headers<'a>(
         &'a self,
         materialized: Option<&'a MaterializedContext>,
     ) -> SmallVec<[PropagatedHeader<'a>; 8]> {

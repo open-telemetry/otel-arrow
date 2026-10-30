@@ -1,0 +1,53 @@
+groups:
+  - id: registry.cpu
+    type: attribute_group
+    brief: Attributes specific to a CPU instance.
+    display_name: CPU Attributes
+    attributes:
+      - id: cpu.mode
+        brief: "The mode of the CPU"
+        type:
+          # TODO: Fix how enum members are used in semantic conventions after https://github.com/open-telemetry/weaver/issues/479
+          members:
+            - id: user
+              value: 'user'
+              brief: User
+              stability: release_candidate
+            - id: system
+              value: 'system'
+              brief: System
+              stability: release_candidate
+            - id: nice
+              value: 'nice'
+              brief: Nice
+              stability: release_candidate
+            - id: idle
+              value: 'idle'
+              brief: Idle
+              stability: release_candidate
+            - id: iowait
+              value: 'iowait'
+              brief: IO Wait
+              stability: release_candidate
+            - id: interrupt
+              value: 'interrupt'
+              brief: Interrupt
+              stability: release_candidate
+            - id: steal
+              value: 'steal'
+              brief: Steal
+              stability: release_candidate
+            - id: kernel
+              value: 'kernel'
+              stability: release_candidate
+              brief: "Deprecated. Use `system` instead."
+              deprecated:
+                reason: renamed
+                renamed_to: "system"
+        stability: release_candidate
+        examples: [ "user", "system" ]
+      - id: cpu.logical_number
+        type: int
+        stability: development
+        brief: "The logical CPU number [0..n-1]"
+        examples: [1]

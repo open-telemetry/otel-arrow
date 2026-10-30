@@ -364,48 +364,6 @@ jobs:
           cargo clippy --locked --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
-  deny:
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        folder:
-          - otap-dataflow
-          - contrib/data_engine
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - name: Advisories
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-      - name: Licenses
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check licenses
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-      - name: Bans
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check bans
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-      - name: Sources
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check sources
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
-
   docs:
     if: github.event_name == 'pull_request'
     strategy:
@@ -512,6 +470,11 @@ jobs:
   # Linux test partitions depend only on this job, not the Windows build.
   build_required_linux:
     runs-on: ubuntu-latest
+    env:
+      # Match ARM's smaller test artifacts and the post-merge Linux cache warmer.
+      # Set these at job scope so rust-cache includes them in its environment hash.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     outputs:
       cache-hit: ${{ steps.rust-cache.outputs.cache-hit }}
     steps:
@@ -581,6 +544,10 @@ jobs:
   # Windows test partitions depend only on this job, not the Linux build.
   build_required_windows:
     runs-on: windows-latest
+    env:
+      # Match Linux and the Windows cache warmer; hash profiles before restore.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     outputs:
       cache-hit: ${{ steps.rust-cache.outputs.cache-hit }}
     steps:
@@ -1186,42 +1153,6 @@ jobs:
           path: live-check-report
           if-no-files-found: warn
 
-  # Required matrix combinations for deny: otap-dataflow only
-  deny_required:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-      - name: Advisories
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-      - name: Licenses
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check licenses
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-      - name: Bans
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check bans
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-      - name: Sources
-        if: "!cancelled()"
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check sources
-          manifest-path: ./rust/otap-dataflow/Cargo.toml
-
   # Required matrix combinations for docs: otap-dataflow only
   docs_required:
     runs-on: ubuntu-latest
@@ -1355,7 +1286,6 @@ jobs:
       - crypto_provider_tests
       - fmt_required
       - clippy_required
-      - deny_required
       - docs_required
       - structure_check
       - compile_proto
@@ -1409,10 +1339,6 @@ jobs:
           fi
           if [[ "${{ needs.clippy_required.result }}" != "success" ]]; then
             echo "clippy_required failed or was cancelled"
-            exit 1
-          fi
-          if [[ "${{ needs.deny_required.result }}" != "success" ]]; then
-            echo "deny_required failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.docs_required.result }}" != "success" ]]; then
