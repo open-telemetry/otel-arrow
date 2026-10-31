@@ -352,6 +352,31 @@ fn bench_new_record(c: &mut Criterion) {
     bench_op(c, "new_record", BenchOp::NewRecord);
 }
 
+/// Isolates string versus Debug attribute encoding without a formatted message body.
+fn bench_new_record_empty_body(c: &mut Criterion) {
+    let mut group = c.benchmark_group("new_record_empty_body");
+    let iterations = 1000usize;
+
+    for case in ["0_attrs", "1_string_attr", "1_debug_attr"] {
+        let id = BenchmarkId::new(case, format!("{iterations}_events"));
+        let _ = group.bench_with_input(id, &iterations, |b, &iters| {
+            let layer = BenchLayer::new(iters, BenchOp::NewRecord);
+            match case {
+                "0_attrs" => run_bench(b, layer, || tracing::info!(message = "")),
+                "1_string_attr" => {
+                    run_bench(b, layer, || tracing::info!(message = "", attr = "value"));
+                }
+                _ => {
+                    // Display recording uses record_debug without adding string quotes.
+                    run_bench(b, layer, || tracing::info!(message = "", attr = %"value"));
+                }
+            }
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_format(c: &mut Criterion) {
     bench_op(c, "format", BenchOp::Format);
 }
@@ -683,7 +708,8 @@ mod bench_entry {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
+        targets = bench_new_record, bench_new_record_empty_body,
+                  bench_format, bench_format_new_record, bench_encode_proto,
                   bench_encode_proto_with_scope, bench_encode_otlp_log_batches,
                   bench_heap_growth_policy,
                   bench_format_with_entity, bench_realistic, bench_runtime_log_filter_emission

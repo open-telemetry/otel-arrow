@@ -3,6 +3,9 @@
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
+use super::structured::{
+    ArrayWriter, MAX_DEPTH, MapWriter, StructCarrier, StructuredValue, ValueWriter,
+};
 use super::{LogRecord, SavedCallsite};
 use crate::attributes::AttributeValue;
 use crate::event::LogEvent;
@@ -21,7 +24,13 @@ use std::time::SystemTime;
 use tracing::Level;
 
 /// Suffix appended to truncated strings.
-pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
+pub const TRUNCATION_SUFFIX: &[u8] = "[\u{2020}]".as_bytes();
+
+const DEPTH_CUTOFF: &str = "[\u{22f1}]";
+
+// Pre-encoded ArrayValue element and KeyValueList entry with minimal framing.
+const ARRAY_CUTOFF: &[u8] = "\x0a\x07\x0a\x05[\u{2020}]".as_bytes();
+const MAP_CUTOFF: &[u8] = "\x0a\x10\x0a\x05[\u{2020}]\x12\x07\x0a\x05[\u{2020}]".as_bytes();
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf, B: BoundedBuf> {
@@ -168,10 +177,11 @@ mod bounded {
     pub fn value_encoder<B: BoundedBuf>(
         buf: &mut B,
         tag: u64,
+        depth: usize,
         value: &mut impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
         buf.encode_len_delimited(tag, |buf| {
-            let mut encoder = ValueEncoder::new(buf);
+            let mut encoder = ValueEncoder::new(buf, depth);
             value(&mut encoder)
         })
     }
@@ -181,12 +191,41 @@ mod bounded {
         buf: &mut B,
         tag: u64,
         key: &str,
+        depth: usize,
         value: &mut impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
         buf.encode_len_delimited(tag, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
-            value_encoder(buf, KEY_VALUE_VALUE, value)
+            value_encoder(buf, KEY_VALUE_VALUE, depth, value)
         })
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn is_raw_any_value(encoded: &[u8]) -> bool {
+        use otel_arrow_dfe_pdata::views::otlp::bytes::decode::{
+            read_fixed64, read_len_delim, read_varint,
+        };
+
+        let Some((tag, pos)) = read_varint(encoded, 0) else {
+            return false;
+        };
+        let end = match (tag >> 3, tag & 7) {
+            (ANY_VALUE_BOOL_VALUE | ANY_VALUE_INT_VALUE, wire_types::VARINT) => {
+                read_varint(encoded, pos).map(|(_, end)| end)
+            }
+            (ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64) => {
+                read_fixed64(encoded, pos).map(|(_, end)| end)
+            }
+            (
+                ANY_VALUE_STRING_VALUE
+                | ANY_VALUE_ARRAY_VALUE
+                | ANY_VALUE_KVLIST_VALUE
+                | ANY_VALUE_BYTES_VALUE,
+                wire_types::LEN,
+            ) => read_len_delim(encoded, pos).map(|(_, end)| end),
+            _ => None,
+        };
+        end == Some(encoded.len())
     }
 
     /// Encode a `Debug` value as a protobuf string field with truncation support.
@@ -214,7 +253,7 @@ mod bounded {
         })
     }
 
-    /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
+    /// Encode a string field, appending the dagger suffix if it won't fit.
     pub fn string_truncating<B: BoundedBuf>(buf: &mut B, tag: u64, val: &str) -> TruncateResult {
         let full_len = val.len();
         let tag_bytes = varint_len((tag << 3) | wire_types::LEN);
@@ -358,13 +397,19 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
             }
         });
     }
+
+    fn record_structured(&mut self, field: &tracing::field::Field, value: &dyn StructuredValue) {
+        self.record_toplevel_field(field, |buf| {
+            ValueEncoder::new(buf, 0).encode_structured(|encoder| value.encode(encoder))
+        });
+    }
 }
 
 /// Adapter that lets `write!` format directly into a [`BoundedBuf`] without
 /// an intermediate `String`.
 ///
 /// When the buffer fills up, the adapter backtracks to make room for a
-/// `[...]` truncation suffix and silently discards all subsequent writes.
+/// dagger truncation suffix and silently discards all subsequent writes.
 /// The `truncated` flag records whether truncation occurred so callers can
 /// report the partial value instead of dropping it entirely.
 struct BoundedBufFmt<'a, B: BoundedBuf> {
@@ -453,6 +498,8 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 /// Encodes one AnyValue into a bounded buffer, used for nested encoding.
 struct ValueEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
+    depth: usize,
+    truncation: Truncation,
 
     /// ensures at most one value is written.
     #[cfg(debug_assertions)]
@@ -460,12 +507,22 @@ struct ValueEncoder<'a, B: BoundedBuf> {
 }
 
 impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
-    fn new(buf: &'a mut B) -> Self {
+    fn new(buf: &'a mut B, depth: usize) -> Self {
         Self {
             buf,
+            depth,
+            truncation: Truncation::None,
             #[cfg(debug_assertions)]
             single: false,
         }
+    }
+
+    fn encode_structured(
+        &mut self,
+        f: impl FnOnce(&mut dyn ValueWriter) -> EncodeResult,
+    ) -> TruncateResult {
+        f(self)?;
+        Ok(self.truncation)
     }
 
     fn once<T, E>(&mut self, f: impl FnOnce(&mut B) -> Result<T, E>) -> Result<T, E> {
@@ -480,18 +537,34 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         f(self.buf)
     }
 
-    /// Encocdes a length-delimited container; `body` reports lost content.
-    fn nested(
+    /// Encodes a length-delimited container; `body` reports lost content.
+    fn encode_nested(
         &mut self,
         field: u64,
         body: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
+        let depth = self.depth + 1;
         self.once(|buf| {
             buf.encode_len_delimited(field, |buf| {
-                let mut encoder = NestedEncoder::new(buf);
+                let mut encoder = NestedEncoder::new(buf, depth);
                 body(&mut encoder)
             })
         })
+    }
+
+    /// Applies the structured-log policy without changing resource/scope encoding.
+    fn encode_structured_nested(
+        &mut self,
+        field: u64,
+        body: impl FnOnce(&mut NestedEncoder<'_, B>) -> EncodeResult,
+    ) -> EncodeResult {
+        self.truncation = if self.depth >= MAX_DEPTH {
+            self.once(|buf| buf.encode_string(ANY_VALUE_STRING_VALUE, DEPTH_CUTOFF))?;
+            Truncation::Some
+        } else {
+            self.encode_nested(field, |encoder| encoder.structured(field, body))?
+        };
+        Ok(())
     }
 
     fn encode_str(&mut self, value: &str) -> TruncateResult {
@@ -521,45 +594,157 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
             })
         })
     }
-
-    fn map(
-        &mut self,
-        f: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
-    ) -> TruncateResult {
-        self.nested(ANY_VALUE_KVLIST_VALUE, f)
-    }
-
-    fn array(
-        &mut self,
-        f: impl FnOnce(&mut NestedEncoder<'_, B>) -> TruncateResult,
-    ) -> TruncateResult {
-        self.nested(ANY_VALUE_ARRAY_VALUE, f)
-    }
 }
 
 /// Encodes the members of a nested map or array.
 struct NestedEncoder<'a, B: BoundedBuf> {
     buf: &'a mut B,
+    depth: usize,
+    truncation: Truncation,
+    cutoff: Option<usize>,
 }
 
 impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
-    fn new(buf: &'a mut B) -> Self {
-        Self { buf }
+    fn new(buf: &'a mut B, depth: usize) -> Self {
+        Self {
+            buf,
+            depth,
+            truncation: Truncation::None,
+            cutoff: None,
+        }
     }
 
-    fn entry(
+    fn encode_entry(
         &mut self,
         key: &str,
         mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        bounded::key_value_encoder(self.buf, KEY_VALUE_LIST_VALUES, key, &mut f)
+        bounded::key_value_encoder(self.buf, KEY_VALUE_LIST_VALUES, key, self.depth, &mut f)
     }
 
-    fn element(
+    fn encode_element(
         &mut self,
         mut f: impl FnMut(&mut ValueEncoder<'_, B>) -> TruncateResult,
     ) -> TruncateResult {
-        bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, &mut f)
+        bounded::value_encoder(self.buf, ARRAY_VALUE_VALUES, self.depth, &mut f)
+    }
+
+    fn remember_cutoff(&mut self, marker: &[u8]) {
+        if self.buf.remaining() >= marker.len() {
+            self.cutoff = Some(self.buf.len());
+        }
+    }
+
+    fn structured(
+        &mut self,
+        field: u64,
+        body: impl FnOnce(&mut NestedEncoder<'_, B>) -> EncodeResult,
+    ) -> TruncateResult {
+        let marker = if field == ANY_VALUE_KVLIST_VALUE {
+            MAP_CUTOFF
+        } else {
+            ARRAY_CUTOFF
+        };
+        self.remember_cutoff(marker);
+        match body(self) {
+            Ok(()) => Ok(self.truncation),
+            Err(EncodeFailure::Dropped) => {
+                // Reclaim only the suffix after the last marker-safe member
+                // boundary, rather than withholding space in every ancestor.
+                let cutoff = self.cutoff.ok_or(EncodeFailure::Dropped)?;
+                self.buf.truncate(cutoff);
+                self.buf.try_extend_slice(marker)?;
+                Ok(Truncation::Some)
+            }
+        }
+    }
+
+    fn member(&mut self, marker: &[u8], f: impl FnOnce(&mut B) -> TruncateResult) -> EncodeResult {
+        let budget = self.buf.remaining().div_ceil(2);
+        let truncation = self
+            .buf
+            .with_max_remaining(budget, |buf| buf.try_atomic(f))?;
+        if truncation == Truncation::Some {
+            self.truncation = Truncation::Some;
+        }
+        self.remember_cutoff(marker);
+        Ok(())
+    }
+}
+
+impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
+    fn encode_str(&mut self, value: &str) -> EncodeResult {
+        self.truncation = ValueEncoder::encode_str(self, value)?;
+        Ok(())
+    }
+
+    fn encode_debug(&mut self, value: &dyn std::fmt::Debug) -> EncodeResult {
+        self.truncation = self.once(|buf| bounded::debug_string(buf, value))?;
+        Ok(())
+    }
+
+    fn encode_i64(&mut self, value: i64) -> EncodeResult {
+        ValueEncoder::encode_i64(self, value)
+    }
+
+    fn encode_f64(&mut self, value: f64) -> EncodeResult {
+        ValueEncoder::encode_f64(self, value)
+    }
+
+    fn encode_bool(&mut self, value: bool) -> EncodeResult {
+        ValueEncoder::encode_bool(self, value)
+    }
+
+    fn encode_raw_any_value(&mut self, encoded: &[u8]) -> EncodeResult {
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            bounded::is_raw_any_value(encoded),
+            "raw encoding must contain exactly one recognized AnyValue field"
+        );
+        self.once(|buf| buf.try_extend_slice(encoded))
+    }
+
+    fn encode_map(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn MapWriter) -> EncodeResult,
+    ) -> EncodeResult {
+        self.encode_structured_nested(ANY_VALUE_KVLIST_VALUE, |encoder| f(encoder))
+    }
+
+    fn encode_array(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn ArrayWriter) -> EncodeResult,
+    ) -> EncodeResult {
+        self.encode_structured_nested(ANY_VALUE_ARRAY_VALUE, |encoder| f(encoder))
+    }
+}
+
+impl<B: BoundedBuf> MapWriter for NestedEncoder<'_, B> {
+    fn encode_entry(
+        &mut self,
+        key: &str,
+        f: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
+    ) -> EncodeResult {
+        let depth = self.depth;
+        self.member(MAP_CUTOFF, |buf| {
+            bounded::key_value_encoder(buf, KEY_VALUE_LIST_VALUES, key, depth, &mut |encoder| {
+                encoder.encode_structured(&mut *f)
+            })
+        })
+    }
+}
+
+impl<B: BoundedBuf> ArrayWriter for NestedEncoder<'_, B> {
+    fn encode_element(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,
+    ) -> EncodeResult {
+        let depth = self.depth;
+        self.member(ARRAY_CUTOFF, |buf| {
+            bounded::value_encoder(buf, ARRAY_VALUE_VALUES, depth, &mut |encoder| {
+                encoder.encode_structured(&mut *f)
+            })
+        })
     }
 }
 
@@ -611,6 +796,17 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         self.record_toplevel_field(field, |buf| bounded::debug_string(buf, value))
+    }
+
+    fn record_error(
+        &mut self,
+        field: &tracing::field::Field,
+        value: &(dyn std::error::Error + 'static),
+    ) {
+        match value.downcast_ref::<StructCarrier>() {
+            Some(structured) => self.record_structured(field, structured.value()),
+            None => self.record_debug(field, &format_args!("{value}")),
+        }
     }
 }
 
@@ -664,20 +860,22 @@ fn encode_config_value<B: BoundedBuf>(
         ConfigAttributeValue::Bool(v) => w.encode_bool(*v).map(no_trunc),
         ConfigAttributeValue::I64(v) => w.encode_i64(*v).map(no_trunc),
         ConfigAttributeValue::F64(v) => w.encode_f64(*v).map(no_trunc),
-        ConfigAttributeValue::Array(values) => w.array(|a| match values {
-            ConfigAttributeValueArray::Bool(vs) => {
-                encode_array_elements(a, vs, |w, v| w.encode_bool(*v).map(no_trunc))
-            }
-            ConfigAttributeValueArray::I64(vs) => {
-                encode_array_elements(a, vs, |w, v| w.encode_i64(*v).map(no_trunc))
-            }
-            ConfigAttributeValueArray::F64(vs) => {
-                encode_array_elements(a, vs, |w, v| w.encode_f64(*v).map(no_trunc))
-            }
-            ConfigAttributeValueArray::String(vs) => {
-                encode_array_elements(a, vs, |w, v| w.encode_str(v))
-            }
-        }),
+        ConfigAttributeValue::Array(values) => {
+            w.encode_nested(ANY_VALUE_ARRAY_VALUE, |a| match values {
+                ConfigAttributeValueArray::Bool(vs) => {
+                    encode_array_elements(a, vs, |w, v| w.encode_bool(*v).map(no_trunc))
+                }
+                ConfigAttributeValueArray::I64(vs) => {
+                    encode_array_elements(a, vs, |w, v| w.encode_i64(*v).map(no_trunc))
+                }
+                ConfigAttributeValueArray::F64(vs) => {
+                    encode_array_elements(a, vs, |w, v| w.encode_f64(*v).map(no_trunc))
+                }
+                ConfigAttributeValueArray::String(vs) => {
+                    encode_array_elements(a, vs, |w, v| w.encode_str(v))
+                }
+            })
+        }
     }
 }
 
@@ -688,7 +886,7 @@ fn encode_array_elements<B: BoundedBuf, T>(
     f: impl Fn(&mut ValueEncoder<'_, B>, &T) -> TruncateResult,
 ) -> TruncateResult {
     for value in values {
-        if Truncation::Some == buf.element(|w| f(w, value))? {
+        if Truncation::Some == buf.encode_element(|w| f(w, value))? {
             return Ok(Truncation::Some);
         }
     }
@@ -705,7 +903,7 @@ fn encode_scope_or_resource_attribute(
     // TODO(4453): Revisit resource/scope truncation handling at the owning layer.
     // For now, preserve the existing all-or-nothing attribute policy.
     buf.try_atomic(
-        |buf| match bounded::key_value_encoder(buf, field, key, &mut f)? {
+        |buf| match bounded::key_value_encoder(buf, field, key, 0, &mut f)? {
             Truncation::None => Ok(()),
             Truncation::Some => Err(EncodeFailure::Dropped),
         },
@@ -799,9 +997,9 @@ fn encode_attribute_value<B: BoundedBuf>(
         AttributeValue::Int(v) => buf.encode_i64(*v).map(no_trunc),
         AttributeValue::UInt(v) => buf.encode_i64(*v as i64).map(no_trunc),
         AttributeValue::Double(v) => buf.encode_f64(*v).map(no_trunc),
-        AttributeValue::Map(m) => buf.map(|buf| {
+        AttributeValue::Map(m) => buf.encode_nested(ANY_VALUE_KVLIST_VALUE, |buf| {
             for (k, v) in m {
-                if Truncation::Some == buf.entry(k, |w| encode_attribute_value(w, v))? {
+                if Truncation::Some == buf.encode_entry(k, |w| encode_attribute_value(w, v))? {
                     return Ok(Truncation::Some);
                 }
             }
@@ -903,6 +1101,7 @@ mod tests {
     use crate::LogContext;
     use crate::attributes::AttributeSetHandler;
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+    use crate::self_tracing::StructBox;
     use crate::self_tracing::encoder::DirectFieldVisitor;
     use crate::self_tracing::format_log_record_to_string;
     use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
@@ -910,7 +1109,7 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, KeyValue as ProtoKeyValue,
-        any_value::Value::StringValue,
+        any_value::Value as AnyValueKind, any_value::Value::StringValue,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, ResourceLogs, ScopeLogs, SeverityNumber,
@@ -1379,7 +1578,7 @@ mod tests {
             Ok(Truncation::None)
         };
 
-        let _ = bounded::value_encoder(&mut buf, LOG_RECORD_BODY, &mut write);
+        let _ = bounded::value_encoder(&mut buf, LOG_RECORD_BODY, 0, &mut write);
     }
 
     /// Scenario: four large string attributes compete for a 256-byte buffer.
@@ -1538,7 +1737,7 @@ mod tests {
     }
 
     /// Scenario: a Debug value overflows the available buffer.
-    /// Guarantees: the value is truncated with a `[...]` suffix instead of
+    /// Guarantees: the value is truncated with a dagger suffix instead of
     /// being dropped entirely, `dropped_count` is incremented, and the
     /// encoded KeyValue is decodable with the suffix at the end.
     #[test]
@@ -1678,7 +1877,7 @@ mod tests {
     }
 
     /// Scenario: a bare `&str` `message` body overflows the available buffer.
-    /// Guarantees: the decoded body ends with `[...]` without incrementing
+    /// Guarantees: the decoded body ends with a dagger suffix without incrementing
     /// OTLP `dropped_attributes_count`.
     #[test]
     fn record_str_message_overflow_truncates_with_suffix() {
@@ -1721,7 +1920,7 @@ mod tests {
     }
 
     /// Scenario: a Debug-formatted `message` body overflows the available buffer.
-    /// Guarantees: the decoded body ends with `[...]` without incrementing
+    /// Guarantees: the decoded body ends with a dagger suffix without incrementing
     /// OTLP `dropped_attributes_count`.
     #[test]
     fn record_debug_message_overflow_truncates_with_suffix() {
@@ -1790,7 +1989,7 @@ mod tests {
 
     /// Scenario: four Debug values compete for a 256-byte buffer with the
     /// halving budget policy.
-    /// Guarantees: all four values are truncated (each ends with `[...]`),
+    /// Guarantees: all four values are truncated (each ends with a dagger suffix),
     /// each successive value is no longer than the previous, all four
     /// increment the dropped count, and the buffer stays within the inline limit.
     #[test]
@@ -1919,6 +2118,1026 @@ mod tests {
         panic!("truncated varint");
     }
 
+    /// Scenario: raw AnyValues of every wire variant are copied at a depth beyond the callback limit.
+    /// Guarantees: heap and stack buffers preserve exact bytes, including non-minimal encodings, and a one-byte-short budget writes nothing.
+    #[test]
+    fn raw_any_values_copy_atomically_without_depth_checks() {
+        fn check<B: BoundedBuf>(buf: &mut B, encoded: &[u8]) {
+            for limit in [encoded.len() - 1, encoded.len()] {
+                buf.clear();
+                let result = buf.with_max_remaining(limit, |buf| {
+                    ValueEncoder::new(buf, MAX_DEPTH + 1)
+                        .encode_structured(|w| w.encode_raw_any_value(encoded))
+                });
+                if limit == encoded.len() {
+                    assert_eq!(result, Ok(Truncation::None));
+                    assert_eq!(buf.as_slice(), encoded);
+                } else {
+                    assert_eq!(result, Err(EncodeFailure::Dropped));
+                    assert!(buf.is_empty());
+                }
+            }
+        }
+
+        let mut nested = AnyValue::new_bool(true);
+        for _ in 0..=MAX_DEPTH {
+            nested = AnyValue::new_array(vec![nested]);
+        }
+        let values = [
+            AnyValue::new_string("payload"),
+            AnyValue::new_bool(true),
+            AnyValue::new_int(-1),
+            AnyValue {
+                value: Some(AnyValueKind::DoubleValue(3.5)),
+            },
+            AnyValue {
+                value: Some(AnyValueKind::BytesValue(vec![0, 255])),
+            },
+            nested,
+            AnyValue::new_kvlist(vec![KeyValue::new("key", AnyValue::new_int(7))]),
+        ];
+        let mut encoded = values
+            .iter()
+            .map(Message::encode_to_vec)
+            .collect::<Vec<_>>();
+        encoded.push(vec![0x18, 0x81, 0x00]);
+        let mut heap = ProtoBuffer::with_capacity(16);
+        let mut stack = StackProtoBuffer::<512>::default();
+        for value in encoded {
+            check(&mut heap, &value);
+            check(&mut stack, &value);
+        }
+    }
+
+    /// Scenario: a raw value exceeds its map-entry budget after a completed member.
+    /// Guarantees: the raw value is omitted atomically, the prefix gets one dagger, later top-level fields survive, and loss is counted once.
+    #[test]
+    fn raw_any_value_failure_uses_container_cutoff() {
+        struct RawValue(Vec<u8>);
+        impl StructuredValue for RawValue {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                w.encode_map(&mut |m| {
+                    m.encode_entry("first", &mut |v| v.encode_bool(true))?;
+                    m.encode_entry("raw", &mut |v| v.encode_raw_any_value(&self.0))?;
+                    panic!("oversized raw value must stop the container")
+                })
+            }
+        }
+        let value = StructBox::new(RawValue(
+            AnyValue::new_string("x".repeat(1024)).encode_to_vec(),
+        ));
+        let fields = BUDGET_TEST_METADATA.fields();
+        let a = fields.field("a").expect("known field");
+        let b = fields.field("b").expect("known field");
+        let mut buf = StackProtoBuffer::<256>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_error(&a, value.as_struct());
+        visitor.record_bool(&b, true);
+        assert_eq!(visitor.dropped_count(), 1);
+        let record = LogRecord::decode(buf.as_ref()).expect("valid marked prefix");
+        assert_eq!(
+            record.attributes,
+            vec![
+                KeyValue::new(
+                    "a",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("first", AnyValue::new_bool(true)),
+                        KeyValue::new("[\u{2020}]", AnyValue::new_string("[\u{2020}]")),
+                    ]),
+                ),
+                KeyValue::new("b", AnyValue::new_bool(true)),
+            ]
+        );
+    }
+
+    /// Scenario: callers supply empty, unknown, wrongly framed, or multiple-field raw enclosures.
+    /// Guarantees: debug builds reject invalid AnyValue enclosures before copying their bytes.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn raw_any_value_rejects_invalid_enclosures() {
+        let invalid: &[&[u8]] = &[
+            &[],
+            &[0x40, 1],
+            &[0x08, 1],
+            &[0x0a, 2, b'x'],
+            &[0x21, 0],
+            &[0x18, 0x80],
+            &[0x10, 1, 0x18, 1],
+            &[0x10, 1, 0x10, 0],
+            &[0x0a, 0, 0],
+        ];
+        for encoded in invalid {
+            let panic = std::panic::catch_unwind(|| {
+                let mut buf = StackProtoBuffer::<32>::default();
+                let _ = ValueEncoder::new(&mut buf, 0)
+                    .encode_structured(|w| w.encode_raw_any_value(encoded));
+            })
+            .expect_err("invalid enclosure must panic");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("panic message");
+            assert!(message.contains("raw encoding must contain exactly one recognized AnyValue"));
+        }
+    }
+
+    /// Scenario: a callback writes a raw AnyValue and then attempts another value.
+    /// Guarantees: raw copying participates in the same debug-only single-value guard as typed encoding.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "value callback must write at most one AnyValue variant")]
+    fn raw_any_value_enforces_single_value() {
+        let mut buf = StackProtoBuffer::<32>::default();
+        let _ = ValueEncoder::new(&mut buf, 0).encode_structured(|w| {
+            w.encode_raw_any_value(&[0x10, 1])?;
+            w.encode_i64(7)
+        });
+    }
+
+    struct Probe {
+        id: i64,
+        name: String,
+        tags: Vec<String>,
+    }
+
+    impl StructuredValue for Probe {
+        fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+            w.encode_map(&mut |m| {
+                m.encode_entry("id", &mut |v| v.encode_i64(self.id))?;
+                m.encode_entry("name", &mut |v| v.encode_str(&self.name))?;
+                m.encode_entry("tags", &mut |v| {
+                    v.encode_array(&mut |a| {
+                        for tag in &self.tags {
+                            a.encode_element(&mut |v| v.encode_str(tag))?;
+                        }
+                        Ok(())
+                    })
+                })
+            })
+        }
+    }
+
+    /// Scenario: a boxed map/array value is mutated between events and encoded under small and roomy budgets.
+    /// Guarantees: logging borrows current state, preserves wire types across all placeholder widths, stays within each budget, and counts partial values once.
+    #[test]
+    fn boxed_values_preserve_mutation_and_budgets() {
+        let mut slot = StructBox::new(Probe {
+            id: 0,
+            name: "example".into(),
+            tags: vec!["a".into(), "b".into()],
+        });
+        let field = BUDGET_TEST_METADATA
+            .fields()
+            .field("a")
+            .expect("known field");
+        for count in [1, 2] {
+            slot.id = count;
+            let mut buf = ProtoBuffer::with_capacity_and_limit(16384, 16384);
+            let mut visitor = DirectFieldVisitor::new(&mut buf);
+            visitor.record_error(&field, slot.as_struct());
+            assert_eq!(visitor.dropped_count(), 0);
+            let expected = LogRecord::decode(buf.as_ref()).expect("valid record");
+            let Some(AnyValueKind::KvlistValue(map)) =
+                &expected.attributes[0].value.as_ref().expect("value").value
+            else {
+                panic!("expected map");
+            };
+            assert_eq!(map.values[0], KeyValue::new("id", AnyValue::new_int(count)));
+            for limit in [8, 32, 64, 128, 2048, 1 << 16, 1 << 28] {
+                let mut buf = ProtoBuffer::with_capacity_and_limit(limit.min(256), limit);
+                let mut visitor = DirectFieldVisitor::new(&mut buf);
+                visitor.record_error(&field, slot.as_struct());
+                assert_eq!(
+                    visitor.dropped_count(),
+                    u32::from(limit <= 128),
+                    "limit {limit}"
+                );
+                assert!(buf.len() <= limit);
+                let decoded = LogRecord::decode(buf.as_ref()).expect("valid bounded record");
+                if limit >= 2048 {
+                    assert_eq!(decoded, expected);
+                }
+            }
+        }
+    }
+
+    /// Scenario: a custom encoder produces a structured `message` with string, integer, and array fields.
+    /// Guarantees: the body contains only caller-supplied typed fields, including an ordinary field named name.
+    #[test]
+    fn structured_message_is_log_body() {
+        let slot = StructBox::new(Probe {
+            id: 7,
+            name: "example".into(),
+            tags: vec!["a".into(), "b".into()],
+        });
+        let record = __log_record_impl!(
+            Level::INFO,
+            "test.structured_message",
+            message = slot.as_struct()
+        )
+        .into_record(LogContext::new());
+        let decoded = LogRecord::decode(record.body_attrs_bytes).expect("valid record");
+
+        assert!(decoded.attributes.is_empty());
+        assert_eq!(
+            decoded.body,
+            Some(AnyValue::new_kvlist(vec![
+                KeyValue::new("id", AnyValue::new_int(7)),
+                KeyValue::new("name", AnyValue::new_string("example")),
+                KeyValue::new(
+                    "tags",
+                    AnyValue::new_array(vec![AnyValue::new_string("a"), AnyValue::new_string("b")]),
+                ),
+            ]))
+        );
+    }
+
+    /// Scenario: an owned structured root encodes a temporary nested view borrowing its strings.
+    /// Guarantees: non-static structured views encode borrowed strings through the stored carrier.
+    #[test]
+    fn structured_values_encode_borrowed_nested_views() {
+        struct State {
+            name: String,
+        }
+
+        struct Snapshot<'a> {
+            name: &'a str,
+        }
+
+        impl StructuredValue for Snapshot<'_> {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                w.encode_map(&mut |m| m.encode_entry("name", &mut |v| v.encode_str(self.name)))
+            }
+        }
+
+        impl StructuredValue for State {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                let snapshot = Snapshot { name: &self.name };
+                w.encode_map(&mut |m| m.encode_entry("snapshot", &mut |v| snapshot.encode(v)))
+            }
+        }
+
+        let state = StructBox::new(State {
+            name: "example".into(),
+        });
+        let field = BUDGET_TEST_METADATA
+            .fields()
+            .field("a")
+            .expect("known field");
+        let mut buf = ProtoBuffer::with_capacity_and_limit(16384, 16384);
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_error(&field, state.as_struct());
+        assert_eq!(visitor.dropped_count(), 0);
+        let decoded = LogRecord::decode(buf.as_ref()).expect("valid record");
+        assert_eq!(
+            decoded.attributes,
+            vec![KeyValue::new(
+                "a",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "snapshot",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("example"),
+                    )]),
+                )]),
+            )],
+        );
+    }
+
+    /// Scenario: a map entry writes a scalar and then fails, exiting its callback through `?`.
+    /// Guarantees: the field rolls back, body and attribute prefixes end with a cutoff entry, and later log fields survive.
+    #[test]
+    fn structured_map_retains_prefix_when_entry_fails() {
+        struct Partial {
+            attempts: std::cell::Cell<usize>,
+        }
+        impl StructuredValue for Partial {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                w.encode_map(&mut |m| {
+                    m.encode_entry("first", &mut |v| v.encode_i64(7))?;
+                    m.encode_entry("failed", &mut |v| {
+                        self.attempts.set(self.attempts.get() + 1);
+                        v.encode_bool(true)?;
+                        Err(EncodeFailure::Dropped)
+                    })?;
+                    panic!("failed entry must stop the callback")
+                })
+            }
+        }
+        let value = StructBox::new(Partial {
+            attempts: std::cell::Cell::new(0),
+        });
+        let message = MESSAGE_TEST_METADATA
+            .fields()
+            .field("message")
+            .expect("known field");
+        let fields = BUDGET_TEST_METADATA.fields();
+        let a = fields.field("a").expect("known field");
+        let b = fields.field("b").expect("known field");
+        let mut buf = ProtoBuffer::with_capacity_and_limit(256, 2048);
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_error(&message, value.as_struct());
+        visitor.record_error(&a, value.as_struct());
+        visitor.record_bool(&b, true);
+        assert_eq!(visitor.dropped_count(), 1);
+        assert_eq!(value.attempts.get(), 2);
+        let prefix = AnyValue::new_kvlist(vec![
+            KeyValue::new("first", AnyValue::new_int(7)),
+            KeyValue::new("[\u{2020}]", AnyValue::new_string("[\u{2020}]")),
+        ]);
+        let record = LogRecord::decode(buf.as_ref()).expect("valid prefix framing");
+        assert_eq!(record.body, Some(prefix.clone()));
+        assert_eq!(
+            record.attributes,
+            vec![
+                KeyValue::new("a", prefix),
+                KeyValue::new("b", AnyValue::new_bool(true)),
+            ]
+        );
+    }
+
+    /// Scenario: a map callback succeeds empty or populated, fails inside, or succeeds before an outer failure.
+    /// Guarantees: complete maps have no marker, callback errors mark retained prefixes, and outer errors roll back the value without losing later fields.
+    #[test]
+    fn structured_map_finalizes_at_callback_boundary() {
+        let fields = BUDGET_TEST_METADATA.fields();
+        let a = fields.field("a").expect("known field");
+        let b = fields.field("b").expect("known field");
+        for completion in ["empty", "complete", "inside_callback", "outside_callback"] {
+            let mut buf = ProtoBuffer::with_capacity_and_limit(256, 2048);
+            let mut visitor = DirectFieldVisitor::new(&mut buf);
+            visitor.record_toplevel_field(&a, |buf| {
+                ValueEncoder::new(buf, 0).encode_structured(|w| {
+                    w.encode_map(&mut |m| {
+                        if completion == "empty" {
+                            return Ok(());
+                        }
+                        m.encode_entry("first", &mut |v| v.encode_i64(7))?;
+                        if completion == "inside_callback" {
+                            return Err(EncodeFailure::Dropped);
+                        }
+                        Ok(())
+                    })?;
+                    if completion != "outside_callback" {
+                        return Ok(());
+                    }
+                    Err(EncodeFailure::Dropped)
+                })
+            });
+            visitor.record_bool(&b, true);
+            assert_eq!(
+                visitor.dropped_count(),
+                u32::from(matches!(completion, "inside_callback" | "outside_callback")),
+                "{completion}",
+            );
+            let mut expected = Vec::new();
+            if completion != "outside_callback" {
+                expected.push(KeyValue::new(
+                    "a",
+                    AnyValue::new_kvlist(if completion == "empty" {
+                        vec![]
+                    } else if completion == "inside_callback" {
+                        vec![
+                            KeyValue::new("first", AnyValue::new_int(7)),
+                            KeyValue::new("[\u{2020}]", AnyValue::new_string("[\u{2020}]")),
+                        ]
+                    } else {
+                        vec![KeyValue::new("first", AnyValue::new_int(7))]
+                    }),
+                ));
+            }
+            expected.push(KeyValue::new("b", AnyValue::new_bool(true)));
+            let record = LogRecord::decode(buf.as_ref()).expect("valid finalized record");
+            assert_eq!(record.attributes, expected, "{completion}");
+        }
+    }
+
+    /// Scenario: a structured writer returns failure after writing a valid scalar body or attribute.
+    /// Guarantees: the returned failure rolls back the value, counts only the attribute loss, and preserves later fields.
+    #[test]
+    fn structured_writer_failure_rolls_back_body_and_attribute() {
+        struct FailAfterWrite;
+
+        impl StructuredValue for FailAfterWrite {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                w.encode_i64(7)?;
+                Err(EncodeFailure::Dropped)
+            }
+        }
+
+        let slot = StructBox::new(FailAfterWrite);
+        let record = __log_record_impl!(
+            Level::INFO,
+            "test.structured_failure",
+            failed = slot.as_struct(),
+            message = slot.as_struct(),
+            tail = true
+        )
+        .into_record(LogContext::new());
+        assert_eq!(record.dropped_attributes_count, 1);
+        let decoded = LogRecord::decode(record.body_attrs_bytes).expect("valid record");
+        assert!(decoded.body.is_none());
+        assert_eq!(
+            decoded.attributes,
+            vec![KeyValue::new("tail", AnyValue::new_bool(true))]
+        );
+    }
+
+    /// Scenario: a map key or array element cannot fit although a later small member would fit.
+    /// Guarantees: both containers mark retained prefixes, stop iterator advancement on failure, count loss once, and allow the next top-level attribute.
+    #[test]
+    fn containers_retain_prefix_after_hard_drop() {
+        let fields = BUDGET_TEST_METADATA.fields();
+        let a = fields.field("a").expect("known field");
+        let b = fields.field("b").expect("known field");
+        for (array, limit) in [(false, 128), (true, 64)] {
+            let mut buf = ProtoBuffer::with_capacity_and_limit(limit, limit);
+            let mut visitor = DirectFieldVisitor::new(&mut buf);
+            let mut advances = 0;
+            visitor.record_toplevel_field(&a, |buf| {
+                ValueEncoder::new(buf, 0).encode_structured(|w| {
+                    if array {
+                        w.encode_array(&mut |a| {
+                            for index in (0..3).inspect(|_| advances += 1) {
+                                a.encode_element(&mut |v| match index {
+                                    0 => v.encode_bool(true),
+                                    1 => v.encode_i64(-1),
+                                    _ => panic!("array stopped before this element"),
+                                })?;
+                            }
+                            Ok(())
+                        })
+                    } else {
+                        w.encode_map(&mut |m| {
+                            let oversized = "x".repeat(256);
+                            for key in ["first", &oversized, "last"]
+                                .into_iter()
+                                .inspect(|_| advances += 1)
+                            {
+                                m.encode_entry(key, &mut |v| {
+                                    assert_eq!(key, "first", "failed key skips its value");
+                                    v.encode_bool(true)
+                                })?;
+                            }
+                            Ok(())
+                        })
+                    }
+                })
+            });
+            assert_eq!(advances, 2);
+            visitor.record_bool(&b, true);
+            assert_eq!(visitor.dropped_count(), 1);
+            assert!(buf.len() <= limit);
+            let record = LogRecord::decode(buf.as_ref()).expect("valid record");
+            let expected = if array {
+                AnyValue::new_array(vec![
+                    AnyValue::new_bool(true),
+                    AnyValue::new_string("[\u{2020}]"),
+                ])
+            } else {
+                AnyValue::new_kvlist(vec![
+                    KeyValue::new("first", AnyValue::new_bool(true)),
+                    KeyValue::new("[\u{2020}]", AnyValue::new_string("[\u{2020}]")),
+                ])
+            };
+            assert_eq!(
+                record.attributes,
+                vec![
+                    KeyValue::new("a", expected),
+                    KeyValue::new("b", AnyValue::new_bool(true)),
+                ]
+            );
+        }
+    }
+
+    /// Scenario: a map entry or array element writes bytes before its callback returns failure.
+    /// Guarantees: the failed member rolls back, `?` stops later callbacks, and the marked prefix and next attribute survive with one loss count.
+    #[test]
+    fn member_callback_failure_retains_only_completed_prefix() {
+        let fields = BUDGET_TEST_METADATA.fields();
+        let a = fields.field("a").expect("known field");
+        let b = fields.field("b").expect("known field");
+        for array in [false, true] {
+            let mut buf = ProtoBuffer::with_capacity_and_limit(256, 256);
+            let mut visitor = DirectFieldVisitor::new(&mut buf);
+            visitor.record_toplevel_field(&a, |buf| {
+                ValueEncoder::new(buf, 0).encode_structured(|w| {
+                    let mut fail = |v: &mut dyn ValueWriter| {
+                        v.encode_i64(7)?;
+                        Err(EncodeFailure::Dropped)
+                    };
+                    if array {
+                        w.encode_array(&mut |a| {
+                            a.encode_element(&mut |v| v.encode_bool(true))?;
+                            a.encode_element(&mut fail)?;
+                            panic!("failed element must stop the callback");
+                        })
+                    } else {
+                        w.encode_map(&mut |m| {
+                            m.encode_entry("first", &mut |v| v.encode_bool(true))?;
+                            m.encode_entry("failed", &mut fail)?;
+                            panic!("failed entry must stop the callback");
+                        })
+                    }
+                })
+            });
+            visitor.record_bool(&b, true);
+            assert_eq!(visitor.dropped_count(), 1);
+            assert!(buf.len() <= 256);
+            let record = LogRecord::decode(buf.as_ref()).expect("valid record");
+            let expected = if array {
+                AnyValue::new_array(vec![
+                    AnyValue::new_bool(true),
+                    AnyValue::new_string("[\u{2020}]"),
+                ])
+            } else {
+                AnyValue::new_kvlist(vec![
+                    KeyValue::new("first", AnyValue::new_bool(true)),
+                    KeyValue::new("[\u{2020}]", AnyValue::new_string("[\u{2020}]")),
+                ])
+            };
+            assert_eq!(
+                record.attributes,
+                vec![
+                    KeyValue::new("a", expected),
+                    KeyValue::new("b", AnyValue::new_bool(true)),
+                ]
+            );
+        }
+    }
+
+    /// Scenario: a map or array string is truncated, leaving space for another member.
+    /// Guarantees: partial UTF-8 strings, later members, and the next attribute survive, with one loss count for the containing attribute.
+    #[test]
+    fn partial_members_do_not_stop_containers() {
+        let large = "\u{1f642}".repeat(1000);
+        let fields = BUDGET_TEST_METADATA.fields();
+        let a = fields.field("a").expect("known field");
+        let b = fields.field("b").expect("known field");
+        for array in [false, true] {
+            let mut buf = ProtoBuffer::with_capacity_and_limit(256, 256);
+            let mut visitor = DirectFieldVisitor::new(&mut buf);
+            visitor.record_toplevel_field(&a, |buf| {
+                ValueEncoder::new(buf, 0).encode_structured(|w| {
+                    if array {
+                        w.encode_array(&mut |a| {
+                            a.encode_element(&mut |v| v.encode_str(&large))?;
+                            a.encode_element(&mut |v| v.encode_bool(true))
+                        })
+                    } else {
+                        w.encode_map(&mut |m| {
+                            m.encode_entry("first", &mut |v| v.encode_str(&large))?;
+                            m.encode_entry("last", &mut |v| v.encode_bool(true))
+                        })
+                    }
+                })
+            });
+            visitor.record_bool(&b, true);
+            assert_eq!(visitor.dropped_count(), 1);
+            assert!(buf.len() <= 256);
+            let mut attributes = LogRecord::decode(buf.as_ref())
+                .expect("valid record")
+                .attributes;
+            assert_eq!(attributes.len(), 2);
+            assert_eq!(
+                attributes.pop(),
+                Some(KeyValue::new("b", AnyValue::new_bool(true)))
+            );
+            let first = attributes.pop().expect("partial attribute");
+            assert_eq!(first.key, "a");
+            let value = first.value.expect("partial value");
+            let members = match value.value.expect("container") {
+                AnyValueKind::ArrayValue(a) => a.values,
+                AnyValueKind::KvlistValue(m) => m
+                    .values
+                    .into_iter()
+                    .map(|kv| kv.value.expect("value"))
+                    .collect::<Vec<_>>(),
+                _ => panic!("expected container"),
+            };
+            assert_eq!(members.len(), 2);
+            let Some(StringValue(first)) = &members[0].value else {
+                panic!("expected string");
+            };
+            assert!(first.ends_with("[\u{2020}]"));
+            assert_ne!(first, &large);
+            assert_eq!(members[1], AnyValue::new_bool(true));
+        }
+    }
+
+    /// Scenario: an empty or failed container has a byte budget around its framing and cutoff-marker sizes.
+    /// Guarantees: exact-fit markers are complete, insufficient budgets roll back, empty containers need no marker space, and later fields remain encodable.
+    #[test]
+    fn structured_cutoff_markers_fit_exactly() {
+        for (array, marker_limit) in [(true, 13), (false, 22)] {
+            for limit in [0, 3, 4, marker_limit - 1, marker_limit, marker_limit + 1] {
+                for complete in [false, true] {
+                    let mut buf = StackProtoBuffer::<64>::default();
+                    let result = buf.with_max_remaining(limit, |buf| {
+                        buf.try_atomic(|buf| {
+                            bounded::value_encoder(buf, LOG_RECORD_BODY, 0, &mut |encoder| {
+                                encoder.encode_structured(|w| {
+                                    let result = if complete {
+                                        Ok(())
+                                    } else {
+                                        Err(EncodeFailure::Dropped)
+                                    };
+                                    if array {
+                                        w.encode_array(&mut |_| result)
+                                    } else {
+                                        w.encode_map(&mut |_| result)
+                                    }
+                                })
+                            })
+                        })
+                    });
+                    let fits = limit >= if complete { 4 } else { marker_limit };
+                    assert_eq!(
+                        result,
+                        if fits {
+                            Ok(if complete {
+                                Truncation::None
+                            } else {
+                                Truncation::Some
+                            })
+                        } else {
+                            Err(EncodeFailure::Dropped)
+                        },
+                        "array={array}, limit={limit}, complete={complete}",
+                    );
+                    assert!(buf.len() <= limit);
+                    let field = BUDGET_TEST_METADATA
+                        .fields()
+                        .field("b")
+                        .expect("known field");
+                    DirectFieldVisitor::new(&mut buf).record_bool(&field, true);
+                    let record = LogRecord::decode(buf.as_ref()).expect("valid cutoff record");
+                    let expected = fits.then(|| {
+                        if array {
+                            AnyValue::new_array(if complete {
+                                vec![]
+                            } else {
+                                vec![AnyValue::new_string("[\u{2020}]")]
+                            })
+                        } else {
+                            AnyValue::new_kvlist(if complete {
+                                vec![]
+                            } else {
+                                vec![KeyValue::new(
+                                    "[\u{2020}]",
+                                    AnyValue::new_string("[\u{2020}]"),
+                                )]
+                            })
+                        }
+                    });
+                    assert_eq!(record.body, expected);
+                    assert_eq!(
+                        record.attributes,
+                        vec![KeyValue::new("b", AnyValue::new_bool(true))]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Scenario: four members fit without reserved footer space, but a fifth cannot fit.
+    /// Guarantees: complete containers keep all four; failed containers reclaim only the suffix after the latest marker-safe boundary and emit one dagger.
+    #[test]
+    fn structured_cutoff_reclaims_completed_suffix() {
+        let values = [("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5)];
+        for (array, limit, retained) in [(true, 24, 2), (false, 56, 3)] {
+            for complete in [false, true] {
+                let mut buf = ProtoBuffer::with_capacity_and_limit(limit, limit);
+                let mut completed = 0;
+                let count = if complete { 4 } else { 5 };
+                let result = buf.try_atomic(|buf| {
+                    bounded::value_encoder(buf, LOG_RECORD_BODY, 0, &mut |encoder| {
+                        encoder.encode_structured(|w| {
+                            if array {
+                                w.encode_array(&mut |a| {
+                                    for (_, value) in &values[..count] {
+                                        a.encode_element(&mut |v| v.encode_i64(*value))?;
+                                        completed += 1;
+                                    }
+                                    Ok(())
+                                })
+                            } else {
+                                w.encode_map(&mut |m| {
+                                    for (key, value) in &values[..count] {
+                                        m.encode_entry(key, &mut |v| v.encode_i64(*value))?;
+                                        completed += 1;
+                                    }
+                                    Ok(())
+                                })
+                            }
+                        })
+                    })
+                });
+                assert_eq!(completed, 4);
+                assert_eq!(
+                    result,
+                    Ok(if complete {
+                        Truncation::None
+                    } else {
+                        Truncation::Some
+                    })
+                );
+                assert!(buf.len() <= limit);
+                let kept = if complete { 4 } else { retained };
+                let expected = if array {
+                    let mut elements = values[..kept]
+                        .iter()
+                        .map(|(_, value)| AnyValue::new_int(*value))
+                        .collect::<Vec<_>>();
+                    if !complete {
+                        elements.push(AnyValue::new_string("[\u{2020}]"));
+                    }
+                    AnyValue::new_array(elements)
+                } else {
+                    let mut entries = values[..kept]
+                        .iter()
+                        .map(|(key, value)| KeyValue::new(*key, AnyValue::new_int(*value)))
+                        .collect::<Vec<_>>();
+                    if !complete {
+                        entries.push(KeyValue::new(
+                            "[\u{2020}]",
+                            AnyValue::new_string("[\u{2020}]"),
+                        ));
+                    }
+                    AnyValue::new_kvlist(entries)
+                };
+                let record = LogRecord::decode(buf.as_ref()).expect("valid reclaimed prefix");
+                assert_eq!(record.body, Some(expected));
+            }
+        }
+    }
+
+    /// Scenario: a child map can encode a scalar entry but cannot fit its own cutoff marker.
+    /// Guarantees: child failure rolls back the whole member, the nearest enclosing map emits one dagger, and the failed child's bytes never leak.
+    #[test]
+    fn structured_cutoff_uses_nearest_marker_safe_container() {
+        let mut buf = StackProtoBuffer::<64>::default();
+        let mut completed = false;
+        let result = buf.try_atomic(|buf| {
+            bounded::value_encoder(buf, LOG_RECORD_BODY, 0, &mut |encoder| {
+                encoder.encode_structured(|w| {
+                    w.encode_map(&mut |m| {
+                        m.encode_entry("child", &mut |v| {
+                            v.encode_map(&mut |m| {
+                                m.encode_entry("x", &mut |v| v.encode_i64(1))?;
+                                completed = true;
+                                Err(EncodeFailure::Dropped)
+                            })
+                        })?;
+                        panic!("unmarked child failure must stop its parent")
+                    })
+                })
+            })
+        });
+        assert!(completed);
+        assert_eq!(result, Ok(Truncation::Some));
+        let record = LogRecord::decode(buf.as_ref()).expect("valid enclosing cutoff");
+        assert_eq!(
+            record.body,
+            Some(AnyValue::new_kvlist(vec![KeyValue::new(
+                "[\u{2020}]",
+                AnyValue::new_string("[\u{2020}]"),
+            )]))
+        );
+    }
+
+    /// Scenario: a structured body or attribute contains both an incomplete array and an incomplete map.
+    /// Guarantees: only the incomplete children get markers across all framing widths; parent siblings survive and multiple child losses count as one attribute loss.
+    #[test]
+    fn structured_cutoffs_mark_only_incomplete_children() {
+        struct PartialChildren;
+        impl StructuredValue for PartialChildren {
+            fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+                w.encode_map(&mut |m| {
+                    m.encode_entry("array", &mut |v| {
+                        v.encode_array(&mut |a| {
+                            a.encode_element(&mut |v| v.encode_bool(true))?;
+                            Err(EncodeFailure::Dropped)
+                        })
+                    })?;
+                    m.encode_entry("map", &mut |v| {
+                        v.encode_map(&mut |m| {
+                            m.encode_entry("first", &mut |v| v.encode_bool(true))?;
+                            Err(EncodeFailure::Dropped)
+                        })
+                    })?;
+                    m.encode_entry("tail", &mut |v| v.encode_bool(true))
+                })
+            }
+        }
+        let value = StructBox::new(PartialChildren);
+        let attribute = BUDGET_TEST_METADATA
+            .fields()
+            .field("a")
+            .expect("known field");
+        let message = MESSAGE_TEST_METADATA
+            .fields()
+            .field("message")
+            .expect("known field");
+        let expected = AnyValue::new_kvlist(vec![
+            KeyValue::new(
+                "array",
+                AnyValue::new_array(vec![
+                    AnyValue::new_bool(true),
+                    AnyValue::new_string("[\u{2020}]"),
+                ]),
+            ),
+            KeyValue::new(
+                "map",
+                AnyValue::new_kvlist(vec![
+                    KeyValue::new("first", AnyValue::new_bool(true)),
+                    KeyValue::new("[\u{2020}]", AnyValue::new_string("[\u{2020}]")),
+                ]),
+            ),
+            KeyValue::new("tail", AnyValue::new_bool(true)),
+        ]);
+        for field in [&attribute, &message] {
+            for limit in [1024, 1 << 16, 1 << 23, 1 << 30] {
+                let mut buf = ProtoBuffer::with_capacity_and_limit(256, limit);
+                let mut visitor = DirectFieldVisitor::new(&mut buf);
+                visitor.record_error(field, value.as_struct());
+                assert_eq!(
+                    visitor.dropped_count(),
+                    u32::from(field.name() != "message")
+                );
+                assert!(buf.len() <= limit);
+                let record = LogRecord::decode(buf.as_ref()).expect("valid marked children");
+                if field.name() == "message" {
+                    assert_eq!(record.body, Some(expected.clone()));
+                    assert!(record.attributes.is_empty());
+                } else {
+                    assert_eq!(
+                        record.attributes,
+                        vec![KeyValue::new("a", expected.clone())]
+                    );
+                    assert!(record.body.is_none());
+                }
+            }
+        }
+    }
+
+    /// Scenario: a top-level structured log key is too large for its budget.
+    /// Guarantees: the failed attribute rolls back, its callback is skipped, and a later small attribute fits without increasing the loss count.
+    #[test]
+    fn top_level_attribute_budgets_are_independent() {
+        let fields = tracing::field::FieldSet::new(
+            &[
+                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "small",
+            ],
+            tracing::callsite::Identifier(&BUDGET_TEST_CALLSITE),
+        );
+        let oversized = fields.iter().next().expect("oversized field");
+        let small = fields.field("small").expect("known field");
+        let mut buf = ProtoBuffer::with_capacity_and_limit(64, 64);
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_toplevel_field(&oversized, |_| {
+            panic!("oversized key skips its value");
+        });
+        assert_eq!(visitor.dropped_count(), 1);
+        assert!(visitor.buf.is_empty());
+        visitor.record_toplevel_field(&small, |buf| {
+            ValueEncoder::new(buf, 0).encode_structured(|w| w.encode_bool(true))
+        });
+        assert_eq!(visitor.dropped_count(), 1);
+        let attributes = LogRecord::decode(buf.as_ref()).expect("log").attributes;
+        assert_eq!(
+            attributes,
+            vec![KeyValue::new("small", AnyValue::new_bool(true))]
+        );
+    }
+
+    fn encode_chain(
+        w: &mut dyn ValueWriter,
+        depth: usize,
+        visited: &mut usize,
+        array: bool,
+    ) -> EncodeResult {
+        if depth == 0 {
+            w.encode_bool(true)
+        } else if array {
+            w.encode_array(&mut |a| {
+                *visited += 1;
+                a.encode_element(&mut |v| encode_chain(v, depth - 1, visited, array))?;
+                a.encode_element(&mut |v| v.encode_bool(true))
+            })
+        } else {
+            w.encode_map(&mut |m| {
+                *visited += 1;
+                m.encode_entry("child", &mut |v| encode_chain(v, depth - 1, visited, array))?;
+                m.encode_entry("tail", &mut |v| v.encode_bool(true))
+            })
+        }
+    }
+
+    /// Scenario: structured bodies and attributes reach the depth boundary with ample byte budgets.
+    /// Guarantees: scalars at MAX_DEPTH fit; deeper maps and arrays become cutoff strings without running their callbacks, preserving tails and counting only attribute loss.
+    #[test]
+    fn structured_depth_limit_is_independent_of_byte_budget() {
+        let attribute = BUDGET_TEST_METADATA
+            .fields()
+            .field("a")
+            .expect("known field");
+        let message = MESSAGE_TEST_METADATA
+            .fields()
+            .field("message")
+            .expect("known field");
+        for field in [&attribute, &message] {
+            for array in [false, true] {
+                for depth in [0, MAX_DEPTH - 1, MAX_DEPTH, MAX_DEPTH + 1] {
+                    let mut buf = ProtoBuffer::with_capacity(256);
+                    let mut visited = 0;
+                    let mut visitor = DirectFieldVisitor::new(&mut buf);
+                    visitor.record_toplevel_field(field, |buf| {
+                        ValueEncoder::new(buf, 0)
+                            .encode_structured(|w| encode_chain(w, depth, &mut visited, array))
+                    });
+                    let truncated = depth > MAX_DEPTH;
+                    assert_eq!(
+                        visitor.dropped_count(),
+                        u32::from(truncated && field.name() != "message")
+                    );
+                    assert_eq!(visited, depth.min(MAX_DEPTH));
+                    let mut expected = if truncated {
+                        AnyValue::new_string("[\u{22f1}]")
+                    } else {
+                        AnyValue::new_bool(true)
+                    };
+                    for _ in 0..depth.min(MAX_DEPTH) {
+                        expected = if array {
+                            AnyValue::new_array(vec![expected, AnyValue::new_bool(true)])
+                        } else {
+                            AnyValue::new_kvlist(vec![
+                                KeyValue::new("child", expected),
+                                KeyValue::new("tail", AnyValue::new_bool(true)),
+                            ])
+                        };
+                    }
+                    let record =
+                        LogRecord::decode(buf.as_ref()).expect("valid depth-limited value");
+                    if field.name() == "message" {
+                        assert_eq!(record.body, Some(expected));
+                        assert!(record.attributes.is_empty());
+                    } else {
+                        assert_eq!(record.attributes, vec![KeyValue::new("a", expected)]);
+                        assert!(record.body.is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scenario: a depth-cutoff body has exactly enough space for its marker or one byte too little.
+    /// Guarantees: maps and arrays emit the complete marker and report truncation, or roll back without invoking their callbacks; later fields remain encodable.
+    #[test]
+    fn structured_depth_marker_is_atomic() {
+        for array in [false, true] {
+            for limit in [8, 9] {
+                let mut buf = StackProtoBuffer::<32>::default();
+                let result = buf.with_max_remaining(limit, |buf| {
+                    buf.try_atomic(|buf| {
+                        bounded::value_encoder(buf, LOG_RECORD_BODY, MAX_DEPTH, &mut |encoder| {
+                            encoder.encode_structured(|w| {
+                                if array {
+                                    w.encode_array(&mut |_| panic!("depth-exhausted array"))
+                                } else {
+                                    w.encode_map(&mut |_| panic!("depth-exhausted map"))
+                                }
+                            })
+                        })
+                    })
+                });
+                if limit == 9 {
+                    assert_eq!(result, Ok(Truncation::Some));
+                } else {
+                    assert_eq!(result, Err(EncodeFailure::Dropped));
+                    assert!(buf.is_empty());
+                }
+                assert!(buf.len() <= limit);
+                let field = BUDGET_TEST_METADATA
+                    .fields()
+                    .field("b")
+                    .expect("known field");
+                DirectFieldVisitor::new(&mut buf).record_bool(&field, true);
+                let record = LogRecord::decode(buf.as_ref()).expect("valid cutoff record");
+                assert_eq!(
+                    record.body,
+                    (limit == 9).then(|| AnyValue::new_string("[\u{22f1}]"))
+                );
+                assert_eq!(
+                    record.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_bool(true))]
+                );
+            }
+        }
+    }
+
     static BUDGET_TEST_CALLSITE: BudgetTestCallsite = BudgetTestCallsite;
 
     struct BudgetTestCallsite;
@@ -1979,7 +3198,7 @@ mod tests {
     }
 
     /// Scenario: strings fully fit, require truncation, or cannot fit in a bounded buffer.
-    /// Guarantees: full writes have no suffix, truncation adds `[...]`, and hard failure changes no bytes.
+    /// Guarantees: full writes have no suffix, truncation adds a dagger suffix, and hard failure changes no bytes.
     #[test]
     fn encode_string_truncating_three_outcomes() {
         // (a) Full fit -> Ok(false), no suffix.
@@ -2010,7 +3229,7 @@ mod tests {
     }
 
     /// Scenario: a long string is truncated while encoding an AnyValue into a bounded buffer.
-    /// Guarantees: prost decodes a string containing the original prefix and the `[...]` suffix.
+    /// Guarantees: prost decodes a string containing the original prefix and the dagger suffix.
     #[test]
     fn encode_string_truncating_round_trips_via_prost() {
         let mut buf = StackProtoBuffer::<48>::default();
@@ -2025,7 +3244,7 @@ mod tests {
             other => panic!("unexpected AnyValue variant: {:?}", other),
         };
         assert!(
-            s.ends_with("[...]"),
+            s.ends_with("[\u{2020}]"),
             "decoded value should end with truncation suffix"
         );
         assert!(s.starts_with("YY"));
