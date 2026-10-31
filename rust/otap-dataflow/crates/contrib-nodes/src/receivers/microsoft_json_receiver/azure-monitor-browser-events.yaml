@@ -1,0 +1,546 @@
+# ============================================================
+# Application Insights browser events (expanded mapping, not round-trip)
+# ============================================================
+#
+# Loaded from the pipeline config via:
+#   endpoints:
+#     "/v2/track":
+#       config_file: "azure-monitor-browser-events.yaml"
+#     "/v2.1/track":
+#       config_file: "azure-monitor-browser-events.yaml"
+#
+# Both routes use the same mapping; neither route requires this expanded form.
+# Choose this mapping for field-level OTel processing: it extracts properties,
+# measurements, tags, trace context, severity, and resource/scope fields.
+# Separate attributes support Azure Data Explorer dynamic property-bag columns:
+# the ADX exporter writes log attributes into LogsAttributes and resource
+# attributes into ResourceAttributes. Individual keys can be queried without
+# parsing the original envelope, or adding a physical column per custom field.
+# Field rules also validate individual values at the receiver boundary:
+# expected types, string lengths, required fields, and per-event constraints.
+# This provides early validation before downstream processing and ingestion.
+# These rules take effect when the receiver runtime is implemented; the current
+# skeleton validates receiver configuration but does not process events.
+# Validation, coercion, event-name transforms, and drops make it intentionally
+# lossy. The Azure Monitor exporter can export these fields with a suitable
+# column schema, but does not reverse them into the original JSON envelope.
+# To retain envelope fields without expansion, use azure-monitor-envelope.yaml
+# on both routes with azure-monitor-exporter.yaml. Nested containers remain
+# JSON strings in exported columns, not reconstructed objects. See Endpoint.md.
+
+name: "Application Insights browser events"
+
+# -- Size limits -------------------------------------------------------------
+# Per-endpoint body limit: 100 KiB (Azure Monitor / AI protocol maximum).
+max_request_body_size: 102400     # 100 KiB
+# Per-event limit: same as max payload for Azure Monitor.
+max_event_size: 102400            # 100 KiB
+
+# Emit the compact UTF-8 JSON size of source fields retained by the mapping.
+filtered_item_size: true
+
+# -- HTTP behaviour ----------------------------------------------------------
+allowed_methods:
+  - POST
+
+accepted_content_types:
+  - "application/json"
+
+# POST body is a JSON array of event objects (or a single object).
+body_format:
+  - json_array
+  - line_separated_json
+
+# GET is not supported for Azure Monitor.
+get_format: disabled
+
+# -- CORS --------------------------------------------------------------------
+cors:
+  allow_credentials: true          # default: true
+  max_age_seconds: 3600            # default: 3600
+  # The <max-age> token is replaced with the max_age_seconds value.
+  # default: "no-cache, no-store, max-age=<max-age>"
+  cache_control: "no-cache, no-store, max-age=<max-age>"
+
+  allow_headers: >-
+    Origin, X-Requested-With, Content-Name, Content-Type, Accept,
+    Cache-Control, Sdk-Context, X-Set-Cross-Origin-Resource-Policy,
+    Content-Encoding
+
+# -- Response format ---------------------------------------------------------
+response_format: azure_monitor
+
+# -- Event name validation ---------------------------------------------------
+# Validate the final (post-transform) event name against the OTel spec.
+# Options: none (default), printable_ascii, otel_semconv
+event_name_validation: printable_ascii
+
+# Preserve unhandled nested fields, especially structured exception arrays.
+unmapped:
+  mode: body
+
+# -- Drop events by name ----------------------------------------------------
+# Silently discard events whose (post-transform) event name matches any of
+# these patterns.  Supports exact names and glob prefixes (trailing *).
+drop_events:
+  - "Microsoft.ApplicationInsights.InternalDiagnostics"
+  - "Microsoft.Internal.*"
+
+# -- iKey filtering -----------------------------------------------------------
+# Uncomment to enable per-endpoint iKey filtering.
+# Inline rules:
+#   ikey_filter:
+#     keys:
+#       "o:bad-key-guid":
+#         action: reject
+#       "o:browser-key":
+#         action: accept
+#         require_origin: true
+#         allowed_origins:
+#           - "https://myapp.example.com"
+#       "o:legacy-key":
+#         action: accept
+#         remap_ikey: "o:new-key"
+#       "*":
+#         action: accept
+#
+# Or reference an external file:
+#   ikey_filter:
+#     filter_file: "ikey-rules.yaml"
+
+
+# -- Environment variable resource attributes ----------------------------------
+# Maps process environment variables to OTel resource attribute keys.
+# Resolved at endpoint compile time; unset/empty vars are silently skipped.
+env_resource_attrs:
+  CONTAINER_APP_NAME: "ms.container.app.name"
+  CONTAINER_APP_REVISION: "ms.container.app.revision"
+  CONTAINER_APP_REPLICA_NAME: "ms.container.app.replica_name"
+  #CONTAINER_APP_ENV_DNS_SUFFIX: "ms.container.app.env_dns_suffix"
+  #CONTAINER_APP_HOSTNAME: "ms.container.app.hostname"
+  #CONTAINER_APP_PORT: "ms.container.app.port"
+
+# -- JSON field -> OTel log mapping rules -------------------------------------
+# Validation is derived from the Azure Monitor / Application Insights
+# (Azure Monitor) ingestion schema.  Max lengths come from the documented
+# field-level limits in the CS 4.0 -> Azure Monitor mapping spec.
+rules:
+  # ===== Event name (from envelope name) ===================================
+  # Azure Monitor envelope names have the form:
+  #   Microsoft.ApplicationInsights.{instrumentationKey}.{EventType}
+  # strip_segment removes the iKey segment (index 2) so the stored event
+  # name becomes e.g. "Microsoft.ApplicationInsights.PageviewPerformance".
+  # match_field: "iKey" compares GUIDs without hyphens and ignoring hex case,
+  # matching the browser SDK's dashless embedded key to the original iKey.
+  # Non-GUID keys compare exactly; names without an embedded iKey (e.g.
+  # "Microsoft.ApplicationInsights.Event") pass through unchanged.
+  - path: "name"
+    target:
+      kind: event_name
+      strip_segment:
+        index: 2
+        match_field: "iKey"
+    validate:
+      expected_type: string
+      max_length: 1024
+      on_validation_failure: reject
+    # Migration: also write the raw and short forms of the event name
+    # to attributes so downstream consumers can migrate at their own pace.
+    also:
+      - target:
+          kind: attribute
+          key: "ai.envelope.name"
+      - target:
+          kind: attribute
+          key: "ai.event.shortName"
+        transform:
+          kind: split_take
+          delimiter: "."
+          index: -1
+
+  # ===== Timestamp ==========================================================
+  - path: "time"
+    target:
+      kind: timestamp
+    validate:
+      expected_type: string
+      on_validation_failure: reject
+
+  # ===== Trace context (from tags) ==========================================
+  - path: "tags.ai.operation.id"
+    target:
+      kind: trace_id
+    validate:
+      expected_type: string
+      max_length: 128
+  - path: "tags.ai.operation.parentId"
+    target:
+      kind: span_id
+    validate:
+      expected_type: string
+      max_length: 128
+
+  # Preserve the envelope type without inferring severity from it.
+  # Explicit baseData.severityLevel is the sole severity source; when absent,
+  # native OTel severity remains UNSPECIFIED rather than guessing from type.
+  - path: "data.baseType"
+    target: { kind: attribute, key: "ai.baseType" }
+
+  # ===== Resource: iKey =====================================================
+  - path: "iKey"
+    target:
+      kind: resource
+      key: "ai.iKey"
+    validate:
+      expected_type: string
+      max_length: 128
+
+  # ===== Envelope-level fields -> attributes =================================
+  - path: "ver"
+    target:
+      kind: attribute
+      key: "ai.envelope.ver"
+    validate:
+      expected_type: integer
+
+  - path: "sampleRate"
+    target:
+      kind: attribute
+      key: "ai.sampleRate"
+    validate:
+      expected_type: float
+
+  # ===== SDK version -> instrumentation scope name + version ================
+  - path: "tags.ai.internal.sdkVersion"
+    target:
+      kind: scope
+      field: name_version
+      split:
+        last_char: ":"
+    also:
+      - target: { kind: resource, key: "telemetry.sdk.name" }
+        transform: { kind: split_take, delimiter: ":", index: 0 }
+      - target: { kind: resource, key: "telemetry.sdk.version" }
+        transform: { kind: split_take, delimiter: ":", index: -1 }
+    validate:
+      expected_type: string
+      max_length: 256
+
+  # ===== User ID -> OTel enduser.pseudo.id ===================================
+  - path: "tags.ai.user.id"
+    target:
+      kind: resource
+      key: "enduser.pseudo.id"
+    validate:
+      expected_type: string
+      max_length: 512
+    also:
+      - target:
+          kind: attribute
+          key: "ai.tags.ai.user.id"
+
+  # ===== Session ID -> OTel session.id =======================================
+  - path: "tags.ai.session.id"
+    target:
+      kind: resource
+      key: "session.id"
+    validate:
+      expected_type: string
+      max_length: 512
+    also:
+      - target:
+          kind: attribute
+          key: "ai.tags.ai.session.id"
+
+  # ===== tags.* -> ai.tags.* (known AI tags have string values) ==============
+  - path: "tags.*"
+    target:
+      kind: attribute
+      prefix: "ai.tags."
+    validate:
+      expected_type: string_coerce
+      max_length: 8192
+
+  # ===== Common baseData fields (shared across envelope types) ==============
+  - path: "data"
+    children:
+      - path: "baseData"
+        children:
+          - path: "ver"
+            target: { kind: attribute, key: "ai.baseData.ver" }
+            validate: { expected_type: integer }
+          - path: "id"
+            target: { kind: attribute, key: "ai.baseData.id" }
+            validate: { expected_type: string, max_length: 512 }
+          - path: "name"
+            target: { kind: attribute, key: "ai.baseData.name" }
+            validate: { expected_type: string, max_length: 1024 }
+          - path: "duration"
+            target: { kind: attribute, key: "ai.baseData.duration" }
+            validate: { expected_type: string, max_length: 64 }
+          - path: "url"
+            target: { kind: attribute, key: "ai.baseData.url" }
+            validate: { expected_type: string, max_length: 2048 }
+          - path: "source"
+            target: { kind: attribute, key: "ai.baseData.source" }
+            validate: { expected_type: string, max_length: 1024 }
+          - path: "responseCode"
+            target: { kind: attribute, key: "ai.baseData.responseCode" }
+            validate: { expected_type: string_coerce, max_length: 1024 }
+          - path: "success"
+            target: { kind: attribute, key: "ai.baseData.success" }
+            validate: { expected_type: boolean }
+          - path: "message"
+            target: { kind: attribute, key: "ai.baseData.message" }
+            validate: { expected_type: string, max_length: 32768 }
+          - path: "severityLevel"
+            target:
+              kind: severity
+              map:
+                "0": { number: 1, text: "TRACE" }
+                "1": { number: 9, text: "INFO" }
+                "2": { number: 13, text: "WARN" }
+                "3": { number: 17, text: "ERROR" }
+                "4": { number: 21, text: "FATAL" }
+            validate: { expected_type: integer }
+            also:
+              - target: { kind: attribute, key: "ai.baseData.severityLevel" }
+          - path: "type"
+            target: { kind: attribute, key: "ai.baseData.type" }
+            validate: { expected_type: string, max_length: 1024 }
+          - path: "target"
+            target: { kind: attribute, key: "ai.baseData.target" }
+            validate: { expected_type: string, max_length: 1024 }
+          - path: "data"
+            target: { kind: attribute, key: "ai.baseData.data" }
+            validate: { expected_type: string, max_length: 8192 }
+          - path: "resultCode"
+            target: { kind: attribute, key: "ai.baseData.resultCode" }
+            validate: { expected_type: string_coerce, max_length: 1024 }
+          - path: "properties"
+            children:
+              - path: "refUri"
+                target: { kind: attribute, key: "http.request.header.referer" }
+                validate: { expected_type: string, max_length: 2048 }
+                also:
+                  - target: { kind: attribute, key: "ai.properties.refUri" }
+              - path: "*"
+                target: { kind: attribute, prefix: "ai.properties." }
+                validate: { expected_type: string_coerce, max_length: 8192 }
+          - path: "measurements"
+            children:
+              - path: "*"
+                target: { kind: attribute, prefix: "ai.measurements." }
+                validate: { expected_type: float }
+          - path: "metrics"
+            target: { kind: attribute, key: "ai.baseData.metrics" }
+            validate: { expected_type: string_coerce, max_length: 32768 }
+
+  # ===== Drop consumed containers ==========================================
+  - path: "tags"
+    target:
+      kind: drop
+
+  # No baseData catch-all: unmapped children, including exceptions arrays,
+  # remain in the structured body without string coercion or truncation.
+
+# -- Per-envelope-type overrides (Azure Monitor / Azure Monitor) --------------------
+# The `name` field carries the AI envelope type name.  These overrides
+# enforce required fields and field-level validation per the Azure Monitor
+# ingestion schema documented in the CS 4.0 -> AI mapping spec.
+event_overrides:
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Request  (SpanKind.SERVER / CONSUMER)
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Request":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              - path: "id"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.id" }
+                validate: { expected_type: string, max_length: 512 }
+              - path: "name"
+                target: { kind: attribute, key: "ai.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "duration"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.duration" }
+                validate: { expected_type: string, max_length: 64 }
+              - path: "success"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.success" }
+                validate: { expected_type: boolean }
+              - path: "responseCode"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.responseCode" }
+                validate: { expected_type: string_coerce, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "ai.baseData.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "source"
+                target: { kind: attribute, key: "ai.baseData.source" }
+                validate: { expected_type: string, max_length: 1024 }
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.RemoteDependency  (CLIENT / PRODUCER / INTERNAL)
+  # =========================================================================
+  "Microsoft.ApplicationInsights.RemoteDependency":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "id"
+                target: { kind: attribute, key: "ai.baseData.id" }
+                validate: { expected_type: string, max_length: 512 }
+              - path: "resultCode"
+                target: { kind: attribute, key: "ai.baseData.resultCode" }
+                validate: { expected_type: string_coerce, max_length: 1024 }
+              - path: "duration"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.duration" }
+                validate: { expected_type: string, max_length: 64 }
+              - path: "success"
+                target: { kind: attribute, key: "ai.baseData.success" }
+                validate: { expected_type: boolean }
+              - path: "data"
+                target: { kind: attribute, key: "ai.baseData.data" }
+                validate: { expected_type: string, max_length: 8192 }
+              - path: "type"
+                target: { kind: attribute, key: "ai.baseData.type" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "target"
+                target: { kind: attribute, key: "ai.baseData.target" }
+                validate: { expected_type: string, max_length: 1024 }
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Exception
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Exception":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              - path: "problemId"
+                target: { kind: attribute, key: "ai.baseData.problemId" }
+                validate: { expected_type: string, max_length: 1024 }
+              # baseData.exceptions (vector<ExceptionDetails>) flows to the
+              # log body as a complex nested structure.
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Message  (Log / Trace)
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Message":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              - path: "message"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.message" }
+                validate: { expected_type: string, max_length: 32768 }
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Event
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Event":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.name" }
+                validate: { expected_type: string, max_length: 512 }
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Metric
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Metric":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Pageview (browser SDK spelling)
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Pageview":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              # Browser SDK fields below are optional; validate when supplied.
+              - path: "name"
+                target: { kind: attribute, key: "ai.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "url"
+                target: { kind: attribute, key: "ai.baseData.url" }
+                validate: { expected_type: string, max_length: 2048 }
+              - path: "duration"
+                target: { kind: attribute, key: "ai.baseData.duration" }
+                validate: { expected_type: string, max_length: 64 }
+              - path: "id"
+                target: { kind: attribute, key: "ai.baseData.id" }
+                validate: { expected_type: string, max_length: 512 }
+
+  # =========================================================================
+  # Microsoft.ApplicationInsights.Availability
+  # =========================================================================
+  "Microsoft.ApplicationInsights.Availability":
+    rules:
+      - path: "data"
+        children:
+          - path: "baseData"
+            children:
+              - path: "ver"
+                required: { on_missing: default, default_value: 2 }
+              - path: "id"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.id" }
+                validate: { expected_type: string, max_length: 512 }
+              - path: "name"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.name" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "duration"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.duration" }
+                validate: { expected_type: string, max_length: 64 }
+              - path: "success"
+                required: { on_missing: reject }
+                target: { kind: attribute, key: "ai.baseData.success" }
+                validate: { expected_type: boolean }
+              - path: "runLocation"
+                target: { kind: attribute, key: "ai.baseData.runLocation" }
+                validate: { expected_type: string, max_length: 1024 }
+              - path: "message"
+                target: { kind: attribute, key: "ai.baseData.message" }
+                validate: { expected_type: string, max_length: 8192 }

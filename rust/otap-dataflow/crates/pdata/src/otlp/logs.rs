@@ -499,7 +499,8 @@ mod test {
     use crate::schema::UTC_TIME_ZONE;
 
     use arrow::array::{
-        RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+        BinaryArray, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt8Array,
+        UInt16Array,
     };
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
@@ -514,6 +515,93 @@ mod test {
     use crate::schema::{FieldExt, consts};
     use crate::{otap::Logs, proto::opentelemetry::logs::v1::LogsData};
     use crate::{otap::OtapArrowRecords, otlp::logs::LogsProtoBytesEncoder};
+
+    /// Scenario: an internal batch has a string flags column when OTAP-to-OTLP revalidates it.
+    /// Guarantees: conversion preserves the payload, column name, and expected and actual types.
+    #[test]
+    fn proto_encode_preserves_schema_error_details() {
+        use crate::TryFromWithOptions;
+        use crate::otap::OtapBatchStore as _;
+        use crate::otap::sealed::OtapBatchStore;
+        use crate::otlp::OtlpProtoBytes;
+        use crate::record_batch;
+        use crate::schema::error::Error as SchemaError;
+        use crate::schema::schema::{DataType as OtapDataType, SimpleType};
+
+        let mut logs = crate::logs!((Logs, ("flags", UInt32, vec![0])));
+        // Inject an invalid internal batch so conversion, rather than set(), validates it.
+        *logs.batches_mut().iter_mut().flatten().next().unwrap() = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::FLAGS,
+                DataType::Utf8,
+                true,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["invalid"]))],
+        )
+        .unwrap();
+
+        let error =
+            OtlpProtoBytes::try_from_with_options(OtapArrowRecords::Logs(logs), Default::default())
+                .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                Error::InvalidSchemaForPayload {
+                    payload_type: ArrowPayloadType::Logs,
+                    source: SchemaError::FieldTypeMismatch {
+                        name,
+                        expected: OtapDataType::Simple(SimpleType::UInt32),
+                        actual: DataType::Utf8,
+                    },
+                } if name == consts::FLAGS
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Scenario: a log body contains malformed CBOR inside an otherwise valid OTAP batch.
+    /// Guarantees: OTAP-to-OTLP conversion retains the CBOR decoding cause through nested encoding.
+    #[test]
+    fn proto_encode_preserves_cbor_error_cause() {
+        use crate::TryFromWithOptions;
+        use crate::otlp::OtlpProtoBytes;
+        use std::error::Error as _;
+
+        let input = &[0x1c][..];
+        let expected = ciborium::from_reader::<ciborium::Value, _>(input)
+            .unwrap_err()
+            .to_string();
+        let body_fields = Fields::from(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+        ]);
+        let body = StructArray::new(
+            body_fields.clone(),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Slice as u8])),
+                Arc::new(BinaryArray::from(vec![input])),
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::BODY,
+                DataType::Struct(body_fields),
+                true,
+            )])),
+            vec![Arc::new(body)],
+        )
+        .unwrap();
+        let mut records = OtapArrowRecords::Logs(Logs::default());
+        records.set(ArrowPayloadType::Logs, batch).unwrap();
+
+        let error = OtlpProtoBytes::try_from_with_options(records, Default::default()).unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidSerializedAttributeBytes { .. }),
+            "{error:?}"
+        );
+        assert_eq!(error.source().unwrap().to_string(), expected);
+    }
 
     #[test]
     fn test_proto_encode() {

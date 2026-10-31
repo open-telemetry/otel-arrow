@@ -1,11 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+mod attributes;
+
+pub(crate) use attributes::{KnownAttributeKey, SyslogAttributesBuilder};
+
 use chrono::Utc;
 use otel_arrow_dfe_pdata::{
-    encode::record::{
-        attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
-    },
+    encode::record::logs::LogsRecordBatchBuilder,
     otap::{Logs, OtapArrowRecords},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
@@ -18,7 +20,7 @@ use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogM
 pub struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
-    log_attrs: StrKeysAttributesRecordBatchBuilder<u16>,
+    log_attrs: SyslogAttributesBuilder,
 }
 
 impl Default for ArrowRecordsBuilder {
@@ -34,7 +36,7 @@ impl ArrowRecordsBuilder {
         Self {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
-            log_attrs: StrKeysAttributesRecordBatchBuilder::<u16>::new(),
+            log_attrs: attributes::new_builder(),
         }
     }
 
@@ -74,9 +76,8 @@ impl ArrowRecordsBuilder {
 
         let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
 
-        for _ in 0..attributes_added {
-            self.log_attrs.append_parent_id(&self.curr_log_id);
-        }
+        self.log_attrs
+            .append_parent_id_n(&self.curr_log_id, usize::from(attributes_added));
 
         self.logs.append_id(Some(self.curr_log_id));
 

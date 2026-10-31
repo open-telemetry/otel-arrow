@@ -309,7 +309,11 @@ pub(crate) fn scoped_value_to_boolean_array(
                 ),
             })?;
 
-            Ok(boolean_arr.clone())
+            Ok(match arr.nulls() {
+                // treat "nulls" as false
+                Some(nulls) => BooleanArray::new(boolean_arr.values() & nulls.inner(), None),
+                None => boolean_arr.clone(),
+            })
         }
     }
 }

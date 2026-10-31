@@ -72,7 +72,7 @@ pub trait DictionaryArrayAppendStr {
     fn append_str_n(&mut self, value: &str, n: usize) -> Result<usize>;
 }
 
-/// this trait can be implemented by types that can receive a value to append as a type of &[T].
+/// this trait can be implemented by types that can receive a value to append as a type of `&[T]`.
 ///
 /// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
 /// Native type of Vec<u8>, if the caller already has a byte slice of &[u8]

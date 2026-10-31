@@ -1,0 +1,71 @@
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      sql_ingest:
+        extensions:
+          sql-credentials:
+            type: urn:otel:extension:flat_file_user_pass_auth
+            config:
+              username: '${env:SQL_SERVER_USERNAME:-otel_reader}'
+              password_secret_file: '${env:SQL_SERVER_PASSWORD_FILE:-/run/sql-server-secrets/password}'
+              password_secret_file_refresh: 1m
+        nodes:
+          sql-events:
+            type: urn:otel:receiver:sql_server
+            capabilities:
+              basic_auth_provider: sql-credentials
+            config:
+              source_id: sql-events
+              connection:
+                host: '${env:SQL_SERVER_HOST:-localhost}'
+                port: ${env:SQL_SERVER_PORT:-1433}
+                database: '${env:SQL_SERVER_DATABASE:-otap_fixture}'
+                tls:
+                  enabled: true
+                  trust_server_certificate: false
+                  ca_file: '${env:SQL_SERVER_CA_FILE:-/run/sql-server-secrets/ca.pem}'
+              query:
+                statement: >
+                  SELECT ID, EVENT_TS, PAYLOAD, AMOUNT, RAW, AT_TIME
+                  FROM dbo.OTAP_SQL_EVENTS
+                  WHERE EVENT_TS > @last_timestamp
+                    OR (EVENT_TS = @last_timestamp AND ID > @last_id)
+                  ORDER BY EVENT_TS ASC, ID ASC
+                interval: 1m
+                timeout: 30s
+                max_rows_per_poll: 1000
+                fetch_size_rows: 100
+                max_batch_bytes: 4MiB
+                catch_up:
+                  max_pages: ${env:SQL_SERVER_CATCH_UP_MAX_PAGES:-32}
+              watermark:
+                mode: composite
+                timestamp:
+                  column: EVENT_TS
+                  bind: last_timestamp
+                  initial: "2026-01-01T00:00:00Z"
+                  timezone: UTC
+                tie_breaker:
+                  column: ID
+                  bind: last_id
+                  initial: 0
+              checkpoint:
+                directory: '${env:SQL_SERVER_STATE_DIR:-./state/sql_server}'
+                on_nack: rewind
+                on_permanent_nack: pause
+                nack_backoff: 1s
+                max_consecutive_failures: 5
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+        connections:
+          - from: sql-events
+            to: console

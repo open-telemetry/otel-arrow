@@ -3,3 +3,7 @@ include_fragments = "full"
 
 # Do not skip hidden directories and files (e.g. .chloggen/README.md)
 hidden = true
+
+# Third-party content vendored verbatim from upstream; its relative links point
+# into the upstream repository layout.
+exclude_path = ["rust/otap-dataflow/vendor"]

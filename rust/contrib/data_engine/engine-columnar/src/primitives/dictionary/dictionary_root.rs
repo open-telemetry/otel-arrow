@@ -154,6 +154,10 @@ impl<'a> Dictionary<'a> {
         }
     }
 
+    /// Creates a dictionary whose row indexes implicitly address the values.
+    ///
+    /// Implicit indexes are not limited by `key_data_type`. Transforms preserve
+    /// them when no remapping is needed; materialized keys must fit the tagged type.
     pub fn new_unique_values(
         key_data_type: DictionaryKeyType,
         values: DictionaryValueArray<'a>,

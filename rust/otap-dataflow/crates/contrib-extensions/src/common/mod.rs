@@ -5,6 +5,21 @@
 
 #[cfg(any(
     feature = "azure-identity-auth",
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth"
+))]
+pub mod azure_identity;
+
+#[cfg(any(
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth"
+))]
+pub mod azure_key_vault;
+
+#[cfg(any(
+    feature = "azure-identity-auth",
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth",
     feature = "oauth2-client-auth",
     feature = "flat-file-api-key-auth",
     feature = "flat-file-sasl-auth",

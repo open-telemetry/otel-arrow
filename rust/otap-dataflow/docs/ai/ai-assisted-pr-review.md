@@ -66,6 +66,9 @@ pipeline instance runs on a single-threaded async runtime, so blocking or
 monopolizing that thread can stall data processing, backpressure, shutdown, live
 reconfiguration, telemetry, and ack/nack progress.
 
+Use the [runtime responsiveness guidance](../async-best-practices.md#runtime-responsiveness)
+for ready-await pitfalls, bounded CPU work, and measurement methodology.
+
 Flag runtime-path work that can block or monopolize the core:
 
 - synchronous filesystem, I/O, networking, sleep, process execution, DNS,

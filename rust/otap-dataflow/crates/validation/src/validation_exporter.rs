@@ -8,23 +8,23 @@ use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::NodeId as NodeName;
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
-};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
+    ContextEntryTake, ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
@@ -157,24 +157,31 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
             }
         }
 
-        [require_key_names, require_key_value_names, deny_names]
-            .into_iter()
-            .filter(|names| !names.is_empty())
-            .map(|names| ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: names
-                        .into_iter()
-                        .map(|name| ContextEntrySelector {
-                            target: ContextEntryTarget::Primitive {
-                                domain: ContextDomain::TransportHeader,
-                                name,
-                            },
-                            form: ContextEntrySelectorForm::Value,
-                        })
-                        .collect(),
-                },
-            })
-            .collect()
+        // Key and deny checks need presence only; value checks scan every duplicate.
+        [
+            (require_key_names, ContextEntryTake::Exists),
+            (require_key_value_names, ContextEntryTake::All),
+            (deny_names, ContextEntryTake::Exists),
+        ]
+        .into_iter()
+        .filter(|(names, _)| !names.is_empty())
+        .map(|(names, take)| ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: names
+                    .into_iter()
+                    .map(|name| ContextEntrySelector {
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name,
+                            matching: ContextNameMatching::Exact,
+                        },
+                        form: ContextEntrySelectorForm::Value,
+                        take,
+                    })
+                    .collect(),
+            },
+        })
+        .collect()
     }
 }
 
@@ -327,7 +334,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_engine::context_declaration::{
+    use otel_arrow_dfe_engine::pdata_context::{
         ContextConsumerSelector, ContextDeclaration, ContextEntrySelector,
     };
 
@@ -335,24 +342,139 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
-    fn entries(names: &[&str]) -> Box<[ContextEntrySelector]> {
+    fn entries(names: &[&str], take: ContextEntryTake) -> Box<[ContextEntrySelector]> {
         names
             .iter()
             .map(|name| ContextEntrySelector {
                 target: ContextEntryTarget::Primitive {
                     domain: ContextDomain::TransportHeader,
                     name: context_name(name),
+                    matching: ContextNameMatching::Exact,
                 },
                 form: ContextEntrySelectorForm::Value,
+                take,
             })
             .collect()
     }
 
-    fn consumes(names: &[&str]) -> ContextDeclaration {
+    fn consumes(names: &[&str], take: ContextEntryTake) -> ContextDeclaration {
         ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
-                entries: entries(names),
+                entries: entries(names, take),
             },
+        }
+    }
+
+    /// Scenario: validation config declares required keys, matching values, and forbidden headers.
+    /// Guarantees: compiled presence reads match key and deny checks without yielding values;
+    /// all-value reads preserve exact-case lookup and duplicate-value matching.
+    #[test]
+    fn compiled_reads_match_validation_header_checks() {
+        use crate::validation_types::transport_headers::{
+            TransportHeaderKeyValue, validate_transport_header_deny_keys,
+            validate_transport_header_require_key_values, validate_transport_header_require_keys,
+        };
+        use otel_arrow_dfe_config::PipelineKey;
+        use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
+        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+        use otel_arrow_dfe_engine::PipelineFactory;
+        use otel_arrow_dfe_engine::pdata_context::Metadata;
+
+        let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "engine": {},
+            "groups": {"group": {"pipelines": {"pipeline": {
+                "nodes": {"exporter": {
+                    "type": "urn:otel:exporter:validation",
+                    "config": {
+                        "suv_input": "suv",
+                        "validations": [
+                            {"type": "transport_header_require_key", "keys": ["Tenant", "tenant"]},
+                            {"type": "transport_header_require_key_value", "pairs": [{"key": "Tenant", "value": "acme"}]},
+                            {"type": "transport_header_deny", "keys": ["missing"]}
+                        ]
+                    }
+                }},
+                "connections": []
+            }}}}
+        })).expect("pipeline config");
+        let mut resolved = spec.resolve();
+        // This fixture does not register the implicit telemetry pipeline's nodes.
+        resolved
+            .pipelines
+            .retain(|pipeline| pipeline.pipeline_group_id.as_ref() == "group");
+        let prepared = PipelineFactory::new(
+            &[],
+            &[],
+            std::slice::from_ref(&VALIDATION_EXPORTER_FACTORY),
+            &[],
+        )
+        .compile_initial_context(&resolved)
+        .expect("compiled validation config");
+        let bindings = prepared
+            .bindings
+            .node_bindings(
+                &PipelineKey::new("group".into(), "pipeline".into()),
+                &"exporter".into(),
+            )
+            .expect("validation bindings");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text(context_name("Tenant"), b"other"));
+        headers.push(TransportHeader::text(context_name("Tenant"), b"acme"));
+        for stored in [None, Some(headers)] {
+            let mut metadata = Metadata::default();
+            if let Some(headers) = &stored {
+                metadata.set_transport_headers(headers.clone());
+            }
+            for (name, selector) in ["Tenant", "tenant", "missing"].into_iter().zip(entries(
+                &["Tenant", "tenant", "missing"],
+                ContextEntryTake::Exists,
+            )) {
+                let name = context_name(name);
+                let selected = bindings
+                    .value(&selector)
+                    .expect("declared presence read")
+                    .read(&metadata);
+                let present = selected.is_some();
+                if let Some(selected) = selected {
+                    selected.visit_members(|member| assert_eq!(member.values().count(), 0));
+                }
+                assert_eq!(
+                    present,
+                    validate_transport_header_require_keys(
+                        std::slice::from_ref(&stored),
+                        std::slice::from_ref(&name)
+                    ),
+                );
+                assert_eq!(
+                    !present,
+                    validate_transport_header_deny_keys(
+                        std::slice::from_ref(&stored),
+                        std::slice::from_ref(&name)
+                    ),
+                );
+            }
+            let selector = entries(&["Tenant"], ContextEntryTake::All)
+                .into_vec()
+                .pop()
+                .expect("one selector");
+            let mut matches_value = false;
+            if let Some(selected) = bindings
+                .value(&selector)
+                .expect("declared value read")
+                .read(&metadata)
+            {
+                selected.visit_members(|member| {
+                    matches_value |= member.values().any(|value| value.bytes == b"acme");
+                });
+            }
+            assert_eq!(
+                matches_value,
+                validate_transport_header_require_key_values(
+                    std::slice::from_ref(&stored),
+                    &[TransportHeaderKeyValue::new(context_name("Tenant"), "acme")],
+                ),
+            );
         }
     }
 
@@ -386,9 +508,9 @@ mod tests {
         assert_eq!(
             decls,
             [
-                consumes(&["x-request-id", "x-tenant-id"]),
-                consumes(&["x-tenant-id"]),
-                consumes(&["x-secret"]),
+                consumes(&["x-request-id", "x-tenant-id"], ContextEntryTake::Exists),
+                consumes(&["x-tenant-id"], ContextEntryTake::All),
+                consumes(&["x-secret"], ContextEntryTake::Exists),
             ]
             .into_iter()
             .collect()
@@ -415,7 +537,9 @@ mod tests {
                 .expect("validation exporter should declare context")
                 .declarations)(&config)
             .unwrap(),
-            [consumes(&["X-Secret"])].into_iter().collect()
+            [consumes(&["X-Secret"], ContextEntryTake::Exists)]
+                .into_iter()
+                .collect()
         );
     }
 

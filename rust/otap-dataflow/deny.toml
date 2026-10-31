@@ -89,7 +89,12 @@ ignore = [
     # remove them once Weaver supports zip >=9.0.0, which fixes all three.
     { id="RUSTSEC-2026-0367", reason="Weaver's unpack_zip does not restore archive Unix permissions, so it cannot preserve the SUID/SGID bits affected by this advisory." },
     { id="RUSTSEC-2026-0368", reason="Weaver's unpack_zip copies entries into regular files instead of creating archive symlinks, so it does not use the affected symlink extraction path." },
-    { id="RUSTSEC-2026-0369", reason="Weaver's unpack_zip neither creates archive symlinks nor applies archive Unix permissions, so it does not chmod through extracted symlinks." }
+    { id="RUSTSEC-2026-0369", reason="Weaver's unpack_zip neither creates archive symlinks nor applies archive Unix permissions, so it does not chmod through extracted symlinks." },
+    # Arrow, Tonic, and Weaver still require zstd 0.13. Reassess these temporary
+    # exceptions on dependency/API/feature changes; remove after upstream upgrades.
+    { id="RUSTSEC-2026-0391", reason="Pending compatible upstream updates. Review found fresh streaming contexts or bulk APIs, rather than the affected streaming with_context constructors." },
+    { id="RUSTSEC-2026-0398", reason="Pending compatible upstream updates. Current all-workspace-feature metadata does not enable zstd-safe's seekable feature, required by the affected APIs." },
+    { id="RUSTSEC-2026-0403", reason="Pending compatible upstream updates. Reviewed decompression paths use read decoders or bulk APIs, which the advisory excludes; no affected write-decoder use was identified." }
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

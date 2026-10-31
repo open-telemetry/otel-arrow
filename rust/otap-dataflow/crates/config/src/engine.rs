@@ -12,7 +12,7 @@ use crate::ExtensionId;
 use crate::PipelineGroupId;
 use crate::PipelineId;
 use crate::TopicName;
-use crate::context_policy::{ContextPolicy, ContextScope};
+use crate::context::policy::{ContextPolicy, ContextScope};
 use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
@@ -199,7 +199,7 @@ impl EngineConfig {
     /// - `custom` -- opaque, freeform metadata the engine never interprets, but
     ///   the most likely place an embedder stashes arbitrary config (including
     ///   auth `headers`). The whole map is walked with the same
-    ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
+    ///   `redact_secret_headers` helper
     ///   used by the structured arms, so any value under a `headers` key -- map
     ///   or `[{key, value}]` list form, at any depth, including a top-level
     ///   `custom.headers` -- is masked. Matching is on the conventional
@@ -2950,7 +2950,7 @@ groups:
         );
         assert_eq!(
             policy.header_propagation.default.selector.selector_type,
-            crate::transport_headers_policy::PropagationSelectorType::AllCaptured
+            crate::context::transport_policy::PropagationSelectorType::AllCaptured
         );
     }
 

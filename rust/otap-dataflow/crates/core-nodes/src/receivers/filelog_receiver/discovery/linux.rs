@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+mod bindings;
+pub use bindings::BindingBatch;
+
 use super::batch::{Batch, deliver};
 use super::probe::{ProbeContext, ProbeScratch};
 use super::roots::{ExclusionRoot, resolve_exclusion, resolve_include_root};
@@ -8,7 +11,6 @@ use super::walk::Walker;
 use super::*;
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
 use std::mem::MaybeUninit;
-use std::os::unix::ffi::OsStrExt;
 
 /// Linux scanner with bounded reusable scratch and root baselines.
 ///
@@ -27,6 +29,8 @@ pub struct Scanner<P> {
     directory_buffer: Vec<MaybeUninit<u8>>,
     walker: Walker,
     batch: Batch,
+    binding_roots: Vec<PathBuf>,
+    binding_parent: PathBuf,
 }
 
 impl<P: MatchPolicy> Scanner<P> {
@@ -34,10 +38,9 @@ impl<P: MatchPolicy> Scanner<P> {
     pub fn new(mut config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
         let limits = config.limits;
         if !(1..=1024).contains(&limits.depth)
-            || !(1..=65536).contains(&limits.path_bytes)
+            || !valid_evidence_limits(limits.path_bytes, limits.fingerprint_bytes)
             || !(1..=1024).contains(&limits.roots)
             || !(1..=1024).contains(&limits.batch)
-            || !(16..=65535).contains(&limits.fingerprint_bytes)
             || limits.work_units == 0
             || config.include_roots.is_empty()
             || config.include_roots.len() > limits.roots
@@ -50,14 +53,7 @@ impl<P: MatchPolicy> Scanner<P> {
                 .include_roots
                 .iter()
                 .chain(&config.exclusion_roots)
-                .any(|root| {
-                    !root.is_absolute()
-                        || root
-                            .components()
-                            .any(|c| matches!(c, std::path::Component::ParentDir))
-                        || root.as_os_str().as_bytes().len() >= limits.path_bytes
-                        || root.as_os_str().as_bytes().contains(&0)
-                })
+                .any(|root| !native_path::valid_absolute_path(root, limits.path_bytes))
         {
             return Err(InvalidScanConfig);
         }
@@ -69,7 +65,12 @@ impl<P: MatchPolicy> Scanner<P> {
             normalized.extend(root.components());
             *root = normalized;
         }
+        let binding_roots = (0..config.include_roots.len())
+            .map(|_| PathBuf::new())
+            .collect();
         Ok(Self {
+            binding_roots,
+            binding_parent: PathBuf::with_capacity(limits.path_bytes),
             include_baselines: vec![None; config.include_roots.len()],
             exclusions: config
                 .exclusion_roots
@@ -108,6 +109,13 @@ impl<P: MatchPolicy> Scanner<P> {
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
         size_of::<Self>()
+            + self.binding_roots.capacity() * size_of::<PathBuf>()
+            + self
+                .binding_roots
+                .iter()
+                .map(|path| path.capacity())
+                .sum::<usize>()
+            + self.binding_parent.capacity()
             + self.include_baselines.capacity() * size_of::<Option<FileLocator>>()
             + self.exclusions.capacity() * size_of::<ExclusionRoot>()
             + self

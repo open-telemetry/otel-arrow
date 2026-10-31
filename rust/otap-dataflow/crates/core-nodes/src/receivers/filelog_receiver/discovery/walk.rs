@@ -443,8 +443,7 @@ fn classify_entry<P: MatchPolicy>(
     path: &Path,
 ) -> Result<EntryKind, (ScanReason, Option<i32>)> {
     let name = entry.file_name();
-    let should_descend =
-        context.matcher.may_descend(path) && !context.matcher.excludes_subtree(path);
+    let should_descend = may_visit_directory(context.matcher, path);
     let file_type = entry.file_type();
     let mut is_directory = file_type == FileType::Directory;
     let mut observed_regular = file_type == FileType::RegularFile;
@@ -492,7 +491,7 @@ fn classify_entry<P: MatchPolicy>(
     })
 }
 
-fn observe_excluded(
+pub(super) fn observe_excluded(
     file: &File,
     name: &std::ffi::CStr,
     symlinks: SymlinkPolicy,
@@ -574,6 +573,12 @@ fn recycle_frame(stack: &mut Vec<Frame>, pool: &mut Vec<Frame>) {
     if let Some(frame) = stack.pop() {
         pool.push(frame);
     }
+}
+
+// Shared with targeted binding checks: a leaf include cannot bypass an
+// ancestor subtree exclusion or a directory outside the include language.
+pub(super) fn may_visit_directory(policy: &impl MatchPolicy, path: &Path) -> bool {
+    policy.may_descend(path) && !policy.excludes_subtree(path)
 }
 
 #[cfg(test)]

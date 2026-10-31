@@ -27,8 +27,12 @@ use crate::error::Result;
 use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
-use crate::pipeline::expr::eval::EvalContext;
-use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::expr::eval::{EvalContext, align_attrs_to_record, align_value_to_record};
+use crate::pipeline::expr::types::MetricDataPointType;
+use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr};
+use crate::pipeline::filter::data_points::{
+    filter_metric_data_points, remove_all_metric_data_points,
+};
 use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
@@ -181,6 +185,36 @@ fn restore_original_parent_payload(
     }
 
     Ok(())
+}
+
+/// Payload types in a Metrics OTAP batch that are parents of data-point sub-batches: the root
+/// metric record batch, resource/scope attributes, and metric-level attributes.
+///
+/// Data-point-level conditional branching does not split or modify these parent payloads, so
+/// they are removed from branch results before concatenation and preserved from the original.
+const DATA_POINT_PARENT_PAYLOAD_TYPES: [ArrowPayloadType; 5] = [
+    ArrowPayloadType::ResourceAttrs,
+    ArrowPayloadType::ScopeAttrs,
+    ArrowPayloadType::UnivariateMetrics,
+    ArrowPayloadType::MultivariateMetrics,
+    ArrowPayloadType::MetricAttrs,
+];
+
+/// Remove parent-level payload types from each branch result, leaving only data-point
+/// sub-batches (data points, dp attrs, exemplars, exemplar attrs).
+fn remove_data_point_parent_payloads(branch_results: &mut [OtapArrowRecords]) {
+    for branch_result in branch_results.iter_mut() {
+        for payload_type in DATA_POINT_PARENT_PAYLOAD_TYPES {
+            _ = branch_result.remove(payload_type);
+        }
+    }
+}
+
+/// Remove all data-point sub-batches from `otap_batch`, leaving only the parent payloads.
+fn remove_data_point_payloads(otap_batch: &mut OtapArrowRecords) {
+    for dp_type in MetricDataPointType::all() {
+        remove_all_metric_data_points(otap_batch, &dp_type);
+    }
 }
 
 #[async_trait(?Send)]
@@ -462,8 +496,217 @@ impl PipelineStage for ConditionalPipelineStage {
         Ok(final_result)
     }
 
+    async fn execute_on_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_ctx: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        // Track which data point rows been selected by previous branches, per data point type
+        // None means the dp type is absent
+        let mut already_selected: [Option<BooleanArray>; 4] = [const { None }; 4];
+        let mut any_present = false;
+        for dp_type in MetricDataPointType::all() {
+            if let Some(rb) = otap_batch.get(dp_type.payload_type()) {
+                already_selected[dp_type as usize] = Some(BooleanArray::new(
+                    BooleanBuffer::new_unset(rb.num_rows()),
+                    None,
+                ));
+                any_present = true;
+            }
+        }
+
+        if !any_present {
+            return Ok(otap_batch);
+        }
+
+        let mut branch_results =
+            Vec::with_capacity(self.branches.len() + usize::from(self.default_branch.is_some()));
+
+        for branch in &mut self.branches {
+            // Check if all present data point types have already been selected by previous
+            // branches. If so, we can skip processing current and subsequent branches
+            let all_selected = already_selected
+                .iter()
+                .all(|sel| sel.as_ref().is_none_or(|s| s.true_count() == s.len()));
+            if all_selected {
+                break;
+            }
+
+            // build the OTAP batch that will be the input to the branch pipeline by applying the
+            // condition predicate to data points not selected by previous branches:
+            let mut branch_otap_batch = otap_batch.clone();
+            let mut any_selected = false;
+            for dp_type in MetricDataPointType::all() {
+                let Some(already_sel) = &mut already_selected[dp_type as usize] else {
+                    // dp type not present in the batch
+                    continue;
+                };
+
+                let num_dp_rows = already_sel.len();
+                if already_sel.true_count() == num_dp_rows {
+                    // all rows already claimed by previous branches
+                    remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
+                    continue;
+                }
+
+                let eval_ctx = EvalContext::new_for_metrics_data_points(dp_type, session_ctx);
+                let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
+
+                match predicate_result {
+                    None => {
+                        // expression evaluated to None (e.g. missing field) -- treat as
+                        // all-false: no rows selected for this dp type in this branch
+                        remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
+                    }
+                    Some(mut scoped_value) => {
+                        match scoped_value.scope {
+                            DataScope::Attribute(attrs_id, _, _)
+                            | DataScope::AttributesAll(attrs_id) => {
+                                scoped_value = align_attrs_to_record(
+                                    scoped_value,
+                                    attrs_id,
+                                    &otap_batch,
+                                    &eval_ctx,
+                                )?
+                            }
+
+                            DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                                if let Some(dp_rb) = otap_batch.get(dp_type.payload_type()) {
+                                    scoped_value = align_value_to_record(
+                                        scoped_value,
+                                        RecordScope::Child(ChildRecordKind::DataPoint),
+                                        dp_rb,
+                                        &otap_batch,
+                                    )?
+                                }
+                            }
+                            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint))
+                            | DataScope::StaticScalar => {
+                                // no alignment needed
+                            }
+                        };
+
+                        let predicate_selection_vec =
+                            scoped_value_to_boolean_array(scoped_value.values, num_dp_rows)?;
+                        let branch_selection_vec =
+                            and(&predicate_selection_vec, &not(already_sel)?)?;
+
+                        // update already-selected tracking for this dp type
+                        *already_sel = or(already_sel, &predicate_selection_vec)?;
+
+                        if branch_selection_vec.true_count() == 0 {
+                            remove_all_metric_data_points(&mut branch_otap_batch, &dp_type);
+                        } else {
+                            let mut id_bitmap = self.id_bitmap_pool.acquire();
+                            let result = filter_metric_data_points(
+                                &mut branch_otap_batch,
+                                &dp_type,
+                                &branch_selection_vec,
+                                &mut id_bitmap,
+                            );
+                            self.id_bitmap_pool.release(id_bitmap);
+                            result?;
+                            any_selected = true;
+                        }
+                    }
+                }
+            }
+
+            if any_selected {
+                for stage in &mut branch.pipeline_stages {
+                    branch_otap_batch = stage
+                        .execute_on_metric_data_points(
+                            branch_otap_batch,
+                            session_ctx,
+                            config_options,
+                            task_context.clone(),
+                            exec_state,
+                        )
+                        .await?;
+                }
+                branch_results.push(branch_otap_batch);
+            }
+        }
+
+        // handle the default (else) branch for any data points that were not selected by
+        // some previous if/else if branch:
+        let has_remaining = MetricDataPointType::all().any(|dp_type| {
+            already_selected[dp_type as usize]
+                .as_ref()
+                .is_some_and(|sel| sel.true_count() < sel.len())
+        });
+
+        if has_remaining {
+            let mut default_otap_batch = otap_batch.clone();
+            let mut default_has_data = false;
+
+            for dp_type in MetricDataPointType::all() {
+                let Some(already_sel) = &already_selected[dp_type as usize] else {
+                    continue;
+                };
+
+                if already_sel.true_count() == already_sel.len() {
+                    // all rows were claimed by conditional branches
+                    remove_all_metric_data_points(&mut default_otap_batch, &dp_type);
+                } else if already_sel.true_count() == 0 {
+                    // no rows were claimed -- all rows go to default, no filtering needed
+                    default_has_data = true;
+                } else {
+                    let remaining_selection = not(already_sel)?;
+                    let mut id_bitmap = self.id_bitmap_pool.acquire();
+                    let result = filter_metric_data_points(
+                        &mut default_otap_batch,
+                        &dp_type,
+                        &remaining_selection,
+                        &mut id_bitmap,
+                    );
+                    self.id_bitmap_pool.release(id_bitmap);
+                    result?;
+                    default_has_data = true;
+                }
+            }
+
+            if default_has_data {
+                if let Some(default_branch) = self.default_branch.as_mut() {
+                    for stage in default_branch.iter_mut() {
+                        default_otap_batch = stage
+                            .execute_on_metric_data_points(
+                                default_otap_batch,
+                                session_ctx,
+                                config_options,
+                                task_context.clone(),
+                                exec_state,
+                            )
+                            .await?;
+                    }
+                }
+                branch_results.push(default_otap_batch);
+            }
+        }
+
+        if branch_results.is_empty() {
+            return Ok(otap_batch);
+        }
+
+        // concatenate the data-point batches from all branches back into the original OTAP batch
+        // while preserving all non-dp batches from original (e.g. preserving dp parents: metrics,
+        // resource/scope attrs and metric attrs).
+        remove_data_point_parent_payloads(&mut branch_results);
+        let concatenated = concatenate_metrics(&mut branch_results, ConcatOptions::preserve_ids())?;
+        remove_data_point_payloads(&mut otap_batch);
+        otap_batch.replace_batches_from(concatenated)?;
+
+        Ok(otap_batch)
+    }
+
     fn supports_exec_on(&self, record_type: &RecordType) -> bool {
-        matches!(record_type, RecordType::Attributes | RecordType::Signal(_))
+        matches!(
+            record_type,
+            RecordType::Attributes | RecordType::Signal(_) | RecordType::DataPoint(_)
+        )
     }
 
     // Propagate parent splitting required by any nested conditional branch.

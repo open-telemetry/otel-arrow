@@ -32,7 +32,7 @@ impl AttributeEnum for SignalType {
 pub enum Outcome {
     /// The operation was accepted and completed at the measured boundary.
     Success,
-    /// The operation was attempted but did not complete because of an error.
+    /// The operation was attempted but did not complete successfully at the measured boundary.
     Failure,
     /// The operation was explicitly not accepted because of validation, policy,
     /// admission, or capacity.

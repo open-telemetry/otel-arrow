@@ -34,6 +34,12 @@ fn build_guest_wasm(plugin_dir: &str, artifact: &str) -> PathBuf {
 
     let status = Command::new("rustup")
         .current_dir(&guest_dir)
+        // Host coverage flags and wrappers must not instrument the WASM
+        // guest, whose target does not provide the profiler runtime.
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .args([
             "run",
             "nightly",

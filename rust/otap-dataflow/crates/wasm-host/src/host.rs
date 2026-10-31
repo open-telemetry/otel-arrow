@@ -22,6 +22,7 @@ use crate::processor::WASM_PROCESSOR_URN;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_telemetry::Level;
+use otel_arrow_dfe_wasm_guest_sdk::HOST_SERVICES_ABI_VERSION;
 
 // Emit guest-forwarded telemetry under the same component scope (URN +
 // target) that `processor.rs` uses for native `wasm_processor` events, so a
@@ -40,7 +41,7 @@ const UNATTRIBUTED_NODE: &str = "unattributed";
 pub(crate) const WASI_CLOCK_WAIT_UNSUPPORTED: &str = "WASI clock waits are unavailable to plugins";
 
 /// Maximum number of distinct guest-created counter names accepted per
-/// plugin instance. See the `counter-add` doc comment in `wit/plugin.wit`
+/// plugin instance. See the `counter-add` doc comment in the SDK WIT package
 /// for the enforced policy: calls for names beyond this bound are accepted
 /// (they do not trap) but silently no-op.
 const MAX_GUEST_COUNTERS: usize = 16;
@@ -48,8 +49,8 @@ const MAX_GUEST_COUNTERS: usize = 16;
 const MAX_GUEST_COUNTER_NAME_LEN: usize = 256;
 /// Maximum length of a guest `log` message retained by the host. Longer
 /// messages are truncated (not dropped, so operators keep partial context)
-/// before being forwarded to telemetry. See the `log` doc comment in
-/// `wit/plugin.wit`.
+/// before being forwarded to telemetry. See the `log` doc comment in the SDK
+/// WIT package.
 ///
 /// Transient argument copies are bounded separately by
 /// [`MAX_GUEST_HOSTCALL_BYTES`] and [`GuestCopyBudget`].
@@ -106,12 +107,6 @@ const MAX_GUEST_CORE_TABLE_ELEMENTS: usize = MAX_GUEST_TABLE_ELEMENTS / MAX_GUES
 /// accounting, and cooperative execution as needed. This cap does not
 /// guarantee pipeline responsiveness.
 const MAX_KERNEL_CALLS_PER_GUEST_CALL: u64 = 100_000;
-/// Version of the host-services ABI this host implements, returned by
-/// `host-services.host-abi-version`. Guests can branch on (or reject) it from
-/// `initialize`. Bump whenever the observable behavior of an existing
-/// `host-services` operation changes; adding a new operation is already a
-/// world-level change that old guests link against unchanged.
-const HOST_SERVICES_ABI_VERSION: u32 = 2;
 /// Sustained call rate (calls per second) allowed through the shared
 /// `log`/`counter-add`/`get-config` token bucket, once the burst allowance is
 /// exhausted. See [`HostServiceRateLimiter`].
@@ -780,7 +775,7 @@ impl HostState {
 
         if self.guest_counters.len() >= MAX_GUEST_COUNTERS {
             // Cardinality bound reached: silently no-op per the documented
-            // policy in `wit/plugin.wit` rather than trapping the guest. The
+            // policy in the SDK WIT package rather than trapping the guest. The
             // rejection is still visible to operators through the
             // `guest_counter_add_rejected_cardinality` metric.
             self.counter_add_rejected_cardinality += 1;

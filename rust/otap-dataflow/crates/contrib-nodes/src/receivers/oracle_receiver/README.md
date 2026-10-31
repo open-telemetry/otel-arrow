@@ -34,6 +34,11 @@ exactly once and does not implement every capability proposed in the
 
 ## Getting Started
 
+For startup-only Azure Key Vault credentials, see the
+[AKV Basic Auth provider](../../../../contrib-extensions/src/azure_key_vault_user_pass_auth/README.md)
+and [complete AKV pipeline](../../../../../configs/oracle-akv-console.yaml).
+This uses the same `basic_auth_provider` binding, without local password files.
+
 1. Choose [snapshot polling](#snapshot-mode) for periodic full results, or prepare
    stable rows with a unique, commit-ordered scalar or composite cursor. Read
    [Delivery guarantees](#delivery-guarantees) before choosing a timestamp column.

@@ -4,13 +4,13 @@
 #[cfg(test)]
 mod tests {
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, ValueKind};
+    use otel_arrow_dfe_config::context::transport_policy::{
         CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
         HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector, PropagationSelectorType,
     };
-    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy;
+    use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy;
 
     // -- Helper functions for tests ------------------------------------------
 
