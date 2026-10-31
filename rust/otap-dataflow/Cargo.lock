@@ -4111,9 +4111,9 @@ dependencies = [
 
 [[package]]
 name = "geneva-uploader"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca9af86a5e39e8c97c170e4b02446ba5e79c99582e92014197e4e0c52c57e2f"
+checksum = "055717a557b5bb391e7c8cd3c71f2ec3a5ebc1f6e2ebc15f64b8dde66d11dceb"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -4126,7 +4126,7 @@ dependencies = [
  "opentelemetry-proto",
  "otel-arrow-dfe-pdata-views",
  "p12-keystore",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",

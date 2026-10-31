@@ -20,7 +20,8 @@ and Workload Identity Federation.
 
 Tokens are cached and refreshed ahead of expiry in a background task, concurrent
 cache misses are coalesced onto a single credential call, and pipeline startup is
-held until the first token is published.
+held until the first token is published. Token refresh is non-blocking; at most one
+Azure Arc request will be made at a time, per extension.
 
 This README is the configuration reference for the extension. Nodes that consume
 the capability (for example the
@@ -106,7 +107,33 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 
 `startup_timeout` accepts human-readable durations such as `30s` or `1m`.
 
-### Authentication methods
+### Managed identity execution bounds
+
+Managed identity credential construction and acquisition run via `spawn_blocking`
+on the pipeline runtime, using its handle to drive the async SDK call.
+One lock stores the cached credential and admits requests. It is acquired before a
+task is submitted and held until the blocking task finishes, even if
+the task awaiting it is cancelled. This keeps synchronous Azure Arc agent
+detection and challenge-file access off the thread-per-core executor without
+allowing cancellation or repeated refresh attempts to create unbounded work.
+
+`startup_timeout` bounds how long pipeline startup waits for the first token;
+it does not terminate an in-progress acquisition. Blocking work cannot be
+forcibly cancelled safely. The Azure SDK version used by this crate
+configures Arc acquisition with six retries and a 72-second retry budget, while
+its default HTTP transport uses a 20-second connection timeout and a 60-second
+read timeout per attempt. Retry elapsed time is checked between attempts, so
+the budget is not a hard wall-clock deadline for the complete operation.
+Synchronous operating-system filesystem calls also have no user-space
+cancellation mechanism.
+
+If startup or shutdown cancels an acquisition, the blocking task continues until the
+SDK call returns and retains admission in the meantime. Subsequent attempts
+wait for that task instead of starting another one. As with other blocking I/O,
+pipeline runtime teardown waits for running blocking tasks, so a stuck SDK call
+can delay shutdown.
+
+## Authentication methods
 
 | `method` | Aliases | Credential | Notes |
 | --- | --- | --- | --- |
