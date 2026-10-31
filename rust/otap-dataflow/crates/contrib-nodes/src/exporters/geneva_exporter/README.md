@@ -167,6 +167,12 @@ The default `runtime_metrics: basic` omits these metrics. Set
 measurements. To opt in only this exporter, set the corresponding
 `policies.telemetry` fields: `messages`, `duration`, `item_counts`, and `size`.
 
+The dashboard uses shared attempted-message counters to show successful export
+attempt totals, attempts per second, and interval success percentage. Retries
+and preparation-only outcomes, including empty inputs, may count as attempts.
+These measurements describe node-local delivery outcomes, not confirmed backend
+ingestion. Enable exporter message telemetry to populate these dashboard fields.
+
 Geneva LZ4 chunking is part of the backend's application payload format, so
 `payload.size` measures the encoded batch after LZ4 encoding. It excludes HTTP
 headers, framing, TLS overhead, and any other transport-layer amplification.

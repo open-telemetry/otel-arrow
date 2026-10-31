@@ -28,7 +28,8 @@ function buildRenderedStructureSignature(
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
         .join(",");
       const nodeType = node.attrs?.["node.type"] || "";
-      return `${node.id}|${nodeType}|${ports}`;
+      const nodeUrn = node.attrs?.["node.urn"] || "";
+      return `${node.id}|${nodeType}|${nodeUrn}|${ports}`;
     })
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
   nodeParts.forEach((part) => {

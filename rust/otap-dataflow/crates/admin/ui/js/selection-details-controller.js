@@ -55,6 +55,8 @@ export function createSelectionDetailsController({
   renderNodeMetricTable,
   calcRate,
   buildNodeSummary,
+  getOtlpReceiverRequestPoint = () => null,
+  getExporterAttemptPoint = () => null,
   escapeHtml,
   setGlobalHover,
   destroyNodeCharts,
@@ -494,8 +496,51 @@ export function createSelectionDetailsController({
     const safeInRate = escapeHtml(formatRateWithUnit(summary.inRate, "msg"));
     const safeOutRate = escapeHtml(formatRateWithUnit(summary.outRate, "msg"));
     const safeErrorRate = escapeHtml(formatRateWithUnit(summary.errorRate, "error"));
+    const isOtlpReceiver = node.attrs["node.urn"] === "urn:otel:receiver:otlp";
+    const requestPoint = isOtlpReceiver ? getOtlpReceiverRequestPoint(node.id) : null;
+    const requestSummaryHtml = isOtlpReceiver ? `
+        <div class="card rounded-xl p-3">
+          <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">External requests received</div>
+          <div class="text-lg font-semibold text-slate-200">${escapeHtml(
+            requestPoint ? formatValueWithUnit(requestPoint.total, "request") : "n/a"
+          )}</div>
+          <div class="text-xs text-slate-400">${escapeHtml(
+            formatRateWithUnit(requestPoint?.value, "req")
+          )}</div>
+          <div class="mt-1 text-xs text-slate-400">Accepted: ${escapeHtml(
+            requestPoint ? formatValueWithUnit(requestPoint.accepted, "request") : "n/a"
+          )}; rejected: ${escapeHtml(
+            requestPoint ? formatValueWithUnit(requestPoint.rejected, "request") : "n/a"
+          )}</div>
+        </div>
+    ` : "";
+    const isExporter = type.toLowerCase() === "exporter";
+    const attemptPoint = isExporter ? getExporterAttemptPoint(node.id) : null;
+    const attemptSummaryHtml = isExporter ? `
+        <div class="card rounded-xl p-3" title="Shared node-local export attempts. Retries and preparation-only outcomes may count; not proof of backend ingestion. Interval success percentage includes failures and refusals in its denominator.">
+          <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">Successful export attempts</div>
+          <div class="text-lg font-semibold text-slate-200">${escapeHtml(
+            attemptPoint ? formatValueWithUnit(attemptPoint.success, "attempt") : "n/a"
+          )}</div>
+          <div class="text-xs text-slate-400">${escapeHtml(
+            formatRateWithUnit(attemptPoint?.value, "attempt")
+          )}</div>
+          <div class="mt-1 text-xs text-slate-400">Success: ${escapeHtml(
+            Number.isFinite(attemptPoint?.successPercent)
+              ? `${attemptPoint.successPercent.toFixed(1)}%` : "n/a"
+          )} (interval)</div>
+          <div class="mt-1 text-xs text-slate-400">Failed: ${escapeHtml(
+            attemptPoint ? formatValueWithUnit(attemptPoint.failure, "attempt") : "n/a"
+          )}; refused: ${escapeHtml(
+            attemptPoint ? formatValueWithUnit(attemptPoint.refused, "attempt") : "n/a"
+          )}</div>
+          ${!attemptPoint ? '<div class="mt-1 text-xs text-slate-400">Requires shared exporter metrics; enable policies.telemetry.messages: true if disabled.</div>' : ""}
+        </div>
+    ` : "";
     const summaryHtml = `
-      <div class="mt-4 grid gap-3 sm:grid-cols-3">
+      <div class="mt-4 grid gap-3 sm:grid-cols-3 ${isOtlpReceiver || isExporter ? "lg:grid-cols-4" : ""}">
+        ${requestSummaryHtml}
+        ${attemptSummaryHtml}
         <div class="card rounded-xl p-3">
           <div class="text-[0.6rem] uppercase tracking-wide text-slate-400">In rate</div>
           <div class="text-lg font-semibold text-slate-200">${safeInRate}</div>

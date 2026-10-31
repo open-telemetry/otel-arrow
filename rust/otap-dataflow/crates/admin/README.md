@@ -87,6 +87,29 @@ Assets are embedded in the binary via `include_dir` and served by
 For operational semantics, metric-name contracts, graph rules, and testing
 guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
 
+### Exporter attempt metrics
+
+Exporter topology nodes show successful export attempt totals and attempts per
+second from the shared `exporter.attempted.messages` counters. Node details also
+show interval success percentage and cumulative failure/refusal totals. These
+fields work with any exporter that emits the shared metrics.
+
+Enable message telemetry on the exporter node:
+
+```yaml
+policies:
+  telemetry:
+    messages: true
+```
+
+Alternatively, use pipeline `policies.telemetry.runtime_metrics: normal` or
+`detailed`. The `basic` level does not enable these shared counters. Missing
+counters display `n/a`, not zero. Success percentage is unavailable for idle
+intervals, new counter buckets, and resets until a baseline is established.
+
+Attempts describe node-local delivery outcomes, not confirmed backend ingestion.
+Retries and preparation-only outcomes, including empty inputs, may count.
+
 ## Security
 
 ### Security controls currently in place
