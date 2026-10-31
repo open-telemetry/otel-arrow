@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: "Migrate clickhouse exporter metrics to enum attributes"
+issues: [3530]
+subtext: |
+  Migration: Replace `otap.exporter.clickhouse.{log,trace}_rows_written` with `exporter.clickhouse.rows.written` (by `signal`). Replace `otap.exporter.clickhouse.*_batches` with `batches.transformed` (by `path`). Replace `exporter.exports.*` with `exporter.attempted.*` boundary metrics.
