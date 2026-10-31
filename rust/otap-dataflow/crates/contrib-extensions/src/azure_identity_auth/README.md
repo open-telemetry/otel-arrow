@@ -20,13 +20,8 @@ and Workload Identity Federation.
 
 Tokens are cached and refreshed ahead of expiry in a background task, concurrent
 cache misses are coalesced onto a single credential call, and pipeline startup is
-held until the first token is published.
-
-Managed identity credential construction and acquisition run through a bounded
-blocking-work boundary. This keeps synchronous environment checks and
-challenge-file access performed by Azure Arc credentials off the thread-per-core
-pipeline executor. One acquisition is admitted per extension instance, and the
-credential is reused across refreshes.
+held until the first token is published. Token refresh is non-blocking; at most one
+Azure Arc request will be made at a time, per extension.
 
 This README is the configuration reference for the extension. Nodes that consume
 the capability (for example the
