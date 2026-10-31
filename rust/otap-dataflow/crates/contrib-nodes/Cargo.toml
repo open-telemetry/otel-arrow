@@ -232,6 +232,7 @@ resource-validator = []
 # Exporters.
 azure-data-explorer = [
     "dep:chrono",
+    "dep:flate2",
     "dep:http",
     "dep:httpdate",
     "dep:humantime-serde",
@@ -299,6 +300,7 @@ chrono.workspace = true
 clap.workspace = true
 insta = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
+flume.workspace = true
 otel-arrow-contrib-data-engine-expressions.workspace = true
 otel-arrow-contrib-data-engine-recordset.workspace = true
 humantime.workspace = true
