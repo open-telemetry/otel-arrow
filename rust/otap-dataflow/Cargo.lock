@@ -1277,7 +1277,6 @@ dependencies = [
  "bytes",
  "core_affinity",
  "criterion",
- "fluke-hpack",
  "flume",
  "futures",
  "futures-channel",
