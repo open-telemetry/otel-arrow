@@ -6,17 +6,24 @@
 //! Projection forms one output from one input plus values the node produces.
 //! Merge forms one output from several inputs.
 
-use super::{ContextDomain, Metadata, PeerAddrMerger};
+use super::{ContextDomain, ContextError, Metadata, PeerAddrMerger};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
+use std::sync::Arc;
 
 /// Compiled handle for one entry a node declared it produces.
 ///
-/// Obtain once during node construction from [`ProjectionBinding::produced`];
-/// handles are valid only with the binding that issued them.
+/// Obtain once during node construction from [`ProjectionBinding::produced`].
+/// A handle records the binding that issued it, so another binding rejects it
+/// instead of writing a different entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProducedEntry(usize);
+pub struct ProducedEntry {
+    /// Identity of the issuing binding's shared target list.
+    binding: usize,
+    /// Position in the issuing binding's sorted target list.
+    index: usize,
+}
 
 /// One value supplied for a produced entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +46,9 @@ struct ProducedTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionBinding {
     /// Declared produced entries, sorted by domain and name and unique.
-    produced: Box<[ProducedTarget]>,
+    ///
+    /// Shared so clones of the binding accept the same handles.
+    produced: Arc<[ProducedTarget]>,
 }
 
 impl ProjectionBinding {
@@ -52,6 +61,14 @@ impl ProjectionBinding {
                 .map(|(domain, name)| ProducedTarget { domain, name })
                 .collect(),
         }
+    }
+
+    /// Identifies this compiled binding by its shared target-list allocation.
+    ///
+    /// Unique among live bindings and shared by clones. A handle kept after
+    /// every clone of its binding is dropped is not detected.
+    fn identity(&self) -> usize {
+        Arc::as_ptr(&self.produced).cast::<()>().addr()
     }
 
     /// Returns the handle for an entry this node declared it produces.
@@ -74,7 +91,10 @@ impl ProjectionBinding {
                 ),
             })?;
         match domain {
-            ContextDomain::TransportHeader => Ok(ProducedEntry(index)),
+            ContextDomain::TransportHeader => Ok(ProducedEntry {
+                binding: self.identity(),
+                index,
+            }),
             ContextDomain::AuthorizedIdentity => Err(Error::InvalidUserConfig {
                 error: format!(
                     "produced context entry `{entry}` cannot be written; only transport-header entries can be produced"
@@ -90,22 +110,25 @@ impl ProjectionBinding {
     /// so produced values do not re-evaluate composites. Without produced values
     /// the output equals the input.
     ///
-    /// # Panics
-    ///
-    /// Panics if a produced value carries a handle issued by another binding.
-    #[must_use]
-    pub fn form(&self, input: &Metadata, produced: &[ProducedValue<'_>]) -> Metadata {
+    /// Fails with [`ContextError::ForeignProducedEntry`] when a value carries a
+    /// handle issued by another binding.
+    pub fn form(
+        &self,
+        input: &Metadata,
+        produced: &[ProducedValue<'_>],
+    ) -> Result<Metadata, ContextError> {
         let mut output = input.clone();
         if produced.is_empty() {
-            return output;
+            return Ok(output);
         }
+        let binding = self.identity();
         let mut headers = output.take_transport_headers().unwrap_or_default();
         for value in produced {
-            let target = self
-                .produced
-                .get(value.entry.0)
-                .expect("produced entry handle was issued by this projection binding");
-            debug_assert_eq!(target.domain, ContextDomain::TransportHeader);
+            // Issuance admits only transport-header targets of this binding.
+            let target = (value.entry.binding == binding)
+                .then(|| self.produced.get(value.entry.index))
+                .flatten()
+                .ok_or(ContextError::ForeignProducedEntry)?;
             headers.push(TransportHeader::new(
                 target.name.clone(),
                 value.kind,
@@ -113,7 +136,7 @@ impl ProjectionBinding {
             ));
         }
         output.set_transport_headers(headers);
-        output
+        Ok(output)
     }
 }
 
@@ -139,8 +162,10 @@ impl MergeBinding {
     /// Merges every input into one output.
     ///
     /// Equivalent to pushing each input into [`Self::merger`] and finishing.
-    #[must_use]
-    pub fn merge<'a>(&self, inputs: impl IntoIterator<Item = &'a Metadata>) -> Metadata {
+    pub fn merge<'a>(
+        &self,
+        inputs: impl IntoIterator<Item = &'a Metadata>,
+    ) -> Result<Metadata, ContextError> {
         let mut merger = self.merger();
         for input in inputs {
             merger.push(input);
@@ -166,13 +191,15 @@ impl MetadataMerger {
     }
 
     /// Returns the merged metadata.
-    #[must_use]
-    pub fn finish(self) -> Metadata {
+    ///
+    /// Failures are reported here rather than per input. The existing merge
+    /// always succeeds.
+    pub fn finish(self) -> Result<Metadata, ContextError> {
         let mut output = Metadata::default();
         if let Some(peer) = self.peer.finish() {
             output.set_peer_addr(peer);
         }
-        output
+        Ok(output)
     }
 }
 
@@ -274,14 +301,16 @@ mod tests {
             populated_metadata(None),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            let actual = binding.form(
-                &input,
-                &[ProducedValue {
-                    entry: partition_entry,
-                    kind: ValueKind::Text,
-                    bytes: b"0",
-                }],
-            );
+            let actual = binding
+                .form(
+                    &input,
+                    &[ProducedValue {
+                        entry: partition_entry,
+                        kind: ValueKind::Text,
+                        bytes: b"0",
+                    }],
+                )
+                .expect("projection forms");
             let expected =
                 legacy_partition_update(&input, &[(&partition, ValueKind::Text, b"0".as_slice())]);
             assert_eq!(actual, expected);
@@ -294,21 +323,23 @@ mod tests {
             assert_eq!(header.value.bytes, b"0");
             assert_eq!(header.wire_name(), "partition");
 
-            let actual = binding.form(
-                &input,
-                &[
-                    ProducedValue {
-                        entry: partition_entry,
-                        kind: ValueKind::Binary,
-                        bytes: &514i64.to_le_bytes(),
-                    },
-                    ProducedValue {
-                        entry: shard_entry,
-                        kind: ValueKind::Text,
-                        bytes: b"east",
-                    },
-                ],
-            );
+            let actual = binding
+                .form(
+                    &input,
+                    &[
+                        ProducedValue {
+                            entry: partition_entry,
+                            kind: ValueKind::Binary,
+                            bytes: &514i64.to_le_bytes(),
+                        },
+                        ProducedValue {
+                            entry: shard_entry,
+                            kind: ValueKind::Text,
+                            bytes: b"east",
+                        },
+                    ],
+                )
+                .expect("projection forms");
             let expected = legacy_partition_update(
                 &input,
                 &[
@@ -347,11 +378,12 @@ mod tests {
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            assert_eq!(binding.form(&input, &[]), input);
+            assert_eq!(binding.form(&input, &[]), Ok(input));
         }
         assert_eq!(
             binding
                 .form(&Metadata::default(), &[])
+                .expect("projection forms")
                 .transport_headers()
                 .map(|headers| headers.len()),
             None
@@ -382,6 +414,37 @@ mod tests {
             panic!("identity entries cannot be produced");
         };
         assert!(error.contains("only transport-header entries can be produced"));
+    }
+
+    /// Scenario: a node supplies a handle issued by another node's binding whose index is also valid here.
+    /// Guarantees: form fails with ForeignProducedEntry instead of writing this binding's entry at that index, while clones accept handles.
+    #[test]
+    fn projection_rejects_foreign_handles() {
+        let partition = name("partition");
+        let binding =
+            ProjectionBinding::new(vec![(ContextDomain::TransportHeader, partition.clone())]);
+        let other = ProjectionBinding::new(vec![(ContextDomain::TransportHeader, name("tenant"))]);
+        let foreign = other
+            .produced(ContextDomain::TransportHeader, &name("tenant"))
+            .expect("other handle");
+        let value = |entry| ProducedValue {
+            entry,
+            kind: ValueKind::Text,
+            bytes: b"0",
+        };
+        assert_eq!(
+            binding.form(&Metadata::default(), &[value(foreign)]),
+            Err(ContextError::ForeignProducedEntry)
+        );
+
+        let own = binding
+            .produced(ContextDomain::TransportHeader, &partition)
+            .expect("own handle");
+        assert_eq!(
+            binding.clone().form(&Metadata::default(), &[value(own)]),
+            binding.form(&Metadata::default(), &[value(own)])
+        );
+        assert!(binding.form(&Metadata::default(), &[value(own)]).is_ok());
     }
 
     /// Scenario: batch-style merges see no inputs, one input, unanimous peers, distinct peers, or a peerless input.
@@ -415,7 +478,7 @@ mod tests {
                 expected.set_peer_addr(peer_addr);
             }
 
-            let merged = binding.merge(&inputs);
+            let merged = binding.merge(&inputs).expect("merge forms");
             assert_eq!(merged, expected, "inputs {peers:?}");
             assert!(merged.transport_headers().is_none());
             assert!(merged.authorized_identity_entries().is_none());
@@ -425,7 +488,11 @@ mod tests {
             for input in &inputs {
                 merger.push(input);
             }
-            assert_eq!(merger.finish(), expected, "incremental inputs {peers:?}");
+            assert_eq!(
+                merger.finish(),
+                Ok(expected),
+                "incremental inputs {peers:?}"
+            );
         }
     }
 }

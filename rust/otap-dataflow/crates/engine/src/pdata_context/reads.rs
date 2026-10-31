@@ -592,16 +592,20 @@ mod tests {
         for roles in [vec![], vec!["a".to_owned(), "b".to_owned()]] {
             let identity =
                 AuthorizedIdentity::new().with_claim("roles", ClaimValue::Many(roles.clone()));
-            let (metadata, _) = arrival.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
-                identity: Some(&identity),
-                peer: None,
-            });
-            let (mismatch, _) = arrival.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
-                identity: Some(&identity),
-                peer: None,
-            });
+            let (metadata, _) = arrival
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
+            let (mismatch, _) = arrival
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
             for selector in &selectors {
                 let read = bindings.value(selector).expect("declared read");
                 let selected = read.read(&metadata).expect("present even for empty claims");
@@ -718,15 +722,19 @@ mod tests {
             .collect(),
             &[],
         );
-        let (mut metadata, _) = bindings.arrival().expect("arrival").form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[
-                ("x-tenant", b"first"),
-                ("x-token-bin", b"\xff\0"),
-                ("x-tenant", b"last"),
-            ]),
-            identity: None,
-            peer: None,
-        });
+        let (mut metadata, _) = bindings
+            .arrival()
+            .expect("arrival")
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[
+                    ("x-tenant", b"first"),
+                    ("x-token-bin", b"\xff\0"),
+                    ("x-tenant", b"last"),
+                ]),
+                identity: None,
+                peer: None,
+            })
+            .expect("arrival forms");
         let mut headers = metadata.take_transport_headers().expect("captured headers");
         headers.push(TransportHeader::text(name("partition"), b"produced"));
         metadata.set_transport_headers(headers);
@@ -818,7 +826,7 @@ mod tests {
             peer: None,
         };
         let binding = bindings.arrival().expect("arrival");
-        let (metadata, _) = binding.form(&arrival);
+        let (metadata, _) = binding.form(&arrival).expect("arrival forms");
         for selector in &selectors {
             let read = bindings.value(selector).expect("declared read");
             let projection = match &selector.target {
@@ -877,29 +885,35 @@ mod tests {
                 );
             }
 
-            let (missing, _) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[
-                    ("x-tenant", b"acme"),
-                    ("environment", b"production"),
-                ]),
-                identity: None,
-                peer: None,
-            });
+            let (missing, _) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[
+                        ("x-tenant", b"acme"),
+                        ("environment", b"production"),
+                    ]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(read.read(&missing).is_none());
-            let (missing, _) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: Some(&identity),
-                peer: None,
-            });
+            let (missing, _) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(read.read(&missing).is_none());
-            let (mismatch, _) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[
-                    ("x-tenant", b"acme"),
-                    ("environment", b"development"),
-                ]),
-                identity: Some(&identity),
-                peer: None,
-            });
+            let (mismatch, _) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[
+                        ("x-tenant", b"acme"),
+                        ("environment", b"development"),
+                    ]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(read.read(&mismatch).is_none());
 
             let mut changed = composite.clone();
@@ -1180,11 +1194,15 @@ mod tests {
         );
         let secret = "private-subject";
         let identity = AuthorizedIdentity::new().with_subject(secret);
-        let (metadata, _) = bindings.arrival().expect("arrival").form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: Some(&identity),
-            peer: None,
-        });
+        let (metadata, _) = bindings
+            .arrival()
+            .expect("arrival")
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: Some(&identity),
+                peer: None,
+            })
+            .expect("arrival forms");
         for (selector, member_name) in selectors.iter().zip(["subject", "account"]) {
             let selected = values(
                 bindings

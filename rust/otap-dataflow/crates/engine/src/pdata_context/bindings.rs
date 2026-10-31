@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextMaterializationPlan, HeadersRead,
-    MergeBinding, Metadata, ProjectionBinding, ValueRead,
+    CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextError,
+    ContextMaterializationPlan, HeadersRead, MergeBinding, Metadata, ProjectionBinding, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -57,8 +57,12 @@ pub struct ArrivalBinding {
 
 impl ArrivalBinding {
     /// Captures headers and identity, records the peer, then materializes composites.
-    #[must_use]
-    pub fn form(&self, arrival: &Arrival<'_>) -> (Metadata, Option<CaptureStats>) {
+    ///
+    /// The existing arrival operations always succeed.
+    pub fn form(
+        &self,
+        arrival: &Arrival<'_>,
+    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         Self::form_with(
             self.header_capture.as_ref(),
             self.authorized_identity_capture.as_ref(),
@@ -72,7 +76,7 @@ impl ArrivalBinding {
         identity_policy: Option<&AuthorizedIdentityPolicy>,
         materialization: Option<&ContextMaterializationPlan>,
         arrival: &Arrival<'_>,
-    ) -> (Metadata, Option<CaptureStats>) {
+    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         let mut metadata = Metadata::default();
         let stats = capture.and_then(|policy| {
             let mut headers = TransportHeaders::new();
@@ -96,7 +100,7 @@ impl ArrivalBinding {
         if let Some(plan) = materialization {
             metadata.materialize_context(plan);
         }
-        (metadata, stats)
+        Ok((metadata, stats))
     }
 }
 
@@ -366,11 +370,13 @@ mod tests {
             expected.set_peer_addr(peer);
             expected.materialize_context(&binding.materialization);
 
-            let (actual, stats) = binding.form(&Arrival {
-                headers: input,
-                identity: None,
-                peer: Some(peer),
-            });
+            let (actual, stats) = binding
+                .form(&Arrival {
+                    headers: input,
+                    identity: None,
+                    peer: Some(peer),
+                })
+                .expect("arrival forms");
             assert_eq!(actual, expected);
             assert_eq!(stats, expected_stats);
             assert_eq!(
@@ -431,11 +437,13 @@ mod tests {
             ..Default::default()
         };
         for identity in [Some(&identity as &dyn Claims), None] {
-            let (actual, stats) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[("tenant", b"untrusted")]),
-                identity,
-                peer: None,
-            });
+            let (actual, stats) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[("tenant", b"untrusted")]),
+                    identity,
+                    peer: None,
+                })
+                .expect("arrival forms");
             let mut expected = Metadata::default();
             if let Some(identity) = identity {
                 expected.capture_authorized_identity(&policy, identity);
@@ -485,11 +493,13 @@ mod tests {
             .expect("materialization plan"),
             ..Default::default()
         };
-        let (mut metadata, stats) = binding.form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: None,
-            peer: None,
-        });
+        let (mut metadata, stats) = binding
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: None,
+                peer: None,
+            })
+            .expect("arrival forms");
         assert!(stats.is_none());
         let entry = metadata
             .materialized_context()
@@ -541,15 +551,17 @@ mod tests {
                     materialization: policy.materialization_plan().clone(),
                     ..Default::default()
                 };
-                let (metadata, _) = arrival.form(&Arrival {
-                    headers: ArrivalHeaders::Pairs(&[
-                        ("X-Tenant", b"first"),
-                        ("x-tenant", b"second"),
-                        ("X-Token-bin", b"\x00\xff"),
-                    ]),
-                    identity: None,
-                    peer: None,
-                });
+                let (metadata, _) = arrival
+                    .form(&Arrival {
+                        headers: ArrivalHeaders::Pairs(&[
+                            ("X-Tenant", b"first"),
+                            ("x-tenant", b"second"),
+                            ("X-Token-bin", b"\x00\xff"),
+                        ]),
+                        identity: None,
+                        peer: None,
+                    })
+                    .expect("arrival forms");
                 let expected = policy
                     .propagate_materialized(
                         metadata.transport_headers().expect("headers"),

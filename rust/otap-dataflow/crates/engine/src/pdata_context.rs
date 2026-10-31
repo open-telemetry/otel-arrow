@@ -13,6 +13,8 @@
 mod bindings;
 /// Node-facing projection and merge over existing message metadata.
 mod derived;
+/// Runtime failures of context binding operations.
+mod error;
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
 /// Materializes selected composites at runtime.
@@ -30,6 +32,7 @@ pub use bindings::{
     SinkBinding,
 };
 pub use derived::{MergeBinding, MetadataMerger, ProducedEntry, ProducedValue, ProjectionBinding};
+pub use error::ContextError;
 pub use layout::*;
 pub use materialization::*;
 pub use metadata::{
