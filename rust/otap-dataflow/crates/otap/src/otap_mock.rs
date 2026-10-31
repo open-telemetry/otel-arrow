@@ -221,18 +221,28 @@ impl ArrowTracesService for ArrowTracesServiceMock {
     }
 }
 
-/// creates a basic batch arrow record to use for testing
+/// create OTAP batch with `num_rows` rows
 #[must_use]
-pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapArrowRecords {
+pub fn create_otap_batch_with_rows(
+    batch_id: i64,
+    payload_type: ArrowPayloadType,
+    num_rows: usize,
+) -> OtapArrowRecords {
+    assert!(num_rows > 0, "num_rows must be > 0");
+    let base = u16::try_from(batch_id).expect("batch_id must fit in u16");
+    let ids = UInt16Array::from_iter_values((0..num_rows).map(|i| {
+        let offset = u16::try_from(i).expect("row index must fit in u16");
+        base.checked_add(offset)
+            .expect("batch_id + row index must fit in u16")
+    }));
+
     let record_batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new(
             consts::ID,
             DataType::UInt16,
             true,
         )])),
-        vec![Arc::new(UInt16Array::from_iter_values(vec![
-            batch_id as u16,
-        ]))],
+        vec![Arc::new(ids)],
     )
     .expect("failed to build test OTAP batch record");
 
@@ -242,12 +252,60 @@ pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapA
         ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
         ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
         ArrowPayloadType::UnivariateMetrics => OtapArrowRecords::Metrics(Metrics::default()),
-        _ => {
-            panic!("unexpected payload_type")
-        }
+        _ => panic!("unexpected payload_type"),
     };
 
     otap_batch.set(payload_type, record_batch).expect("valid");
 
     otap_batch
+}
+
+/// creates a basic batch arrow record
+#[must_use]
+pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapArrowRecords {
+    create_otap_batch_with_rows(batch_id, payload_type, 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: create_otap_batch_with_rows builds a multi-row OTAP batch
+    /// with sequential IDs starting at batch_id for each supported payload type.
+    /// Guarantees: the resulting batch contains exactly num_rows rows for the
+    /// requested payload type, so benchmark workloads have the intended size.
+    #[test]
+    fn test_create_otap_batch_with_rows_row_count() {
+        for payload_type in [
+            ArrowPayloadType::Logs,
+            ArrowPayloadType::Spans,
+            ArrowPayloadType::UnivariateMetrics,
+        ] {
+            let batch = create_otap_batch_with_rows(1, payload_type, 50);
+            let record_batch = batch.get(payload_type).expect("payload must be set");
+            assert_eq!(record_batch.num_rows(), 50);
+        }
+    }
+
+    /// Scenario: create_otap_batch delegates to the multi-row helper with a
+    /// single row.
+    /// Guarantees: existing callers of create_otap_batch keep receiving a
+    /// one-row batch after the helper refactor.
+    #[test]
+    fn test_create_otap_batch_single_row() {
+        let batch = create_otap_batch(1, ArrowPayloadType::Logs);
+        let record_batch = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("payload must be set");
+        assert_eq!(record_batch.num_rows(), 1);
+    }
+
+    /// Scenario: create_otap_batch_with_rows is called with num_rows == 0.
+    /// Guarantees: the helper rejects empty batches by panicking, so
+    /// benchmarks cannot silently generate zero-sized workloads.
+    #[test]
+    #[should_panic(expected = "num_rows must be > 0")]
+    fn test_create_otap_batch_with_rows_rejects_zero_rows() {
+        let _ = create_otap_batch_with_rows(1, ArrowPayloadType::Logs, 0);
+    }
 }
