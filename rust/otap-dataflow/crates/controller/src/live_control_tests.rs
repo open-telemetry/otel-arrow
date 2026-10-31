@@ -487,9 +487,9 @@ static CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: CONTEXT_BINDINGS_TEST_RECEIVER_URN,
         create: context_bindings_test_receiver_create,
-        context_declarations: Some(ContextDeclarationProvider {
-            declarations: context_bindings_test_declarations,
-        }),
+        context_declarations: Some(ContextDeclarationProvider::new(
+            context_bindings_test_declarations,
+        )),
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
             ContextBindingsTestConfig,

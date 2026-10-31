@@ -3,7 +3,7 @@
 
 use super::{
     CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextMaterializationPlan, HeadersRead,
-    Metadata, ValueRead,
+    MergeBinding, Metadata, ProjectionBinding, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -164,6 +164,10 @@ pub struct NodeBindings {
     /// Sorted by selector and unique, as produced by sorted declarations.
     pub(super) values: Box<[ValueRead]>,
     pub(super) headers: Option<HeadersRead>,
+    /// Present when the node declares produced entries.
+    pub(super) projection: Option<ProjectionBinding>,
+    /// Present only when the node's factory assigns the merge role.
+    pub(super) merge: Option<MergeBinding>,
 }
 
 impl NodeBindings {
@@ -200,6 +204,18 @@ impl NodeBindings {
     #[must_use]
     pub fn headers(&self) -> Option<&HeadersRead> {
         self.headers.as_ref()
+    }
+
+    /// Returns the projection for a node that declared produced entries.
+    #[must_use]
+    pub fn projection(&self) -> Option<&ProjectionBinding> {
+        self.projection.as_ref()
+    }
+
+    /// Returns the merge for a processor whose factory assigned the merge role.
+    #[must_use]
+    pub fn merge(&self) -> Option<&MergeBinding> {
+        self.merge.as_ref()
     }
 
     pub(crate) fn header_capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
@@ -245,6 +261,10 @@ impl NodeBindings {
         self.sink = policy.map(|policy| SinkBinding { policy });
     }
 
+    /// Returns whether no legacy engine policy is compiled.
+    ///
+    /// Adapter-derived reads, projection, and merge are excluded so live-update
+    /// comparison keeps using only the existing inputs.
     pub(super) fn is_empty(&self) -> bool {
         self.header_capture_policy().is_none()
             && self.authorized_identity_policy().is_none()
