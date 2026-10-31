@@ -113,6 +113,8 @@ fn issuer_thumbprint(
 /// Each credential file is bounded by the shared TLS loader's 4 MiB limit.
 /// Combined client CA PEM, including one separator byte per file, is limited
 /// to 4 MiB. Every CA file must contain at least one certificate.
+/// At most 256 CA certificates may be loaded across all files, including
+/// duplicates. Peer intermediates also count toward the runtime issuer limit.
 /// Credentials and client trust are startup snapshots; changes require
 /// rebuilding the acceptor.
 ///
@@ -144,6 +146,11 @@ pub async fn build_acceptor(config: &Config) -> Result<SourceAcceptor, io::Error
             )));
         }
         for certificate in certificates {
+            if client_cas.len() >= MAX_ISSUER_CANDIDATES {
+                return Err(invalid_input(
+                    "client CA bundles exceed 256 issuer candidates",
+                ));
+            }
             client_cas.push(certificate.map_err(invalid_input)?.into_owned());
         }
         client_ca_pem.push_str(pem);
@@ -606,6 +613,53 @@ mod tests {
         assert!(build_acceptor(&config).await.is_err());
         config.tls.client_ca_files.clear();
         assert!(build_acceptor(&config).await.is_err());
+    }
+
+    /// Scenario: one or two CA files contain 256 certificates, followed by a 257th duplicate.
+    /// Guarantees: startup accepts the exact aggregate count and rejects overflow independently of bytes.
+    #[tokio::test]
+    async fn bounds_startup_ca_count() {
+        for file_count in [1, 2] {
+            let (directory, _server_ca, client_ca, mut config) = fixture();
+            if file_count == 2 {
+                config
+                    .tls
+                    .client_ca_files
+                    .push(directory.path().join("second.crt"));
+            }
+            let certificates_per_file = MAX_ISSUER_CANDIDATES / file_count;
+            let pem = client_ca.cert_pem.repeat(certificates_per_file);
+            assert!((pem.len() + 1) * file_count + client_ca.cert_pem.len() < MAX_CLIENT_CA_BYTES);
+            for path in &config.tls.client_ca_files {
+                fs::write(path, &pem).unwrap();
+            }
+            let acceptor = build_acceptor(&config).await.unwrap();
+            assert_eq!(acceptor.client_cas.len(), MAX_ISSUER_CANDIDATES);
+            let client = client_ca.issue_leaf(
+                "source",
+                Some("host.example.com"),
+                Some(ExtendedKeyUsage::ClientAuth),
+            );
+            let leaf = CertificateDer::from_pem_slice(client.cert_pem.as_bytes()).unwrap();
+            let issuer = CertificateDer::from_pem_slice(client_ca.cert_pem.as_bytes()).unwrap();
+            let expected: [u8; 20] = Sha1::digest(issuer.as_ref()).into();
+            assert_eq!(acceptor.issuer_thumbprint(&[leaf]).unwrap(), expected);
+
+            fs::write(
+                config.tls.client_ca_files.last().unwrap(),
+                format!("{pem}{}", client_ca.cert_pem),
+            )
+            .unwrap();
+            let error = build_acceptor(&config)
+                .await
+                .err()
+                .expect("257 certificates must fail startup");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "client CA bundles exceed 256 issuer candidates"
+            );
+        }
     }
 
     /// Scenario: a credential exceeds 4 MiB or combined CA PEM reaches its aggregate limit.
