@@ -221,7 +221,7 @@ impl ArrowTracesService for ArrowTracesServiceMock {
     }
 }
 
-/// create OTAP batch with `num_rows` rows
+/// Creates an OTAP batch with `num_rows` rows (for testing).
 #[must_use]
 pub fn create_otap_batch_with_rows(
     batch_id: i64,
@@ -236,15 +236,15 @@ pub fn create_otap_batch_with_rows(
             .expect("batch_id + row index must fit in u16")
     }));
 
-    let record_batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            consts::ID,
-            DataType::UInt16,
-            true,
-        )])),
-        vec![Arc::new(ids)],
-    )
-    .expect("failed to build test OTAP batch record");
+    let id_field = Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+        std::collections::HashMap::from([(
+            consts::metadata::COLUMN_ENCODING.to_string(),
+            consts::metadata::encodings::PLAIN.to_string(),
+        )]),
+    );
+    let record_batch =
+        RecordBatch::try_new(Arc::new(Schema::new(vec![id_field])), vec![Arc::new(ids)])
+            .expect("failed to build test OTAP batch record");
 
     let record_batch = complete_batch(payload_type, record_batch);
 
@@ -260,7 +260,7 @@ pub fn create_otap_batch_with_rows(
     otap_batch
 }
 
-/// creates a basic batch arrow record
+/// Creates a basic batch arrow record to use for testing
 #[must_use]
 pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapArrowRecords {
     create_otap_batch_with_rows(batch_id, payload_type, 1)
@@ -298,6 +298,29 @@ mod tests {
             .get(ArrowPayloadType::Logs)
             .expect("payload must be set");
         assert_eq!(record_batch.num_rows(), 1);
+    }
+
+    /// Scenario: a multi-row batch from create_otap_batch_with_rows goes
+    /// through decode_transport_optimized_ids, as happens in exporter paths.
+    /// Guarantees: the ID column is marked plain-encoded, so decoding leaves
+    /// the sequential IDs intact instead of cumulative-summing them as if
+    /// they were delta-encoded.
+    #[test]
+    fn test_create_otap_batch_with_rows_ids_survive_decode() {
+        let mut batch = create_otap_batch_with_rows(1, ArrowPayloadType::Logs, 3);
+        batch
+            .decode_transport_optimized_ids()
+            .expect("decode must succeed");
+        let record_batch = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("payload must be set");
+        let ids = record_batch
+            .column_by_name(consts::ID)
+            .expect("ID column must exist")
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .expect("ID column must be UInt16");
+        assert_eq!(ids.values(), &[1, 2, 3]);
     }
 
     /// Scenario: create_otap_batch_with_rows is called with num_rows == 0.
