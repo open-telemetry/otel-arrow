@@ -8,7 +8,8 @@
 //! [`crate::common::windows_event`] layer. Modules are introduced
 //! incrementally; configuration, stable subscription identifiers, and source
 //! identity authorization with bounded mutual TLS handshakes are available,
-//! along with WS-Man routing and envelope parsing. No receiver is registered yet.
+//! along with WS-Man routing, request validation, and bounded basic responses.
+//! No receiver is registered yet, and no subscriptions are advertised.
 
 /// Configuration and stable subscription identifiers.
 pub mod config;

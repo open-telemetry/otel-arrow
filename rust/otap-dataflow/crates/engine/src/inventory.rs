@@ -7,7 +7,7 @@
 //! Inventory][rfc]. Components annotated with the
 //! [`#[component_inventory]`][macro] attribute macro (in
 //! `otel-arrow-dfe-engine-macros`) emit one [`ComponentMeta`] entry into the
-//! [`COMPONENT_INVENTORY`] distributed slice at link time. Offline tooling
+//! `COMPONENT_INVENTORY` distributed slice at link time. Offline tooling
 //! (`cargo xtask component-inventory`, added in a later phase) reads the slice
 //! to detect new/removed components for threat-model drift detection,
 //! documentation coverage, and security review.
@@ -74,7 +74,7 @@ pub mod attrs {
 
 /// Inventory metadata for one security-relevant component.
 ///
-/// Collected at link time via the [`COMPONENT_INVENTORY`] distributed slice;
+/// Collected at link time via the `COMPONENT_INVENTORY` distributed slice;
 /// extracted by `cargo xtask component-inventory`. Identity and category are
 /// the fixed fields; all domain-specific properties live in the free-form
 /// [`attributes`](ComponentMeta::attributes) slice so the struct is not biased
@@ -135,7 +135,7 @@ impl ComponentMeta {
 #[linkme::distributed_slice]
 pub static COMPONENT_INVENTORY: [ComponentMeta] = [..];
 
-/// Iterate over every component registered in the [`COMPONENT_INVENTORY`]
+/// Iterate over every component registered in the `COMPONENT_INVENTORY`
 /// distributed slice.
 ///
 /// Mirrors the iteration pattern used for `KNOWN_CAPABILITIES`.

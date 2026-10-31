@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Utilities for configuring [`Parser`](otel_arrow_contrib_data_engine_kql_parser::Parser) to parse program for OTAP
+//! Utilities for configuring [`Parser`](otel_arrow_contrib_data_engine_parser_abstractions::Parser) to parse program for OTAP
 //! query-engine
 
 use otel_arrow_contrib_data_engine_expressions::{
