@@ -909,11 +909,13 @@ mod tests {
                 &self.bindings
             ));
             let arrival = self.bindings.arrival().expect("receiver arrival binding");
-            let (formed, stats) = arrival.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: None,
-                peer: None,
-            });
+            let (formed, stats) = arrival
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(stats.is_none());
             assert_ne!(
                 formed,
@@ -931,11 +933,13 @@ mod tests {
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
-            let (metadata, stats) = effect_handler.form_context(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: None,
-                peer: None,
-            });
+            let (metadata, stats) = effect_handler
+                .form_context(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(stats.is_none());
             self.check_bindings(effect_handler.node_bindings(), metadata);
             effect_handler
@@ -953,11 +957,13 @@ mod tests {
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
-            let (metadata, stats) = effect_handler.form_context(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: None,
-                peer: None,
-            });
+            let (metadata, stats) = effect_handler
+                .form_context(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(stats.is_none());
             self.check_bindings(effect_handler.node_bindings(), metadata);
             effect_handler

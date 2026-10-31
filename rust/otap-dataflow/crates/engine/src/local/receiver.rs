@@ -42,7 +42,7 @@ use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::pdata_context::{
-    Arrival, ArrivalBinding, ContextMaterializationPlan, Metadata, NodeBindings,
+    Arrival, ArrivalBinding, ContextError, ContextMaterializationPlan, Metadata, NodeBindings,
 };
 use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
@@ -264,8 +264,12 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Forms complete request metadata without removing the legacy send hook.
-    #[must_use]
-    pub fn form_context(&self, arrival: &Arrival<'_>) -> (Metadata, Option<CaptureStats>) {
+    ///
+    /// A receiver rejects the request when this fails.
+    pub fn form_context(
+        &self,
+        arrival: &Arrival<'_>,
+    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         match self
             .node_bindings
             .as_ref()

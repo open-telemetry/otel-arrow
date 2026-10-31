@@ -852,11 +852,13 @@ mod tests {
             .expect("materialization plan"),
         };
         let identity = AuthorizedIdentity::new().with_subject("verified");
-        let (metadata, _) = binding.form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: Some(&identity),
-            peer: None,
-        });
+        let (metadata, _) = binding
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: Some(&identity),
+                peer: None,
+            })
+            .expect("arrival forms");
         let mut context = metadata
             .materialized_context()
             .expect("formed context")
