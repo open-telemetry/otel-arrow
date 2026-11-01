@@ -354,7 +354,7 @@ jobs:
           docker image prune -f 2>/dev/null || true
 
   update-benchmarks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [pipeline-perf-test]
     if: ${{ !cancelled() }}
     permissions:

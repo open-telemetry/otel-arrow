@@ -157,7 +157,7 @@ jobs:
           path: size-reports/bloat-${{ matrix.platform.name }}.json
 
   summary:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [build-multiarch, bloat-multiarch]
     if: always()
     permissions:
