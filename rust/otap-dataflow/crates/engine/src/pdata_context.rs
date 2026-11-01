@@ -485,10 +485,19 @@ impl ContextDeclarationProvider {
     /// Creates a provider for a processor that merges several inputs into one output.
     ///
     /// The node declares no context reads or writes and receives a merge binding.
+    /// Use [`Self::with_merge_role`] for a merging processor that also declares context.
     #[must_use]
     pub const fn merging() -> Self {
+        Self::new(no_context_declarations).with_merge_role()
+    }
+
+    /// Assigns the merge role to a provider, keeping its declarations.
+    ///
+    /// Only processor factories may carry the merge role.
+    #[must_use]
+    pub const fn with_merge_role(self) -> Self {
         Self {
-            declarations: no_context_declarations,
+            declarations: self.declarations,
             role: NodeBindingRole::Merge,
         }
     }
@@ -774,7 +783,15 @@ impl CompiledNodeState {
                     component_declarations.push(ContextDeclaration::Consumes { selector });
                 }
                 ContextDeclaration::Produces { domain, entry } => {
-                    produced.push((domain, entry.clone()));
+                    match domain {
+                        ContextDomain::TransportHeader => produced.push(entry.clone()),
+                        // Rejected with the factory URN before compilation.
+                        ContextDomain::AuthorizedIdentity => {
+                            return Err(invalid_context(format!(
+                                "produced context entry `{entry}` must be a transport header"
+                            )));
+                        }
+                    }
                     component_declarations.push(ContextDeclaration::Produces { domain, entry });
                 }
                 ContextDeclaration::HeaderCapture { policy } => {
@@ -1189,6 +1206,26 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 },
             )));
         }
+        // Only transport-header entries can be produced.
+        if let Some(entry) = declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                ContextDeclaration::Produces {
+                    domain: ContextDomain::AuthorizedIdentity,
+                    entry,
+                } => Some(entry),
+                _ => None,
+            })
+        {
+            return Err(EngineError::ConfigError(Box::new(
+                Error::InvalidUserConfig {
+                    error: format!(
+                        "node factory `{urn}` declared produced context entry `{entry}` in the \
+                         authorized-identity domain; only transport-header entries can be produced"
+                    ),
+                },
+            )));
+        }
         Ok((declarations, role))
     }
 }
@@ -1246,18 +1283,25 @@ mod tests {
         }
     }
 
-    /// Typed component configuration that declares one produced transport header.
+    /// Typed component configuration that declares one produced entry.
     #[derive(serde::Deserialize)]
     struct TestProducerConfig {
-        /// Produced transport-header entry name.
+        /// Produced entry name.
         entry: ContextEntryName,
+        /// Whether the entry is declared in the authorized-identity domain.
+        #[serde(default)]
+        identity: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
         /// Declares the configured produced entry.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Produces {
-                domain: ContextDomain::TransportHeader,
+                domain: if self.identity {
+                    ContextDomain::AuthorizedIdentity
+                } else {
+                    ContextDomain::TransportHeader
+                },
                 entry: self.entry.clone(),
             }]
             .into_iter()
@@ -1401,7 +1445,7 @@ mod tests {
     ];
 
     /// Registers the type router and processors with produce or merge context roles.
-    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 4] = [
+    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 5] = [
         crate::ProcessorFactory {
             name: "urn:otel:processor:type_router",
             create: unused_test_processor,
@@ -1433,6 +1477,18 @@ mod tests {
             context_declarations: Some(ContextDeclarationProvider::merging()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
+        },
+        crate::ProcessorFactory {
+            name: "urn:test:processor:merge-produce",
+            create: unused_test_processor,
+            context_declarations: Some(
+                ContextDeclarationProvider::from_typed_config::<TestProducerConfig>()
+                    .with_merge_role(),
+            ),
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                TestProducerConfig,
+            >,
         },
     ];
 
@@ -1663,7 +1719,11 @@ groups:
     }
 
     /// Resolves a pipeline with producing, merging, and plain nodes in one chain.
-    fn resolve_role_pipeline(merge_urn: &str, exporter_urn: &str) -> ResolvedOtelDataflowSpec {
+    fn resolve_role_pipeline(
+        merge_urn: &str,
+        merge_config: &str,
+        exporter_urn: &str,
+    ) -> ResolvedOtelDataflowSpec {
         otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&format!(
             r#"
 version: otel_dataflow/v1
@@ -1681,7 +1741,7 @@ groups:
             config: {{entry: partition}}
           merge:
             type: "{merge_urn}"
-            config: {{}}
+            config: {merge_config}
           plain:
             type: "urn:test:processor:plain"
             config: {{}}
@@ -1710,6 +1770,7 @@ groups:
         let compiled = test_pipeline_factory()
             .compile_initial_context(&resolve_role_pipeline(
                 "urn:test:processor:merge",
+                "{}",
                 "urn:test:exporter:example",
             ))
             .expect("context compiles");
@@ -1766,13 +1827,60 @@ groups:
     #[test]
     fn merge_role_requires_processor_factory() {
         let Err(EngineError::ConfigError(error)) = test_pipeline_factory().compile_initial_context(
-            &resolve_role_pipeline("urn:test:processor:plain", "urn:test:exporter:merge"),
+            &resolve_role_pipeline("urn:test:processor:plain", "{}", "urn:test:exporter:merge"),
         ) else {
             panic!("merge role on an exporter must be rejected");
         };
         let message = error.to_string();
         assert!(message.contains("urn:test:exporter:merge"), "{message}");
         assert!(message.contains("merge binding role"), "{message}");
+    }
+
+    /// Scenario: a merge-role processor factory also declares a produced entry.
+    /// Guarantees: the node receives both the merge binding and a projection for its declared entry.
+    #[test]
+    fn merge_role_keeps_provider_declarations() {
+        let compiled = test_pipeline_factory()
+            .compile_initial_context(&resolve_role_pipeline(
+                "urn:test:processor:merge-produce",
+                "{entry: merged}",
+                "urn:test:exporter:example",
+            ))
+            .expect("context compiles");
+        let merge = compiled
+            .bindings
+            .node_bindings(&pipeline("default", "main"), &ConfigNodeId::from("merge"))
+            .expect("merge bindings");
+        assert!(merge.merge().is_some());
+        assert!(
+            merge
+                .projection()
+                .expect("merge projection")
+                .produced(ContextDomain::TransportHeader, &context_name("merged"))
+                .is_ok()
+        );
+    }
+
+    /// Scenario: a processor factory declares a produced entry in the authorized-identity domain.
+    /// Guarantees: compilation fails naming the factory URN and entry instead of deferring the failure to node construction.
+    #[test]
+    fn produced_identity_entries_are_rejected_at_compilation() {
+        let Err(EngineError::ConfigError(error)) =
+            test_pipeline_factory().compile_initial_context(&resolve_role_pipeline(
+                "urn:test:processor:produce",
+                "{entry: subject, identity: true}",
+                "urn:test:exporter:example",
+            ))
+        else {
+            panic!("produced identity entries must be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("urn:test:processor:produce"), "{message}");
+        assert!(message.contains("`subject`"), "{message}");
+        assert!(
+            message.contains("only transport-header entries can be produced"),
+            "{message}"
+        );
     }
 
     /// Scenario: projection and merge adapters are removed from a compiled snapshot.
@@ -1782,6 +1890,7 @@ groups:
         let compiled = test_pipeline_factory()
             .compile_initial_context(&resolve_role_pipeline(
                 "urn:test:processor:merge",
+                "{}",
                 "urn:test:exporter:example",
             ))
             .expect("context compiles");
@@ -1958,56 +2067,48 @@ groups:
         }
     }
 
-    /// Scenario: same-name sources are declared in different domains for named reads and writes.
+    /// Scenario: same-name sources are declared in different domains for named reads.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
     fn declaration_domains_are_part_of_binding_identity() {
-        let declarations = |domain| {
-            [
-                ContextDeclaration::Produces {
-                    domain,
-                    entry: context_name("id"),
+        let declarations = |domain| -> NodeContextDeclarations {
+            [ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::Entries {
+                    entries: Box::new([ContextEntrySelector {
+                        target: primitive_target(domain, "id"),
+                        form: ContextEntrySelectorForm::Value,
+                        take: ContextEntryTake::All,
+                    }]),
                 },
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::Entries {
-                        entries: Box::new([ContextEntrySelector {
-                            target: primitive_target(domain, "id"),
-                            form: ContextEntrySelectorForm::Value,
-                            take: ContextEntryTake::All,
-                        }]),
-                    },
-                },
-            ]
+            }]
+            .into_iter()
+            .collect()
         };
         let header = declarations(ContextDomain::TransportHeader);
         let identity = declarations(ContextDomain::AuthorizedIdentity);
         let combined: NodeContextDeclarations =
-            header.clone().into_iter().chain(identity.clone()).collect();
-        assert_eq!(combined.len(), 4);
+            header.iter().chain(identity.iter()).cloned().collect();
+        assert_eq!(combined.len(), 2);
         assert!(
             !context_runtime_requirements(combined).preserves_original_name(&context_name("id"))
         );
 
-        for (header, identity) in header.into_iter().zip(identity) {
-            let header: NodeContextDeclarations = [header].into_iter().collect();
-            let identity: NodeContextDeclarations = [identity].into_iter().collect();
-            let installed = compiled_bindings(header.clone());
-            let candidate = compiled_bindings(identity.clone());
-            let key = pipeline("group", "pipeline");
-            let node = ConfigNodeId::from("node");
-            assert!(
-                installed
-                    .validate_node_declarations(&key, &node, &header)
-                    .is_ok()
-            );
-            assert!(
-                installed
-                    .validate_node_declarations(&key, &node, &identity)
-                    .is_err()
-            );
-            assert!(!installed.pipeline_bindings_match(&candidate, &key));
-            assert!(!candidate.pipeline_bindings_match(&installed, &key));
-        }
+        let installed = compiled_bindings(header.clone());
+        let candidate = compiled_bindings(identity.clone());
+        let key = pipeline("group", "pipeline");
+        let node = ConfigNodeId::from("node");
+        assert!(
+            installed
+                .validate_node_declarations(&key, &node, &header)
+                .is_ok()
+        );
+        assert!(
+            installed
+                .validate_node_declarations(&key, &node, &identity)
+                .is_err()
+        );
+        assert!(!installed.pipeline_bindings_match(&candidate, &key));
+        assert!(!candidate.pipeline_bindings_match(&installed, &key));
     }
 
     /// Scenario: a node declares all-captured identity reads, alone or alongside all-captured headers.

@@ -10,7 +10,14 @@ use super::{ContextDomain, ContextError, Metadata, PeerAddrMerger};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Source of projection binding identities.
+///
+/// Atomic because identities must stay unique across every compiled snapshot
+/// in the process, including those compiled for live reconfiguration. It is
+/// incremented only when a binding is compiled, never on the data path.
+static NEXT_PROJECTION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Compiled handle for one entry a node declared it produces.
 ///
@@ -19,9 +26,9 @@ use std::sync::Arc;
 /// instead of writing a different entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProducedEntry {
-    /// Identity of the issuing binding's shared target list.
-    binding: usize,
-    /// Position in the issuing binding's sorted target list.
+    /// Identity of the issuing binding.
+    binding: u64,
+    /// Position in the issuing binding's sorted entry list.
     index: usize,
 }
 
@@ -36,71 +43,57 @@ pub struct ProducedValue<'a> {
     pub bytes: &'a [u8],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProducedTarget {
-    domain: ContextDomain,
-    name: ContextEntryName,
-}
-
 /// Compiled projection for a node that produces context entries.
+///
+/// Equality is identity: clones of one compiled binding are equal and accept
+/// each other's handles, while separately compiled bindings are not, even
+/// with the same entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionBinding {
-    /// Declared produced entries, sorted by domain and name and unique.
-    ///
-    /// Shared so clones of the binding accept the same handles.
-    produced: Arc<[ProducedTarget]>,
+    /// Identity assigned at compilation and shared by clones.
+    id: u64,
+    /// Declared produced transport-header entries, sorted and unique.
+    produced: Box<[ContextEntryName]>,
 }
 
 impl ProjectionBinding {
-    pub(super) fn new(mut produced: Vec<(ContextDomain, ContextEntryName)>) -> Self {
+    /// Compiles a projection for declared transport-header entries.
+    pub(super) fn new(mut produced: Vec<ContextEntryName>) -> Self {
         produced.sort();
         produced.dedup();
         Self {
-            produced: produced
-                .into_iter()
-                .map(|(domain, name)| ProducedTarget { domain, name })
-                .collect(),
+            id: NEXT_PROJECTION_ID.fetch_add(1, Ordering::Relaxed),
+            produced: produced.into_boxed_slice(),
         }
-    }
-
-    /// Identifies this compiled binding by its shared target-list allocation.
-    ///
-    /// Unique among live bindings and shared by clones. A handle kept after
-    /// every clone of its binding is dropped is not detected.
-    fn identity(&self) -> usize {
-        Arc::as_ptr(&self.produced).cast::<()>().addr()
     }
 
     /// Returns the handle for an entry this node declared it produces.
     ///
     /// Call once during node construction with the same domain and entry the
-    /// node returned from its context declarations. An undeclared entry, or a
-    /// declared entry outside the transport-header domain, is a configuration
-    /// error.
+    /// node returned from its context declarations. Only transport-header
+    /// entries can be declared as produced. Any other request is a mismatch
+    /// between the node and its declarations and fails with
+    /// [`Error::UndeclaredContextEntry`].
     pub fn produced(
         &self,
         domain: ContextDomain,
         entry: &ContextEntryName,
     ) -> Result<ProducedEntry, Error> {
+        let undeclared = || Error::UndeclaredContextEntry {
+            domain,
+            entry: entry.clone(),
+        };
+        if domain != ContextDomain::TransportHeader {
+            return Err(undeclared());
+        }
         let index = self
             .produced
-            .binary_search_by(|target| (target.domain, &target.name).cmp(&(domain, entry)))
-            .map_err(|_| Error::InvalidUserConfig {
-                error: format!(
-                    "produced context entry `{entry}` in domain {domain:?} was not declared by this node"
-                ),
-            })?;
-        match domain {
-            ContextDomain::TransportHeader => Ok(ProducedEntry {
-                binding: self.identity(),
-                index,
-            }),
-            ContextDomain::AuthorizedIdentity => Err(Error::InvalidUserConfig {
-                error: format!(
-                    "produced context entry `{entry}` cannot be written; only transport-header entries can be produced"
-                ),
-            }),
-        }
+            .binary_search(entry)
+            .map_err(|_| undeclared())?;
+        Ok(ProducedEntry {
+            binding: self.id,
+            index,
+        })
     }
 
     /// Clones the input and appends each produced value as a transport header.
@@ -121,19 +114,13 @@ impl ProjectionBinding {
         if produced.is_empty() {
             return Ok(output);
         }
-        let binding = self.identity();
         let mut headers = output.take_transport_headers().unwrap_or_default();
         for value in produced {
-            // Issuance admits only transport-header targets of this binding.
-            let target = (value.entry.binding == binding)
+            let name = (value.entry.binding == self.id)
                 .then(|| self.produced.get(value.entry.index))
                 .flatten()
                 .ok_or(ContextError::ForeignProducedEntry)?;
-            headers.push(TransportHeader::new(
-                target.name.clone(),
-                value.kind,
-                value.bytes,
-            ));
+            headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
         output.set_transport_headers(headers);
         Ok(output)
@@ -141,6 +128,11 @@ impl ProjectionBinding {
 }
 
 /// Compiled merge for a node that combines several inputs into one output.
+///
+/// Merge applies whenever an output stands for merged inputs, including a
+/// merge of exactly one input, which keeps only that input's peer address.
+/// An output that forwards one input's context unchanged is not a merge and
+/// needs no binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeBinding {
     _compiled: (),
@@ -286,10 +278,7 @@ mod tests {
     fn projection_matches_partition_header_update() {
         let partition = name("partition");
         let shard = name("shard");
-        let binding = ProjectionBinding::new(vec![
-            (ContextDomain::TransportHeader, shard.clone()),
-            (ContextDomain::TransportHeader, partition.clone()),
-        ]);
+        let binding = ProjectionBinding::new(vec![shard.clone(), partition.clone()]);
         let partition_entry = binding
             .produced(ContextDomain::TransportHeader, &partition)
             .expect("partition handle");
@@ -373,8 +362,7 @@ mod tests {
     /// Guarantees: the output equals the input, including absent transport headers.
     #[test]
     fn projection_without_values_preserves_input() {
-        let binding =
-            ProjectionBinding::new(vec![(ContextDomain::TransportHeader, name("partition"))]);
+        let binding = ProjectionBinding::new(vec![name("partition")]);
         for input in [
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
@@ -391,58 +379,58 @@ mod tests {
         );
     }
 
-    /// Scenario: construction-time lookups name an undeclared entry or a declared identity entry.
-    /// Guarantees: both fail loudly instead of issuing a handle that would write the wrong domain or name.
+    /// Scenario: construction-time lookups name an undeclared transport header or any authorized-identity entry.
+    /// Guarantees: both fail with UndeclaredContextEntry naming the domain and entry instead of issuing a handle.
     #[test]
-    fn produced_lookup_rejects_undeclared_and_unwritable_entries() {
-        let binding = ProjectionBinding::new(vec![
-            (ContextDomain::TransportHeader, name("partition")),
-            (ContextDomain::AuthorizedIdentity, name("subject")),
-        ]);
-        assert!(
-            binding
-                .produced(ContextDomain::TransportHeader, &name("other"))
-                .is_err()
-        );
-        assert!(
-            binding
-                .produced(ContextDomain::AuthorizedIdentity, &name("partition"))
-                .is_err()
-        );
-        let Err(Error::InvalidUserConfig { error }) =
-            binding.produced(ContextDomain::AuthorizedIdentity, &name("subject"))
-        else {
-            panic!("identity entries cannot be produced");
-        };
-        assert!(error.contains("only transport-header entries can be produced"));
+    fn produced_lookup_rejects_undeclared_entries() {
+        let binding = ProjectionBinding::new(vec![name("partition")]);
+        for (domain, entry) in [
+            (ContextDomain::TransportHeader, "other"),
+            (ContextDomain::AuthorizedIdentity, "partition"),
+        ] {
+            let Err(Error::UndeclaredContextEntry {
+                domain: actual_domain,
+                entry: actual_entry,
+            }) = binding.produced(domain, &name(entry))
+            else {
+                panic!("{domain:?} `{entry}` is not a declared produced entry");
+            };
+            assert_eq!((actual_domain, actual_entry), (domain, name(entry)));
+        }
     }
 
-    /// Scenario: a node supplies a handle issued by another node's binding whose index is also valid here.
-    /// Guarantees: form fails with ForeignProducedEntry instead of writing this binding's entry at that index, while clones accept handles.
+    /// Scenario: a node supplies a handle issued by another binding, including one compiled from identical entries.
+    /// Guarantees: form fails with ForeignProducedEntry instead of writing this binding's entry, while clones accept handles and compare equal.
     #[test]
     fn projection_rejects_foreign_handles() {
         let partition = name("partition");
-        let binding =
-            ProjectionBinding::new(vec![(ContextDomain::TransportHeader, partition.clone())]);
-        let other = ProjectionBinding::new(vec![(ContextDomain::TransportHeader, name("tenant"))]);
-        let foreign = other
-            .produced(ContextDomain::TransportHeader, &name("tenant"))
-            .expect("other handle");
+        let binding = ProjectionBinding::new(vec![partition.clone()]);
         let value = |entry| ProducedValue {
             entry,
             kind: ValueKind::Text,
             bytes: b"0",
         };
-        assert_eq!(
-            binding.form(&Metadata::default(), &[value(foreign)]),
-            Err(ContextError::ForeignProducedEntry)
-        );
+        for other in [
+            ProjectionBinding::new(vec![name("tenant")]),
+            ProjectionBinding::new(vec![partition.clone()]),
+        ] {
+            assert_ne!(other, binding);
+            let foreign = other
+                .produced(ContextDomain::TransportHeader, &other.produced[0])
+                .expect("other handle");
+            assert_eq!(
+                binding.form(&Metadata::default(), &[value(foreign)]),
+                Err(ContextError::ForeignProducedEntry)
+            );
+        }
 
         let own = binding
             .produced(ContextDomain::TransportHeader, &partition)
             .expect("own handle");
+        let clone = binding.clone();
+        assert_eq!(clone, binding);
         assert_eq!(
-            binding.clone().form(&Metadata::default(), &[value(own)]),
+            clone.form(&Metadata::default(), &[value(own)]),
             binding.form(&Metadata::default(), &[value(own)])
         );
         assert!(binding.form(&Metadata::default(), &[value(own)]).is_ok());
