@@ -11,7 +11,7 @@
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ContextError {
-    /// A produced value carried a handle issued by a different projection binding.
-    #[error("produced context entry handle was not issued by this node's projection binding")]
-    ForeignProducedEntry,
+    /// A value supplied to a binding does not match the binding's compiled context.
+    #[error("context value does not match this node's compiled context bindings")]
+    ContextMismatch,
 }

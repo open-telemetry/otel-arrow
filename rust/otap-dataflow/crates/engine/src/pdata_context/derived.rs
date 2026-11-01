@@ -10,14 +10,6 @@ use super::{ContextDomain, ContextError, Metadata, PeerAddrMerger};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Source of projection binding identities.
-///
-/// Atomic because identities must stay unique across every compiled snapshot
-/// in the process, including those compiled for live reconfiguration. It is
-/// incremented only when a binding is compiled, never on the data path.
-static NEXT_PROJECTION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Compiled handle for one entry a node declared it produces.
 ///
@@ -46,11 +38,14 @@ pub struct ProducedValue<'a> {
 /// Compiled projection for a node that produces context entries.
 ///
 /// Equality is identity: clones of one compiled binding are equal and accept
-/// each other's handles, while separately compiled bindings are not, even
-/// with the same entries.
+/// each other's handles, while other bindings in the same compiled snapshot
+/// are not, even with the same entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionBinding {
-    /// Identity assigned at compilation and shared by clones.
+    /// Identity unique within one compiled snapshot and shared by clones.
+    ///
+    /// A node receives its bindings and handles together at construction, so
+    /// handles never cross snapshots.
     id: u64,
     /// Declared produced transport-header entries, sorted and unique.
     produced: Box<[ContextEntryName]>,
@@ -58,11 +53,11 @@ pub struct ProjectionBinding {
 
 impl ProjectionBinding {
     /// Compiles a projection for declared transport-header entries.
-    pub(super) fn new(mut produced: Vec<ContextEntryName>) -> Self {
+    pub(super) fn new(id: u64, mut produced: Vec<ContextEntryName>) -> Self {
         produced.sort();
         produced.dedup();
         Self {
-            id: NEXT_PROJECTION_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             produced: produced.into_boxed_slice(),
         }
     }
@@ -103,7 +98,7 @@ impl ProjectionBinding {
     /// so produced values do not re-evaluate composites. Without produced values
     /// the output equals the input.
     ///
-    /// Fails with [`ContextError::ForeignProducedEntry`] when a value carries a
+    /// Fails with [`ContextError::ContextMismatch`] when a value carries a
     /// handle issued by another binding.
     pub fn form(
         &self,
@@ -119,7 +114,7 @@ impl ProjectionBinding {
             let name = (value.entry.binding == self.id)
                 .then(|| self.produced.get(value.entry.index))
                 .flatten()
-                .ok_or(ContextError::ForeignProducedEntry)?;
+                .ok_or(ContextError::ContextMismatch)?;
             headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
         output.set_transport_headers(headers);
@@ -278,7 +273,7 @@ mod tests {
     fn projection_matches_partition_header_update() {
         let partition = name("partition");
         let shard = name("shard");
-        let binding = ProjectionBinding::new(vec![shard.clone(), partition.clone()]);
+        let binding = ProjectionBinding::new(0, vec![shard.clone(), partition.clone()]);
         let partition_entry = binding
             .produced(ContextDomain::TransportHeader, &partition)
             .expect("partition handle");
@@ -362,7 +357,7 @@ mod tests {
     /// Guarantees: the output equals the input, including absent transport headers.
     #[test]
     fn projection_without_values_preserves_input() {
-        let binding = ProjectionBinding::new(vec![name("partition")]);
+        let binding = ProjectionBinding::new(0, vec![name("partition")]);
         for input in [
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
@@ -383,7 +378,7 @@ mod tests {
     /// Guarantees: both fail with UndeclaredContextEntry naming the domain and entry instead of issuing a handle.
     #[test]
     fn produced_lookup_rejects_undeclared_entries() {
-        let binding = ProjectionBinding::new(vec![name("partition")]);
+        let binding = ProjectionBinding::new(0, vec![name("partition")]);
         for (domain, entry) in [
             (ContextDomain::TransportHeader, "other"),
             (ContextDomain::AuthorizedIdentity, "partition"),
@@ -400,27 +395,27 @@ mod tests {
     }
 
     /// Scenario: a node supplies a handle issued by another binding, including one compiled from identical entries.
-    /// Guarantees: form fails with ForeignProducedEntry instead of writing this binding's entry, while clones accept handles and compare equal.
+    /// Guarantees: form fails with ContextMismatch instead of writing this binding's entry, while clones accept handles and compare equal.
     #[test]
-    fn projection_rejects_foreign_handles() {
+    fn projection_rejects_mismatched_handles() {
         let partition = name("partition");
-        let binding = ProjectionBinding::new(vec![partition.clone()]);
+        let binding = ProjectionBinding::new(0, vec![partition.clone()]);
         let value = |entry| ProducedValue {
             entry,
             kind: ValueKind::Text,
             bytes: b"0",
         };
         for other in [
-            ProjectionBinding::new(vec![name("tenant")]),
-            ProjectionBinding::new(vec![partition.clone()]),
+            ProjectionBinding::new(1, vec![name("tenant")]),
+            ProjectionBinding::new(2, vec![partition.clone()]),
         ] {
             assert_ne!(other, binding);
-            let foreign = other
+            let mismatched = other
                 .produced(ContextDomain::TransportHeader, &other.produced[0])
                 .expect("other handle");
             assert_eq!(
-                binding.form(&Metadata::default(), &[value(foreign)]),
-                Err(ContextError::ForeignProducedEntry)
+                binding.form(&Metadata::default(), &[value(mismatched)]),
+                Err(ContextError::ContextMismatch)
             );
         }
 
