@@ -11,7 +11,7 @@
 
 /// Runtime context policies shared independently of compiler bookkeeping.
 mod bindings;
-/// Node-facing projection and merge over existing message metadata.
+/// Node-facing projection and merge of message metadata.
 mod derived;
 /// Runtime failures of context binding operations.
 mod error;

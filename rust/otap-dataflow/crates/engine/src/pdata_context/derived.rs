@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Projection and merge adapters retain the existing derived-metadata semantics.
+//! Bindings that derive output metadata from input metadata.
 //!
 //! Projection forms one output from one input plus values the node produces.
 //! Merge forms one output from several inputs.
@@ -75,8 +75,8 @@ impl ProjectionBinding {
     ///
     /// Call once during node construction with the same domain and entry the
     /// node returned from its context declarations. An undeclared entry, or a
-    /// declared entry in a domain the existing implementation cannot write, is
-    /// a configuration error.
+    /// declared entry outside the transport-header domain, is a configuration
+    /// error.
     pub fn produced(
         &self,
         domain: ContextDomain,
@@ -192,8 +192,9 @@ impl MetadataMerger {
 
     /// Returns the merged metadata.
     ///
-    /// Failures are reported here rather than per input. The existing merge
-    /// always succeeds.
+    /// Pushing inputs never fails. This fails when the merged metadata does
+    /// not meet the node's context requirements, for example when an entry
+    /// listed in its `required_out` policy is absent.
     pub fn finish(self) -> Result<Metadata, ContextError> {
         let mut output = Metadata::default();
         if let Some(peer) = self.peer.finish() {
@@ -223,7 +224,7 @@ mod tests {
         value.parse().expect("peer address")
     }
 
-    /// Builds metadata carrying every legacy field: headers, identity, peer, and a composite.
+    /// Builds metadata carrying every field: headers, identity, peer, and a composite.
     fn populated_metadata(peer_addr: Option<SocketAddr>) -> Metadata {
         let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
             scope: ContextScope::Pipeline("group".into(), "pipeline".into()),
@@ -265,8 +266,8 @@ mod tests {
         metadata
     }
 
-    /// Applies the partition processor's existing in-place header update.
-    fn legacy_partition_update(
+    /// Applies the partition processor's in-place header update: clone, take, push, and set.
+    fn partition_header_update(
         input: &Metadata,
         produced: &[(&ContextEntryName, ValueKind, &[u8])],
     ) -> Metadata {
@@ -280,9 +281,9 @@ mod tests {
     }
 
     /// Scenario: partition-style projection appends text and binary values to empty and populated inputs.
-    /// Guarantees: output equals the legacy clone, take, push, and set sequence, retaining identity, peer, and composites.
+    /// Guarantees: output equals the partition processor's header update, retaining identity, peer, and composites.
     #[test]
-    fn projection_matches_legacy_partition_update() {
+    fn projection_matches_partition_header_update() {
         let partition = name("partition");
         let shard = name("shard");
         let binding = ProjectionBinding::new(vec![
@@ -312,7 +313,7 @@ mod tests {
                 )
                 .expect("projection forms");
             let expected =
-                legacy_partition_update(&input, &[(&partition, ValueKind::Text, b"0".as_slice())]);
+                partition_header_update(&input, &[(&partition, ValueKind::Text, b"0".as_slice())]);
             assert_eq!(actual, expected);
             let headers = actual.transport_headers().expect("produced header");
             let header = headers
@@ -340,7 +341,7 @@ mod tests {
                     ],
                 )
                 .expect("projection forms");
-            let expected = legacy_partition_update(
+            let expected = partition_header_update(
                 &input,
                 &[
                     (
@@ -469,12 +470,12 @@ mod tests {
                 .iter()
                 .map(|peer_addr| populated_metadata(*peer_addr))
                 .collect::<Vec<_>>();
-            let mut legacy = PeerAddrMerger::new();
+            let mut peers_merged = PeerAddrMerger::new();
             for input in &inputs {
-                legacy.push(input.peer_addr());
+                peers_merged.push(input.peer_addr());
             }
             let mut expected = Metadata::default();
-            if let Some(peer_addr) = legacy.finish() {
+            if let Some(peer_addr) = peers_merged.finish() {
                 expected.set_peer_addr(peer_addr);
             }
 

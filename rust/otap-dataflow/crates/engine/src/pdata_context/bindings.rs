@@ -58,7 +58,9 @@ pub struct ArrivalBinding {
 impl ArrivalBinding {
     /// Captures headers and identity, records the peer, then materializes composites.
     ///
-    /// The existing arrival operations always succeed.
+    /// Fails when the formed metadata does not meet the node's context
+    /// requirements, for example when an entry listed in its `required_in`
+    /// policy is absent.
     pub fn form(
         &self,
         arrival: &Arrival<'_>,
