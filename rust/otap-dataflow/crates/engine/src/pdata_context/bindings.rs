@@ -265,10 +265,6 @@ impl NodeBindings {
         self.sink = policy.map(|policy| SinkBinding { policy });
     }
 
-    /// Returns whether no legacy engine policy is compiled.
-    ///
-    /// Adapter-derived reads, projection, and merge are excluded so live-update
-    /// comparison keeps using only the existing inputs.
     pub(super) fn is_empty(&self) -> bool {
         self.header_capture_policy().is_none()
             && self.authorized_identity_policy().is_none()
