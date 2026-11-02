@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot, watch};
 
 use super::config::Config;
 use super::error::Error;
@@ -35,9 +35,11 @@ type CredentialFactory =
 
 struct ManagedIdentityExecution {
     // Shared with the blocking task so cancellation cannot release admission
-    // while synchronous Azure Arc SDK work is still running.
+    // while synchronous Azure Arc SDK work is still running. Release therefore
+    // also acknowledges that the worker has stopped using the pipeline runtime.
     credential: Arc<Mutex<Option<Arc<dyn TokenCredential>>>>,
     credential_factory: Arc<CredentialFactory>,
+    shutdown: watch::Sender<bool>,
 }
 
 impl ManagedIdentityExecution {
@@ -45,6 +47,7 @@ impl ManagedIdentityExecution {
         Self {
             credential: Arc::new(Mutex::new(None)),
             credential_factory,
+            shutdown: watch::channel(false).0,
         }
     }
 
@@ -53,6 +56,10 @@ impl ManagedIdentityExecution {
         let scope = scope.to_owned();
         let credential_factory = Arc::clone(&self.credential_factory);
         let runtime = Handle::current();
+        let shutdown = self.shutdown.subscribe();
+        // Dropping this sender when the caller is cancelled tells the worker
+        // to drop its SDK future while the pipeline runtime is still alive.
+        let (_cancel_on_drop, cancelled) = oneshot::channel::<()>();
         // Acquire admission before submitting work, then retain it inside the
         // blocking task even if the caller stops awaiting the result.
         tokio::task::spawn_blocking(move || {
@@ -61,10 +68,19 @@ impl ManagedIdentityExecution {
                 credential_factory.as_ref(),
                 &mut credential,
                 &scope,
+                cancelled,
+                shutdown,
             )
         })
         .await
         .map_err(|source| Error::ManagedIdentityTask { source })?
+    }
+
+    /// Cancels in-flight and later acquisitions, then waits for the worker to
+    /// acknowledge exit by releasing admission.
+    async fn shutdown(&self) {
+        let _ = self.shutdown.send_replace(true);
+        drop(self.credential.lock().await);
     }
 }
 
@@ -73,17 +89,28 @@ fn acquire_managed_identity_token(
     credential_factory: &CredentialFactory,
     cached: &mut Option<Arc<dyn TokenCredential>>,
     scope: &str,
+    cancelled: oneshot::Receiver<()>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<AccessToken, Error> {
     runtime.block_on(async {
-        let credential = match cached {
-            Some(credential) => credential,
-            None => cached.insert(credential_factory()?),
+        let acquire = async {
+            let credential = match cached {
+                Some(credential) => credential,
+                None => cached.insert(credential_factory()?),
+            };
+
+            credential
+                .get_token(&[scope], Some(TokenRequestOptions::default()))
+                .await
+                .map_err(|source| Error::TokenAcquisition { source })
         };
 
-        credential
-            .get_token(&[scope], Some(TokenRequestOptions::default()))
-            .await
-            .map_err(|source| Error::TokenAcquisition { source })
+        tokio::select! {
+            biased;
+            _ = cancelled => Err(Error::ManagedIdentityCancelled),
+            _ = shutdown.wait_for(|shutdown| *shutdown) => Err(Error::ManagedIdentityCancelled),
+            result = acquire => result,
+        }
     })
 }
 
@@ -183,6 +210,12 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
     fn log_refresh_failure(&self, error: &Error) {
         otel_warn!("azure_identity_auth.token_refresh_failed", error = %error);
+    }
+
+    async fn shutdown_in_flight(&self) {
+        if let CredentialExecution::ManagedIdentity(execution) = &self.credential {
+            execution.shutdown().await;
+        }
     }
 
     fn expires_on(value: &BearerToken) -> Option<Instant> {

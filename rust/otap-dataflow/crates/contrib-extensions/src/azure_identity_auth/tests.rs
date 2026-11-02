@@ -656,6 +656,175 @@ async fn managed_identity_uses_pipeline_runtime() {
     assert_eq!(token.expose_token(), "runtime-token");
 }
 
+/// Reports when its acquisition is dropped before completion.
+struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for DropSignal {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.0.take() {
+            let _ = dropped.send(());
+        }
+    }
+}
+
+/// Parks every acquisition on a pipeline-runtime timer that outlives the test.
+#[derive(Debug)]
+struct TimerCredential {
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+    dropped: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[async_trait::async_trait]
+impl TokenCredential for TimerCredential {
+    async fn get_token(
+        &self,
+        _scopes: &[&str],
+        _options: Option<TokenRequestOptions<'_>>,
+    ) -> azure_core::Result<AccessToken> {
+        let _dropped = DropSignal(self.dropped.lock().expect("drop signal").take());
+        let _ = self.started.send(());
+        tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+        Ok(AccessToken {
+            token: "timer-token".to_string().into(),
+            expires_on: OffsetDateTime::now_utc() + AzureDuration::minutes(60),
+        })
+    }
+}
+
+/// Scenario: Graceful extension shutdown arrives while a managed-identity refresh is awaiting a
+/// Tokio timer on the pipeline runtime, and the runtime is dropped once shutdown returns.
+/// Guarantees: Shutdown cancels the blocking worker's SDK future and waits for the worker to
+/// release admission before returning, so no SDK future outlives the runtime's timer driver.
+#[test]
+fn shutdown_drains_managed_identity_worker_before_runtime_drop() {
+    use otel_arrow_dfe_engine::control::ExtensionControlMsg;
+    use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as _};
+    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("pipeline runtime");
+    let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let (dropped_tx, mut dropped) = tokio::sync::oneshot::channel();
+    let credential = Arc::new(TimerCredential {
+        started: started_tx,
+        dropped: Mutex::new(Some(dropped_tx)),
+    });
+    let auth = Auth::from_managed_identity_factory(
+        move || Ok(Arc::clone(&credential) as Arc<dyn TokenCredential>),
+        "test_scope".to_string(),
+    );
+    let (tx, _rx) = watch::channel(None);
+    let extension = AzureIdentityAuthExtension::new(
+        "shutdown-test",
+        auth.clone(),
+        BackgroundProviderRefreshPolicy::expiry_driven(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),
+        )
+        .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
+    let wait = Duration::from_secs(10);
+
+    runtime.block_on(async {
+        let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let ctrl = ControlChannel::new(SharedReceiver::mpsc(ctrl_rx), shutdown_rx);
+        let effects =
+            otel_arrow_dfe_engine::testing::test_extension_effect_handler("shutdown-test".into());
+        let task = tokio::spawn(Box::new(extension).start(ctrl, effects));
+
+        tokio::time::timeout(wait, started.recv())
+            .await
+            .expect("startup refresh must reach the SDK timer")
+            .expect("started channel open");
+        assert!(
+            !auth.managed_identity_admission_available(),
+            "the worker must hold admission while its SDK future is pending"
+        );
+
+        ctrl_tx
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: std::time::Instant::now() + wait,
+                reason: "test shutdown".to_string(),
+            })
+            .await
+            .expect("send shutdown");
+        let _ = tokio::time::timeout(wait, task)
+            .await
+            .expect("shutdown must finish before its deadline")
+            .expect("join extension task")
+            .expect("clean shutdown");
+
+        assert!(
+            dropped.try_recv().is_ok(),
+            "shutdown must drop the pending SDK future before returning"
+        );
+        assert!(
+            auth.managed_identity_admission_available(),
+            "shutdown must wait for the worker to release admission"
+        );
+    });
+
+    drop(runtime);
+}
+
+/// Scenario: Extension shutdown begins while a consumer is still awaiting a managed-identity
+/// acquisition parked on a pipeline-runtime timer, then the consumer requests another token.
+/// Guarantees: Shutdown cancels the worker without the caller's cooperation and waits for it to
+/// release admission; the waiting caller receives a cancellation error, and later acquisitions
+/// fail without constructing or calling the credential again.
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_cancels_managed_identity_acquisition_with_live_caller() {
+    let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let (dropped_tx, mut dropped) = tokio::sync::oneshot::channel();
+    let credential = Arc::new(TimerCredential {
+        started: started_tx,
+        dropped: Mutex::new(Some(dropped_tx)),
+    });
+    let constructions = Arc::new(AtomicUsize::new(0));
+    let factory_constructions = Arc::clone(&constructions);
+    let auth = Auth::from_managed_identity_factory(
+        move || {
+            let _ = factory_constructions.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::clone(&credential) as Arc<dyn TokenCredential>)
+        },
+        "test_scope".to_string(),
+    );
+    let wait = Duration::from_secs(10);
+
+    let consumer_auth = auth.clone();
+    let consumer = tokio::spawn(async move { consumer_auth.fetch().await });
+    tokio::time::timeout(wait, started.recv())
+        .await
+        .expect("acquisition must reach the SDK timer")
+        .expect("started channel open");
+
+    tokio::time::timeout(wait, auth.shutdown_in_flight())
+        .await
+        .expect("shutdown must not wait for the live caller to give up");
+    assert!(
+        dropped.try_recv().is_ok(),
+        "shutdown must drop the pending SDK future before returning"
+    );
+    assert!(auth.managed_identity_admission_available());
+
+    let result = tokio::time::timeout(wait, consumer)
+        .await
+        .expect("the live caller must observe the cancelled acquisition")
+        .expect("join consumer");
+    assert!(matches!(result, Err(Error::ManagedIdentityCancelled)));
+    assert!(matches!(
+        auth.fetch().await,
+        Err(Error::ManagedIdentityCancelled)
+    ));
+    assert_eq!(constructions.load(Ordering::SeqCst), 1);
+}
+
 fn make_tracker() -> BackgroundProviderMetricsTracker<AzureIdentityAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<AzureIdentityAuthMetrics>(EmptyAttributes());

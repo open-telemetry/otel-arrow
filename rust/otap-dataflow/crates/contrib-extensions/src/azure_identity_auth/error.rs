@@ -30,4 +30,8 @@ pub enum Error {
         /// Underlying task panic or cancellation.
         source: tokio::task::JoinError,
     },
+
+    /// The caller stopped waiting for a managed-identity acquisition.
+    #[error("managed identity token acquisition was cancelled")]
+    ManagedIdentityCancelled,
 }

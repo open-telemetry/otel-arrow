@@ -132,11 +132,13 @@ the budget is not a hard wall-clock deadline for the complete operation.
 Synchronous operating-system filesystem calls also have no user-space
 cancellation mechanism.
 
-If startup or shutdown cancels an acquisition, the blocking task continues until the
-SDK call returns and retains admission in the meantime. Subsequent attempts
-wait for that task instead of starting another one. As with other blocking I/O,
-pipeline runtime teardown waits for running blocking tasks, so a stuck SDK call
-can delay shutdown.
+If startup cancels an acquisition, or shutdown begins, the blocking task drops
+the pending async SDK call at its next await point, but synchronous work already
+in progress runs to completion. The task retains admission until it finishes,
+so subsequent attempts wait for it instead of starting another one. Graceful
+shutdown waits, up to its deadline, for the task to finish before the pipeline
+runtime is dropped. As with other blocking I/O, a stuck synchronous call that
+outlasts the deadline still delays runtime teardown.
 
 ## Authentication methods
 
