@@ -323,7 +323,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// This is called on the send path at the stop node.  The observation
     /// is accumulated into a local histogram and drained into the `MetricSet`
-    /// on the next periodic [`report_flow_metrics`] call -- matching the
+    /// on the next periodic `report_flow_metrics` call -- matching the
     /// `ComputeDuration` reporting pattern.
     pub fn record_flow_duration(&self, signal: SignalType, total: u64) {
         let Some(measurement) = self.flow.end.duration.as_ref() else {
@@ -661,6 +661,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
@@ -700,6 +703,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where

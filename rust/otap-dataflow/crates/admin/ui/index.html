@@ -118,7 +118,7 @@
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <h2 class="text-lg font-semibold tracking-tight">Engine Metrics</h2>
     </div>
-    <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+    <div id="engine-metrics-grid" class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
       <div id="card-engine-cpu" class="card rounded-2xl px-3 py-2 shadow-lg">
         <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
           CPU
@@ -136,6 +136,16 @@
         <div id="engine-memory-rss" class="text-2xl font-semibold">n/a</div>
         <div class="metric-card-chart hidden mt-2" data-chart="engine-memory">
           <canvas id="engineChartMemory"></canvas>
+        </div>
+      </div>
+
+      <div id="card-engine-memory-commit" class="card rounded-2xl px-3 py-2 shadow-lg hidden">
+        <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Private Commit
+        </div>
+        <div id="engine-memory-commit" class="text-2xl font-semibold">n/a</div>
+        <div class="metric-card-chart hidden mt-2" data-chart="engine-memory-commit">
+          <canvas id="engineChartMemoryCommit"></canvas>
         </div>
       </div>
 

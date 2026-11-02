@@ -345,6 +345,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:windows_perf_counters",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:safety:memory_limiter",
     "category": "Safety",
     "description": "Engine memory pressure monitor and shedding controller",
@@ -352,6 +358,12 @@
   },
   {
     "id": "urn:otel:extension:azure_key_vault_sasl_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:azure_key_vault_user_pass_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}

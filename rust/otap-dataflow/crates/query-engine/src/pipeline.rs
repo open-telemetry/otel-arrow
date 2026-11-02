@@ -165,7 +165,7 @@ pub trait PipelineStage {
     }
 
     /// Implementation of this trait method can be used to clear any state that was added in
-    /// [`init_state_for_conditional_branch`]
+    /// [`Self::init_state_for_conditional_branch`]
     fn clear_state_for_conditional_branch(
         &mut self,
         _exec_state: &mut ExecutionState,

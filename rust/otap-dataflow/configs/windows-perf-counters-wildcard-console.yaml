@@ -1,0 +1,53 @@
+# platform: windows-only
+# Wildcard discovery example using the built-in Process performance object.
+# Each scrape reads every current process instance; repeated names get #1, #2 suffixes.
+# List "_Total" beside "*" to keep it alongside ordinary instances.
+# From rust\otap-dataflow:
+# cargo run --features windows-perf-counters --bin df_engine -- -c configs\windows-perf-counters-wildcard-console.yaml
+
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          wildcard:
+            type: receiver:windows_perf_counters
+            config:
+              metrics:
+                windows.memory.available:
+                  unit: By
+                  description: Physical memory immediately available for allocation.
+                  gauge: {}
+                windows.process.private:
+                  unit: By
+                  description: Committed private memory for each process instance.
+                  sum:
+                    aggregation: cumulative
+                    monotonic: false
+              perfcounters:
+                - object: Memory
+                  counters:
+                    - name: Available Bytes
+                      metric: windows.memory.available
+                - object: Process
+                  instances: ["*"]
+                  counters:
+                    - name: Private Bytes
+                      metric: windows.process.private
+              collection_interval: 5s
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+              unicode: false
+              color: false
+        connections:
+          - from: wildcard
+            to: console

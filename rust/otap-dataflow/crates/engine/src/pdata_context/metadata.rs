@@ -12,7 +12,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
+use super::Claims;
+use crate::capability::auth::ClaimValue;
 use crate::pdata_context::{
     ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
     ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
@@ -79,7 +80,7 @@ impl Metadata {
     pub fn capture_authorized_identity(
         &mut self,
         policy: &AuthorizedIdentityPolicy,
-        identity: &AuthorizedIdentity,
+        identity: &(impl Claims + ?Sized),
     ) {
         self.authorized_identity =
             AuthorizedIdentityEntries::capture(policy, identity).unwrap_or_default();
@@ -196,6 +197,11 @@ impl<'a> AuthorizedClaimValue<'a> {
             .map(move |offset| self.storage.decode_value(self.first_value + offset))
     }
 
+    /// Returns the value at `offset` in source order.
+    pub(super) fn get(&self, offset: usize) -> Option<&'a str> {
+        (offset < self.value_count).then(|| self.storage.decode_value(self.first_value + offset))
+    }
+
     /// Returns the number of values.
     #[must_use]
     pub const fn len(&self) -> usize {
@@ -245,7 +251,10 @@ impl fmt::Debug for AuthorizedIdentityEntries {
 }
 
 impl AuthorizedIdentityEntries {
-    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
+    fn capture(
+        policy: &AuthorizedIdentityPolicy,
+        identity: &(impl Claims + ?Sized),
+    ) -> Option<Self> {
         PackedAuthorizedIdentity::capture(policy, identity).map(|packed| Self {
             packed: Some(Arc::new(packed)),
         })
@@ -264,11 +273,12 @@ impl AuthorizedIdentityEntries {
     }
 
     /// Iterates over captured entries in policy order.
-    pub fn iter(&self) -> impl Iterator<Item = AuthorizedIdentityEntry<'_>> {
-        self.packed
-            .as_deref()
-            .into_iter()
-            .flat_map(|packed| (0..packed.entry_count).map(|index| packed.decode_entry(index)))
+    #[must_use]
+    pub fn iter(&self) -> AuthorizedIdentityEntriesIter<'_> {
+        AuthorizedIdentityEntriesIter {
+            packed: self.packed.as_deref(),
+            next: 0,
+        }
     }
 
     /// Finds an entry by exact configured name.
@@ -278,8 +288,31 @@ impl AuthorizedIdentityEntries {
     }
 }
 
+/// Iterates borrowed authorized identity entries in capture-policy order.
+pub struct AuthorizedIdentityEntriesIter<'a> {
+    packed: Option<&'a PackedAuthorizedIdentity>,
+    next: usize,
+}
+
+impl<'a> Iterator for AuthorizedIdentityEntriesIter<'a> {
+    type Item = AuthorizedIdentityEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let packed = self.packed?;
+        if self.next >= packed.entry_count {
+            return None;
+        }
+        let entry = packed.decode_entry(self.next);
+        self.next += 1;
+        Some(entry)
+    }
+}
+
 impl PackedAuthorizedIdentity {
-    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
+    fn capture(
+        policy: &AuthorizedIdentityPolicy,
+        identity: &(impl Claims + ?Sized),
+    ) -> Option<Self> {
         let mut entry_count = 0usize;
         let mut value_count = 0usize;
         let mut blob_len = 0usize;
@@ -541,6 +574,7 @@ impl PeerAddrMerger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::auth::AuthorizedIdentity;
 
     /// Scenario: default metadata is given a peer address.
     /// Guarantees: the peer address starts absent and reads back as set.

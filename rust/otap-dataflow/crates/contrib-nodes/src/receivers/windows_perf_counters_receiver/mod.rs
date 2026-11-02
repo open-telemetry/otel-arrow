@@ -8,35 +8,12 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.windows_perf_counters",
 );
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
-)]
 mod config;
-
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
-)]
 mod metrics;
-
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
-)]
 mod otap_builder;
-
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
-)]
 mod pdh;
-
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "consumed by the receiver runtime in a follow-up")
-)]
 mod runtime;
+
 #[cfg(test)]
 mod test_utils {
     use otel_arrow_dfe_pdata::otap::OtapArrowRecords;

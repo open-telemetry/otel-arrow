@@ -39,7 +39,12 @@ use super::error::KafkaExporterError;
 use super::metrics::{KafkaExporterMetrics, KafkaTopicSource};
 use crate::common::kafka::validate_kafka_topic;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaderRef;
+use otel_arrow_dfe_engine::pdata_context::{
+    ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
+    ContextEntryTarget, ContextNameMatching,
+};
 use otel_arrow_dfe_otap::pdata::Context;
 use regex::Regex;
 use std::borrow::Cow;
@@ -56,6 +61,19 @@ use std::borrow::Cow;
 pub struct TopicRouter;
 
 impl TopicRouter {
+    /// Selects the first case-insensitive header match used for topic routing.
+    pub(super) fn topic_read_selector(name: &ContextEntryName) -> ContextEntrySelector {
+        ContextEntrySelector {
+            target: ContextEntryTarget::Primitive {
+                domain: ContextDomain::TransportHeader,
+                name: name.clone(),
+                matching: ContextNameMatching::AsciiCaseInsensitive,
+            },
+            form: ContextEntrySelectorForm::Value,
+            take: ContextEntryTake::First,
+        }
+    }
+
     /// Resolves the destination topic for a signal and increments the
     /// appropriate topic routing metric.
     ///
@@ -202,6 +220,96 @@ mod tests {
                 key.try_into().expect("valid test context entry name"),
             ),
             None => config,
+        }
+    }
+
+    /// Scenario: Kafka declares topic routing and partitioning reads over mixed-case, repeated headers.
+    /// Guarantees: the first-value topic read yields exactly the router's first match, and the
+    /// all-captured read matches the partitioner's stored iteration.
+    #[test]
+    fn compiled_reads_match_kafka_header_consumers() {
+        use super::super::exporter::KAFKA_EXPORTER_FACTORY;
+        use otel_arrow_dfe_config::PipelineKey;
+        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+        use otel_arrow_dfe_engine::PipelineFactory;
+        use otel_arrow_dfe_engine::pdata_context::ReadValue;
+
+        let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "engine": {},
+            "groups": {"group": {"pipelines": {"pipeline": {
+                "nodes": {"exporter": {
+                    "type": "urn:otel:exporter:kafka",
+                    "config": {
+                        "brokers": "localhost:9092",
+                        "client_id": "read-adapter-test",
+                        "logs": {
+                            "topic": "fallback",
+                            "topic_from_transport_header": "Topic",
+                            "partition_by_transport_headers": true,
+                            "encoding": "otlp_proto"
+                        }
+                    }
+                }},
+                "connections": []
+            }}}}
+        }))
+        .expect("pipeline config");
+        let mut resolved = spec.resolve();
+        // This fixture does not register the implicit telemetry pipeline's nodes.
+        resolved
+            .pipelines
+            .retain(|pipeline| pipeline.pipeline_group_id.as_ref() == "group");
+        let prepared =
+            PipelineFactory::new(&[], &[], std::slice::from_ref(&KAFKA_EXPORTER_FACTORY), &[])
+                .compile_initial_context(&resolved)
+                .expect("compiled Kafka config");
+        let bindings = prepared
+            .bindings
+            .node_bindings(
+                &PipelineKey::new("group".into(), "pipeline".into()),
+                &"exporter".into(),
+            )
+            .expect("Kafka bindings");
+        let read = bindings
+            .value(&TopicRouter::topic_read_selector(
+                &"Topic".try_into().expect("context name"),
+            ))
+            .expect("topic read");
+        let signal = make_signal_config("fallback", Some("Topic"));
+        for context in [
+            Context::default(),
+            context_with_headers(vec![
+                make_transport_header("topic", "first"),
+                make_transport_header("Topic", "second"),
+                TransportHeader::binary("other".try_into().expect("header name"), b"\xff\0"),
+            ]),
+        ] {
+            let mut values = Vec::new();
+            if let Some(selected) = read.read(context.metadata()) {
+                selected.visit_members(|member| values.extend(member.values()));
+            }
+            assert_eq!(
+                values,
+                TopicRouter::header_topic(&signal, &context)
+                    .map(ReadValue::from)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            );
+            let legacy = context
+                .transport_headers()
+                .into_iter()
+                .flat_map(|headers| headers.iter())
+                .map(ReadValue::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                bindings
+                    .headers()
+                    .expect("partition read")
+                    .read(context.metadata())
+                    .collect::<Vec<_>>(),
+                legacy,
+            );
         }
     }
 

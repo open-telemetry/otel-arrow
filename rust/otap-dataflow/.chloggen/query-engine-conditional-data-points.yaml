@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: OTAP query-engine now supports if/else conditional branches inside `apply data_points` pipelines.
-issues: [3722]

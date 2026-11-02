@@ -199,7 +199,7 @@ impl EngineConfig {
     /// - `custom` -- opaque, freeform metadata the engine never interprets, but
     ///   the most likely place an embedder stashes arbitrary config (including
     ///   auth `headers`). The whole map is walked with the same
-    ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
+    ///   `redact_secret_headers` helper
     ///   used by the structured arms, so any value under a `headers` key -- map
     ///   or `[{key, value}]` list form, at any depth, including a top-level
     ///   `custom.headers` -- is masked. Matching is on the conventional

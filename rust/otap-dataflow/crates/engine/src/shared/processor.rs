@@ -729,6 +729,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
@@ -763,6 +766,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where

@@ -1,0 +1,20 @@
+groups:
+  - id: event.browser.web_vital
+    stability: development
+    type: event
+    name: browser.web_vital
+    brief: >
+      This event describes the website performance metrics introduced by Google, See [web vitals](https://web.dev/vitals).
+    attributes:
+      - ref: browser.web_vital.name
+        requirement_level: required
+      - ref: browser.web_vital.value
+        requirement_level: required
+      - ref: browser.web_vital.delta
+        requirement_level: required
+      - ref: browser.web_vital.id
+        requirement_level: required
+      - ref: browser.web_vital.rating
+        requirement_level: recommended
+      - ref: browser.web_vital.navigation_type
+        requirement_level: recommended
