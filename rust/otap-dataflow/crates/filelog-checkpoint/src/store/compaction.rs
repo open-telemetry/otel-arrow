@@ -209,6 +209,9 @@ impl CheckpointStore {
             .compaction
             .as_ref()
             .expect("installed compaction attempt");
+        // validate_recovery currently returns only AuthorityChanged. Here it
+        // describes staged bytes, so report a staging error. Revisit this
+        // mapping if validate_recovery gains other errors.
         attempt
             .validate_recovery(
                 &self.recovered,

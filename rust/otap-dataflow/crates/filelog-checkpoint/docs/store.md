@@ -151,6 +151,9 @@ State use, append, sync, and another compaction stay blocked. If recovery is
 allowed, `recover_compaction()` validates the active file under the same lock
 and cleans up the temporary. It returns `Some(receipt)` when the proposed
 snapshot was published, or `None` when the old generation remains active.
+If replacement returned success, recovery must validate the new generation;
+it cannot fall back to the old one. If the outcome is uncertain, recovery may
+accept either complete generation.
 Recheck removal eligibility before another attempt.
 
 `can_recover_compaction()` reports whether this store permits recovery. The
