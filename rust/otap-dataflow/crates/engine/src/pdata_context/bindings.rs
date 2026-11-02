@@ -60,7 +60,8 @@ impl ArrivalBinding {
     ///
     /// Fails when the formed metadata does not meet the node's context
     /// requirements, for example when an entry listed in its `required_in`
-    /// policy is absent.
+    /// policy is absent. `required_in` is not yet enforced, so the current
+    /// implementation always succeeds.
     pub fn form(
         &self,
         arrival: &Arrival<'_>,
@@ -133,11 +134,15 @@ impl SinkBinding {
     }
 
     /// Emits the existing primitive and materialized propagation results in order.
+    ///
+    /// Fails when the metadata does not match this node's compiled context
+    /// bindings; an exporter permanently nacks the input. The current
+    /// implementation always succeeds.
     pub fn propagate<'a>(
         &'a self,
         metadata: &'a Metadata,
-        mut emit: impl FnMut(&'a str, PropagatedValue<'a>),
-    ) {
+        mut emit: impl FnMut(PropagatedValue<'a>),
+    ) -> Result<(), ContextError> {
         for header in metadata
             .transport_headers()
             .into_iter()
@@ -147,15 +152,13 @@ impl SinkBinding {
                     .materialized_headers(metadata.materialized_context()),
             )
         {
-            emit(
-                header.header_name,
-                PropagatedValue {
-                    wire_name: header.header_name,
-                    kind: header.value_kind,
-                    bytes: header.value,
-                },
-            );
+            emit(PropagatedValue {
+                wire_name: header.header_name,
+                kind: header.value_kind,
+                bytes: header.value,
+            });
         }
+        Ok(())
     }
 }
 
@@ -575,10 +578,10 @@ mod tests {
                     .collect::<Vec<_>>();
                 let sink = SinkBinding::new(policy);
                 let mut actual = Vec::new();
-                sink.propagate(&metadata, |name, value| {
-                    assert_eq!(name, value.wire_name);
-                    actual.push((name.to_owned(), value.kind, value.bytes.to_vec()));
-                });
+                sink.propagate(&metadata, |value| {
+                    actual.push((value.wire_name.to_owned(), value.kind, value.bytes.to_vec()));
+                })
+                .expect("propagation succeeds");
                 assert_eq!(actual, expected);
                 assert!(
                     actual
@@ -766,13 +769,15 @@ mod tests {
             .collect::<Vec<_>>();
         let sink = SinkBinding::new(policy);
         let mut actual = Vec::new();
-        sink.propagate(&metadata, |name, value| {
-            actual.push((name.to_owned(), value.bytes.to_vec()))
-        });
+        sink.propagate(&metadata, |value| {
+            actual.push((value.wire_name.to_owned(), value.bytes.to_vec()))
+        })
+        .expect("propagation succeeds");
         assert_eq!(actual, expected);
         assert_eq!(actual, [("route".to_owned(), b"fixed".to_vec())]);
-        sink.propagate(&Metadata::default(), |_, _| {
+        sink.propagate(&Metadata::default(), |_| {
             panic!("unmaterialized metadata must emit nothing")
-        });
+        })
+        .expect("propagation succeeds");
     }
 }

@@ -550,6 +550,8 @@ type ContextDeclarationsByPipeline =
 struct PreparedNodeContextDeclarations {
     /// Whether this node can form arrival metadata, even without capture policies.
     receiver: bool,
+    /// Whether this node can project produced values into a derived context.
+    processor: bool,
     /// Engine-assigned role from the node's factory.
     role: NodeBindingRole,
     /// Sorted component and engine declarations for the node.
@@ -611,6 +613,7 @@ impl PreparedNodeContextDeclarations {
         )?;
         Ok(Self {
             receiver: false,
+            processor: false,
             role: NodeBindingRole::None,
             declarations,
             composites,
@@ -750,14 +753,10 @@ fn original_name_key(name: &ContextEntryName) -> Box<str> {
 
 impl CompiledNodeState {
     /// Compiles header capture and separates component declarations from engine policies.
-    ///
-    /// `next_projection_id` numbers projection bindings uniquely within one
-    /// compiled snapshot.
     fn compile(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
         materialization_plan: &ContextMaterializationPlan,
-        next_projection_id: &mut u64,
     ) -> Result<Self, Error> {
         let mut component_declarations = Vec::new();
         let mut header_capture = None;
@@ -831,11 +830,9 @@ impl CompiledNodeState {
                     values.into_boxed_slice()
                 },
                 headers,
-                projection: (!produced.is_empty()).then(|| {
-                    let id = *next_projection_id;
-                    *next_projection_id += 1;
-                    ProjectionBinding::new(id, produced)
-                }),
+                // Only processors derive an output context from an input context.
+                projection: (prepared.processor && !produced.is_empty())
+                    .then(|| ProjectionBinding::new(produced)),
                 merge: (prepared.role == NodeBindingRole::Merge).then(MergeBinding::new),
             }),
         })
@@ -874,7 +871,6 @@ impl CompiledContextBindings {
         requirements: &ContextRuntimeRequirements,
     ) -> Result<Self, Error> {
         let mut materialization_by_pipeline = HashMap::new();
-        let mut next_projection_id = 0;
         let by_pipeline = declarations
             .into_iter()
             .map(|(pipeline, prepared_nodes)| {
@@ -899,7 +895,6 @@ impl CompiledContextBindings {
                                 declarations,
                                 requirements,
                                 &materialization,
-                                &mut next_projection_id,
                             )?,
                         ))
                     })
@@ -1084,6 +1079,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
                         .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 declarations.receiver = node_config.kind() == NodeKind::Receiver;
+                declarations.processor = node_config.kind() == NodeKind::Processor;
                 declarations.role = role;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
@@ -1754,7 +1750,7 @@ groups:
     }
 
     /// Scenario: one pipeline holds a producing receiver, producing processor, merge-role processor, and plain nodes.
-    /// Guarantees: projection follows only `Produces` declarations, merge follows only the factory role, arrival is unaffected, and producing nodes reject each other's handles.
+    /// Guarantees: only producing processors receive a projection (a producing receiver forms context at arrival instead), merge follows only the factory role, and arrival is unaffected.
     #[test]
     fn projection_and_merge_bindings_follow_declarations_and_roles() {
         let compiled = test_pipeline_factory()
@@ -1777,36 +1773,21 @@ groups:
         let receiver = bindings("receiver");
         assert!(receiver.arrival().is_some());
         assert!(receiver.merge().is_none());
-        let projection = receiver.projection().expect("receiver projection");
-        assert!(
-            projection
-                .produced(ContextDomain::TransportHeader, &context_name("generated"))
-                .is_ok()
-        );
-        assert!(
-            projection
-                .produced(ContextDomain::TransportHeader, &context_name("partition"))
-                .is_err()
-        );
+        assert!(receiver.projection().is_none());
 
         let produce = bindings("produce");
         assert!(produce.arrival().is_none());
         assert!(produce.merge().is_none());
-        let produce_projection = produce.projection().expect("processor projection");
-        let partition = produce_projection
-            .produced(ContextDomain::TransportHeader, &context_name("partition"))
-            .expect("partition handle");
-        assert_ne!(produce_projection, projection);
-        assert_eq!(
-            projection.form(
-                &Metadata::default(),
-                &[ProducedValue {
-                    entry: partition,
-                    kind: otel_arrow_dfe_config::context::transport_headers::ValueKind::Text,
-                    bytes: b"0",
-                }],
-            ),
-            Err(ContextError::ContextMismatch)
+        let projection = produce.projection().expect("processor projection");
+        assert!(
+            projection
+                .produced(ContextDomain::TransportHeader, &context_name("partition"))
+                .is_ok()
+        );
+        assert!(
+            projection
+                .produced(ContextDomain::TransportHeader, &context_name("generated"))
+                .is_err()
         );
 
         let merge = bindings("merge");
@@ -1836,7 +1817,7 @@ groups:
     }
 
     /// Scenario: a merge-role processor factory also declares a produced entry.
-    /// Guarantees: the node receives both the merge binding and a projection for its declared entry.
+    /// Guarantees: the node receives both the merge binding and a projection for its declared entry, and producing processors in one pipeline reject each other's handles.
     #[test]
     fn merge_role_keeps_provider_declarations() {
         let compiled = test_pipeline_factory()
@@ -1846,17 +1827,40 @@ groups:
                 "urn:test:exporter:example",
             ))
             .expect("context compiles");
+        let key = pipeline("default", "main");
         let merge = compiled
             .bindings
-            .node_bindings(&pipeline("default", "main"), &ConfigNodeId::from("merge"))
+            .node_bindings(&key, &ConfigNodeId::from("merge"))
             .expect("merge bindings");
         assert!(merge.merge().is_some());
+        let merge_projection = merge.projection().expect("merge projection");
         assert!(
-            merge
-                .projection()
-                .expect("merge projection")
+            merge_projection
                 .produced(ContextDomain::TransportHeader, &context_name("merged"))
                 .is_ok()
+        );
+
+        let produce_projection = compiled
+            .bindings
+            .node_bindings(&key, &ConfigNodeId::from("produce"))
+            .expect("produce bindings")
+            .projection()
+            .expect("produce projection")
+            .clone();
+        let partition = produce_projection
+            .produced(ContextDomain::TransportHeader, &context_name("partition"))
+            .expect("partition handle");
+        assert_ne!(&produce_projection, merge_projection);
+        assert_eq!(
+            merge_projection.form(
+                &Metadata::default(),
+                &[ProducedValue {
+                    entry: &partition,
+                    kind: otel_arrow_dfe_config::context::transport_headers::ValueKind::Text,
+                    bytes: b"0",
+                }],
+            ),
+            Err(ContextError::ContextMismatch)
         );
     }
 

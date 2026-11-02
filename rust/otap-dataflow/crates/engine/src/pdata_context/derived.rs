@@ -6,7 +6,7 @@
 //! Projection forms one output from one input plus values the node produces.
 //! Merge forms one output from several inputs.
 
-use super::{ContextDomain, ContextError, Metadata, PeerAddrMerger};
+use super::{ContextDomain, ContextError, ContextLayoutIdentity, Metadata, PeerAddrMerger};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
@@ -16,19 +16,27 @@ use otel_arrow_dfe_config::error::Error;
 /// Obtain once during node construction from [`ProjectionBinding::produced`].
 /// A handle records the binding that issued it, so another binding rejects it
 /// instead of writing a different entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ProducedEntry {
     /// Identity of the issuing binding.
-    binding: u64,
+    binding: ContextLayoutIdentity,
     /// Position in the issuing binding's sorted entry list.
     index: usize,
 }
+
+impl PartialEq for ProducedEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.binding.matches(&other.binding) && self.index == other.index
+    }
+}
+
+impl Eq for ProducedEntry {}
 
 /// One value supplied for a produced entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProducedValue<'a> {
     /// Produced entry handle issued by the node's projection binding.
-    pub entry: ProducedEntry,
+    pub entry: &'a ProducedEntry,
     /// Text or binary representation.
     pub kind: ValueKind,
     /// Raw value bytes.
@@ -38,26 +46,35 @@ pub struct ProducedValue<'a> {
 /// Compiled projection for a node that produces context entries.
 ///
 /// Equality is identity: clones of one compiled binding are equal and accept
-/// each other's handles, while other bindings in the same compiled snapshot
-/// are not, even with the same entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// each other's handles, while every other binding is not, even with the
+/// same entries.
+#[derive(Debug, Clone)]
 pub struct ProjectionBinding {
-    /// Identity unique within one compiled snapshot and shared by clones.
+    /// Identity shared by clones and by the handles this binding issues.
     ///
-    /// A node receives its bindings and handles together at construction, so
-    /// handles never cross snapshots.
-    id: u64,
+    /// The shared allocation is created once at compilation and cloned only
+    /// when a node looks up handles during construction; `form` compares
+    /// pointers and never touches the reference count.
+    identity: ContextLayoutIdentity,
     /// Declared produced transport-header entries, sorted and unique.
     produced: Box<[ContextEntryName]>,
 }
 
+impl PartialEq for ProjectionBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity.matches(&other.identity)
+    }
+}
+
+impl Eq for ProjectionBinding {}
+
 impl ProjectionBinding {
     /// Compiles a projection for declared transport-header entries.
-    pub(super) fn new(id: u64, mut produced: Vec<ContextEntryName>) -> Self {
+    pub(super) fn new(mut produced: Vec<ContextEntryName>) -> Self {
         produced.sort();
         produced.dedup();
         Self {
-            id,
+            identity: ContextLayoutIdentity::default(),
             produced: produced.into_boxed_slice(),
         }
     }
@@ -86,7 +103,7 @@ impl ProjectionBinding {
             .binary_search(entry)
             .map_err(|_| undeclared())?;
         Ok(ProducedEntry {
-            binding: self.id,
+            binding: self.identity.clone(),
             index,
         })
     }
@@ -111,7 +128,10 @@ impl ProjectionBinding {
         }
         let mut headers = output.take_transport_headers().unwrap_or_default();
         for value in produced {
-            let name = (value.entry.binding == self.id)
+            let name = value
+                .entry
+                .binding
+                .matches(&self.identity)
                 .then(|| self.produced.get(value.entry.index))
                 .flatten()
                 .ok_or(ContextError::ContextMismatch)?;
@@ -181,7 +201,8 @@ impl MetadataMerger {
     ///
     /// Pushing inputs never fails. This fails when the merged metadata does
     /// not meet the node's context requirements, for example when an entry
-    /// listed in its `required_out` policy is absent.
+    /// listed in its `required_out` policy is absent. `required_out` is not
+    /// yet enforced, so the current implementation always succeeds.
     pub fn finish(self) -> Result<Metadata, ContextError> {
         let mut output = Metadata::default();
         if let Some(peer) = self.peer.finish() {
@@ -273,7 +294,7 @@ mod tests {
     fn projection_matches_partition_header_update() {
         let partition = name("partition");
         let shard = name("shard");
-        let binding = ProjectionBinding::new(0, vec![shard.clone(), partition.clone()]);
+        let binding = ProjectionBinding::new(vec![shard.clone(), partition.clone()]);
         let partition_entry = binding
             .produced(ContextDomain::TransportHeader, &partition)
             .expect("partition handle");
@@ -290,7 +311,7 @@ mod tests {
                 .form(
                     &input,
                     &[ProducedValue {
-                        entry: partition_entry,
+                        entry: &partition_entry,
                         kind: ValueKind::Text,
                         bytes: b"0",
                     }],
@@ -313,12 +334,12 @@ mod tests {
                     &input,
                     &[
                         ProducedValue {
-                            entry: partition_entry,
+                            entry: &partition_entry,
                             kind: ValueKind::Binary,
                             bytes: &514i64.to_le_bytes(),
                         },
                         ProducedValue {
-                            entry: shard_entry,
+                            entry: &shard_entry,
                             kind: ValueKind::Text,
                             bytes: b"east",
                         },
@@ -357,7 +378,7 @@ mod tests {
     /// Guarantees: the output equals the input, including absent transport headers.
     #[test]
     fn projection_without_values_preserves_input() {
-        let binding = ProjectionBinding::new(0, vec![name("partition")]);
+        let binding = ProjectionBinding::new(vec![name("partition")]);
         for input in [
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
@@ -378,7 +399,7 @@ mod tests {
     /// Guarantees: both fail with UndeclaredContextEntry naming the domain and entry instead of issuing a handle.
     #[test]
     fn produced_lookup_rejects_undeclared_entries() {
-        let binding = ProjectionBinding::new(0, vec![name("partition")]);
+        let binding = ProjectionBinding::new(vec![name("partition")]);
         for (domain, entry) in [
             (ContextDomain::TransportHeader, "other"),
             (ContextDomain::AuthorizedIdentity, "partition"),
@@ -399,22 +420,24 @@ mod tests {
     #[test]
     fn projection_rejects_mismatched_handles() {
         let partition = name("partition");
-        let binding = ProjectionBinding::new(0, vec![partition.clone()]);
-        let value = |entry| ProducedValue {
-            entry,
-            kind: ValueKind::Text,
-            bytes: b"0",
-        };
+        let binding = ProjectionBinding::new(vec![partition.clone()]);
+        fn value(entry: &ProducedEntry) -> ProducedValue<'_> {
+            ProducedValue {
+                entry,
+                kind: ValueKind::Text,
+                bytes: b"0",
+            }
+        }
         for other in [
-            ProjectionBinding::new(1, vec![name("tenant")]),
-            ProjectionBinding::new(2, vec![partition.clone()]),
+            ProjectionBinding::new(vec![name("tenant")]),
+            ProjectionBinding::new(vec![partition.clone()]),
         ] {
             assert_ne!(other, binding);
             let mismatched = other
                 .produced(ContextDomain::TransportHeader, &other.produced[0])
                 .expect("other handle");
             assert_eq!(
-                binding.form(&Metadata::default(), &[value(mismatched)]),
+                binding.form(&Metadata::default(), &[value(&mismatched)]),
                 Err(ContextError::ContextMismatch)
             );
         }
@@ -425,10 +448,10 @@ mod tests {
         let clone = binding.clone();
         assert_eq!(clone, binding);
         assert_eq!(
-            clone.form(&Metadata::default(), &[value(own)]),
-            binding.form(&Metadata::default(), &[value(own)])
+            clone.form(&Metadata::default(), &[value(&own)]),
+            binding.form(&Metadata::default(), &[value(&own)])
         );
-        assert!(binding.form(&Metadata::default(), &[value(own)]).is_ok());
+        assert!(binding.form(&Metadata::default(), &[value(&own)]).is_ok());
     }
 
     /// Scenario: batch-style merges see no inputs, one input, unanimous peers, distinct peers, or a peerless input.
