@@ -789,10 +789,10 @@ impl CompiledNodeState {
                 ContextDeclaration::Produces { domain, entry } => {
                     match domain {
                         ContextDomain::TransportHeader => produced.push(entry.clone()),
-                        // Rejected with the factory URN before compilation.
                         ContextDomain::AuthorizedIdentity => {
                             return Err(invalid_context(format!(
-                                "produced context entry `{entry}` must be a transport header"
+                                "produced context entry `{entry}` is in the authorized-identity \
+                                 domain; only transport-header entries can be produced"
                             )));
                         }
                     }
@@ -1212,26 +1212,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     error: format!(
                         "node factory `{urn}` returned engine-owned context declaration \
                          `{declaration:?}`"
-                    ),
-                },
-            )));
-        }
-        // Only transport-header entries can be produced.
-        if let Some(entry) = declarations
-            .iter()
-            .find_map(|declaration| match declaration {
-                ContextDeclaration::Produces {
-                    domain: ContextDomain::AuthorizedIdentity,
-                    entry,
-                } => Some(entry),
-                _ => None,
-            })
-        {
-            return Err(EngineError::ConfigError(Box::new(
-                Error::InvalidUserConfig {
-                    error: format!(
-                        "node factory `{urn}` declared produced context entry `{entry}` in the \
-                         authorized-identity domain; only transport-header entries can be produced"
                     ),
                 },
             )));
@@ -1881,7 +1861,7 @@ groups:
     }
 
     /// Scenario: a processor factory declares a produced entry in the authorized-identity domain.
-    /// Guarantees: compilation fails naming the factory URN and entry instead of deferring the failure to node construction.
+    /// Guarantees: compilation fails naming the entry and domain instead of deferring the failure to node construction.
     #[test]
     fn produced_identity_entries_are_rejected_at_compilation() {
         let Err(EngineError::ConfigError(error)) =
@@ -1894,8 +1874,8 @@ groups:
             panic!("produced identity entries must be rejected");
         };
         let message = error.to_string();
-        assert!(message.contains("urn:test:processor:produce"), "{message}");
         assert!(message.contains("`subject`"), "{message}");
+        assert!(message.contains("authorized-identity domain"), "{message}");
         assert!(
             message.contains("only transport-header entries can be produced"),
             "{message}"
