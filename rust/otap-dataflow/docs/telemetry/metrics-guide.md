@@ -491,6 +491,19 @@ absent when instrumentation is disabled, so it must not drive receiver behavior.
 For externally driven work, retain the guard from `processing()` and call `success()`
 before handoff instead of using `run()`.
 
+Before final snapshots, stop admission and finish, cancel, or drop **all**
+outstanding attempts, including owning `run()` futures (not just pinned
+references). Return expressions run before locals drop; an unfinished guard
+would record failure too late to export.
+
+```rust
+attempt.cancellation_handle().cancel(); // Before cleanup.
+self.cancel_and_join_source_work().await?;
+drop(attempt);
+let snapshots = self.metrics.boundary.terminal_snapshots();
+Ok(TerminalState::new(deadline, snapshots))
+```
+
 ### Exporter implementation
 
 Every exporter implementation should follow this shape:

@@ -47,7 +47,7 @@ use crate::pdata_context::{
 use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
@@ -155,6 +155,8 @@ pub struct EffectHandler<PData> {
     context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     /// Optional signal used to gate pipeline startup on receiver initialization.
     readiness: Option<ReadinessSignaller>,
+    /// Shares the runtime's budget so fatal handoff cannot restart the error-path flush timeout.
+    pub(crate) terminal_metrics_deadline: TerminalMetricsDeadline,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -180,6 +182,7 @@ impl<PData> EffectHandler<PData> {
             node_bindings: None,
             context_materialization_plan: None,
             readiness: None,
+            terminal_metrics_deadline: TerminalMetricsDeadline::default(),
         }
     }
 
@@ -472,9 +475,11 @@ impl<PData> EffectHandler<PData> {
     /// Hands final node metrics to the collector before returning a fatal error.
     ///
     /// Normal exits return their snapshots in [`TerminalState`] instead. This
-    /// handoff uses the supplied absolute deadline; the runtime flushes accepted
-    /// snapshots after the receiver returns. An unavailable or full standalone
-    /// reporter is reported as an error, never as a successful handoff.
+    /// handoff records the supplied absolute deadline in the pipeline's shared
+    /// terminal budget and publishes using the earliest recorded deadline. The
+    /// runtime flushes accepted snapshots within that same budget after the
+    /// receiver returns. An unavailable or full standalone reporter is reported
+    /// as an error, never as a successful handoff.
     ///
     /// Handoff is not transactional: if a later snapshot fails or reaches the
     /// deadline, earlier accepted snapshots remain available to the collector.
@@ -485,7 +490,8 @@ impl<PData> EffectHandler<PData> {
         &self,
         terminal: TerminalState,
     ) -> Result<(), TelemetryError> {
-        let deadline = terminal.deadline();
+        self.terminal_metrics_deadline.record(terminal.deadline());
+        let deadline = self.terminal_metrics_deadline.get();
         for snapshot in terminal.into_metrics() {
             if self
                 .core

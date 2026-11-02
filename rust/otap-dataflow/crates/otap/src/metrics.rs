@@ -52,6 +52,9 @@ pub struct ReceiverPulledMetrics {
 ///
 /// Attempts may overlap on the same core. Each has independent completion state;
 /// no mutable metric borrow is held across source work or control handling.
+///
+/// Before final snapshots, finish, cancel, or drop every outstanding attempt,
+/// including attempts owned by pending [`ReceiverPullAttempt::run`] futures.
 #[derive(Default)]
 pub struct ReceiverPullMetrics {
     inner: Option<Rc<RefCell<PullMetricSets>>>,
@@ -108,6 +111,11 @@ impl ReceiverPullMetrics {
     }
 
     /// Takes completed observations for terminal handoff; active attempts stay active.
+    ///
+    /// Finish, cancel, or drop every outstanding attempt before calling this for
+    /// the final handoff. In particular, do not take snapshots in a return
+    /// expression while an unfinished guard or owning `run()` future is still
+    /// alive: its later drop records failure after the snapshots were captured.
     #[must_use]
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = Vec::new();
@@ -155,6 +163,7 @@ impl PullAttemptState {
 ///
 /// Keep this guard on the receiver's local core, including when source work is
 /// dispatched to a worker. Finish before handoff, or cancel before joining work.
+/// On shutdown, finish, cancel, or drop it before taking final metric snapshots.
 #[must_use = "retain the attempt until collection succeeds or fails"]
 pub struct ReceiverPullAttempt(Option<Rc<PullAttemptState>>);
 
@@ -1168,6 +1177,60 @@ mod tests {
         );
         assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
         assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: Shutdown completes, cancels, or drops every outstanding attempt before capturing final snapshots.
+    /// Guarantees: The final batch contains every attempt's count and duration, and later guard cleanup cannot add unexported observations.
+    #[tokio::test(start_paused = true)]
+    async fn pull_shutdown_finishes_attempts_before_terminal_snapshots() {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = ReceiverPullMetrics::register(&pipeline);
+        let completed = metrics.processing();
+        let cancelled = metrics.processing();
+        let cancellation = cancelled.cancellation_handle();
+        let abandoned = metrics.processing();
+        let mut pending = Box::pin(
+            metrics
+                .processing()
+                .run(async |_| std::future::pending::<Result<(), ()>>().await),
+        );
+        assert!(futures::poll!(&mut pending).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+
+        let snapshots = {
+            completed.success();
+            cancellation.cancel();
+            drop(abandoned);
+            drop(pending);
+            metrics.terminal_snapshots()
+        };
+        assert_eq!(snapshots.len(), 3);
+        for snapshot in snapshots {
+            match &snapshot.get_metrics()[0] {
+                MetricValue::U64(value) => {
+                    let expected = match snapshot.measurement_attribute_value("outcome") {
+                        Some("success") => 1,
+                        Some("failure") => 3,
+                        other => panic!("unexpected pull outcome: {other:?}"),
+                    };
+                    assert_eq!(*value, expected);
+                }
+                MetricValue::Distribution(value) => {
+                    assert_eq!(value.summary(), (4, 4.0, 1.0, 1.0));
+                }
+                _ => panic!("pull counter or duration"),
+            }
+        }
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        cancelled.success();
+        cancellation.cancel();
+        assert!(
+            metrics.terminal_snapshots().is_empty(),
+            "cleanup after the final handoff must not leave new observations"
+        );
     }
 
     /// Scenario: A periodic report fills its channel with the attempt counter before duration can be sent.
