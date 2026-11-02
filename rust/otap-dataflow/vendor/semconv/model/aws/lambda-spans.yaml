@@ -1,0 +1,20 @@
+groups:
+  - id: span.aws.lambda.server
+    type: span
+    span_kind: server
+    stability: development
+    brief: >
+      This span represents AWS Lambda invocation.
+    note: |
+      Consider setting other attributes of the [`faas` resource][faasres] and [trace][faas] conventions
+      and the [cloud resource conventions][cloud].
+
+      **Span name** MUST be set to the function name from the Lambda `Context`
+      unless stated otherwise.
+
+      **Span kind** MUST be `SERVER` unless stated otherwise.
+    attributes:
+      - ref: aws.lambda.invoked_arn
+        requirement_level: recommended
+      - ref: aws.lambda.resource_mapping.id
+        requirement_level: recommended

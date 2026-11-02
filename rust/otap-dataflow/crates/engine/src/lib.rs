@@ -561,7 +561,7 @@ pub trait ConsumerEffectHandlerExtension<PData> {
 }
 
 /// Implementation-detail module re-exporting the internal
-/// [`AckNackRouting`] trait.
+/// `AckNackRouting` trait.
 ///
 /// **Do not use directly.** Prefer
 /// [`ConsumerEffectHandlerExtension::notify_ack`] /
@@ -820,7 +820,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// 3) Apply wiring: attach senders to source ports and receivers to destination nodes,
     ///    then publish collected channel metrics on the pipeline.
     ///
-    /// [config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]
+    /// `[config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]`
     ///
     /// The `internal_telemetry` settings are injected into any receiver with the
     /// `INTERNAL_TELEMETRY_RECEIVER_URN` plugin URN, enabling it to consume logs
@@ -2023,7 +2023,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy)
         .with_authorized_identity_policy(authorized_identity_policy)
-        .with_context_materialization(context_materialization_plan, self.context_materializer);
+        .with_context_materialization(context_materialization_plan, self.context_materializer)
+        .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())
@@ -2177,7 +2178,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_propagation_policy(propagation_policy);
+        .with_propagation_policy(propagation_policy)
+        .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
             .validate_factory_consumption(normalized.as_str())

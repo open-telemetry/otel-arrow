@@ -116,6 +116,8 @@
 //! support, or if an interoperable extension can be defined. Keeping the
 //! projection isolated in this module makes either future path replaceable
 //! without changing the hot-path metric-set API or registry aggregation model.
+//!
+//! [`Metric`]: otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::Metric
 
 use crate::attributes::{AttributeSetHandler, AttributeValue};
 use crate::descriptor::{Instrument, MetricsField, Temporality};

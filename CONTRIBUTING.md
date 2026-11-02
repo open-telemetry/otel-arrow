@@ -438,6 +438,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Gokhan Uslu](https://github.com/gouslu), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).

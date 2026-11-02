@@ -63,6 +63,7 @@ Receivers ingest data into a pipeline.
 | [`urn:otel:receiver:postgresql`](src/receivers/postgresql_receiver/README.md) | `postgresql` | Experimental | Development-only PostgreSQL polling over unencrypted TCP; explicitly opt-in. |
 | [`urn:otel:receiver:sql_server`](src/receivers/sql_server_receiver/README.md) | `sql-server` | Compatibility may change | Polls SQL Server queries into logs over verified TLS, using capability-based SQL credentials and shared acknowledged checkpoints. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
+| [`urn:otel:receiver:windows_perf_counters`](src/receivers/windows_perf_counters_receiver/README.md) | `windows-perf-counters` | Experimental | Collects local Windows performance counters as metrics. |
 
 ## Processors
 
