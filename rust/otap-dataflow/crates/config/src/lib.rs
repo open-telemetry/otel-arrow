@@ -19,8 +19,6 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
-/// Context configuration: entry names, composite definitions, header
-/// capture and propagation policies, and authorized identity capture.
 pub mod context;
 pub mod conversion;
 pub mod engine;
@@ -28,7 +26,6 @@ pub mod engine;
 pub mod env_substitution;
 pub mod error;
 pub mod extension;
-/// Extension URN type.
 pub mod extension_urn;
 pub mod health;
 pub mod node;
@@ -49,7 +46,6 @@ pub use topic::{
     SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
     TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,
 };
-/// Validation helpers for node configuration.
 pub mod validation;
 
 pub use context::{ContextEntryName, ContextEntryRef};
