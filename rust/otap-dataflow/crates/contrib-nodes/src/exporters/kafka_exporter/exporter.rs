@@ -52,8 +52,7 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
+    ContextDeclarationProvider, ContextDomain, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
@@ -370,19 +369,13 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                         .topic_from_transport_header()
                         .map(|name| ContextDeclaration::Consumes {
                             selector: ContextConsumerSelector::Entries {
-                                entries: vec![ContextEntrySelector {
-                                    target: ContextEntryTarget::Primitive {
-                                        domain: ContextDomain::TransportHeader,
-                                        name: name.clone(),
-                                    },
-                                    form: ContextEntrySelectorForm::Value,
-                                }]
-                                .into_boxed_slice(),
+                                entries: vec![TopicRouter::topic_read_selector(name)]
+                                    .into_boxed_slice(),
                             },
                         });
                 let partition = signal.partition_by_transport_headers().then_some(
                     ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllStored {
+                        selector: ContextConsumerSelector::AllCaptured {
                             domain: ContextDomain::TransportHeader,
                         },
                     },
@@ -1810,6 +1803,11 @@ pub mod test_support {
         /// Guarantees: both context reads are declared.
         #[test]
         fn declarations_use_generic_bindings() {
+            use otel_arrow_dfe_engine::pdata_context::{
+                ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
+                ContextEntryTarget, ContextNameMatching,
+            };
+
             let config = serde_json::json!({
                 "brokers": "localhost:9092",
                 "client_id": "test",
@@ -1838,14 +1836,16 @@ pub mod test_support {
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: context_name("x-traces-topic"),
+                                matching: ContextNameMatching::AsciiCaseInsensitive,
                             },
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::First,
                         }]
                         .into_boxed_slice(),
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored {
+                    selector: ContextConsumerSelector::AllCaptured {
                         domain: ContextDomain::TransportHeader,
                     },
                 },

@@ -3,7 +3,7 @@
 
 //! Collects and compiles context declarations before runtime construction.
 //!
-//! Primitive reads, writes, and all-stored selections always specify a source domain.
+//! Primitive reads, writes, and all-captured selections always specify a source domain.
 //! Composite selections instead name the composite and optionally its member; the
 //! definition supplies each member's value source (a domain-backed field, configured
 //! constant, or random generator) and the entire entry's presence gate.
@@ -19,18 +19,24 @@ mod materialization;
 mod metadata;
 /// Compiles and applies exporter transport-header propagation policies.
 mod propagation;
+/// Node-facing reads over existing header storage and composite projections.
+mod reads;
 
 use PreparedHeaderPropagationPolicy as HeaderPropagationPolicy;
-pub use bindings::NodeBindings;
+pub use bindings::{
+    Arrival, ArrivalBinding, ArrivalHeaders, ClaimRef, Claims, NodeBindings, PropagatedValue,
+    SinkBinding,
+};
 pub use layout::*;
 pub use materialization::*;
 pub use metadata::{
-    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntry, Metadata,
-    PeerAddrMerger,
+    AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntriesIter,
+    AuthorizedIdentityEntry, Metadata, PeerAddrMerger,
 };
 pub use propagation::CompiledHeaderPropagationPolicy;
 #[doc(hidden)]
 pub use propagation::PreparedHeaderPropagationPolicy;
+pub use reads::{HeaderValue, HeadersRead, Read, ReadMember, ReadValue, ValueRead};
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -57,6 +63,8 @@ pub enum ContextEntryTarget {
         domain: ContextDomain,
         /// Stored primitive name.
         name: ContextEntryName,
+        /// Matching semantics used by the existing consumer.
+        matching: ContextNameMatching,
     },
     /// A member whose source domain is specified by its composite definition.
     CompositeMember {
@@ -70,6 +78,15 @@ pub enum ContextEntryTarget {
         /// Composite entry name.
         name: ContextEntryName,
     },
+}
+
+/// Matching semantics for a declared primitive name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ContextNameMatching {
+    /// Match the configured stored spelling exactly.
+    Exact,
+    /// Match ASCII case-insensitively, as Kafka topic routing does.
+    AsciiCaseInsensitive,
 }
 
 /// One selected value source after resolving a primitive or composite target.
@@ -117,7 +134,7 @@ impl ContextEntryTarget {
         mut visit: impl FnMut(SelectedSource<'a>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         match self {
-            Self::Primitive { domain, name } => visit(SelectedSource::Field(*domain, name)),
+            Self::Primitive { domain, name, .. } => visit(SelectedSource::Field(*domain, name)),
             Self::CompositeMember { composite, member } => {
                 let declaration = composite_declaration(composite, composites)?;
                 let part = declaration
@@ -180,6 +197,23 @@ pub struct ContextEntrySelector {
     pub target: ContextEntryTarget,
     /// Representation applied to selected value members, excluding condition-only fields.
     pub form: ContextEntrySelectorForm,
+    /// Number of values the consumer takes from each selected member.
+    pub take: ContextEntryTake,
+}
+
+/// Specifies which already-stored values a consumer reads from each selected member.
+///
+/// Presence is independent of `take`: a read is present whenever its target
+/// is present, so `Exists` reads stop at the first match without yielding values.
+/// This does not change capture or storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ContextEntryTake {
+    /// Presence only; members yield no values.
+    Exists,
+    /// The first value of each member, in source order.
+    First,
+    /// Every value of each member, in source order.
+    All,
 }
 
 /// Specifies whether a consumer needs values, stored names, or original wire names.
@@ -193,7 +227,12 @@ pub enum ContextEntrySelectorForm {
     OriginalKeyValue,
 }
 
-/// Selects named entries or all stored primitives within one source domain.
+/// Selects named entries or all captured primitives within one source domain.
+///
+/// This is the compiled counterpart of user-configured context selection
+/// (for example `PropagationSelectorType`). Selection vocabulary added here
+/// must remain expressible in configuration; the operation applied to a
+/// selection (read, hash, propagate, export) is chosen by the binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextConsumerSelector {
     /// Selects named context entries in order.
@@ -202,7 +241,10 @@ pub enum ContextConsumerSelector {
         entries: Box<[ContextEntrySelector]>,
     },
     /// Selects every primitive in one domain using its stored name.
-    AllStored {
+    ///
+    /// Only transport headers support this selection; all-captured authorized
+    /// identity reads are rejected during binding compilation.
+    AllCaptured {
         /// Source authority domain.
         domain: ContextDomain,
     },
@@ -289,7 +331,7 @@ impl ContextDeclaration {
                 }
             }
             Self::Consumes {
-                selector: ContextConsumerSelector::AllStored { .. },
+                selector: ContextConsumerSelector::AllCaptured { .. },
             }
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
@@ -453,6 +495,8 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
+    /// Whether this node can form arrival metadata, even without capture policies.
+    receiver: bool,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
     /// Selected composite definitions in canonical order with their full presence gates.
@@ -485,7 +529,7 @@ impl PreparedNodeContextDeclarations {
                     }
                     ContextDeclaration::Produces { .. }
                     | ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllStored { .. },
+                        selector: ContextConsumerSelector::AllCaptured { .. },
                     }
                     | ContextDeclaration::HeaderCapture { .. }
                     | ContextDeclaration::AuthorizedIdentityCapture { .. } => {}
@@ -511,6 +555,7 @@ impl PreparedNodeContextDeclarations {
             },
         )?;
         Ok(Self {
+            receiver: false,
             declarations,
             composites,
             requirements,
@@ -658,10 +703,29 @@ impl CompiledNodeState {
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
+        let mut values = Vec::new();
+        let mut headers = None;
         for declaration in prepared.declarations {
             match declaration {
-                declaration @ (ContextDeclaration::Produces { .. }
-                | ContextDeclaration::Consumes { .. }) => {
+                ContextDeclaration::Consumes { selector } => {
+                    match &selector {
+                        ContextConsumerSelector::Entries { entries } => {
+                            for entry in entries {
+                                values.push(ValueRead::compile(entry, materialization_plan)?);
+                            }
+                        }
+                        ContextConsumerSelector::AllCaptured { domain } => match domain {
+                            ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
+                            ContextDomain::AuthorizedIdentity => {
+                                return Err(invalid_context(
+                                    "all-captured authorized identity reads are not supported; use explicit named identity reads",
+                                ));
+                            }
+                        },
+                    }
+                    component_declarations.push(ContextDeclaration::Consumes { selector });
+                }
+                declaration @ ContextDeclaration::Produces { .. } => {
                     component_declarations.push(declaration);
                 }
                 ContextDeclaration::HeaderCapture { policy } => {
@@ -682,9 +746,21 @@ impl CompiledNodeState {
             component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
             bindings: Arc::new(NodeBindings {
-                header_capture,
-                header_propagation,
-                authorized_identity_capture,
+                arrival: (prepared.receiver
+                    || header_capture.is_some()
+                    || authorized_identity_capture.is_some())
+                .then_some(ArrivalBinding {
+                    header_capture,
+                    authorized_identity_capture,
+                    materialization: materialization_plan.clone(),
+                }),
+                sink: header_propagation.map(|policy| SinkBinding { policy }),
+                values: {
+                    values.sort_by(|left: &ValueRead, right| left.selector().cmp(right.selector()));
+                    values.dedup_by(|left, right| left.selector() == right.selector());
+                    values.into_boxed_slice()
+                },
+                headers,
             }),
         })
     }
@@ -692,6 +768,17 @@ impl CompiledNodeState {
     /// Returns whether the node has no component declarations or engine context policies.
     fn is_empty(&self) -> bool {
         self.component_declarations.is_empty() && self.bindings.is_empty()
+    }
+
+    /// Compares the existing live-update inputs without adding adapter-derived state.
+    fn bindings_match(&self, other: &Self) -> bool {
+        self.component_declarations == other.component_declarations
+            && self.composites == other.composites
+            && self.bindings.header_capture_policy() == other.bindings.header_capture_policy()
+            && self.bindings.authorized_identity_policy()
+                == other.bindings.authorized_identity_policy()
+            && self.bindings.header_propagation_policy()
+                == other.bindings.header_propagation_policy()
     }
 }
 
@@ -751,9 +838,8 @@ impl CompiledContextBindings {
 
     /// Returns the pipeline's selected composite materialization plan.
     ///
-    /// Consumers may resolve existing [`ContextProjection`] values against this
-    /// plan. General consumer bindings and optimized lookup structures are
-    /// intentionally outside this API.
+    /// Legacy consumers may resolve existing [`ContextProjection`] values against
+    /// this plan. New consumers obtain compiled reads from [`NodeBindings`].
     #[must_use]
     pub fn context_materialization_plan(
         &self,
@@ -778,7 +864,7 @@ impl CompiledContextBindings {
         pipeline: &PipelineKey,
         node: &ConfigNodeId,
     ) -> Option<&CompiledHeaderCapturePolicy> {
-        self.node_bindings(pipeline, node)?.header_capture.as_ref()
+        self.node_bindings(pipeline, node)?.header_capture_policy()
     }
 
     /// Returns the node's header propagation policy.
@@ -788,8 +874,7 @@ impl CompiledContextBindings {
         node: &ConfigNodeId,
     ) -> Option<&CompiledHeaderPropagationPolicy> {
         self.node_bindings(pipeline, node)?
-            .header_propagation
-            .as_ref()
+            .header_propagation_policy()
     }
 
     /// Returns the node's authorized identity claim projection policy.
@@ -799,8 +884,7 @@ impl CompiledContextBindings {
         node: &ConfigNodeId,
     ) -> Option<&AuthorizedIdentityPolicy> {
         self.node_bindings(pipeline, node)?
-            .authorized_identity_capture
-            .as_ref()
+            .authorized_identity_policy()
     }
 
     /// Compares one pipeline's bindings while ignoring nodes without context declarations.
@@ -827,7 +911,7 @@ impl CompiledContextBindings {
                     node.is_empty()
                         || candidate
                             .and_then(|nodes| nodes.get(node_id))
-                            .is_some_and(|candidate_node| candidate_node == node)
+                            .is_some_and(|candidate_node| candidate_node.bindings_match(node))
                 })
     }
 
@@ -918,9 +1002,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     .into_iter()
                     .chain(wrapper_declarations)
                     .collect();
-                let declarations =
+                let mut declarations =
                     PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
                         .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
+                declarations.receiver = node_config.kind() == NodeKind::Receiver;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
             let _ = declarations.insert(pipeline_key, declarations_by_node);
@@ -1080,6 +1165,7 @@ mod tests {
                             None => ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: self.entry.clone(),
+                                matching: ContextNameMatching::Exact,
                             },
                         },
                         form: if self.original {
@@ -1087,6 +1173,7 @@ mod tests {
                         } else {
                             ContextEntrySelectorForm::Value
                         },
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -1330,6 +1417,8 @@ groups:
                 .header_capture_policy(&pipeline, &node)
                 .expect("capture accessor"),
             bindings
+                .arrival()
+                .expect("arrival")
                 .header_capture
                 .as_ref()
                 .expect("stored capture policy"),
@@ -1338,20 +1427,112 @@ groups:
             compiled
                 .header_propagation_policy(&pipeline, &node)
                 .expect("propagation accessor"),
-            bindings
-                .header_propagation
-                .as_ref()
-                .expect("stored propagation policy"),
+            &bindings.sink().expect("sink").policy,
         ));
         assert!(std::ptr::eq(
             compiled
                 .authorized_identity_policy(&pipeline, &node)
                 .expect("identity accessor"),
             bindings
+                .arrival()
+                .expect("arrival")
                 .authorized_identity_capture
                 .as_ref()
                 .expect("stored identity policy"),
         ));
+    }
+
+    /// Scenario: read adapters are derived from declarations that specify primitive matching semantics.
+    /// Guarantees: live updates compare declarations, not derived adapters, and detect matching changes.
+    #[test]
+    fn read_adapters_preserve_live_update_inputs() {
+        let compile = |matching| {
+            compiled_bindings(
+                [ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries {
+                        entries: Box::new([ContextEntrySelector {
+                            target: ContextEntryTarget::Primitive {
+                                domain: ContextDomain::TransportHeader,
+                                name: context_name("tenant"),
+                                matching,
+                            },
+                            form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::All,
+                        }]),
+                    },
+                }]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let current = compile(ContextNameMatching::Exact);
+        let mut without_adapter = current.clone();
+        let key = pipeline("group", "pipeline");
+        let node = without_adapter
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .get_mut(&ConfigNodeId::from("node"))
+            .expect("node");
+        Arc::make_mut(&mut node.bindings).values = Box::new([]);
+        assert!(current.pipeline_bindings_match(&without_adapter, &key));
+        assert!(without_adapter.pipeline_bindings_match(&current, &key));
+        let different_matching = compile(ContextNameMatching::AsciiCaseInsensitive);
+        assert!(!current.pipeline_bindings_match(&different_matching, &key));
+        assert!(!different_matching.pipeline_bindings_match(&current, &key));
+    }
+
+    /// Scenario: arrival adapters add pipeline materialization without changing legacy declarations or policies.
+    /// Guarantees: live-update comparison still ignores policy-free receivers and adapter-derived plans.
+    #[test]
+    fn arrival_adapters_preserve_live_update_inputs() {
+        let compiled = test_pipeline_factory()
+            .compile_initial_context(&resolve_conditional_pipeline(
+                "[{type: constant, name: route, value: fixed}]",
+                "tenant:route",
+            ))
+            .expect("context compiles");
+        let key = pipeline("default", "main");
+        let receiver = ConfigNodeId::from("receiver");
+        let mut without_receiver = compiled.bindings.as_ref().clone();
+        let removed = without_receiver
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .remove(&receiver)
+            .expect("receiver");
+        assert!(removed.bindings.arrival().is_some());
+        assert!(
+            compiled
+                .bindings
+                .pipeline_bindings_match(&without_receiver, &key)
+        );
+        assert!(without_receiver.pipeline_bindings_match(&compiled.bindings, &key));
+
+        let current = compiled_bindings(
+            [ContextDeclaration::HeaderCapture {
+                policy: HeaderCapturePolicy::default(),
+            }]
+            .into_iter()
+            .collect(),
+        );
+        let mut changed = current.clone();
+        let key = pipeline("group", "pipeline");
+        let node = changed
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .get_mut(&ConfigNodeId::from("node"))
+            .expect("node");
+        Arc::make_mut(&mut node.bindings).set_materialization_plan(
+            compiled
+                .bindings
+                .context_materialization_plan(&pipeline("default", "main"))
+                .expect("materialization plan")
+                .clone(),
+        );
+        assert!(current.pipeline_bindings_match(&changed, &key));
+        assert!(changed.pipeline_bindings_match(&current, &key));
     }
 
     /// Scenario: node contexts share names across groups and pipelines, or reference unknown nodes.
@@ -1432,6 +1613,7 @@ groups:
         ContextEntryTarget::Primitive {
             domain,
             name: context_name(name),
+            matching: ContextNameMatching::Exact,
         }
     }
 
@@ -1450,7 +1632,11 @@ groups:
     ) -> NodeContextDeclarations {
         [ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
-                entries: Box::new([ContextEntrySelector { target, form }]),
+                entries: Box::new([ContextEntrySelector {
+                    target,
+                    form,
+                    take: ContextEntryTake::All,
+                }]),
             },
         }]
         .into_iter()
@@ -1502,7 +1688,7 @@ groups:
         }
     }
 
-    /// Scenario: same-name sources are declared in different domains for reads, writes, and all-stored.
+    /// Scenario: same-name sources are declared in different domains for named reads and writes.
     /// Guarantees: deduplication, node validation, and live binding comparison preserve the domain.
     #[test]
     fn declaration_domains_are_part_of_binding_identity() {
@@ -1517,11 +1703,9 @@ groups:
                         entries: Box::new([ContextEntrySelector {
                             target: primitive_target(domain, "id"),
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::All,
                         }]),
                     },
-                },
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllStored { domain },
                 },
             ]
         };
@@ -1529,7 +1713,7 @@ groups:
         let identity = declarations(ContextDomain::AuthorizedIdentity);
         let combined: NodeContextDeclarations =
             header.clone().into_iter().chain(identity.clone()).collect();
-        assert_eq!(combined.len(), 6);
+        assert_eq!(combined.len(), 4);
         assert!(
             !context_runtime_requirements(combined).preserves_original_name(&context_name("id"))
         );
@@ -1553,6 +1737,35 @@ groups:
             );
             assert!(!installed.pipeline_bindings_match(&candidate, &key));
             assert!(!candidate.pipeline_bindings_match(&installed, &key));
+        }
+    }
+
+    /// Scenario: a node declares all-captured identity reads, alone or alongside all-captured headers.
+    /// Guarantees: binding compilation rejects the unsupported identity selection instead of ignoring it.
+    #[test]
+    fn all_captured_identity_reads_are_rejected() {
+        for domains in [
+            vec![ContextDomain::AuthorizedIdentity],
+            vec![
+                ContextDomain::TransportHeader,
+                ContextDomain::AuthorizedIdentity,
+            ],
+        ] {
+            let declarations = declarations_by_pipeline(
+                domains
+                    .into_iter()
+                    .map(|domain| ContextDeclaration::Consumes {
+                        selector: ContextConsumerSelector::AllCaptured { domain },
+                    })
+                    .collect(),
+            );
+            let requirements = ContextRuntimeRequirements::compile(&declarations);
+            assert!(matches!(
+                CompiledContextBindings::compile(declarations, &requirements),
+                Err(Error::InvalidUserConfig { error })
+                    if error.contains("all-captured authorized identity reads are not supported")
+                        && error.contains("use explicit named identity reads")
+            ));
         }
     }
 
@@ -1971,8 +2184,10 @@ groups:
                                 target: ContextEntryTarget::Primitive {
                                     domain: ContextDomain::TransportHeader,
                                     name: context_name(name),
+                                    matching: ContextNameMatching::Exact,
                                 },
                                 form: ContextEntrySelectorForm::OriginalKeyValue,
+                                take: ContextEntryTake::All,
                             })
                             .into(),
                     },
@@ -2024,8 +2239,10 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("original"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -2036,8 +2253,10 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("value"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::Value,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -2100,8 +2319,10 @@ groups:
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: context_name("x-tenant"),
+                                matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::OriginalKeyValue,
+                            take: ContextEntryTake::All,
                         }]
                         .into_boxed_slice(),
                     },
@@ -2112,8 +2333,10 @@ groups:
                             target: ContextEntryTarget::Primitive {
                                 domain: ContextDomain::TransportHeader,
                                 name: context_name("authorization"),
+                                matching: ContextNameMatching::Exact,
                             },
                             form: ContextEntrySelectorForm::Value,
+                            take: ContextEntryTake::All,
                         }]
                         .into_boxed_slice(),
                     },
@@ -2130,8 +2353,10 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("X-Tenant"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },
@@ -2146,8 +2371,10 @@ groups:
                         target: ContextEntryTarget::Primitive {
                             domain: ContextDomain::TransportHeader,
                             name: context_name("x-request-id"),
+                            matching: ContextNameMatching::Exact,
                         },
                         form: ContextEntrySelectorForm::OriginalKeyValue,
+                        take: ContextEntryTake::All,
                     }]
                     .into_boxed_slice(),
                 },

@@ -87,7 +87,7 @@ impl Cli {
         Self::from_arg_matches_with_effective_defaults(&matches)
     }
 
-    /// Return a cloned `clap::Command` with the given [`Branding`] applied.
+    /// Return a cloned `clap::Command` with the given [`Branding`](crate::Branding) applied.
     ///
     /// The standalone `dfctl` binary uses [`Cli::command()`] (compile-time
     /// [`crate::BIN_NAME`]); embedders can use this to produce a command whose
