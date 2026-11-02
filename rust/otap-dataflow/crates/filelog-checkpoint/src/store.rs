@@ -130,6 +130,16 @@ pub enum StoreError {
     /// A failed compaction must pass guarded recovery under the retained lock.
     #[error("checkpoint compaction requires recovery under the held namespace lock")]
     CompactionRecoveryRequired,
+    /// The temporary checkpoint failed validation before replacing the active file.
+    /// Recovery can validate the active file and clean up the failed temporary.
+    #[error("invalid compaction temporary: {reason}")]
+    CompactionStagingInvalid {
+        /// The validation that failed, without checkpoint contents.
+        reason: &'static str,
+        /// Original codec or replay error, when decoding failed.
+        #[source]
+        source: Option<ReplayError>,
+    },
     /// Hard file or configured replay admission was exceeded during recovery.
     #[error("checkpoint recovery exceeds {0}")]
     RecoveryLimit(&'static str),
@@ -149,6 +159,13 @@ fn io(operation: &'static str, source: impl Into<std::io::Error>) -> StoreError 
 }
 
 /// Store admission. The receiver must additionally admit its aggregate memory.
+///
+/// Set `replay.max_snapshot_bytes` large enough for the full retained table,
+/// including older fingerprint evidence. Receiver callers should use
+/// [`crate::CheckpointBounds::for_population`] to size this budget.
+/// `validate()` checks resource ceilings, but does not prove that every table
+/// allowed by `max_tracked_files` fits. With an undersized budget, appends can
+/// succeed until the WAL fills, then compaction returns `RecoveryLimit`.
 #[derive(Debug, Clone, Copy)]
 pub struct StoreConfig {
     /// Record, snapshot, and framing-profile admission.
@@ -363,6 +380,8 @@ impl CheckpointStore {
     }
 
     /// Last sequence covered by a successful file sync in this generation.
+    /// Successful compaction makes earlier applied progress durable and resets
+    /// this value to zero. Do not compare sequences from different generations.
     /// Startup assumes the caller has excluded unresolved prior writeback errors;
     /// a new handle cannot establish that history from a successful fsync.
     #[must_use]

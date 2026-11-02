@@ -412,6 +412,8 @@ pub(super) struct Io {
     #[cfg(test)]
     pub fail_write_after: Option<usize>,
     #[cfg(test)]
+    pub replace_write_with: Option<Vec<u8>>,
+    #[cfg(test)]
     pub fail_step: Option<&'static str>,
     #[cfg(test)]
     pub events: Vec<&'static str>,
@@ -469,6 +471,12 @@ impl Io {
     }
 
     pub fn write_all(&mut self, file: &mut File, bytes: &[u8]) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if let Some(replacement) = self.replace_write_with.take() {
+            return file
+                .write_all(&replacement)
+                .map_err(|e| io("write checkpoint", e));
+        }
         #[cfg(test)]
         if let Some(count) = self.fail_write_after.take() {
             file.write_all(&bytes[..count.min(bytes.len())])

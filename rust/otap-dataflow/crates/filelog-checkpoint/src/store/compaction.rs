@@ -9,6 +9,9 @@ use super::*;
 use crate::{FileId, LifecycleState};
 
 /// Durable publication of existing applied state; never source-progress authorization.
+/// All progress applied before this compaction is durable. In the new generation,
+/// `synced_sequence()` is zero and the next append uses sequence one. Compare
+/// append sequences only within the same generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactionReceipt {
     /// Published snapshot generation. Its first subsequent WAL sequence is one.
@@ -181,28 +184,40 @@ impl CheckpointStore {
             .len()
             != prefix.len() as u64
         {
-            return Err(StoreError::AuthorityChanged);
+            return Err(invalid_staging("unexpected file length"));
         }
         let _ = temp
             .seek(SeekFrom::Start(0))
             .map_err(|e| io("seek compaction temporary", e))?;
-        read_prefix(&mut temp, &mut prefix)?;
+        temp.read_exact(&mut prefix).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                invalid_staging("incomplete file")
+            } else {
+                io("read compaction temporary", error)
+            }
+        })?;
         let (staged, boundary) =
-            ReplayState::from_checkpoint(&prefix, &self.checkpoint_id, self.config.replay)?;
+            ReplayState::from_checkpoint(&prefix, &self.checkpoint_id, self.config.replay)
+                .map_err(|source| StoreError::CompactionStagingInvalid {
+                    reason: "snapshot validation failed",
+                    source: Some(source),
+                })?;
         if staged.generation() != generation {
-            return Err(StoreError::AuthorityChanged);
+            return Err(invalid_staging("unexpected generation"));
         }
         let attempt = self
             .compaction
             .as_ref()
             .expect("installed compaction attempt");
-        attempt.validate_recovery(
-            &self.recovered,
-            &staged,
-            boundary as u64,
-            prefix.len() as u64,
-            prefix.len() as u64,
-        )?;
+        attempt
+            .validate_recovery(
+                &self.recovered,
+                &staged,
+                boundary as u64,
+                prefix.len() as u64,
+                prefix.len() as u64,
+            )
+            .map_err(|_| invalid_staging("state differs from the intended snapshot"))?;
         drop(staged);
         drop(prefix);
         self.io.sync(&temp, "compaction file sync")?;
@@ -273,5 +288,12 @@ impl CheckpointStore {
         self.recovered = recovered;
         self.compaction = None;
         Ok(receipt)
+    }
+}
+
+fn invalid_staging(reason: &'static str) -> StoreError {
+    StoreError::CompactionStagingInvalid {
+        reason,
+        source: None,
     }
 }

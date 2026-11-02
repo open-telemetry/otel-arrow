@@ -112,56 +112,56 @@ no operational repair or clearance procedure.
 
 ## Compaction and retention
 
-`compact()` publishes all currently applied state in generation `old + 1` with
-an empty WAL. It does not authorize new source progress. The caller keeps
-unresolved batches and admissions until their separate append succeeds.
-Generation overflow fails before I/O.
+`compact()` replaces the update history with a snapshot of the latest applied
+state. It starts a new generation with an empty WAL. It does not advance a
+source position.
 
-`compact_with_retention(ids)` uses the same protocol and omits the entire vetted
-set in one snapshot, including sets larger than the WAL operation limit. Unknown,
-duplicate, and quarantined IDs reject the whole set before writing. An empty
-retention-only call does no I/O; ordinary `compact()` still works without
-removals. Neither timestamps nor lifecycle alone establish eligibility.
+Successful compaction makes all earlier applied progress durable, including
+progress written with `Durability::Deferred`. `synced_sequence()` then starts
+at zero, and the next append uses sequence one. Compare sequence numbers only
+within the same generation.
 
-The caller must revalidate continuous absence and every runtime veto and keep
-those decisions stable during the call: discovery, logical readers, descriptors,
-leases, pending candidates, open-batch deltas, the retained batch, carry-over,
-and rotation state. These checks and maintenance deadlines belong to Task 24.
-Quarantined records remain excluded from ordinary retention.
+`compact_with_retention(ids)` also removes the complete caller-approved set in
+one snapshot. Unknown, duplicate, and quarantined IDs reject the whole set
+before writing. An empty set does nothing; `compact()` still works without
+removals.
 
-Publication holds namespace ownership and exclusive mutable store access:
+The receiver decides when removal is safe. It must check continuous absence
+and all remaining uses: discovery, readers, descriptors, leases, candidates,
+open and retained batches, carry-over, and rotation state. Keep those checks
+valid until publication finishes. Age alone does not allow removal, and
+quarantined records are never ordinary retention candidates. The receiver also
+schedules retention checks when the WAL is quiet.
 
-1. Check generation, the complete removal set, and snapshot admission. Create
-   `checkpoint.db.compact.tmp` exclusively, write a complete container, read it
-   back, and validate it against the intended state.
-2. Sync and close the temporary. Verify the old append handle and its length,
-   then sync it before closing so deferred writeback errors cannot be bypassed.
-3. Atomically replace `checkpoint.db` and sync the namespace directory.
-4. Reopen through guarded recovery. Only after validation and all required
-   barriers succeed, install the new table and handle, reset WAL accounting to
-   zero, and make sequence one available for the next append.
+The store holds the namespace lock throughout publication:
 
-After an I/O failure, `has_unresolved_compaction()` identifies a retained
-attempt. State use, append, sync, and another compaction remain blocked.
-`recover_compaction()` validates under the same lock and returns `Some(receipt)`
-if the complete proposed generation became authoritative, or `None` if the old
-one remains. It compares records and boundaries before repair or cleanup; a
-successful replacement cannot fall back to the old generation. Revalidate
-runtime vetoes before retrying an unpublished retention attempt.
+1. Write and validate a complete temporary checkpoint, then sync and close it.
+2. Check and sync the old append handle before closing it, so earlier write
+   errors cannot be missed.
+3. Replace the active checkpoint atomically and sync the directory.
+4. Reopen and validate the replacement before installing its state and resuming
+   appends. Generation overflow fails before writing.
 
-`can_recover_compaction()` reports whether the instance permits recovery; the
-worker still classifies errors and bounds retries. A failed sync is always
-terminal, including temporary-file, old-handle, directory, recovery, and cleanup
-barriers. No automatic reopen clears it. An ambiguous replacement closes the
-old handle and never assumes rollback or appends through the replaced inode.
+`CompactionStagingInvalid` means the temporary failed validation before
+replacement. The active file is unchanged, but the attempt needs cleanup.
+`AuthorityChanged` means an active-file or ownership check failed.
 
-Task 12's unmerged IdentityOwner adapter remains necessary: retain prepared
-admissions/leases and the original authorized operation at `CompactionRequired`,
-serialize compaction/recovery, invalidate association scans after state changes,
-and publish runtime removals only after the complete durable result. Its current
-required-write path stops at `CompactionRequired`. Tasks 14, 16, and 18 remain
-worker/channel, batch, and pipeline-completion work; this store adds none of
-those runtime components.
+`has_unresolved_compaction()` identifies an attempt that still needs resolution.
+State use, append, sync, and another compaction stay blocked. If recovery is
+allowed, `recover_compaction()` validates the active file under the same lock
+and cleans up the temporary. It returns `Some(receipt)` when the proposed
+snapshot was published, or `None` when the old generation remains active.
+Recheck removal eligibility before another attempt.
+
+`can_recover_compaction()` reports whether this store permits recovery. The
+caller still decides whether the error is retryable and limits retries. Any
+failed file or directory sync is terminal. Reopening cannot clear that failure.
+
+When an append returns `CompactionRequired`, the worker keeps the authorized
+operation, pending admissions, and leases until it can compact and retry the
+append. Run compaction and recovery one at a time. Restart identity scans when
+saved state changes, and remove runtime tracking only after the complete
+removal set has been durably published.
 
 ## Resource bounds and limitations
 
@@ -180,6 +180,14 @@ length (up to 1 GiB after thresholds are lowered) plus one replacement header
 and snapshot within the configured snapshot bound. No old-WAL-sized allocation
 is introduced. Allocation failure may abort the process; allocation is not
 fallibly reserved.
+
+If constructing `StoreConfig` directly, allow enough snapshot space for the
+full retained table, including older fingerprint evidence. Receiver callers
+should use `CheckpointBounds::for_population` to size that budget. Validation
+checks resource ceilings; it does not guarantee that the chosen record count
+fits the snapshot budget. An undersized budget can allow appends until the WAL
+is full, then prevent compaction with `RecoveryLimit`. Retrying with the same
+state and limits will not make it fit.
 
 `StoreConfig` uses the [interacting WAL bound][publication]:
 `min(max_wal_bytes, max_wal_transactions * WAL_MAX_TX_FRAME_BYTES)`.

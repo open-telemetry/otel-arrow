@@ -8,8 +8,8 @@
 
 use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::config::Config;
 
-/// Scenario: A checkpoint with a maximum-width fingerprint reopens under a smaller selected window.
-/// Guarantees: Snapshot and WAL recovery preserve the old record unchanged as profile-incompatible.
+/// Scenario: A maximum-width fingerprint reopens and compacts under a smaller selected window.
+/// Guarantees: Snapshot/WAL recovery, compaction, and restart preserve old evidence as profile-incompatible.
 #[test]
 fn reduced_fingerprint_window_preserves_checkpoint() {
     use otel_arrow_dfe_filelog_checkpoint::{
@@ -98,7 +98,7 @@ fn reduced_fingerprint_window_preserves_checkpoint() {
             fs::write(&database, bytes).unwrap();
         }
         let before = fs::read(&database).unwrap();
-        let reopened = CheckpointStore::open(
+        let mut reopened = CheckpointStore::open(
             &root,
             new.inputs().checkpoint_id(),
             new.inputs().store_config().unwrap(),
@@ -110,5 +110,30 @@ fn reduced_fingerprint_window_preserves_checkpoint() {
             Some(false)
         );
         assert_eq!(fs::read(&database).unwrap(), before);
+        let generation = reopened.state().unwrap().generation();
+        let receipt = reopened.compact().unwrap();
+        assert_eq!(receipt.generation, generation + 1);
+        assert_eq!(receipt.removed_records, 0);
+        assert_eq!(reopened.state().unwrap().get(&id), Some(&record));
+        assert_eq!(
+            reopened.state().unwrap().profile_compatible(&id),
+            Some(false)
+        );
+        assert_eq!(reopened.wal_bytes(), 0);
+        assert_eq!(reopened.synced_sequence(), 0);
+        drop(reopened);
+        let restarted = CheckpointStore::open(
+            &root,
+            new.inputs().checkpoint_id(),
+            new.inputs().store_config().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restarted.state().unwrap().generation(), generation + 1);
+        assert_eq!(restarted.state().unwrap().last_sequence(), 0);
+        assert_eq!(restarted.state().unwrap().get(&id), Some(&record));
+        assert_eq!(
+            restarted.state().unwrap().profile_compatible(&id),
+            Some(false)
+        );
     }
 }

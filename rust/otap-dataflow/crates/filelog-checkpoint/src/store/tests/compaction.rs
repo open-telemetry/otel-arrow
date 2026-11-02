@@ -638,3 +638,63 @@ fn compaction_byte_threshold_equality() {
         1
     );
 }
+
+/// Scenario: The temporary write produces a wrong length, generation, state, or checksum.
+/// Guarantees: Staging errors preserve active authority and allow guarded cleanup before another attempt.
+#[test]
+fn compaction_invalid_temporary_preserves_authority() {
+    for case in 0..4 {
+        let (dir, root) = root();
+        let mut store = store(&root);
+        let _ = store
+            .append(vec![registration()], Durability::Sync)
+            .unwrap();
+        let expected = records(&store);
+        let path = namespace(dir.path());
+        let before = fs::read(path.join(DB)).unwrap();
+        let mut replacement = encode_checkpoint(1, ID, &expected).unwrap();
+        let reason = match case {
+            0 => {
+                replacement.truncate(replacement.len() - 1);
+                "unexpected file length"
+            }
+            1 => {
+                replacement = encode_checkpoint(0, ID, &expected).unwrap();
+                "unexpected generation"
+            }
+            2 => {
+                let mut changed = expected.clone();
+                changed[0].last_seen_time_unix_nano += 1;
+                replacement = encode_checkpoint(1, ID, &changed).unwrap();
+                "state differs from the intended snapshot"
+            }
+            _ => {
+                *replacement.last_mut().unwrap() ^= 1;
+                "snapshot validation failed"
+            }
+        };
+        store.io.replace_write_with = Some(replacement);
+        let start = store.io.events.len();
+        match store.compact().unwrap_err() {
+            StoreError::CompactionStagingInvalid {
+                reason: actual,
+                source,
+            } => {
+                assert_eq!(actual, reason);
+                assert_eq!(source.is_some(), case == 3);
+            }
+            other => panic!("expected staging integrity error, got {other:?}"),
+        }
+        assert_eq!(fs::read(path.join(DB)).unwrap(), before);
+        assert!(!store.io.events[start..].contains(&"compaction file sync"));
+        assert!(!store.io.events[start..].contains(&"before checkpoint replacement"));
+        assert!(!store.authority_failed);
+        assert!(store.has_unresolved_compaction());
+        assert!(store.can_recover_compaction());
+        assert_blocked(&mut store);
+        assert_eq!(store.recover_compaction().unwrap(), None);
+        assert_eq!(records(&store), expected);
+        assert!(!path.join(COMPACT).exists());
+        assert_eq!(store.compact().unwrap().generation, 1);
+    }
+}
