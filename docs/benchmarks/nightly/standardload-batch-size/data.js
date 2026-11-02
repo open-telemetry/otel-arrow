@@ -1,426 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793557496211,
+  "lastUpdate": 1793583516487,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "c1ly",
-            "username": "c1ly",
-            "email": "129437996+c1ly@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "5abeaf8efbd37b6c8519fc8edcd519281e988bbd",
-          "message": "[otap-dataflow] Kafka Exporter enhancement + integration tests (#3683)\n\n# Change Summary\n\n- Updated to immediately send a permanent nack for unretryable errors\nthat occur when attempting to send data\n- Add live reconfiguration support\n- Updated config to allow control of dynamic topics via allowlist and\nregex\n- Updated config to allow user to directly update config setting for\nautomatic topic creation\n- Added and reorganized test under various scenario types\n  - Security\n  - Shutdown & Live Reconfiguration\n  - Retry expectations\n  - Delivery semantics\n  - Kafka Integration\n  - Telemetry/Observability\n  - Configuration\n  \n## What issue does this PR close?\n\n* Completes part of #3509 \n\n## How are these changes tested?\n\nintegration tests and unit tests\n\n## Are there any user-facing changes?\n\nyes, allow_auto_create_topics is now exposed directly in the Kafka\nExporter config and overwrites any changes set in the producer_config\nhash map (if configured)\n\n### Changelog\n\n* [ x ] Added a `.chloggen/*.yaml` entry\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-08-15T01:02:30Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/5abeaf8efbd37b6c8519fc8edcd519281e988bbd"
-        },
-        "date": 1786816040284,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6666667461395264,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 56.23563986641471,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 57.29706831339251,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.671354166666667,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 27.36328125,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99997.80671477271,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98331.17660285984,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001316,
-            "unit": "seconds",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2730546.2171630263,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2589875.537768033,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 27.76887566586498,
-            "unit": "bytes/log",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6683611869812012,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.21298617242007,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.51774116190919,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.609895833333333,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 19.32421875,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99993.01037208119,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98324.76584496486,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003194,
-            "unit": "seconds",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 5352244.146500979,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 5133903.708534533,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 54.43434419096624,
-            "unit": "bytes/log",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.6666667461395264,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.42841758881755,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.68043864391072,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.757421875,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 19.25390625,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99996.98175776728,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98330.36539513784,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001811,
-            "unit": "seconds",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2933699.2336978996,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2786431.9966273243,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 29.835129991726472,
-            "unit": "bytes/log",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.8846673965454102,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.97614917080904,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 82.10482395728546,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 20.379036458333335,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 28.55859375,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 33293.540078267564,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 32666.067592936048,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002631,
-            "unit": "seconds",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 5320674.663082343,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 5025663.613262934,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 162.88078287797717,
-            "unit": "bytes/log",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 3.3333334922790527,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.91947501624004,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.42560741885626,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.261588541666665,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.91796875,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99995.97349546726,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 96662.77437895168,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002416,
-            "unit": "seconds",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3187470.6574052777,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3028468.5996091063,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 32.97516213334913,
-            "unit": "bytes/log",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 50.27004357647385,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 51.61747784170424,
-            "unit": "%",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 32.47291666666667,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 35.65234375,
-            "unit": "MiB",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98329.42309994138,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98329.42309994138,
-            "unit": "logs/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002386,
-            "unit": "seconds",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2708626.866117932,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2560363.502645301,
-            "unit": "bytes/sec",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 27.546453347589573,
-            "unit": "bytes/log",
-            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -41800,6 +41382,424 @@ window.BENCHMARK_DATA = {
             "value": 161.86547442695434,
             "unit": "bytes/log",
             "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "clhain",
+            "username": "clhain",
+            "email": "8164192+clhain@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9dcda8ad4c61e731ae9b1ba7444f8884160c8b1a",
+          "message": "feat(clickhouse_exporter): TLS Config Support (#4506)\n\n# Change summary\n\nAdd TLS and mutual TLS (mTLS) support to the ClickHouse exporter. All\ncode paths now construct a provider-neutral hyper HTTP client rather\nthan relying on clickhouse::Client::default(), which hard-codes a\nspecific rustls crypto provider. This keeps the exporter aligned with\nthe workspace's crypto-* feature selection (ring, aws-lc, openssl, or\nsymcrypt). When a tls configuration block is present, a custom hyper\nHTTPS client is built with the configured CA trust anchors and optional\nclient certificate (mTLS). Without a tls block, the endpoint scheme\ndecides: https:// endpoints get a provider-neutral HTTPS connector with\nsystem CA trust anchors, while http:// endpoints use a plaintext\nconnector. The implementation reuses the shared TlsClientConfig type and\nbuild_rustls_client_config utility used by other exporters (e.g. OTLP\ngRPC) for a consistent configuration surface.\n\nKey changes:\n\n- Optional tls field on ClickHouse exporter Config/ConfigPatch\n(backward-compatible via serde defaults)\n- build_client is now async and returns Result, constructing\nprovider-neutral hyper clients for all code paths instead of ever\ncalling Client::default()\n- New build_plaintext_client helper for explicit plaintext (no TLS)\nconnections with TCP keepalive and pool idle timeout tuning\n- Removed rustls-tls-ring and rustls-tls-native-roots features from the\nclickhouse dependency; only lz4 is retained (with default-features =\nfalse)\n- hyper-rustls and rustls removed as direct dependencies of the\nclickhouse feature; TLS is handled via the shared\nbuild_rustls_client_config loader and the workspace crypto provider\n- New validation rejects http:// endpoints that carry TLS material\n(custom CA, client certs) without insecure: true, preventing\ncertificates from being silently ignored over plaintext\n- tls block with insecure: true and no custom CA on a non-https endpoint\nnow succeeds (returns a plaintext client), consistent with the shared\nTLS loader's contract and other components\n- New TlsConfigError variant on ClickhouseExporterError\n- Documentation and changelog entry\n\n## Related issue\n\n* Closes #4505\n\n## Validation\n\n- 13 new unit tests across config.rs (deserialization), writer.rs\n(build_client with various TLS configurations), and tls_utils.rs\n(build_rustls_client_config_from_material)\n- Existing integration tests in logs_otlp.rs and transform_batch.rs\nupdated for the new async/fallible build_client signature; no tests\nremoved or weakened\n- Validated end-to-end against a live ClickHouse instance with mTLS\nenforced\n\n## User-facing changes\n\nThe ClickHouse exporter now accepts an optional tls configuration block\nfor custom CA certificates and client certificate authentication (mTLS),\nusing the same TlsClientConfig fields as other exporters. The exporter\nno longer bundles its own rustls crypto provider, deferring to the\nworkspace-level crypto-* feature selection. See the\n.chloggen/clickhouse-exporter-mtls-support.yaml entry.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-10-31T00:38:50Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9dcda8ad4c61e731ae9b1ba7444f8884160c8b1a"
+        },
+        "date": 1793583515151,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.0016950301360338926,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.2359916440205,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.52028416988416,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.755338541666667,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.5390625,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98318.64878085858,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98320.31531161966,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004893,
+            "unit": "seconds",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 5362470.825181808,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 5145317.414777113,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 54.54082208936999,
+            "unit": "bytes/log",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH100 - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.90597298893454,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.21657076386195,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.427604166666665,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.87109375,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98327.38089335515,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98327.38089335515,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002005,
+            "unit": "seconds",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3194560.8833990092,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3028486.696193781,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.48902649877145,
+            "unit": "bytes/log",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH512 - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.43975870506418,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.8388270886665,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.843359375,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.40625,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98330.93733616025,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98330.93733616025,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001462,
+            "unit": "seconds",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2949646.784279146,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2796029.8988734167,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 29.99713888819447,
+            "unit": "bytes/log",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH1024 - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 50.99830154636065,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 52.574322014322014,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 27.506640625,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 31.42578125,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98330.15726925353,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98330.15726925353,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001938,
+            "unit": "seconds",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2699061.342879125,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2556110.547104528,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 27.448968026038983,
+            "unit": "bytes/log",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH8192 - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.012818211689591408,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 66.04644583233302,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 82.65336110468256,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 20.943880208333333,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 24.734375,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 32504.280712191317,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 32508.44717983971,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002866,
+            "unit": "seconds",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 5297336.401965547,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 5005582.628369809,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 162.95261267510554,
+            "unit": "bytes/log",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH10 - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 56.4826536424767,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 57.83047662905826,
+            "unit": "%",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 22.520703125,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 24.56640625,
+            "unit": "MiB",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98329.66727557174,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98329.66727557174,
+            "unit": "logs/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002237,
+            "unit": "seconds",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2740155.410886371,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2591821.3869187897,
+            "unit": "bytes/sec",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 27.86702616624346,
+            "unit": "bytes/log",
+            "extra": "Nightly - 100kLRPS Batch Size Variations/OTLP-ATTR-OTLP-BATCH4096 - Egress Bytes Per Log"
           }
         ]
       }
