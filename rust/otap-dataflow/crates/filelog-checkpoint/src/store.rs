@@ -4,9 +4,14 @@
 //! Blocking Linux checkpoint storage. Call only from the dedicated checkpoint
 //! worker. The caller supplies a provisioned state-root capability,
 //! source/Ack authorization, retry deadlines, and periodic/drain sync scheduling.
-//! Compaction is a separate task; reaching admission returns `CompactionRequired`.
+//! Reaching append admission returns `CompactionRequired`; the worker compacts
+//! before retrying the still-authorized transaction.
 
+mod compaction;
 mod filesystem;
+
+use compaction::CompactionAttempt;
+pub use compaction::CompactionReceipt;
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -116,6 +121,15 @@ pub enum StoreError {
     /// WAL admission would be exceeded; no bytes or live state changed.
     #[error("checkpoint compaction required before append")]
     CompactionRequired,
+    /// A compaction generation cannot wrap or reuse a published number.
+    #[error("checkpoint compaction generation exhausted")]
+    GenerationExhausted,
+    /// The entire proposed ordinary-retention set was rejected before writing.
+    #[error("invalid checkpoint retention set: {0}")]
+    InvalidRetention(&'static str),
+    /// A failed compaction must pass guarded recovery under the retained lock.
+    #[error("checkpoint compaction requires recovery under the held namespace lock")]
+    CompactionRecoveryRequired,
     /// Hard file or configured replay admission was exceeded during recovery.
     #[error("checkpoint recovery exceeds {0}")]
     RecoveryLimit(&'static str),
@@ -214,11 +228,23 @@ pub struct RecoveryReport {
 }
 
 struct Recovered {
-    file: DataFile,
+    file: Option<DataFile>,
     state: ReplayState,
     wal_offset: u64,
     end: u64,
     report: RecoveryReport,
+}
+
+impl Recovered {
+    // Ready/append-recovery states always own a data handle. Compaction closes
+    // it only while CompactionRecoveryRequired blocks those paths.
+    fn file(&self) -> &DataFile {
+        self.file.as_ref().expect("available checkpoint handle")
+    }
+
+    fn file_mut(&mut self) -> &mut DataFile {
+        self.file.as_mut().expect("available checkpoint handle")
+    }
 }
 
 struct Pending {
@@ -241,6 +267,7 @@ pub struct CheckpointStore {
     recovered: Recovered,
     synced_sequence: u64,
     pending: Option<Pending>,
+    compaction: Option<CompactionAttempt>,
     authority_failed: bool,
     io: Io,
     // Rust drops fields in declaration order: ownership outlives every data handle.
@@ -306,7 +333,7 @@ impl CheckpointStore {
             namespace.publish_no_replace()?;
             namespace.sync_directory(&mut io, "publication directory sync")?;
         }
-        let mut recovered = recover(&namespace, checkpoint_id, config, &mut io, None)?;
+        let mut recovered = recover(&namespace, checkpoint_id, config, &mut io, None, None)?;
         recovered.report.interrupted_creation = interrupted_creation;
         recovered.report.cleaned_temporary |= cleaned_creation;
         let synced_sequence = recovered.state.last_sequence();
@@ -317,6 +344,7 @@ impl CheckpointStore {
             recovered,
             synced_sequence,
             pending: None,
+            compaction: None,
             authority_failed: false,
             io,
         })
@@ -360,7 +388,7 @@ impl CheckpointStore {
     // This instance must never resume after observing namespace substitution.
     fn verify_authority(&mut self) -> Result<(), StoreError> {
         self.authority_failed = true;
-        self.namespace.verify_database(&self.recovered.file)?;
+        self.namespace.verify_database(self.recovered.file())?;
         self.authority_failed = false;
         Ok(())
     }
@@ -371,7 +399,7 @@ impl CheckpointStore {
         self.authority_failed = true;
         let length = self
             .recovered
-            .file
+            .file()
             .len()
             .map_err(|e| io("stat checkpoint length", e))?;
         if length != self.recovered.end {
@@ -383,6 +411,9 @@ impl CheckpointStore {
 
     fn ready(&self) -> Result<(), StoreError> {
         self.usable()?;
+        if self.compaction.is_some() {
+            return Err(StoreError::CompactionRecoveryRequired);
+        }
         if self.pending.is_some() {
             Err(StoreError::RecoveryRequired)
         } else {
@@ -438,11 +469,15 @@ impl CheckpointStore {
             sequence,
         });
         let pending = self.pending.as_ref().expect("installed pending append");
-        self.recovered.file.append(&mut self.io, &pending.frame)?;
+        self.recovered
+            .file_mut()
+            .append(&mut self.io, &pending.frame)?;
         self.recovered.state.commit(prepared);
         self.recovered.end += pending.frame.len() as u64;
         if must_sync {
-            self.recovered.file.sync(&mut self.io, "append file sync")?;
+            self.recovered
+                .file()
+                .sync(&mut self.io, "append file sync")?;
             self.synced_sequence = sequence;
         }
         self.pending = None;
@@ -460,7 +495,7 @@ impl CheckpointStore {
         self.verify_authority()?;
         self.verify_length()?;
         self.recovered
-            .file
+            .file()
             .sync(&mut self.io, "explicit file sync")?;
         self.synced_sequence = self.recovered.state.last_sequence();
         Ok(())
@@ -474,6 +509,9 @@ impl CheckpointStore {
     /// never available after a failed sync; reopening is not a writeback repair.
     pub fn resolve_pending(&mut self) -> Result<AppendReceipt, StoreError> {
         self.usable()?;
+        if self.compaction.is_some() {
+            return Err(StoreError::CompactionRecoveryRequired);
+        }
         if self.pending.is_none() {
             return Err(StoreError::InvalidConfig("no pending append"));
         }
@@ -483,7 +521,7 @@ impl CheckpointStore {
         // Validate before repair that disk cannot extend beyond this attempt.
         let size = self
             .recovered
-            .file
+            .file()
             .len()
             .map_err(|e| io("stat pending append", e))?;
         if size < pending.boundary || size > pending.boundary + pending.frame.len() as u64 {
@@ -494,7 +532,7 @@ impl CheckpointStore {
         // A newly opened handle need not report an already-observed error.
         // This covers both earlier deferred progress and this failed attempt.
         self.recovered
-            .file
+            .file()
             .sync(&mut self.io, "pre-resolution file sync")?;
         let recovery = recover(
             &self.namespace,
@@ -506,6 +544,7 @@ impl CheckpointStore {
                 self.recovered.state.generation(),
                 self.recovered.wal_offset,
             )),
+            None,
         );
         if matches!(
             &recovery,
@@ -524,11 +563,13 @@ impl CheckpointStore {
                 unreachable!("retained frame is complete");
             };
             let prepared = recovered.state.prepare(transaction)?;
-            recovered.file.append(&mut self.io, &pending.frame)?;
+            recovered.file_mut().append(&mut self.io, &pending.frame)?;
             recovered.state.commit(prepared);
             recovered.end += pending.frame.len() as u64;
         }
-        recovered.file.sync(&mut self.io, "resolved append sync")?;
+        recovered
+            .file()
+            .sync(&mut self.io, "resolved append sync")?;
         let receipt = AppendReceipt {
             sequence: pending.sequence,
             synced: true,
@@ -555,6 +596,7 @@ fn recover(
     config: StoreConfig,
     io_ops: &mut Io,
     pending_guard: Option<(&Pending, u64, u64)>,
+    compaction_guard: Option<(&Recovered, &CompactionAttempt)>,
 ) -> Result<Recovered, StoreError> {
     let artifacts = namespace.inventory()?;
     if !artifacts.database {
@@ -655,6 +697,9 @@ fn recover(
             }
         }
     }
+    if let Some((previous, attempt)) = compaction_guard {
+        attempt.validate_recovery(previous, &state, boundary, end, length)?;
+    }
     // Recheck opened authority before any mutation; the directory barrier must
     // precede both torn-tail truncation and temporary cleanup.
     namespace.verify_database(&file)?;
@@ -678,7 +723,7 @@ fn recover(
     let mut cleaned = false;
     for (exists, name) in [(artifacts.create, CREATE), (artifacts.compact, COMPACT)] {
         if exists {
-            namespace.remove(name)?;
+            namespace.remove_with_io(name, io_ops)?;
             cleaned = true;
         }
     }
@@ -686,7 +731,7 @@ fn recover(
         namespace.sync_directory(io_ops, "cleanup directory sync")?;
     }
     Ok(Recovered {
-        file,
+        file: Some(file),
         state,
         wal_offset: boundary,
         end,

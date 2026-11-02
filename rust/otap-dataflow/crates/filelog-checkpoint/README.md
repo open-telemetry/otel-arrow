@@ -48,13 +48,16 @@ the version 1 byte format remains compatible.
 
 This crate handles checkpoint values, bytes, in-memory replay, and Linux
 namespace storage. The [Linux store](docs/store.md) adds exclusive ownership,
-first publication, bounded recovery, WAL append, and synchronization. It accepts
+first publication, bounded recovery, WAL append, synchronization, and atomic
+compaction with caller-vetted retention. It accepts
 a crate-owned `StateRoot` capability constructed from a borrowed, provisioned
 Linux directory descriptor, without depending on the engine.
 
-Compaction, retention, receiver integration, and administrative workflows are
-outside this implementation. Reaching a WAL limit returns
-`CompactionRequired`; further appends require a compaction implementation.
+Receiver integration, runtime retention eligibility, and administrative workflows
+remain outside this implementation. Reaching a WAL limit returns
+`CompactionRequired`; the worker compacts, then retries its still-authorized
+append. An uncertain compaction requires guarded recovery under the held lock;
+a failed sync remains terminal.
 
 ## Decoding and replay
 

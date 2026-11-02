@@ -173,7 +173,7 @@ impl SnapshotRecord {
         Ok(out.finish())
     }
 
-    fn encode_frame(&self) -> Result<Vec<u8>, EncodeError> {
+    pub(crate) fn encode_frame(&self) -> Result<Vec<u8>, EncodeError> {
         let payload = self.encode_payload()?;
         let payload_len =
             u32::try_from(payload.len()).map_err(|_| EncodeError::ArithmeticOverflow {
