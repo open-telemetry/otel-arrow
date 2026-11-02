@@ -101,7 +101,7 @@ struct WindowsPerfCountersReceiver {
 #[allow(unsafe_code)]
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub(super) static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: WINDOWS_PERF_COUNTERS_RECEIVER_URN,
     create: |pipeline, node, node_config, receiver_config, _capabilities| {
         if pipeline.num_cores() > 1 {
