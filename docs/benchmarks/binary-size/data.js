@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793638180187,
+  "lastUpdate": 1793644742564,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -78109,6 +78109,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_physical_plan",
             "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_pdata",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 118.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 105.9,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a28e088559553b028b10b840a100b0486dd86e30",
+          "message": "chore(deps): update python dependencies (#4604)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n| grpcio | `==1.84.0` → `==1.85.1` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/grpcio/1.85.1?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/grpcio/1.84.0/1.85.1?slim=true)\n|\n|\n[opentelemetry-exporter-otlp](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.45.1` → `==1.45.2` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp/1.45.2?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp/1.45.1/1.45.2?slim=true)\n|\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.45.1` → `==1.45.2` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-proto/1.45.2?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-proto/1.45.1/1.45.2?slim=true)\n|\n|\n[opentelemetry-sdk](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.45.1` → `==1.45.2` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-sdk/1.45.2?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-sdk/1.45.1/1.45.2?slim=true)\n|\n| [pandas](https://redirect.github.com/pandas-dev/pandas)\n([changelog](https://pandas.pydata.org/docs/whatsnew/index.html)) |\n`==3.0.6` → `==3.1.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/pandas/3.1.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pandas/3.0.6/3.1.0?slim=true)\n|\n| pydantic | `==2.13.5` → `==2.14.2` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/pydantic/2.14.2?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pydantic/2.13.5/2.14.2?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-python\n(opentelemetry-exporter-otlp)</summary>\n\n###\n[`v1.45.2`](https://redirect.github.com/open-telemetry/opentelemetry-python/blob/HEAD/CHANGELOG.md#Version-1452066b2-2026-10-29)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-python/compare/v1.45.1...v1.45.2)\n\n##### Added\n\n- `opentelemetry-sdk`, `opentelemetry-configuration`,\n  `opentelemetry-exporter-prometheus`: enforce metric cardinality limits\n  (default 2000) with the `otel.metric.overflow` attribute, configurable\n  through `View(aggregation_cardinality_limit=...)`, reader\n  `cardinality_limits` and declarative configuration\n\n([#&#8203;5809](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5809))\n\n##### Fixed\n\n- `opentelemetry-api`: limit `traceparent` header length to 512\ncharacters in\n  `TraceContextTextMapPropagator` during extraction\n\n([#&#8203;5818](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5818))\n\n</details>\n\n<details>\n<summary>pandas-dev/pandas (pandas)</summary>\n\n###\n[`v3.1.0`](https://redirect.github.com/pandas-dev/pandas/releases/tag/v3.1.0):\npandas 3.1.0\n\n[Compare\nSource](https://redirect.github.com/pandas-dev/pandas/compare/v3.0.6...v3.1.0)\n\nWe are pleased to announce the release of pandas 3.1.0.\nThis release includes some new features, bug fixes, and performance\nimprovements. We recommend that all users upgrade to this version.\n\nHighlights include:\n\n- [New `DataFrame.select()` and updated `DataFrame.filter()`\nmethod](https://pandas.pydata.org/docs/whatsnew/v3.1.0.html#new-method-dataframe-select)\n- [Faster `pd.read_csv()`, with parallel reads of large\nfiles](https://pandas.pydata.org/docs/whatsnew/v3.1.0.html#whatsnew-310-enhancements-read-csv)\n\nSee the [detailed release\nnotes](https://pandas.pydata.org/docs/whatsnew/v3.1.0.html) for a list\nof all the changes.\n\nThe release can be installed from PyPI:\n\n```\npython -m pip install --upgrade pandas\n```\n\nOr from conda-forge\n\n```\nconda install -c conda-forge pandas\n```\n\nPlease report any issues with the release on the [pandas issue\ntracker](https://redirect.github.com/pandas-dev/pandas/issues).\n\nThanks to all the contributors who made this release possible.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xODguMiIsInVwZGF0ZWRJblZlciI6IjQ0LjIwMi4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-02T17:53:00Z",
+          "tree_id": "235e64c96e5aca2971905c45f1f8934344950ba1",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a28e088559553b028b10b840a100b0486dd86e30"
+        },
+        "date": 1793644719865,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 86.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 5.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 4.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 3.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_pdata",
+            "value": 2.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.45,
             "unit": "MB"
           },
           {
