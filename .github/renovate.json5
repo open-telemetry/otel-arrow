@@ -24,7 +24,10 @@
   "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
   "extends": [
     "config:best-practices",
-    "helpers:pinGitHubActionDigestsToSemver"
+    "helpers:pinGitHubActionDigestsToSemver",
+    // consistently label dependency maintenance, overriding inherited fix rules
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)"
   ],
   "customManagers": [
     {
@@ -36,6 +39,7 @@
       "datasourceTemplate": "github-releases"
     }
   ],
+  // Weekly updates arrive Friday (UTC) ahead of Monday release preparation.
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
   "packageRules": [
@@ -47,25 +51,46 @@
         "patch"
       ],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
-      // keep Go patch updates separate from other ecosystems
-      "groupName": "go patch versions",
+      // These two Go rules feed one PR group via the shared groupName:
+      // all patches (including 0.x) plus minor updates from versions >=1.0.0.
+      "groupName": "go patches and stable minors",
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["patch"],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
-      // keep Rust patch updates separate from other ecosystems
-      "groupName": "rust patch versions",
+      // Reuse the patch group; potentially breaking 0.x minors stay outside it.
+      "groupName": "go patches and stable minors",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": ">=1.0.0",
+      "schedule": [
+        "before 8am on Friday"
+      ]
+    },
+    {
+      // The same paired-rule policy gives Rust its own single PR group.
+      "groupName": "rust patches and stable minors",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["patch"],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
+      ]
+    },
+    {
+      // Reuse the patch group; potentially breaking 0.x minors stay outside it.
+      "groupName": "rust patches and stable minors",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": ">=1.0.0",
+      "schedule": [
+        "before 8am on Friday"
       ]
     },
     {
@@ -76,7 +101,7 @@
         "major"
       ],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
@@ -91,7 +116,7 @@
         "weaver_semconv"
       ],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
@@ -107,7 +132,7 @@
         "opentelemetry-proto"
       ],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
@@ -119,7 +144,19 @@
         "azure_identity"
       ],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
+      ]
+    },
+    {
+      // upgrade the runtime and WASI bindings together, including major releases
+      "groupName": "wasmtime crates",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "wasmtime",
+        "wasmtime-wasi"
+      ],
+      "schedule": [
+        "before 8am on Friday"
       ]
     },
     {
@@ -147,7 +184,7 @@
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["digest"],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
@@ -155,31 +192,21 @@
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["digest"],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
-      // keep pip-compile source + lock updates together in one PR stream
-      "groupName": "pipeline perf python dependencies",
+      // keep Python source + lock updates together across both tools
+      "groupName": "python dependencies",
       "matchManagers": ["pip-compile"],
       "matchFileNames": [
         "tools/pipeline_perf_test/**/requirements.lock.txt",
-        "tools/pipeline_perf_test/**/requirements.txt"
-      ],
-      "schedule": [
-        "before 8am on Monday"
-      ]
-    },
-    {
-      // keep comparison dashboard source + lock updates together
-      "groupName": "comparison dashboard python dependencies",
-      "matchManagers": ["pip-compile"],
-      "matchFileNames": [
+        "tools/pipeline_perf_test/**/requirements.txt",
         "tools/comparison_dashboard/requirements.lock.txt",
         "tools/comparison_dashboard/requirements.txt"
       ],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on Friday"
       ]
     },
     {
@@ -205,6 +232,16 @@
       "matchDepTypes": ["indirect"],
       "enabled": false
     },
+    {
+      // override project groups and manager defaults for one maintenance branch
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "groupName": null,
+      "branchTopic": "lock-file-maintenance",
+      "commitMessageAction": "Refresh dependency lock files",
+      "schedule": [
+        "before 8am on Friday"
+      ]
+    },
   ],
   // activate pip-compile manager on generated output lock files
   "pip-compile": {
@@ -213,9 +250,7 @@
     ]
   },
   "lockFileMaintenance": {
-    "enabled": true,
-    "branchTopic": "lock-file-maintenance",
-    "commitMessageAction": "Refresh dependency lock files"
+    "enabled": true
   },
   "postUpdateOptions": [
     // see https://docs.renovatebot.com/golang/#module-tidying

@@ -1,0 +1,325 @@
+file_format: definition/2
+
+attribute_groups:
+  - id: messaging.attributes.common
+    visibility: internal
+    attributes:
+      - ref: error.type
+        examples: ["amqp:decode-error", "KAFKA_STORAGE_ERROR", "channel-error"]
+        requirement_level:
+          conditionally_required: If and only if the messaging operation has failed.
+      - ref: messaging.system
+        requirement_level: required
+      - ref: messaging.operation.name
+        requirement_level: required
+      - ref: messaging.operation.type
+        requirement_level:
+          conditionally_required: If applicable.
+      - ref: messaging.destination.name
+        requirement_level:
+          conditionally_required: If span describes operation on a single message or if the value applies to all messages in the batch.
+      - ref: messaging.destination.template
+        requirement_level:
+          conditionally_required: >
+            If available. Instrumentations MUST NOT use `messaging.destination.name` as template
+            unless low-cardinality of destination name is guaranteed.
+      - ref: messaging.destination.partition.id
+        requirement_level:
+          recommended: When applicable.
+      - ref: messaging.message.id
+        requirement_level:
+          recommended: If span describes operation on a single message.
+      - ref: messaging.message.conversation_id
+
+  # Attributes shared by all messaging spans reported from consumer(receive, process, settle).
+  - id: messaging.attributes.consumer
+    visibility: internal
+    attributes:
+      - ref_group: messaging.attributes.common
+      - ref: messaging.batch.message_count
+        requirement_level:
+          conditionally_required: If the span describes an operation on a batch of messages.
+      - ref: messaging.client.id
+
+  # Network attributes for spans that directly contact the broker over the network
+  # ("Send", "Receive", "Settle" client spans): the broker itself (`server.*`) plus
+  # the specific intermediary node the operation went to (`network.peer.*`).
+  # "Create" and "Process" spans do not reference this group: `network.peer.*` does
+  # not apply to them, so they declare `server.address`/`server.port` on their own
+  # (the client library knows the broker address there too).
+  - id: messaging.attributes.network
+    visibility: internal
+    attributes:
+      - ref: server.address
+        note: >
+          Server domain name of the broker if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name.
+      - ref: server.port
+      - ref: network.peer.address
+        brief: Peer address of the messaging intermediary node where the operation was performed.
+        note: >
+          Semantic conventions for individual messaging systems SHOULD document whether `network.peer.*` attributes are applicable.
+
+          Network peer address and port are important when the application interacts with individual intermediary nodes directly,
+
+          If a messaging operation involved multiple network calls (for example retries), the address of the last contacted node SHOULD be used.
+        requirement_level:
+          recommended: If applicable for this messaging system.
+      - ref: network.peer.port
+        brief: Peer port of the messaging intermediary node where the operation was performed.
+        requirement_level:
+          recommended: if and only if `network.peer.address` is set.
+
+  # Message size attributes for spans that carry a message body; not applicable to
+  # "Settle" spans, which reference already-transferred messages by handle.
+  - id: messaging.attributes.message_size
+    visibility: internal
+    attributes:
+      - ref: messaging.message.body.size
+        requirement_level: opt_in
+        brief: The size of the message body in bytes. Only applicable for spans describing single message operations.
+      - ref: messaging.message.envelope.size
+        requirement_level: opt_in
+
+spans:
+  - type: messaging.create.producer
+    kind: producer
+    requirement_level: recommended
+    stability: development
+    brief: Describes a message being created or passed to a client library for sending.
+    name:
+      note: >
+        SHOULD be `{messaging.operation.name} {destination}`, see
+        [Span name](/docs/messaging/messaging-spans.md#span-name).
+    note: |
+      "Create" spans always refer to a single message and are used to provide a unique
+      creation context for messages in batch sending scenarios. A "Create" span is only
+      used together with a client "Send" span (`messaging.send.client`) that links to it;
+      when the "Send" span itself serves as the creation context, use the producer "Send"
+      span (`messaging.send.producer`) instead and omit the "Create" span. See
+      [Producer spans](/docs/messaging/messaging-spans.md#producer-spans) for details.
+    attributes:
+      - ref_group: messaging.attributes.common
+      - ref: messaging.system
+        sampling_relevant: true
+      - ref: messaging.operation.name
+        sampling_relevant: true
+        examples: ['create']
+      - ref: messaging.operation.type
+        sampling_relevant: true
+        note: SHOULD be set to `create`.
+        examples: ['create']
+      - ref: messaging.destination.name
+        sampling_relevant: true
+      - ref: messaging.destination.template
+        sampling_relevant: true
+      - ref: messaging.destination.partition.id
+        sampling_relevant: true
+      - ref: server.address
+        sampling_relevant: true
+        note: >
+          Server domain name of the broker if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name.
+      - ref: server.port
+        sampling_relevant: true
+      - ref_group: messaging.attributes.message_size
+
+  - type: messaging.send.producer
+    kind: producer
+    requirement_level: recommended
+    stability: development
+    brief: >
+      Describes one or more messages being sent to an intermediary, where the "Send" span's
+      context is used as the message creation context.
+    name:
+      note: >
+        SHOULD be `{messaging.operation.name} {destination}`, see
+        [Span name](/docs/messaging/messaging-spans.md#span-name).
+    note: |
+      Use this span when no separate "Create" span exists and the "Send" span's context is
+      injected into the message(s) as the creation context. See
+      [Producer spans](/docs/messaging/messaging-spans.md#producer-spans) for details.
+    attributes:
+      - ref_group: messaging.attributes.common
+      - ref_group: messaging.attributes.network
+      - ref: messaging.system
+        sampling_relevant: true
+      - ref: messaging.operation.name
+        sampling_relevant: true
+        examples: ['send', 'publish']
+      - ref: messaging.operation.type
+        sampling_relevant: true
+        note: SHOULD be set to `send`.
+        examples: ['send']
+      - ref: messaging.destination.name
+        sampling_relevant: true
+      - ref: messaging.destination.template
+        sampling_relevant: true
+      - ref: messaging.destination.partition.id
+        sampling_relevant: true
+      - ref: server.address
+        sampling_relevant: true
+      - ref: server.port
+        sampling_relevant: true
+      - ref: messaging.batch.message_count
+        requirement_level:
+          conditionally_required: If the span describes an operation on a batch of messages.
+      - ref_group: messaging.attributes.message_size
+      - ref: messaging.client.id
+
+  - type: messaging.send.client
+    kind: client
+    requirement_level: recommended
+    stability: development
+    brief: >
+      Describes one or more messages being sent to an intermediary when a separate message
+      creation context ("Create" span or custom context) already exists.
+    name:
+      note: >
+        SHOULD be `{messaging.operation.name} {destination}`, see
+        [Span name](/docs/messaging/messaging-spans.md#span-name).
+    note: |
+      Use this span when a "Create" span (or a custom creation context) already exists for the
+      message(s): the "Send" span describes only the transport operation and links to the
+      creation context that was injected into the message. See
+      [Producer spans](/docs/messaging/messaging-spans.md#producer-spans) for details.
+    attributes:
+      - ref_group: messaging.attributes.common
+      - ref_group: messaging.attributes.network
+      - ref: messaging.system
+        sampling_relevant: true
+      - ref: messaging.operation.name
+        sampling_relevant: true
+        examples: ['send', 'publish']
+      - ref: messaging.operation.type
+        sampling_relevant: true
+        note: SHOULD be set to `send`.
+        examples: ['send']
+      - ref: messaging.destination.name
+        sampling_relevant: true
+      - ref: messaging.destination.template
+        sampling_relevant: true
+      - ref: messaging.destination.partition.id
+        sampling_relevant: true
+      - ref: server.address
+        sampling_relevant: true
+      - ref: server.port
+        sampling_relevant: true
+      - ref: messaging.batch.message_count
+        requirement_level:
+          conditionally_required: If the span describes an operation on a batch of messages.
+      - ref_group: messaging.attributes.message_size
+      - ref: messaging.client.id
+
+  - type: messaging.receive.client
+    kind: client
+    requirement_level: recommended
+    stability: development
+    brief: Describes one or more messages being requested by a consumer (pull-based).
+    name:
+      note: >
+        SHOULD be `{messaging.operation.name} {destination}`, see
+        [Span name](/docs/messaging/messaging-spans.md#span-name).
+    note: |
+      "Receive" spans are created for pull-based scenarios, where consumers explicitly
+      call methods of messaging SDKs to receive messages. See
+      [Consumer spans](/docs/messaging/messaging-spans.md#consumer-spans) for details.
+    attributes:
+      - ref_group: messaging.attributes.consumer
+      - ref_group: messaging.attributes.network
+      - ref: messaging.system
+        sampling_relevant: true
+      - ref: messaging.operation.name
+        sampling_relevant: true
+        examples: ['receive', 'poll']
+      - ref: messaging.operation.type
+        sampling_relevant: true
+        note: SHOULD be set to `receive`.
+        examples: ['receive']
+      - ref_group: messaging.attributes.message_size
+      - ref: messaging.destination.name
+        sampling_relevant: true
+      - ref: messaging.destination.template
+        sampling_relevant: true
+      - ref: messaging.destination.partition.id
+        sampling_relevant: true
+      - ref: server.address
+        sampling_relevant: true
+      - ref: server.port
+        sampling_relevant: true
+
+
+  - type: messaging.process.consumer
+    kind: consumer
+    requirement_level: recommended
+    stability: development
+    brief: Describes one or more messages being processed by a consumer (push-based).
+    name:
+      note: >
+        SHOULD be `{messaging.operation.name} {destination}`, see
+        [Span name](/docs/messaging/messaging-spans.md#span-name).
+    note: |
+      "Process" spans are created for push-based scenarios, where messages are passed to
+      the application through a callback or handler. See
+      [Consumer spans](/docs/messaging/messaging-spans.md#consumer-spans) for details.
+
+      Exclusively for single-message scenarios, when the
+      message creation context is used as the parent, see
+      [Message creation context as parent of "Process" span](/docs/messaging/messaging-spans.md#message-creation-context-as-parent-of-process-span).
+    attributes:
+      - ref_group: messaging.attributes.consumer
+      - ref: messaging.system
+        sampling_relevant: true
+      - ref: messaging.operation.name
+        sampling_relevant: true
+        examples: ['process', 'consume']
+      - ref: messaging.operation.type
+        sampling_relevant: true
+        note: SHOULD be set to `process`.
+        examples: ['process']
+      - ref_group: messaging.attributes.message_size
+      - ref: messaging.destination.name
+        sampling_relevant: true
+      - ref: messaging.destination.template
+        sampling_relevant: true
+      - ref: messaging.destination.partition.id
+        sampling_relevant: true
+      - ref: server.address
+        sampling_relevant: true
+        note: >
+          Server domain name of the broker if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name.
+      - ref: server.port
+        sampling_relevant: true
+
+  - type: messaging.settle.client
+    kind: client
+    requirement_level: recommended
+    stability: development
+    brief: Describes one or more messages being settled.
+    name:
+      note: >
+        SHOULD be `{messaging.operation.name} {destination}`, see
+        [Span name](/docs/messaging/messaging-spans.md#span-name).
+    note: |
+      "Settle" spans are created for every manually or automatically triggered settlement
+      operation. See [Consumer spans](/docs/messaging/messaging-spans.md#consumer-spans) for details.
+    attributes:
+      - ref_group: messaging.attributes.consumer
+      - ref_group: messaging.attributes.network
+      - ref: messaging.system
+        sampling_relevant: true
+      - ref: messaging.operation.name
+        sampling_relevant: true
+        examples: ['ack', 'nack', 'settle']
+      - ref: messaging.operation.type
+        sampling_relevant: true
+        note: SHOULD be set to `settle`.
+        examples: ['settle']
+      - ref: messaging.destination.name
+        sampling_relevant: true
+      - ref: messaging.destination.template
+        sampling_relevant: true
+      - ref: messaging.destination.partition.id
+        sampling_relevant: true
+      - ref: server.address
+        sampling_relevant: true
+      - ref: server.port
+        sampling_relevant: true

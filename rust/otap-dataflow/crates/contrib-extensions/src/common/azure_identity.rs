@@ -4,7 +4,11 @@
 //! Protocol-neutral Azure identity configuration and credential construction.
 
 use std::path::Path;
-#[cfg(any(feature = "azure-key-vault-sasl-auth", test))]
+#[cfg(any(
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth",
+    test
+))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -51,7 +55,11 @@ impl std::fmt::Display for AuthMethod {
 }
 
 /// Owned identity configuration for consumers that use a nested identity block.
-#[cfg(any(feature = "azure-key-vault-sasl-auth", test))]
+#[cfg(any(
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth",
+    test
+))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityConfig {
@@ -70,7 +78,11 @@ pub struct IdentityConfig {
     pub token_file_path: Option<PathBuf>,
 }
 
-#[cfg(any(feature = "azure-key-vault-sasl-auth", test))]
+#[cfg(any(
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth",
+    test
+))]
 impl IdentityConfig {
     /// Rejects inapplicable fields, explicitly blank IDs, and an empty token path.
     ///
@@ -110,7 +122,11 @@ pub struct IdentityOptions<'a> {
     pub token_file_path: Option<&'a Path>,
 }
 
-#[cfg(any(feature = "azure-key-vault-sasl-auth", test))]
+#[cfg(any(
+    feature = "azure-key-vault-sasl-auth",
+    feature = "azure-key-vault-user-pass-auth",
+    test
+))]
 impl<'a> From<&'a IdentityConfig> for IdentityOptions<'a> {
     fn from(config: &'a IdentityConfig) -> Self {
         Self {
@@ -427,7 +443,10 @@ mod tests {
     /// Scenario: The application explicitly installs its selected workspace crypto provider before SDK construction.
     /// Guarantees: Identity, default HTTP, and Key Vault client construction retain that exact provider without token I/O.
     #[cfg(all(
-        feature = "azure-key-vault-sasl-auth",
+        any(
+            feature = "azure-key-vault-sasl-auth",
+            feature = "azure-key-vault-user-pass-auth"
+        ),
         any(
             feature = "crypto-ring",
             feature = "crypto-aws-lc",

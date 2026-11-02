@@ -6,7 +6,9 @@
   "timeout_minutes": 30,
   "required": true,
   "paths": [
-    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/windows_perf_counters_receiver/**"
+    "rust/otap-dataflow/crates/contrib-nodes/src/receivers/windows_perf_counters_receiver/**",
+    "rust/otap-dataflow/configs/windows-perf-counters-console.yaml",
+    "rust/otap-dataflow/configs/windows-perf-counters-wildcard-console.yaml"
   ],
   "command": [
     "pwsh",

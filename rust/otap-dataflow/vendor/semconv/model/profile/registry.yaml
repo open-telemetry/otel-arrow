@@ -1,0 +1,85 @@
+groups:
+
+  - id: registry.profile.frame
+    type: attribute_group
+    display_name: Profile Frame Attributes
+    brief: >
+      Describes the origin of a single frame in a Profile.
+    attributes:
+      - id: profile.frame.type
+        stability: development
+        brief: >
+          Describes the interpreter or compiler of a single frame.
+        examples: ['cpython']
+        type:
+          members:
+            - id: dotnet
+              brief: >
+                [.NET](https://wikipedia.org/wiki/.NET)
+              value: "dotnet"
+              stability: development
+            - id: jvm
+              brief: >
+                [JVM](https://wikipedia.org/wiki/Java_virtual_machine)
+              value: "jvm"
+              stability: development
+            - id: kernel
+              brief: >
+                [Kernel](https://wikipedia.org/wiki/Kernel_(operating_system))
+              value: "kernel"
+              stability: development
+            - id: native
+              brief: >
+                Can be one of but not limited to
+                [C](https://wikipedia.org/wiki/C_(programming_language)),
+                [C++](https://wikipedia.org/wiki/C%2B%2B),
+                [Go](https://wikipedia.org/wiki/Go_(programming_language)) or
+                [Rust](https://wikipedia.org/wiki/Rust_(programming_language)).
+                If possible, a more precise value MUST be used.
+              value: "native"
+              stability: development
+            - id: perl
+              brief: >
+                [Perl](https://wikipedia.org/wiki/Perl)
+              value: "perl"
+              stability: development
+            - id: php
+              brief: >
+                [PHP](https://wikipedia.org/wiki/PHP)
+              value: "php"
+              stability: development
+            - id: cpython
+              brief: >
+                [Python](https://wikipedia.org/wiki/Python_(programming_language))
+              value: "cpython"
+              stability: development
+            - id: ruby
+              brief: >
+                [Ruby](https://wikipedia.org/wiki/Ruby_(programming_language))
+              value: "ruby"
+              stability: development
+            - id: v8js
+              brief: >
+                [V8JS](https://wikipedia.org/wiki/V8_(JavaScript_engine))
+              value: "v8js"
+              stability: development
+            - id: beam
+              brief: >
+                [Erlang](https://en.wikipedia.org/wiki/BEAM_(Erlang_virtual_machine))
+              value: "beam"
+              stability: development
+            - id: go
+              brief: >
+                [Go](https://wikipedia.org/wiki/Go_(programming_language)),
+              value: "go"
+              stability: development
+            - id: rust
+              brief: >
+                [Rust](https://wikipedia.org/wiki/Rust_(programming_language))
+              value: "rust"
+              stability: development
+            - id: luajit
+              brief: >
+                [LuaJIT](https://en.wikipedia.org/wiki/LuaJIT)
+              value: "luajit"
+              stability: development

@@ -41,8 +41,8 @@ pub struct WriterOptions {
     /// the data become visible earlier. Note, setting this to too small of an interval could
     /// result in the creation of many small files, which can negatively impact read performance.
     ///
-    /// Note that files may actually be buffered for slightly longer than this value. For more
-    /// details see [`Self::flush_age_check_interval`]
+    /// Note that files may actually be buffered for slightly longer than this value. File age is
+    /// checked periodically, every 1/60th of this interval with a minimum of one second.
     #[serde(default)]
     #[serde(with = "humantime_serde")]
     pub flush_when_older_than: Option<Duration>,

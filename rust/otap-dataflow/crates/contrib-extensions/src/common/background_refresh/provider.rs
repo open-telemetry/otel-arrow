@@ -9,7 +9,11 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_engine::capability::auth::SaslCredential;
+use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::{
+    BasicAuthCredentialStream, BasicAuthProvider,
+};
 use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
     SaslCredentialProvider, SaslCredentialStream,
 };
@@ -19,6 +23,7 @@ use otel_arrow_dfe_engine::capability::{
 use otel_arrow_dfe_engine::control::ExtensionControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::extension::EffectHandler;
+use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicAuthProvider as SharedBasicAuthProvider;
 use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
@@ -395,6 +400,21 @@ impl<S: BackgroundProviderSource<SaslCredential>, M: BackgroundProviderMetrics>
     }
 
     fn credential_stream(&self) -> SaslCredentialStream {
+        let stream = WatchStream::new(self.subscribe()).filter_map(|value| async move { value });
+        Box::pin(stream)
+    }
+}
+
+#[async_trait]
+impl<S: BackgroundProviderSource<BasicAuthCredential>, M: BackgroundProviderMetrics>
+    SharedBasicAuthProvider
+    for BackgroundProviderExtension<S, M, BasicAuthCredential, BasicAuthProvider>
+{
+    async fn get_credential(&self) -> Result<BasicAuthCredential, CapabilityError> {
+        self.get_value().await
+    }
+
+    fn credential_stream(&self) -> BasicAuthCredentialStream {
         let stream = WatchStream::new(self.subscribe()).filter_map(|value| async move { value });
         Box::pin(stream)
     }
