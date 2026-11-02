@@ -294,6 +294,52 @@ impl PdataFormat {
             }
         }
     }
+
+    // Convert only when necessary, retaining the original payload across every
+    // suspension. Native merge/split and output encoding remain synchronous.
+    async fn materialize_cooperative<Y: Future<Output = ()>>(
+        self,
+        payload: &mut PdataPayload,
+        service: &CodecService,
+        encoding: Option<&EncodingPlan>,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        if payload.format() == self {
+            return Ok(());
+        }
+        match self.codec() {
+            None => {
+                payload
+                    .materialize_otap_cooperative(service, yield_to_runtime)
+                    .await
+            }
+            Some(codec) => {
+                let plan = encoding.ok_or_else(|| {
+                    format_error(format!(
+                        "missing startup encoding plan for {}",
+                        codec.encoding()
+                    ))
+                })?;
+                if plan.codec() != codec {
+                    return Err(format_error(
+                        "output encoding plan does not match requested format",
+                    ));
+                }
+                let signal = payload.signal_type();
+                let bytes = payload
+                    .with_encoded_output_cooperative(
+                        service,
+                        plan,
+                        |output| output.into_bytes(),
+                        yield_to_runtime,
+                    )
+                    .await?;
+                *payload =
+                    PdataPayload::from_encoded(EncodedPdata::from_resolved(codec, signal, bytes));
+                Ok(())
+            }
+        }
+    }
 }
 
 /// A resolved batching operation. Working and output formats may differ when
@@ -378,6 +424,30 @@ impl BatchPlan {
         payload: &mut PdataPayload,
         service: &CodecService,
     ) -> Result<(), CodecError> {
+        self.validate_signal(payload)?;
+        self.working
+            .materialize(payload, service, self.encoding.as_ref())?;
+        self.cache_item_count(payload)
+    }
+
+    /// Prepares input with cooperative decoding when representation conversion is needed.
+    ///
+    /// Decode failure or cancellation preserves encoded bytes, identity, and caches.
+    /// Matching formats stay untouched; counting and encoding remain synchronous.
+    pub async fn prepare_cooperative<Y: Future<Output = ()>>(
+        &self,
+        payload: &mut PdataPayload,
+        service: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        self.validate_signal(payload)?;
+        self.working
+            .materialize_cooperative(payload, service, self.encoding.as_ref(), yield_to_runtime)
+            .await?;
+        self.cache_item_count(payload)
+    }
+
+    fn validate_signal(&self, payload: &PdataPayload) -> Result<(), CodecError> {
         if !self.output.signals().contains(&payload.signal_type()) {
             return Err(format_error(format!(
                 "{} does not support {:?}",
@@ -385,8 +455,10 @@ impl BatchPlan {
                 payload.signal_type()
             )));
         }
-        self.working
-            .materialize(payload, service, self.encoding.as_ref())?;
+        Ok(())
+    }
+
+    fn cache_item_count(&self, payload: &mut PdataPayload) -> Result<(), CodecError> {
         if self.settings.sizer == BatchSizer::Items && payload.known_item_count().is_none() {
             let view = payload
                 .encoded_view()
@@ -413,6 +485,20 @@ impl BatchPlan {
     ) -> Result<(), CodecError> {
         self.output
             .materialize(payload, service, self.encoding.as_ref())
+    }
+
+    /// Finishes output with cooperative decoding before any synchronous encoding.
+    ///
+    /// Failure or cancellation during decoding leaves the original output intact.
+    pub async fn finish_cooperative<Y: Future<Output = ()>>(
+        &self,
+        payload: &mut PdataPayload,
+        service: &CodecService,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        self.output
+            .materialize_cooperative(payload, service, self.encoding.as_ref(), yield_to_runtime)
+            .await
     }
 
     /// Merges/splits prepared inputs and validates their explicit input provenance.

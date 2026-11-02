@@ -80,7 +80,7 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     /// rejected before admission.
     ///
     /// External backend implementations are expected to use a
-    /// [`TrackedPublishTracker`] to construct and resolve tracked receipts with
+    /// [`TrackedPublishTracker`](crate::topic::TrackedPublishTracker) to construct and resolve tracked receipts with
     /// one shared timeout worker rather than per-message timeout tasks.
     fn publish_tracked(
         &self,

@@ -11,9 +11,10 @@
 ## Overview
 
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
-and Common Event Format (CEF) security logs. The receiver automatically detects
-the message format and converts them into `OtapPdata` using the efficient
-Apache Arrow columnar format for downstream processing.
+and Common Event Format (CEF) security logs. The receiver retains original
+messages in encoded `syslog-batch` pdata. When a consumer requires content
+access, the codec detects the message format and converts the batch to native
+Apache Arrow records.
 
 ## Getting Started
 
@@ -87,8 +88,8 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `newline`.
 
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
-defaults to `100`, and `batch.max_size` defaults to `100` (values above `256`
-are capped). Receiver batches may flush earlier to respect the hard byte limit.
+defaults to `100`, and `batch.max_size` defaults to `100` (values above `8192`
+are capped). Receiver batches may flush earlier to respect the hard 2 MiB byte limit.
 
 The receiver supports pressure-aware `messages` rate limiting when the
 engine-level memory limiter is configured. UDP counts one datagram as one
@@ -139,6 +140,9 @@ Format detection and parsing remain lazy until a downstream component requests
 native OTAP records. This keeps transparent forwarding and codec-native
 batching on the original message bytes. Each message retains the local year at
 receipt for RFC 3164 timestamp inference, including CEF wrapped in RFC 3164.
+TCP captures the year once per nonempty buffer refill; messages completed from
+that refill share its context. A fragmented message uses the refill supplying its
+last bytes. UDP captures the year independently for each datagram.
 Delayed decoding and batching across New Year do not change that year; local
 timezone and DST resolution still use the event date. Observed timestamps remain
 those recorded when the receiver seals each batch.
@@ -417,9 +421,9 @@ downstream:
 A batch is flushed when either:
 
 - **`batch.max_size`** messages have accumulated (default: 100, capped at
-  256), or
+  8,192), or
 - The encoded buffer cannot reserve space for another 16 KiB message within
-  its 256 KiB limit, or
+  its 2 MiB limit, or
 - **`batch.max_batch_duration_ms`** milliseconds have elapsed since the last flush
   (default: 100 ms), or
 - The connection closes (TCP) or the receiver shuts down
@@ -429,21 +433,27 @@ Both thresholds are optionally configurable via the `batch` section (see
 of in-memory data that could be lost on a crash, at the expense of more
 frequent (and smaller) downstream sends.
 
-The syslog codec also caps each output and synchronous OTAP conversion at
-**256 messages and 256 KiB of encoded framing**, with **16 KiB per message**.
+The syslog codec also caps each encoded output and OTAP conversion at
+**8,192 messages and 2 MiB of encoded framing**, with **16 KiB per message**.
 Codec-native batching splits on either limit even when a batch processor requests
 larger outputs. Split-budget fallback may retain a whole input only if it fits
 these hard limits; otherwise batching fails recoverably rather than emitting an
 oversized decode. Message bytes, order, receipt years, and ownership are preserved.
 
-These limits mitigate uninterrupted parsing and Arrow finalization work. They do
-not guarantee a wall-clock latency or make codec execution cooperative. A future
-execution change will add scheduling opportunities within decoding and finalization.
+When a consumer requests native records through the effect handler, inputs with
+at most 256 messages and 256 KiB decode synchronously without a job allocation.
+Larger inputs decode cooperatively into one Arrow batch, offering scheduling
+opportunities between parsing steps. Finalization remains synchronous; hard
+input limits and step budgets do not guarantee a wall-clock latency.
+
+Larger batches also increase the memory retained by count-bounded channels.
+Review channel capacities when increasing batch targets; cooperative execution
+does not itself bound queued bytes.
 
 The opt-in scheduling-latency test arms a timer on the same runtime thread as
-maximum-sized RFC 3164, raw, and attribute-heavy CEF decodes. It measures parsing
-and Arrow finalization without inserting yields. Run it in release mode on an
-otherwise idle pinned CPU (replace `<cpu>`):
+maximum-sized RFC 3164, raw, and attribute-heavy CEF decodes. It exercises the
+cooperative conversion boundary and includes Arrow finalization. Run it in
+release mode on an otherwise idle pinned CPU (replace `<cpu>`):
 
 ```sh
 cd rust/otap-dataflow
@@ -495,8 +505,7 @@ config:
 These are settings on the downstream batch processor, not the receiver's
 `batch` section. Keep an `otap` block as well if the processor also handles
 native OTAP traffic. The syslog codec supports item sizing only. Its hard
-256-message and 256-KiB caps still apply, so copying a larger previous target
-does not restore larger encoded outputs.
+8,192-message and 2-MiB caps apply even when larger targets are configured.
 
 Alternatively, set `format: otap` and keep the original `otap` block to retain
 native OTAP batching. That materializes receiver batches before merging them;
@@ -547,17 +556,17 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### Shared Receiver Metrics
 
+This receiver opts into the shared `receiver.received` and
+`receiver.processing` metric sets. See the
+[shared receiver contract](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for their definitions and telemetry policy. Entity context includes the fixed
+`protocol` (`tcp` or `udp`); classified messages use `signal=logs`.
+
 Each UDP datagram or emitted TCP frame records one shared receiver observation
 when receiver-local handling terminates. TCP payload size excludes the newline
 delimiter. Processing duration covers active admission and encoded-frame
 append work. It excludes batch buffering, deferred parsing and Arrow
 construction, and pipeline handoff.
-
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
-| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
-| `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
 `outcome=success` means receiver-local admission and encoded-frame append
 completed. It does not certify that content parsing or Arrow construction

@@ -7,11 +7,87 @@ permissions:
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - main
   merge_group:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  deny:
+    strategy:
+      fail-fast: false
+      matrix:
+        folder:
+          - otap-dataflow
+          - contrib/data_engine
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check cargo-deny opt-out
+        id: deny_bypass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            if [[ "$MERGE_GROUP_HEAD_REF" =~ /pr-([0-9]+)- ]]; then
+              PR_NUMBER="${BASH_REMATCH[1]}"
+            else
+              echo "::error::Could not identify the pull request from merge group ref."
+              exit 1
+            fi
+          fi
+
+          skip=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq 'any(.labels[]; .name == "skipdeny")')
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$skip" == "true" ]]; then
+            echo "::notice::Skipping cargo-deny because PR #${PR_NUMBER} has the skipdeny label."
+            echo "cargo-deny bypassed for PR #${PR_NUMBER} via \`skipdeny\`. Maintainers must confirm the failure is pre-existing and not introduced by this PR." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.deny_bypass.outputs.skip != 'true'
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        if: steps.deny_bypass.outputs.skip != 'true'
+        with:
+          toolchain: stable
+      - name: Advisories
+        if: "!cancelled() && steps.deny_bypass.outputs.skip == 'false'"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: Licenses
+        if: "!cancelled() && steps.deny_bypass.outputs.skip == 'false'"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: Bans
+        if: "!cancelled() && steps.deny_bypass.outputs.skip == 'false'"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check bans
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: Sources
+        if: "!cancelled() && steps.deny_bypass.outputs.skip == 'false'"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check sources
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+
   markdownlint:
     runs-on: ubuntu-latest
 
@@ -54,8 +130,19 @@ jobs:
 
   sanity:
     runs-on: ubuntu-latest
+    if: always()
+    needs: deny
 
     steps:
+    - name: Require cargo-deny success or explicit opt-out
+      env:
+        DENY_RESULT: ${{ needs.deny.result }}
+      run: |
+        if [[ "$DENY_RESULT" != "success" ]]; then
+          echo "::error::deny failed, was cancelled, or was skipped."
+          exit 1
+        fi
+
     - name: check out code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
