@@ -82,12 +82,15 @@ bounds, not filesystem or wall-clock latency guarantees.
 
 When complete, call `finish_prepare` with a fresh policy-aware opener. It checks
 the owner/revision, reopens the source under the shared probe budget and validates
-its locator, size and scanned prefix again. A changed prefix, including growth
-of a short prefix, returns `Deferred`; discard the result and prepare again.
-If the shared probes are busy, finishing returns the completed scan unchanged;
-retry finishing on a later turn without repeating association. The fresh handle
-supplies mtime and the final start anchor. No scan result alone permits a reader
-or a checkpoint write.
+its locator, size and scanned prefix again. A changed prefix returns `Deferred`;
+discard the result and prepare again. One exception: a nonempty `Unrelated` scan
+accepts an append-only extension of its prefix, because every retained record
+already differed within the scanned bytes. An `Associated` result or an empty
+scanned prefix could change with more bytes, so growth defers. If the shared
+probes are busy, or the scan is not yet complete, finishing returns the scan
+unchanged; retry on a later turn without repeating completed association work.
+The fresh handle supplies mtime and the final start anchor. No scan result alone
+permits a reader or a checkpoint write.
 
 Ordinary non-finalizing progress can run between steps without invalidation.
 Identity/metadata mutations, finalization, or pending-write recovery invalidate

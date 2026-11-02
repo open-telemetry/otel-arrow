@@ -269,6 +269,127 @@ fn fingerprint_growth_reuses_queued_buffer() {
     assert_eq!(owner.growth[0].new_fingerprint, b"abcd");
 }
 
+fn append(path: &Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(bytes)
+        .unwrap();
+}
+
+fn drain(owner: &IdentityOwner, scan: &mut AssociationScan) {
+    while !owner.advance_association(scan, || false).unwrap().complete {}
+}
+
+/// Scenario: A short unrelated file is appended to while its multi-turn association scan is waiting.
+/// Guarantees: The completed Unrelated result is reused for the extended prefix, which becomes the registered evidence.
+#[test]
+fn unrelated_scan_accepts_append_only_growth() {
+    let f = Fixture::new();
+    let inputs = f.inputs(|c| {
+        c.limits.max_tracked_files = 256;
+        c.identity.fingerprint_bytes = 1000;
+        c.start_at = StartAt::End;
+        c.identity.on_recovery_mismatch = RecoveryMismatch::Fail;
+    });
+    let mut owner = f.owner(&inputs);
+    populate(&mut owner, 130, 1000);
+    let path = f.write("candidate", b"line-1\n");
+    let budget = ProbeBudget::default();
+    let mut scan = begin(&mut owner, &path, &budget);
+    assert!(
+        !owner
+            .advance_association(&mut scan, || false)
+            .unwrap()
+            .complete
+    );
+    append(&path, b"line-2\n");
+    drain(&owner, &mut scan);
+    let plan = ready(
+        owner
+            .finish_prepare(scan, &budget, now(), || open(&path), || false)
+            .unwrap(),
+    );
+    assert!(matches!(
+        plan.decision(),
+        Decision::Register {
+            anchor: Anchor::End,
+            superseded: None,
+            reset: false,
+        }
+    ));
+    assert_eq!(plan.seed.fingerprint, b"line-1\nline-2\n");
+    assert_eq!(plan.seed.offset, 14);
+    drop(plan);
+    assert!(f.registry.is_empty().unwrap());
+}
+
+/// Scenario: Growth follows a scan whose result additional bytes could change: a short-prefix
+/// association, or an empty prefix compared only by path.
+/// Guarantees: Finishing defers and releases the lease rather than reusing a possibly stale result.
+#[test]
+fn growth_after_changeable_scan_result_defers() {
+    for (initial, extension) in [(&b"aaa"[..], &b"c"[..]), (&b""[..], &b"aaa"[..])] {
+        let f = Fixture::new();
+        let inputs = f.inputs(|c| c.identity.on_recovery_mismatch = RecoveryMismatch::Fail);
+        let mut owner = f.owner(&inputs);
+        populate(&mut owner, 1, 16);
+        let path = f.write("candidate", initial);
+        let budget = ProbeBudget::default();
+        let mut scan = begin(&mut owner, &path, &budget);
+        drain(&owner, &mut scan);
+        append(&path, extension);
+        assert!(matches!(
+            owner
+                .finish_prepare(scan, &budget, now(), || open(&path), || false)
+                .unwrap(),
+            Admission::Deferred
+        ));
+        assert!(f.registry.is_empty().unwrap());
+        assert!(budget.try_reserve().is_some());
+    }
+}
+
+/// Scenario: The caller attempts to finish a scan before association has completed.
+/// Guarantees: The scan, its cursor and lease are returned unchanged without opening the source.
+#[test]
+fn finishing_incomplete_scan_returns_it() {
+    let f = Fixture::new();
+    let inputs = f.inputs(|c| c.limits.max_tracked_files = 256);
+    let mut owner = f.owner(&inputs);
+    populate(&mut owner, 100, 16);
+    let path = f.write("candidate", b"different");
+    let budget = ProbeBudget::default();
+    let mut scan = begin(&mut owner, &path, &budget);
+    let _ = owner.advance_association(&mut scan, || false).unwrap();
+    let Admission::Scanning(mut scan) = owner
+        .finish_prepare(
+            scan,
+            &budget,
+            now(),
+            || panic!("incomplete opener"),
+            || false,
+        )
+        .unwrap()
+    else {
+        panic!("incomplete scan discarded")
+    };
+    assert!(!scan.is_complete());
+    assert_eq!(f.registry.len().unwrap(), 1);
+    let work = owner.advance_association(&mut scan, || false).unwrap();
+    assert_eq!(work.records, 100 - RECORDS_PER_STEP);
+    assert!(work.complete);
+    let plan = ready(
+        owner
+            .finish_prepare(scan, &budget, now(), || open(&path), || false)
+            .unwrap(),
+    );
+    drop(plan);
+    assert!(f.registry.is_empty().unwrap());
+}
+
 /// Scenario: Discovery occupies the shared probes after association has completed.
 /// Guarantees: Finishing returns the completed scan without reopening or repeating comparisons, retaining its lease until retry.
 #[test]

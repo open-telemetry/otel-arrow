@@ -149,7 +149,9 @@ impl IdentityOwner {
 
     /// Reopen under current policy and revalidate the scanned prefix before using
     /// the result. Changed evidence defers and releases the lease; prepare again.
-    /// No source handle or probe reservation survives a yielded scan step.
+    /// An Unrelated result with a nonempty prefix accepts append-only growth.
+    /// An incomplete scan is returned unchanged. No source handle or probe
+    /// reservation survives a yielded scan step.
     pub fn finish_prepare(
         &mut self,
         scan: AssociationScan,
@@ -159,7 +161,10 @@ impl IdentityOwner {
         cancelled: impl FnMut() -> bool,
     ) -> Result<Admission, IdentityError> {
         self.validate_scan(&scan)?;
-        let context = scan.result.ok_or(IdentityError::InvalidCandidate)?;
+        let Some(context) = scan.result else {
+            // Keep the cursor and lease; the caller must advance it further.
+            return Ok(Admission::Scanning(scan));
+        };
         let mut cancelled = cancelled;
         evidence::check_cancelled(&mut cancelled)?;
         let Some(reservation) = budget.try_reserve() else {

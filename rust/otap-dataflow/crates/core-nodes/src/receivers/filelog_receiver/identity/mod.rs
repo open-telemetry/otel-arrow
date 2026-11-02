@@ -495,13 +495,21 @@ impl IdentityOwner {
             &mut cancelled,
         )?;
         let prefix = &self.scratch[..count];
+        // A completed scan remains valid for an append-only extension only when
+        // its result cannot change. Unrelated with a nonempty scanned prefix means
+        // every retained Active record differed within the scanned bytes, so more
+        // bytes cannot associate it. An Associated result or an empty prefix (only
+        // path evidence was compared) could change, so growth requires a new scan.
+        let rescan_required = resumed
+            && prefix != candidate.fingerprint
+            && (candidate.context != Context::Unrelated || candidate.fingerprint.is_empty());
         if count
             < metadata
                 .len()
                 .saturating_sub(u64::from(self.ignored_header))
                 .min(self.fingerprint_bytes as u64) as usize
             || !prefix.starts_with(candidate.fingerprint)
-            || (resumed && prefix != candidate.fingerprint)
+            || rescan_required
         {
             return Ok(Admission::Deferred);
         }
