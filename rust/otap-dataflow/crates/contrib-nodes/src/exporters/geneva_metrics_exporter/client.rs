@@ -50,10 +50,15 @@ impl PublishError {
             Self::Response { status } => {
                 *status == StatusCode::UNAUTHORIZED
                     || *status == StatusCode::FORBIDDEN
+                    || *status == StatusCode::REQUEST_TIMEOUT
                     || *status == StatusCode::TOO_MANY_REQUESTS
                     || status.is_server_error()
             }
         }
+    }
+
+    pub(crate) fn is_refusal(&self) -> bool {
+        matches!(self, Self::Response { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
     }
 }
 
@@ -228,11 +233,11 @@ mod tests {
         assert!(!error.is_unauthorized());
     }
 
-    /// Scenario: A bearer credential is rejected, the endpoint is throttled, or the service is unavailable.
-    /// Guarantees: HTTP 401, 403, 429, and 5xx responses are classified as retryable.
+    /// Scenario: Credentials are rejected, an upload times out, or the service is throttled or unavailable.
+    /// Guarantees: HTTP 401, 403, 408, 429, and 5xx responses remain retryable independently of refusal classification.
     #[tokio::test]
     async fn classifies_transient_responses_as_retryable() {
-        for status in [401, 403, 429, 500, 503] {
+        for status in [401, 403, 408, 429, 500, 503] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(status))
@@ -253,6 +258,7 @@ mod tests {
 
             assert!(error.is_retryable(), "HTTP {status} should be retryable");
             assert_eq!(error.is_unauthorized(), matches!(status, 401 | 403));
+            assert_eq!(error.is_refusal(), matches!(status, 401 | 403 | 429));
         }
     }
 

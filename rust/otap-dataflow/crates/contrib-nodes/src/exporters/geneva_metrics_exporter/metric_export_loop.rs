@@ -67,8 +67,8 @@ impl InFlightPublication {
     ) -> CompletedPublication {
         let result = match result {
             Ok(()) => Ok(()),
-            Err(error) if error.is_retryable() => Err(self.attempt.failed(error)),
-            Err(error) => Err(self.attempt.refused(error)),
+            Err(error) if error.is_refusal() => Err(self.attempt.refused(error)),
+            Err(error) => Err(self.attempt.failed(error)),
         };
         CompletedPublication {
             data: self.data,
@@ -1199,10 +1199,10 @@ mod tests {
     }
 
     /// Scenario: One input is split into two publications and the second succeeds or fails.
-    /// Guarantees: No early ACK is sent, any packet failure NACKs the input, and every HTTP submission records its own telemetry.
+    /// Guarantees: Completion waits for both packets; retryable refusals stay retryable and each attempt has the correct telemetry outcome.
     #[tokio::test]
     async fn split_publications_complete_once_and_record_each_attempt() {
-        for final_status in [200, 503, 400] {
+        for final_status in [200, 503, 400, 401, 403, 408, 429] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(200))
@@ -1275,7 +1275,7 @@ mod tests {
                 &MetricValue::U64(successes)
             );
             if final_status != 200 {
-                let outcome = if final_status == 400 {
+                let outcome = if matches!(final_status, 400 | 401 | 403 | 429) {
                     "refused"
                 } else {
                     "failure"

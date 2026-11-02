@@ -70,26 +70,13 @@ impl Config {
         if !matches!(endpoint.scheme(), "http" | "https") {
             return Err("endpoint must use HTTP or HTTPS".to_string());
         }
-        if self.monitoring_account.trim().is_empty() {
-            return Err("monitoring_account must not be empty".to_string());
-        }
-        if self.metric_namespace.trim().is_empty() {
-            return Err("metric_namespace must not be empty".to_string());
-        }
         if self.timeout.is_zero() {
             return Err("timeout must be greater than zero".to_string());
         }
         if endpoint.scheme() != "https" {
             return Err("bearer authentication requires an HTTPS endpoint".to_string());
         }
-        if self
-            .scope_attributes
-            .iter()
-            .any(|selection| selection.name.trim().is_empty() || selection.keys.is_empty())
-        {
-            return Err("scope_attributes entries require a name and at least one key".to_string());
-        }
-        Ok(())
+        super::otlp_to_geneva::Config::from(self).validate()
     }
 }
 
@@ -133,6 +120,22 @@ mod tests {
         let config = valid_config();
 
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    /// Scenario: Runtime configuration selects a reserved monitoring-account placeholder.
+    /// Guarantees: Mapping-invalid accounts are rejected before exporter startup.
+    #[test]
+    fn rejects_reserved_monitoring_accounts() {
+        for account in ["Default", "*"] {
+            let mut config = valid_config();
+            config.monitoring_account = account.to_string();
+            assert!(
+                config
+                    .validate()
+                    .expect_err("reserved account")
+                    .contains("reserved")
+            );
+        }
     }
 
     /// Scenario: A configuration omits a usable endpoint.
