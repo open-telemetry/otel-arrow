@@ -18,8 +18,10 @@ use x509_parser::prelude::{FromDer, X509Certificate};
 
 // Bound combined CA PEM at startup and, separately, peer DER during issuer selection to 4 MiB.
 const MAX_CLIENT_CA_BYTES: usize = 4 * 1024 * 1024;
-// Bound issuer-search work across peer intermediates and configured CA certificates, including duplicates.
-const MAX_ISSUER_CANDIDATES: usize = 256;
+// Bound the configured CA inventory across all files, including duplicates.
+const MAX_CLIENT_CA_CERTIFICATES: usize = 256;
+// Reserve an independent issuer-search budget for peer certificates after the leaf, including duplicates.
+const MAX_PEER_ISSUER_CANDIDATES: usize = 16;
 
 /// An acceptor that requires certificates from the configured client CAs.
 #[derive(Clone)]
@@ -41,7 +43,9 @@ impl SourceAcceptor {
     /// # Errors
     ///
     /// Fails for missing, malformed, or ambiguous issuers. Selection is bounded
-    /// to 256 candidates and 4 MiB of peer DER, independently of TLS verification.
+    /// to 256 configured CAs plus 16 non-leaf peer certificates (272 candidates
+    /// total), including duplicates. Peer DER, including the leaf, is separately
+    /// bounded to 4 MiB. These limits are independent of TLS verification.
     pub fn issuer_thumbprint(&self, verified_peer: &[CertificateDer<'_>]) -> io::Result<[u8; 20]> {
         issuer_thumbprint(verified_peer, &self.client_cas, self.signature_algorithms)
     }
@@ -52,11 +56,8 @@ fn issuer_thumbprint(
     client_cas: &[CertificateDer<'_>],
     algorithms: WebPkiSupportedAlgorithms,
 ) -> io::Result<[u8; 20]> {
-    if peer
-        .len()
-        .saturating_sub(1)
-        .saturating_add(client_cas.len())
-        > MAX_ISSUER_CANDIDATES
+    if client_cas.len() > MAX_CLIENT_CA_CERTIFICATES
+        || peer.len().saturating_sub(1) > MAX_PEER_ISSUER_CANDIDATES
         || peer
             .iter()
             .try_fold(0usize, |size, cert| size.checked_add(cert.len()))
@@ -114,7 +115,8 @@ fn issuer_thumbprint(
 /// Combined client CA PEM, including one separator byte per file, is limited
 /// to 4 MiB. Every CA file must contain at least one certificate.
 /// At most 256 CA certificates may be loaded across all files, including
-/// duplicates. Peer intermediates also count toward the runtime issuer limit.
+/// duplicates. Issuer selection separately permits up to 16 non-leaf peer
+/// certificates, so a full CA inventory does not consume the peer allowance.
 /// Credentials and client trust are startup snapshots; changes require
 /// rebuilding the acceptor.
 ///
@@ -146,7 +148,7 @@ pub async fn build_acceptor(config: &Config) -> Result<SourceAcceptor, io::Error
             )));
         }
         for certificate in certificates {
-            if client_cas.len() >= MAX_ISSUER_CANDIDATES {
+            if client_cas.len() >= MAX_CLIENT_CA_CERTIFICATES {
                 return Err(invalid_input(
                     "client CA bundles exceed 256 issuer candidates",
                 ));
@@ -471,8 +473,8 @@ mod tests {
         );
     }
 
-    /// Scenario: selection receives absent, malformed, trailing-data, or excessive certificate inputs.
-    /// Guarantees: invalid input and both count/byte limits produce explicit errors without a thumbprint.
+    /// Scenario: selection receives absent, malformed, trailing-data, or oversized certificate inputs.
+    /// Guarantees: invalid input and peer DER exceeding 4 MiB produce explicit errors without a thumbprint.
     #[test]
     fn bounds_issuer_selection() {
         ensure_crypto_provider();
@@ -502,14 +504,6 @@ mod tests {
         assert!(
             issuer_thumbprint(&[malformed], std::slice::from_ref(&issuer), algorithms).is_err()
         );
-        let candidates = vec![issuer.clone(); MAX_ISSUER_CANDIDATES];
-        assert!(issuer_thumbprint(std::slice::from_ref(&leaf), &candidates, algorithms).is_ok());
-        assert!(
-            issuer_thumbprint(&[leaf.clone(), issuer], &candidates, algorithms)
-                .unwrap_err()
-                .to_string()
-                .contains("limits")
-        );
         assert!(
             issuer_thumbprint(
                 &[CertificateDer::from(vec![0; MAX_CLIENT_CA_BYTES + 1])],
@@ -520,6 +514,63 @@ mod tests {
             .to_string()
             .contains("limits")
         );
+    }
+
+    /// Scenario: configured CAs and non-leaf peer certificates reach or exceed their separate count limits.
+    /// Guarantees: 256 CAs plus 16 peer candidates succeed; neither list can borrow unused capacity from the other.
+    #[test]
+    fn bounds_issuer_counts_independently() {
+        ensure_crypto_provider();
+        let algorithms = rustls::crypto::CryptoProvider::get_default()
+            .unwrap()
+            .signature_verification_algorithms;
+        let ca = generate_ca("issuer");
+        let client = ca.issue_leaf(
+            "source",
+            Some("host.example.com"),
+            Some(ExtendedKeyUsage::ClientAuth),
+        );
+        let leaf = CertificateDer::from_pem_slice(client.cert_pem.as_bytes()).unwrap();
+        let issuer = CertificateDer::from_pem_slice(ca.cert_pem.as_bytes()).unwrap();
+        let expected: [u8; 20] = Sha1::digest(issuer.as_ref()).into();
+        for (ca_count, peer_count, accepted) in [
+            (MAX_CLIENT_CA_CERTIFICATES, 0, true),
+            (MAX_CLIENT_CA_CERTIFICATES, 1, true),
+            (MAX_CLIENT_CA_CERTIFICATES, MAX_PEER_ISSUER_CANDIDATES, true),
+            (0, MAX_PEER_ISSUER_CANDIDATES, true),
+            (MAX_CLIENT_CA_CERTIFICATES + 1, 0, false),
+            (0, MAX_PEER_ISSUER_CANDIDATES + 1, false),
+            (
+                MAX_CLIENT_CA_CERTIFICATES,
+                MAX_PEER_ISSUER_CANDIDATES + 1,
+                false,
+            ),
+            (
+                MAX_CLIENT_CA_CERTIFICATES + 1,
+                MAX_PEER_ISSUER_CANDIDATES,
+                false,
+            ),
+        ] {
+            let candidates = vec![issuer.clone(); ca_count];
+            let mut peer = vec![leaf.clone()];
+            peer.extend(vec![issuer.clone(); peer_count]);
+            assert!(peer.iter().map(|cert| cert.len()).sum::<usize>() < MAX_CLIENT_CA_BYTES);
+            let result = issuer_thumbprint(&peer, &candidates, algorithms);
+            if accepted {
+                assert_eq!(
+                    result.unwrap(),
+                    expected,
+                    "{ca_count} CAs, {peer_count} peers"
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+                assert_eq!(
+                    error.to_string(),
+                    "issuer selection exceeds certificate limits"
+                );
+            }
+        }
     }
 
     /// Scenario: the CA file changes after the TLS acceptor is built.
@@ -616,7 +667,7 @@ mod tests {
     }
 
     /// Scenario: one or two CA files contain 256 certificates, followed by a 257th duplicate.
-    /// Guarantees: startup accepts the exact aggregate count and rejects overflow independently of bytes.
+    /// Guarantees: a full CA inventory leaves room for 16 peer candidates; startup rejects the 257th CA independently of bytes.
     #[tokio::test]
     async fn bounds_startup_ca_count() {
         for file_count in [1, 2] {
@@ -627,14 +678,14 @@ mod tests {
                     .client_ca_files
                     .push(directory.path().join("second.crt"));
             }
-            let certificates_per_file = MAX_ISSUER_CANDIDATES / file_count;
+            let certificates_per_file = MAX_CLIENT_CA_CERTIFICATES / file_count;
             let pem = client_ca.cert_pem.repeat(certificates_per_file);
             assert!((pem.len() + 1) * file_count + client_ca.cert_pem.len() < MAX_CLIENT_CA_BYTES);
             for path in &config.tls.client_ca_files {
                 fs::write(path, &pem).unwrap();
             }
             let acceptor = build_acceptor(&config).await.unwrap();
-            assert_eq!(acceptor.client_cas.len(), MAX_ISSUER_CANDIDATES);
+            assert_eq!(acceptor.client_cas.len(), MAX_CLIENT_CA_CERTIFICATES);
             let client = client_ca.issue_leaf(
                 "source",
                 Some("host.example.com"),
@@ -643,7 +694,10 @@ mod tests {
             let leaf = CertificateDer::from_pem_slice(client.cert_pem.as_bytes()).unwrap();
             let issuer = CertificateDer::from_pem_slice(client_ca.cert_pem.as_bytes()).unwrap();
             let expected: [u8; 20] = Sha1::digest(issuer.as_ref()).into();
-            assert_eq!(acceptor.issuer_thumbprint(&[leaf]).unwrap(), expected);
+            let mut peer = vec![leaf];
+            assert_eq!(acceptor.issuer_thumbprint(&peer).unwrap(), expected);
+            peer.extend(vec![issuer; MAX_PEER_ISSUER_CANDIDATES]);
+            assert_eq!(acceptor.issuer_thumbprint(&peer).unwrap(), expected);
 
             fs::write(
                 config.tls.client_ca_files.last().unwrap(),

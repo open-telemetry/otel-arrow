@@ -22,7 +22,7 @@ use quick_xml::{
     Reader, Writer,
     events::{BytesEnd, BytesStart, Event},
 };
-use std::{io, time::Duration};
+use std::{fmt::Write as _, io, time::Duration};
 use uuid::Uuid;
 
 /// Validated advertisement shared across sources, without mutable delivery state.
@@ -200,10 +200,10 @@ impl Advertisement {
             )],
         )?;
         start(writer, "auth:ClientCertificate", &[])?;
-        let thumbprint: String = issuer_thumbprint
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect();
+        let mut thumbprint = String::with_capacity(40);
+        for byte in issuer_thumbprint {
+            write!(&mut thumbprint, "{byte:02X}").map_err(io::Error::other)?;
+        }
         text(
             writer,
             "auth:Thumbprint",
@@ -345,7 +345,7 @@ mod tests {
     }
 
     /// Scenario: optimized enumeration advertises one subscription in either configured initial-read mode.
-    /// Guarantees: identities, endpoints, settings, XML query, and issuer authentication policy match configuration.
+    /// Guarantees: configured settings and issuer policy are preserved, including zero-padded uppercase thumbprint hex.
     #[test]
     fn encodes_subscription_contract() {
         let mut config = config();
@@ -379,7 +379,10 @@ mod tests {
                 .encode_enumeration(
                     Uuid::from_u128(1),
                     &advertisement,
-                    &[0xab; 20],
+                    &[
+                        0x00, 0x01, 0x09, 0x0a, 0x0f, 0x10, 0x1f, 0x7f, 0x80, 0xab, 0xcd, 0xef,
+                        0xfe, 0xff, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                    ],
                     Uuid::from_u128(2),
                 )
                 .unwrap();
@@ -515,7 +518,7 @@ mod tests {
             assert_eq!(thumbprint.attribute("Role"), Some("issuer"));
             assert_eq!(
                 thumbprint.text(),
-                Some("ABABABABABABABABABABABABABABABABABABABAB")
+                Some("0001090A0F101F7F80ABCDEFFEFF020304050607")
             );
             let filter = child(subscribe, WSMAN, "Filter");
             assert_eq!(
