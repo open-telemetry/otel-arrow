@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use uuid::Uuid;
 
+// At most 1 MiB of configured query XML is parsed and retained per advertisement.
+const MAX_QUERY_BYTES: usize = 1024 * 1024;
+// Cap query XML nodes independently of bytes to bound parser bookkeeping.
+const MAX_QUERY_NODES: usize = 65_536;
+
 /// Configuration of the single-replica WEF receiver.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,7 +153,9 @@ impl Config {
     ///
     /// Checks credential paths, authorization, subscriptions, and resource limits;
     /// it does not load certificates or bind sockets. When a public origin enables
-    /// advertisement, the query must be well-formed XML with a QueryList root.
+    /// advertisement, the query must be well-formed XML with a QueryList root,
+    /// at most 1 MiB and 65,536 nodes. Subscription names must contain only
+    /// characters permitted in XML 1.0 when advertisement is enabled.
     /// Windows query semantics are not validated locally.
     pub fn validate(&self) -> Result<(), String> {
         if self.tls.client_ca_files.is_empty() {
@@ -221,10 +228,19 @@ impl Config {
             }
         }
         if self.public_endpoint.is_some() {
-            let query = Document::parse(&subscription.query)
+            if subscription.query.len() > MAX_QUERY_BYTES {
+                return Err("subscription query exceeds 1 MiB".into());
+            }
+            let query = Document::parse_bounded(&subscription.query, MAX_QUERY_NODES)
                 .map_err(|error| format!("invalid subscription query XML: {error}"))?;
             if !query.root_element().has_tag_name("QueryList") {
                 return Err("subscription query must have a QueryList root".into());
+            }
+            if !subscription.name.chars().all(|c| {
+                matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}'
+                    | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
+            }) {
+                return Err("subscription name contains a prohibited XML character".into());
             }
         }
         Ok(())
@@ -365,6 +381,67 @@ subscriptions:
         }
         config.subscriptions[0].query = "<QueryList/>".into();
         config.validate().unwrap();
+    }
+
+    /// Scenario: advertised queries reach independent byte and node limits, then exceed each by one.
+    /// Guarantees: configuration validation accepts exact limits and rejects overflow only with advertisement enabled.
+    #[test]
+    fn enforces_exact_query_limits() {
+        let mut config: Config = serde_yaml::from_str(YAML_CONFIG).unwrap();
+        config.public_endpoint = Some("https://collector.example.com".into());
+        let wrapper = "<QueryList></QueryList>";
+        config.subscriptions[0].query = format!(
+            "<QueryList>{}</QueryList>",
+            " ".repeat(MAX_QUERY_BYTES - wrapper.len())
+        );
+        assert_eq!(config.subscriptions[0].query.len(), MAX_QUERY_BYTES);
+        config.validate().unwrap();
+        config.subscriptions[0].query.push(' ');
+        assert_eq!(
+            config.validate().unwrap_err(),
+            "subscription query exceeds 1 MiB"
+        );
+        config.public_endpoint = None;
+        config.validate().unwrap();
+
+        config.public_endpoint = Some("https://collector.example.com".into());
+        config.subscriptions[0].query = format!(
+            "<QueryList>{}</QueryList>",
+            "<Query/>".repeat(MAX_QUERY_NODES - 1)
+        );
+        config.validate().unwrap();
+        config.subscriptions[0].query = config.subscriptions[0]
+            .query
+            .replace("</QueryList>", "<Query/></QueryList>");
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .starts_with("invalid subscription query XML:")
+        );
+        config.public_endpoint = None;
+        config.validate().unwrap();
+    }
+
+    /// Scenario: subscription names contain valid XML characters or prohibited controls and noncharacters.
+    /// Guarantees: XML-invalid names fail configuration validation only when advertisement is enabled.
+    #[test]
+    fn validates_advertised_subscription_name() {
+        let mut config: Config = serde_yaml::from_str(YAML_CONFIG).unwrap();
+        config.subscriptions[0].query = "<QueryList/>".into();
+        config.public_endpoint = Some("https://collector.example.com".into());
+        config.subscriptions[0].name = "audit & <test>\t\n\r\u{e9}\u{1f600}".into();
+        config.validate().unwrap();
+        for prohibited in ['\0', '\u{1}', '\u{b}', '\u{fffe}', '\u{ffff}'] {
+            config.subscriptions[0].name = format!("audit{prohibited}");
+            assert_eq!(
+                config.validate().unwrap_err(),
+                "subscription name contains a prohibited XML character"
+            );
+            config.public_endpoint = None;
+            config.validate().unwrap();
+            config.public_endpoint = Some("https://collector.example.com".into());
+        }
     }
 
     /// Scenario: identical subscriptions are reconstructed after restart and edited.

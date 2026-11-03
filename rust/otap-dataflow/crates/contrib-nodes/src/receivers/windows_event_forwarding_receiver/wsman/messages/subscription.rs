@@ -15,9 +15,8 @@
 //! Committed bookmarks and actual receiver activation are not implemented here.
 
 use super::{ADDRESSING, ANONYMOUS, BoundedXml, EVENTING, SOAP, WSMAN, write_escaped_text};
-use crate::{
-    common::xml::Document,
-    receivers::windows_event_forwarding_receiver::config::{Config, InitialRead, Subscription},
+use crate::receivers::windows_event_forwarding_receiver::config::{
+    Config, InitialRead, Subscription,
 };
 use quick_xml::{
     Reader, Writer,
@@ -25,11 +24,6 @@ use quick_xml::{
 };
 use std::{io, time::Duration};
 use uuid::Uuid;
-
-// At most 1 MiB of configured query XML is parsed and retained per advertisement.
-const MAX_QUERY_BYTES: usize = 1024 * 1024;
-// Cap query XML nodes independently of bytes to bound parser bookkeeping.
-const MAX_QUERY_NODES: usize = 65_536;
 
 /// Validated advertisement shared across sources, without mutable delivery state.
 pub struct Advertisement {
@@ -51,21 +45,6 @@ impl Advertisement {
     /// Rejects invalid configuration, oversized or malformed query XML, and names
     /// containing characters forbidden in XML 1.0. Does not load credentials.
     pub fn from_config(config: &Config, receiver_name: &str) -> Result<Option<Self>, String> {
-        if config.public_endpoint.is_some()
-            && let Some(subscription) = config.subscriptions.first()
-        {
-            if subscription.query.len() > MAX_QUERY_BYTES {
-                return Err("subscription query exceeds 1 MiB".into());
-            }
-            let _ = Document::parse_bounded(&subscription.query, MAX_QUERY_NODES)
-                .map_err(|error| format!("invalid subscription query XML: {error}"))?;
-            if !subscription.name.chars().all(|c| {
-                matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}'
-                    | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
-            }) {
-                return Err("subscription name contains a prohibited XML character".into());
-            }
-        }
         config.validate()?;
         let Some(endpoint) = &config.public_endpoint else {
             return Ok(None);
@@ -626,7 +605,7 @@ mod tests {
         }
     }
 
-    /// Scenario: configuration disables advertisement or supplies malformed and excessive XML.
+    /// Scenario: configuration disables advertisement or supplies malformed XML or an XML-invalid name.
     /// Guarantees: invalid input never produces an advertisement; absent public origin preserves empty mode.
     #[test]
     fn validates_advertisement_configuration() {
@@ -644,42 +623,12 @@ mod tests {
             "<Other/>".into(),
             "<QueryList>".into(),
             "<!DOCTYPE QueryList><QueryList/>".into(),
-            format!("<QueryList>{}</QueryList>", " ".repeat(MAX_QUERY_BYTES)),
-            format!(
-                "<QueryList>{}</QueryList>",
-                "<Query/>".repeat(MAX_QUERY_NODES)
-            ),
         ] {
             config.subscriptions[0].query = query;
             assert!(Advertisement::from_config(&config, "receiver").is_err());
         }
         config.subscriptions[0].query = "<QueryList/>".into();
         config.subscriptions[0].name = "invalid\u{0}name".into();
-        assert!(Advertisement::from_config(&config, "receiver").is_err());
-    }
-
-    /// Scenario: query documents reach the independent construction byte and node limits exactly.
-    /// Guarantees: each exact limit is accepted, and one additional byte or node is rejected.
-    #[test]
-    fn enforces_exact_query_limits() {
-        let mut config = config();
-        let wrapper = "<QueryList></QueryList>";
-        config.subscriptions[0].query = format!(
-            "<QueryList>{}</QueryList>",
-            " ".repeat(MAX_QUERY_BYTES - wrapper.len())
-        );
-        assert_eq!(config.subscriptions[0].query.len(), MAX_QUERY_BYTES);
-        assert!(Advertisement::from_config(&config, "receiver").is_ok());
-        config.subscriptions[0].query.push(' ');
-        assert!(Advertisement::from_config(&config, "receiver").is_err());
-        config.subscriptions[0].query = format!(
-            "<QueryList>{}</QueryList>",
-            "<Query/>".repeat(MAX_QUERY_NODES - 1)
-        );
-        assert!(Advertisement::from_config(&config, "receiver").is_ok());
-        config.subscriptions[0].query = config.subscriptions[0]
-            .query
-            .replace("</QueryList>", "<Query/></QueryList>");
         assert!(Advertisement::from_config(&config, "receiver").is_err());
     }
 
