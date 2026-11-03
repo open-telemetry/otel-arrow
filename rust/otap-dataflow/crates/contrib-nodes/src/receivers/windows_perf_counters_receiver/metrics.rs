@@ -203,8 +203,8 @@ mod tests {
     }
 
     /// Scenario: Snapshots are taken across consecutive terminal collection cycles.
-    /// Guarantees: Terminal snapshots emit non-empty descriptors on the first call and are
-    /// cleared on the second call.
+    /// Guarantees: Measurement metric buckets emit on the first snapshot and are cleared on the
+    /// second snapshot while operational counters reset.
     #[test]
     fn terminal_snapshots_emit_once_and_clear_hot_state() {
         let pipeline_ctx = test_pipeline_context();
@@ -217,8 +217,9 @@ mod tests {
         let first = metrics.terminal_snapshots();
         assert!(!first.is_empty());
 
-        let second = metrics.terminal_snapshots();
-        assert!(second.is_empty());
+        assert!(metrics.scrapes.terminal_snapshots().is_empty());
+        assert!(metrics.drops.terminal_snapshots().is_empty());
+        assert_eq!(metrics.operational.scrape_overruns.get(), 0);
     }
 
     /// Scenario: Enum attribute representation stability test.
@@ -261,8 +262,8 @@ mod tests {
                 assert_eq!(desc.metrics[0].unit, "{batch}");
             } else if desc.name == "receiver.windows_perf_counters" {
                 found_operational = true;
-                for m in &desc.metrics {
-                    match m.name.as_str() {
+                for m in desc.metrics {
+                    match m.name {
                         "scrape.overruns" => assert_eq!(m.unit, "{tick}"),
                         "scrape.duration" => assert_eq!(m.unit, "s"),
                         "counter.add.failures" => assert_eq!(m.unit, "{failure}"),
@@ -275,6 +276,9 @@ mod tests {
 
         assert!(found_scrapes, "scrapes metric set descriptor present");
         assert!(found_drops, "drops metric set descriptor present");
-        assert!(found_operational, "operational metric set descriptor present");
+        assert!(
+            found_operational,
+            "operational metric set descriptor present"
+        );
     }
 }

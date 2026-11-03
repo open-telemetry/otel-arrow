@@ -793,7 +793,7 @@ Self-metrics and events use *scrape* for a collection.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.windows_perf_counters.scrapes.collections` | `{scrape}` | `outcome` | Number of collections partitioned by terminal outcome (`success`, `failure`). |
+| `receiver.windows_perf_counters.scrapes.collections` | `{scrape}` | `outcome` | Collections in which at least one counter query collected successfully (`success`) or failed to collect (`failure`), plus startup query-open or priming failures (`failure`). A partially successful collection increments both outcomes, so their sum is not the total number of collections. |
 
 <!-- markdownlint-enable MD013 -->
 

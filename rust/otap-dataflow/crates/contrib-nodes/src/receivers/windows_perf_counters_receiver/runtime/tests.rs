@@ -444,8 +444,8 @@ fn full_or_closed_downstream_counts_dropped_batches() {
             .unwrap();
         OtapPdata::new(Context::default(), records.into())
     };
-    let drops = |h: &mut Harness| {
-        h.receiver
+    let drops = |receiver: &mut WindowsPerfCountersReceiver| {
+        receiver
             .metrics
             .drops
             .get(WindowsPerfCountersDropAttributes {
@@ -458,22 +458,22 @@ fn full_or_closed_downstream_counts_dropped_batches() {
         let data = batch(&h.receiver.config.counters);
         h.receiver.send(&h.effect_handler, data).unwrap();
     }
-    assert_eq!(drops(&mut h), 0);
+    assert_eq!(drops(&mut h.receiver), 0);
     let data = batch(&h.receiver.config.counters);
     h.receiver.send(&h.effect_handler, data).unwrap();
-    assert_eq!(drops(&mut h), 1);
+    assert_eq!(drops(&mut h.receiver), 1);
     assert!(h.receiver.diagnostics.dropping);
 
     assert!(h.output.try_recv().is_ok());
     let data = batch(&h.receiver.config.counters);
     h.receiver.send(&h.effect_handler, data).unwrap();
-    assert_eq!(drops(&mut h), 1);
+    assert_eq!(drops(&mut h.receiver), 1);
     assert!(!h.receiver.diagnostics.dropping);
 
     drop(h.output);
     let data = batch(&h.receiver.config.counters);
     h.receiver.send(&h.effect_handler, data).unwrap();
-    assert_eq!(drops(&mut h), 2);
+    assert_eq!(drops(&mut h.receiver), 2);
 }
 
 /// Decoded string attributes of one data point.
