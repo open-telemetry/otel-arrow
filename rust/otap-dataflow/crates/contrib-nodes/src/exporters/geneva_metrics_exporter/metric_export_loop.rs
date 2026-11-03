@@ -323,7 +323,12 @@ impl GenevaMetricsExporter {
                         "geneva_metrics_exporter.shutdown.deadline_exceeded",
                         message = "publication work abandoned at the shutdown deadline"
                     );
-                    return Ok(());
+                    let nack = NackMsg::new(
+                        "Geneva metrics exporter shutdown deadline exhausted during publication",
+                        publication.data,
+                    );
+                    pending_completion = Some(Self::nack_completion(effect_handler, nack));
+                    continue;
                 }
             };
             let completed = publication.complete(result, &mut self.metrics);
@@ -1146,6 +1151,51 @@ mod tests {
                 metric_value(&snapshots, "success", "messages"),
                 &MetricValue::U64(2)
             );
+        }
+    }
+
+    /// Scenario: An in-flight publication is cancelled at an expired or subsequently reached shutdown deadline.
+    /// Guarantees: Cancellation sends a retryable NACK when completion delivery is ready without extending the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_nacks_cancelled_publication() {
+        for remaining in [Duration::ZERO, Duration::from_secs(1)] {
+            let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
+            let mut exporter = exporter("http://127.0.0.1:1", provider);
+            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            let (effect_handler, mut completions) = completion_harness();
+            let PublicationStart::InFlight(mut publication) =
+                exporter.start_publication(metrics_pdata(1), &effect_handler)
+            else {
+                panic!("publication should start");
+            };
+            publication.request = Box::pin(std::future::pending());
+            let deadline = tokio::time::Instant::now() + remaining;
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                exporter.finish_shutdown_work(
+                    Some(publication),
+                    None,
+                    deadline.into_std(),
+                    &effect_handler,
+                ),
+            )
+            .await
+            .expect("shutdown must remain bounded")
+            .expect("shutdown should finish");
+            assert_eq!(tokio::time::Instant::now(), deadline);
+            match tokio::time::timeout(Duration::from_secs(1), completions.recv())
+                .await
+                .expect("cancelled input should complete")
+                .expect("completion channel should remain open")
+            {
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert!(!nack.permanent);
+                    assert!(nack.reason.contains("shutdown deadline exhausted"));
+                }
+                PipelineCompletionMsg::DeliverAck { .. } => {
+                    panic!("cancelled publication cannot be ACKed")
+                }
+            }
         }
     }
 

@@ -3,6 +3,7 @@
 
 //! Geneva Metrics ingestion protocol version 6 data model and flags.
 
+use std::rc::Rc;
 use thiserror::Error;
 
 pub(super) const PROTOCOL_VERSION: u16 = 6;
@@ -98,13 +99,13 @@ pub struct Metric {
     pub exemplars: Vec<MetricExemplar>,
 }
 
-/// A metric dimension.
+/// A metric dimension whose strings are shared when inherited by data points.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dimension {
     /// Dimension name.
-    pub name: String,
+    pub name: Rc<str>,
     /// Dimension value.
-    pub value: String,
+    pub value: Rc<str>,
 }
 
 /// Numeric data carried by a metric.

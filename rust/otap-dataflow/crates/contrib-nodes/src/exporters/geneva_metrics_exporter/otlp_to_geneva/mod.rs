@@ -844,16 +844,16 @@ mod tests {
             metric.dimensions,
             vec![
                 super::super::encoder::Dimension {
-                    name: "a-dimension".to_string(),
-                    value: "first".to_string(),
+                    name: "a-dimension".into(),
+                    value: "first".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "shared".to_string(),
-                    value: "point".to_string(),
+                    name: "shared".into(),
+                    value: "point".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "z-dimension".to_string(),
-                    value: "7".to_string(),
+                    name: "z-dimension".into(),
+                    value: "7".into(),
                 },
             ]
         );
@@ -874,10 +874,54 @@ mod tests {
             honored.packet.metrics[0]
                 .dimensions
                 .iter()
-                .find(|dimension| dimension.name == "shared")
-                .map(|dimension| dimension.value.as_str()),
+                .find(|dimension| dimension.name.as_ref() == "shared")
+                .map(|dimension| dimension.value.as_ref()),
             Some("scope")
         );
+    }
+
+    /// Scenario: Many points inherit large resource and scope dimension strings.
+    /// Guarantees: Mapping shares both inherited names and values across points instead of duplicating their storage.
+    #[test]
+    fn shares_inherited_dimension_strings() {
+        use std::rc::Rc;
+
+        let value = "x".repeat(MAX_DIMENSION_VALUE_UTF16_UNITS);
+        let mut scope = scope_with_metrics(vec![otlp_metric(
+            "temperature",
+            metric::Data::Gauge(Gauge {
+                data_points: vec![gauge_point(Vec::new()); 128],
+            }),
+        )]);
+        scope.scope = Some(InstrumentationScope {
+            name: "meter".to_string(),
+            attributes: vec![string_attribute("scope", &value)],
+            ..Default::default()
+        });
+        let request = request(vec![string_attribute("resource", &value)], scope);
+        let mut mapping_config = config();
+        mapping_config.resource_attributes = vec!["*".to_string()];
+        mapping_config.scope_attributes = vec![ScopeAttributes {
+            name: "meter".to_string(),
+            keys: vec!["*".to_string()],
+        }];
+        let mapped =
+            map_request(&request, &mapping_config, TEST_TIME_NANOS).expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 128);
+        let first = &mapped.packet.metrics[0].dimensions;
+        assert_eq!(first.len(), 2);
+        for dimension in first {
+            assert_eq!(dimension.value.as_ref(), value.as_str());
+        }
+        for metric in &mapped.packet.metrics[1..] {
+            assert_eq!(metric.dimensions.len(), first.len());
+            for (inherited, dimension) in first.iter().zip(&metric.dimensions) {
+                assert!(Rc::ptr_eq(&inherited.name, &dimension.name));
+                assert!(Rc::ptr_eq(&inherited.value, &dimension.value));
+            }
+        }
     }
 
     /// Scenario: Successive scopes override, omit, and clear one exact-case resource dimension.
@@ -931,20 +975,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "scope-one".to_string(),
+                    name: "region".into(),
+                    value: "scope-one".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "scope-one".to_string(),
+                    name: "region".into(),
+                    value: "scope-one".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "scope-one".to_string(),
+                    name: "region".into(),
+                    value: "scope-one".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "resource".to_string(),
+                    name: "region".into(),
+                    value: "resource".into(),
                 },
             ]
         );

@@ -5,6 +5,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::str::{self, Utf8Error};
 
 use otel_arrow_dfe_pdata_views::views::common::{
@@ -163,28 +164,28 @@ fn attribute_dimension<A>(attribute: &A, string_only: bool) -> Result<Dimension,
 where
     A: AttributeView,
 {
-    let value = attribute.value().map_or_else(
-        || Ok(String::new()),
+    let value: Rc<str> = attribute.value().map_or_else(
+        || Ok("".into()),
         |value| {
             if let Some(value) = value.as_string() {
-                return Ok(str::from_utf8(value)?.to_string());
+                return Ok(str::from_utf8(value)?.into());
             }
             if !string_only {
                 if let Some(value) = value.as_bool() {
-                    return Ok(if value { "True" } else { "False" }.to_string());
+                    return Ok(if value { "True" } else { "False" }.into());
                 }
                 if let Some(value) = value.as_int64() {
-                    return Ok(value.to_string());
+                    return Ok(value.to_string().into());
                 }
                 if let Some(value) = value.as_double() {
-                    return Ok(format_double_dimension(value));
+                    return Ok(format_double_dimension(value).into());
                 }
             }
-            Ok(String::new())
+            Ok("".into())
         },
     )?;
     Ok(Dimension {
-        name: str::from_utf8(attribute.key())?.to_string(),
+        name: str::from_utf8(attribute.key())?.into(),
         value,
     })
 }
@@ -260,10 +261,10 @@ pub(super) fn apply_scope_resource_overrides(
     }
     let mut first_index = HashMap::with_capacity(original_resource_dimensions.len());
     for (index, dimension) in original_resource_dimensions.iter().enumerate() {
-        let _ = first_index.entry(dimension.name.as_str()).or_insert(index);
+        let _ = first_index.entry(dimension.name.as_ref()).or_insert(index);
     }
     for scope_dimension in scope_dimensions {
-        let Some(&index) = first_index.get(scope_dimension.name.as_str()) else {
+        let Some(&index) = first_index.get(scope_dimension.name.as_ref()) else {
             continue;
         };
         let original = &original_resource_dimensions[index];
@@ -495,8 +496,8 @@ mod tests {
 
     fn dimension(name: &str, value: &str) -> Dimension {
         Dimension {
-            name: name.to_string(),
-            value: value.to_string(),
+            name: name.into(),
+            value: value.into(),
         }
     }
 
@@ -662,8 +663,8 @@ mod tests {
             .expect("one merged dimension should be valid");
 
             assert_eq!(merged.len(), 1);
-            assert_eq!(merged[0].name, "SHARED");
-            assert_eq!(merged[0].value, expected);
+            assert_eq!(merged[0].name.as_ref(), "SHARED");
+            assert_eq!(merged[0].value.as_ref(), expected);
         }
     }
 
@@ -1009,7 +1010,7 @@ mod tests {
             dimension("DIMENSION-0", "second"),
             true,
         ));
-        assert_eq!(dimensions[0].value, "second");
+        assert_eq!(dimensions[0].value.as_ref(), "second");
         assert!(!set_dimension(
             &mut dimensions,
             dimension("dimension-overflow", "value"),

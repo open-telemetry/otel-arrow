@@ -698,7 +698,7 @@ mod tests {
             metrics: (0..16)
                 .map(|index| {
                     let mut metric = standard_metric(unsigned_values(index, 1), SUM | COUNT);
-                    metric.dimensions[0].value = format!("{index:04}{}", "x".repeat(100));
+                    metric.dimensions[0].value = format!("{index:04}{}", "x".repeat(100)).into();
                     metric
                 })
                 .collect(),
@@ -1529,7 +1529,7 @@ mod tests {
     #[test]
     fn rejects_nul_in_dimension_value() {
         let mut metric = standard_metric(unsigned_values(1, 1), SUM | COUNT);
-        metric.dimensions[1].value = "invalid\0value".to_string();
+        metric.dimensions[1].value = "invalid\0value".into();
         let packet = Packet {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![metric],
@@ -1615,14 +1615,14 @@ mod tests {
             "dimension name",
             MAX_DIMENSION_NAME_LENGTH,
             |metric, value| {
-                metric.dimensions[0].name = value;
+                metric.dimensions[0].name = value.into();
             },
         );
         assert_limit(
             "dimension value",
             MAX_DIMENSION_VALUE_LENGTH,
             |metric, value| {
-                metric.dimensions[0].value = value;
+                metric.dimensions[0].value = value.into();
             },
         );
     }

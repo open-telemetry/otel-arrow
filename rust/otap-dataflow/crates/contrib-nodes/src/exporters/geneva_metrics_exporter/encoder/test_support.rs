@@ -9,8 +9,8 @@ pub(super) const DEFAULT_TIME_BUCKET: u64 = 63_524_174_400;
 
 pub(super) fn dimension(name: &str, value: &str) -> Dimension {
     Dimension {
-        name: name.to_string(),
-        value: value.to_string(),
+        name: name.into(),
+        value: value.into(),
     }
 }
 
