@@ -371,18 +371,15 @@ pub struct ContextDeclarationProvider {
     /// Declaration callback.
     pub declarations: ContextDeclarationFn,
     /// Engine-assigned role supplied by the factory rather than configuration.
-    role: NodeBindingRole,
+    role: Option<NodeBindingRole>,
 }
 
 /// Engine-assigned binding roles that component declarations do not express.
 ///
 /// Roles are compiler input fixed by a node factory. They are not serialized
 /// configuration and not part of the declaration set a node validates.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NodeBindingRole {
-    /// No engine-assigned role.
-    #[default]
-    None,
     /// Combines the metadata of several inputs into one output.
     Merge,
 }
@@ -469,7 +466,7 @@ impl ContextDeclarationProvider {
     pub const fn new(declarations: ContextDeclarationFn) -> Self {
         Self {
             declarations,
-            role: NodeBindingRole::None,
+            role: None,
         }
     }
 
@@ -498,7 +495,7 @@ impl ContextDeclarationProvider {
     pub const fn with_merge_role(self) -> Self {
         Self {
             declarations: self.declarations,
-            role: NodeBindingRole::Merge,
+            role: Some(NodeBindingRole::Merge),
         }
     }
 }
@@ -552,8 +549,8 @@ struct PreparedNodeContextDeclarations {
     receiver: bool,
     /// Whether this node can project produced values into a derived context.
     processor: bool,
-    /// Engine-assigned role from the node's factory.
-    role: NodeBindingRole,
+    /// Engine-assigned role from the node's factory, if any.
+    role: Option<NodeBindingRole>,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
     /// Selected composite definitions in canonical order with their full presence gates.
@@ -614,7 +611,7 @@ impl PreparedNodeContextDeclarations {
         Ok(Self {
             receiver: false,
             processor: false,
-            role: NodeBindingRole::None,
+            role: None,
             declarations,
             composites,
             requirements,
@@ -833,7 +830,7 @@ impl CompiledNodeState {
                 // Only processors derive an output context from an input context.
                 projection: (prepared.processor && !produced.is_empty())
                     .then(|| ProjectionBinding::new(produced)),
-                merge: (prepared.role == NodeBindingRole::Merge).then(MergeBinding::new),
+                merge: (prepared.role == Some(NodeBindingRole::Merge)).then(MergeBinding::new),
             }),
         })
     }
@@ -1143,13 +1140,13 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     }
 
     /// Validates node configuration, rejects engine-owned factory declarations,
-    /// and returns the factory's engine-assigned binding role.
+    /// and returns the factory's engine-assigned binding role, if any.
     fn node_context_declarations(
         &self,
         kind: NodeKind,
         urn: &str,
         config: &serde_json::Value,
-    ) -> Result<(NodeContextDeclarations, NodeBindingRole), EngineError> {
+    ) -> Result<(NodeContextDeclarations, Option<NodeBindingRole>), EngineError> {
         let missing_factory = || {
             EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
                 error: format!("node factory `{urn}` is not registered"),
@@ -1181,8 +1178,8 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         // Validate before collecting declarations. Nodes are not constructed yet.
         validate_config(config).map_err(|error| EngineError::ConfigError(Box::new(error)))?;
 
-        let role = context_declarations.map_or(NodeBindingRole::None, |provider| provider.role);
-        if role == NodeBindingRole::Merge && kind != NodeKind::Processor {
+        let role = context_declarations.and_then(|provider| provider.role);
+        if role == Some(NodeBindingRole::Merge) && kind != NodeKind::Processor {
             return Err(EngineError::ConfigError(Box::new(
                 Error::InvalidUserConfig {
                     error: format!(
