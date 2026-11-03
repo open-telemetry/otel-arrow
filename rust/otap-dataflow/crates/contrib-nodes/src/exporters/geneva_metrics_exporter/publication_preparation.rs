@@ -82,28 +82,20 @@ pub(super) enum PrepareError {
     Encoding(#[from] encoder::EncodeError),
 }
 
+/// Fixtures shared by the preparation and export loop tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use bytes::Bytes;
-    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+pub(super) mod test_support {
+    use super::{Config, OtapPdata};
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
     };
-    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
     use otel_arrow_dfe_pdata_codec::OtapPayload;
 
-    fn metrics_pdata(request: ExportMetricsServiceRequest) -> OtapPdata {
-        let payload = OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
-            .expect("request should serialize");
-        OtapPdata::new_default(payload)
-    }
-
-    fn mapping_config() -> Config {
+    pub(crate) fn mapping_config() -> Config {
         Config {
             monitoring_account: "example-account".to_string(),
             metric_namespace: "example-namespace".to_string(),
@@ -113,6 +105,92 @@ mod tests {
             honor_scope_attributes: false,
             disable_exemplars: false,
         }
+    }
+
+    pub(crate) fn gauge_point(attributes: Vec<KeyValue>, flags: u32) -> NumberDataPoint {
+        NumberDataPoint {
+            attributes,
+            time_unix_nano: 1_700_000_000_000_000_000,
+            flags,
+            value: Some(number_data_point::Value::AsDouble(12.5)),
+            ..Default::default()
+        }
+    }
+
+    /// A request with one `temperature` gauge holding `points`.
+    pub(crate) fn gauge_request(points: Vec<NumberDataPoint>) -> ExportMetricsServiceRequest {
+        ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: "temperature".to_string(),
+                        data: Some(metric::Data::Gauge(Gauge {
+                            data_points: points,
+                        })),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    pub(crate) fn single_point_request() -> ExportMetricsServiceRequest {
+        gauge_request(vec![gauge_point(Vec::new(), 0)])
+    }
+
+    /// Over 20 MiB of distinct dimension values, so preparation must split it.
+    pub(crate) fn oversized_request() -> ExportMetricsServiceRequest {
+        gauge_request(
+            (0..21_000)
+                .map(|index| {
+                    let value = format!("{index:08}{}", "x".repeat(1_016));
+                    let attribute = KeyValue {
+                        key: "dimension".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue(value)),
+                        }),
+                    };
+                    gauge_point(vec![attribute], 0)
+                })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn otlp_pdata(request: ExportMetricsServiceRequest) -> OtapPdata {
+        let payload = OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
+            .expect("request should serialize");
+        OtapPdata::new_default(payload)
+    }
+
+    pub(crate) fn otap_pdata(request: ExportMetricsServiceRequest) -> OtapPdata {
+        let records = otlp_to_otap(&OtlpProtoMessage::Metrics(request.into()));
+        OtapPdata::new_default(OtapPayload::from_otap(records))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{
+        gauge_point, gauge_request, mapping_config, otlp_pdata, oversized_request,
+        single_point_request,
+    };
+    use super::*;
+    use bytes::Bytes;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, NumberDataPoint, metric, number_data_point,
+    };
+    use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
+
+    fn raw_otlp(bytes: &[u8]) -> OtapPdata {
+        OtapPdata::new_default(
+            OtlpProtoBytes::ExportMetricsRequest(Bytes::copy_from_slice(bytes)).into(),
+        )
     }
 
     /// Scenario: Preparation receives OTLP bytes for a non-metrics signal.
@@ -132,66 +210,11 @@ mod tests {
         }
     }
 
-    fn gauge_point(attributes: Vec<KeyValue>, flags: u32) -> NumberDataPoint {
-        NumberDataPoint {
-            attributes,
-            time_unix_nano: 1_700_000_000_000_000_000,
-            flags,
-            value: Some(number_data_point::Value::AsDouble(12.5)),
-            ..Default::default()
-        }
-    }
-
-    fn gauge_resource(
-        resource_attributes: Vec<KeyValue>,
-        points: Vec<NumberDataPoint>,
-    ) -> ResourceMetrics {
-        ResourceMetrics {
-            resource: Some(Resource {
-                attributes: resource_attributes,
-                ..Default::default()
-            }),
-            scope_metrics: vec![ScopeMetrics {
-                metrics: vec![Metric {
-                    name: "temperature".to_string(),
-                    data: Some(metric::Data::Gauge(Gauge {
-                        data_points: points,
-                    })),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
-
-    /// Scenario: The exporter receives a serialized OTLP gauge before HTTP publication is available.
-    /// Guarantees: Runtime preparation decodes, maps, and serializes the request into one account packet.
-    #[test]
-    fn prepares_otlp_metric_publication() {
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 0)])],
-        };
-        let data = metrics_pdata(request);
-
-        let prepared =
-            prepare_publication(&data, &mapping_config()).expect("publication should prepare");
-
-        assert_eq!(prepared.publications.len(), 1);
-        assert!(!prepared.publications[0].bytes.is_empty());
-        assert_eq!(prepared.publications[0].item_count, 1);
-        assert_eq!(prepared.rejected_data_points, 0);
-        assert_eq!(prepared.cardinality_overflows, 0);
-    }
-
     /// Scenario: An OTLP request contains a data point marked with no recorded value.
     /// Guarantees: Runtime preparation reports the rejected point and produces no empty publication.
     #[test]
     fn reports_rejected_data_points_during_preparation() {
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 1)])],
-        };
-        let data = metrics_pdata(request);
+        let data = otlp_pdata(gauge_request(vec![gauge_point(Vec::new(), 1)]));
 
         let prepared = prepare_publication(&data, &mapping_config())
             .expect("invalid points should not reject the request");
@@ -206,11 +229,7 @@ mod tests {
     #[test]
     fn rejects_malformed_otlp_framing() {
         for malformed in [&[0x0a][..], &[0x0a, 0x05, 0x01][..], &[0x0b][..]] {
-            let data = OtapPdata::new_default(
-                OtlpProtoBytes::ExportMetricsRequest(Bytes::copy_from_slice(malformed)).into(),
-            );
-
-            let error = prepare_publication(&data, &mapping_config())
+            let error = prepare_publication(&raw_otlp(malformed), &mapping_config())
                 .expect_err("malformed framing should be rejected");
 
             assert!(matches!(error, PrepareError::Decode(_)));
@@ -221,19 +240,14 @@ mod tests {
     /// Guarantees: Until strict nested validation exists (#4029), preparation publishes the well-formed metrics and skips the malformed content.
     #[test]
     fn skips_malformed_nested_otlp_content() {
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 0)])],
-        };
         let mut bytes = Vec::new();
-        OtlpProtoMessage::Metrics(request.into())
+        OtlpProtoMessage::Metrics(single_point_request().into())
             .encode(&mut bytes)
             .expect("request should serialize");
         // ResourceMetrics whose scope_metrics field claims five bytes but contains one.
         bytes.extend_from_slice(&[0x0a, 0x03, 0x12, 0x05, 0x01]);
-        let data =
-            OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)).into());
 
-        let prepared = prepare_publication(&data, &mapping_config())
+        let prepared = prepare_publication(&raw_otlp(&bytes), &mapping_config())
             .expect("well-formed top-level framing should be accepted");
 
         assert_eq!(prepared.publications.len(), 1);
@@ -246,34 +260,10 @@ mod tests {
     #[test]
     fn ignores_otlp_fields_with_unexpected_wire_types() {
         for mistyped in [&[0x08, 0x01][..], &[0x0a, 0x02, 0x08, 0x01][..]] {
-            let data = OtapPdata::new_default(
-                OtlpProtoBytes::ExportMetricsRequest(Bytes::copy_from_slice(mistyped)).into(),
-            );
-
-            let prepared = prepare_publication(&data, &mapping_config())
+            let prepared = prepare_publication(&raw_otlp(mistyped), &mapping_config())
                 .expect("well-formed top-level framing should be accepted");
 
             assert!(prepared.publications.is_empty());
-            assert_eq!(prepared.rejected_data_points, 0);
-        }
-    }
-
-    /// Scenario: Preparation receives native OTAP gauge metrics from a pipeline source.
-    /// Guarantees: Native metrics produce a publication with the same mapped point count as OTLP.
-    #[test]
-    fn prepares_native_otap_metrics() {
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![gauge_resource(Vec::new(), vec![gauge_point(Vec::new(), 0)])],
-        };
-        let records = otlp_to_otap(&OtlpProtoMessage::Metrics(request.clone().into()));
-        let native = OtapPdata::new_default(OtapPayload::from_otap(records));
-        let encoded = metrics_pdata(request);
-
-        for data in [native, encoded] {
-            let prepared = prepare_publication(&data, &mapping_config())
-                .expect("native and encoded metrics should prepare");
-            assert_eq!(prepared.publications.len(), 1);
-            assert_eq!(prepared.publications[0].item_count, 1);
             assert_eq!(prepared.rejected_data_points, 0);
         }
     }
@@ -282,10 +272,8 @@ mod tests {
     /// Guarantees: Normalization preserves metric/value/attribute associations, matches OTLP publication bytes, and leaves the original payload unchanged.
     #[test]
     fn normalizes_transport_encoded_metrics_before_mapping() {
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, any_value};
-
-        let mut resource = gauge_resource(Vec::new(), Vec::new());
-        resource.scope_metrics[0].metrics = (0..3)
+        let mut request = gauge_request(Vec::new());
+        request.resource_metrics[0].scope_metrics[0].metrics = (0..3)
             .map(|index| Metric {
                 name: format!("gauge{index}"),
                 data: Some(metric::Data::Gauge(Gauge {
@@ -303,9 +291,6 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![resource],
-        };
         let records = otlp_to_otap(&OtlpProtoMessage::Metrics(request.clone().into()));
         let mut optimized = records.clone();
         optimized
@@ -314,7 +299,7 @@ mod tests {
         assert_ne!(records.root_record_batch(), optimized.root_record_batch());
         let original_root = optimized.root_record_batch().cloned();
         let native = OtapPdata::new_default(OtapPayload::from_otap(optimized));
-        let encoded = metrics_pdata(request);
+        let encoded = otlp_pdata(request);
         let receive_time = 1_700_000_000_000_000_000;
         let expected = prepare_publication_at(&encoded, &mapping_config(), receive_time)
             .expect("OTLP metrics should prepare");
@@ -336,28 +321,7 @@ mod tests {
     /// Guarantees: Preparation preserves every point in independently checksummed packets below the GIG publication limit.
     #[test]
     fn splits_large_otlp_request_below_gig_limit() {
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, any_value};
-
-        let points = (0..21_000)
-            .map(|index| {
-                gauge_point(
-                    vec![KeyValue {
-                        key: "dimension".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(any_value::Value::StringValue(format!(
-                                "{index:08}{}",
-                                "x".repeat(1_016)
-                            ))),
-                        }),
-                    }],
-                    0,
-                )
-            })
-            .collect();
-        let data = metrics_pdata(ExportMetricsServiceRequest {
-            resource_metrics: vec![gauge_resource(Vec::new(), points)],
-        });
-        let prepared = prepare_publication(&data, &mapping_config())
+        let prepared = prepare_publication(&otlp_pdata(oversized_request()), &mapping_config())
             .expect("large request should be split, not rejected");
         assert!(prepared.publications.len() > 1);
         assert_eq!(prepared.rejected_data_points, 0);

@@ -127,9 +127,15 @@ impl GenevaMetricsExporter {
         Box::pin(async move { effect_handler.notify_nack(nack).await })
     }
 
-    fn record_refusal(&mut self, attempt: ExporterAttempt) {
+    fn refuse(
+        &mut self,
+        attempt: ExporterAttempt,
+        nack: NackMsg<OtapPdata>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> CompletionFuture {
         let result = Err::<(), _>(attempt.refused(()));
         _ = self.metrics.record(attempt.complete(result));
+        Self::nack_completion(effect_handler, nack)
     }
 
     fn start_publication(
@@ -141,25 +147,22 @@ impl GenevaMetricsExporter {
         let mut attempt = self.metrics.attempt(signal_type);
         attempt.set_item_count_with(|| data.num_items() as u64);
         if signal_type != SignalType::Metrics {
-            self.record_refusal(attempt);
             let nack = NackMsg::new_permanent(UNSUPPORTED_SIGNAL_MESSAGE, data);
-            return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
+            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
         }
 
         // ExporterInbox force-drains pdata during shutdown even when normal
         // admission is closed, so re-check auth before doing publication work.
         if !self.auth.is_ready() {
-            self.record_refusal(attempt);
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
-            return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
+            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
         }
 
         let prepared = match prepare_publication(&data, &self.mapping_config) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.record_refusal(attempt);
                 let nack = NackMsg::new_permanent(error.to_string(), data);
-                return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
+                return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
             }
         };
         if prepared.rejected_data_points > 0 || prepared.cardinality_overflows > 0 {
@@ -193,16 +196,10 @@ impl GenevaMetricsExporter {
         let mut attempt = self.metrics.attempt(SignalType::Metrics);
         attempt.set_item_count_with(|| packet.item_count);
         attempt.set_payload_size_with(|| packet.bytes.len());
-        if !self.auth.is_ready() {
-            self.record_refusal(attempt);
+        let header = self.auth.header().filter(|_| self.auth.is_ready());
+        let Some((auth_header_name, auth_header_value, auth_generation)) = header else {
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
-            return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
-        }
-        let Some((auth_header_name, auth_header_value, auth_generation)) = self.auth.header()
-        else {
-            self.record_refusal(attempt);
-            let nack = NackMsg::new(self.auth.not_ready_reason(), data);
-            return PublicationStart::Completion(Self::nack_completion(effect_handler, nack));
+            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
         };
 
         let request = self.publisher.publish(
@@ -484,9 +481,8 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                         if tokio::time::Instant::now() >= tokio::time::Instant::from_std(deadline) {
                             let mut attempt = self.metrics.attempt(data.signal_type());
                             attempt.set_item_count_with(|| data.num_items() as u64);
-                            self.record_refusal(attempt);
                             let nack = NackMsg::new(SHUTDOWN_AT_CAPACITY_MESSAGE, data);
-                            pending_completion = Some(Self::nack_completion(&effect_handler, nack));
+                            pending_completion = Some(self.refuse(attempt, nack, &effect_handler));
                             continue;
                         }
                     }
@@ -507,6 +503,9 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
 
 #[cfg(test)]
 mod tests {
+    use super::super::publication_preparation::test_support::{
+        mapping_config, otap_pdata, otlp_pdata, oversized_request, single_point_request,
+    };
     use super::*;
     use futures::StreamExt;
     use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -522,18 +521,15 @@ mod tests {
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
     use otel_arrow_dfe_otap::testing::TestCallData;
-    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
-        Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric, number_data_point,
-    };
-    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::cell::{Cell, RefCell};
     use std::time::{Duration, Instant};
     use wiremock::matchers::{header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    type ControlSender = mpsc::Sender<NodeControlMsg<OtapPdata>>;
+    type Completions = PipelineCompletionMsgReceiver<OtapPdata>;
 
     struct TestTokenProvider {
         updates: RefCell<Option<UnboundedReceiver<BearerToken>>>,
@@ -604,71 +600,25 @@ mod tests {
         }
     }
 
-    fn mapping_config() -> Config {
-        Config {
-            monitoring_account: "default-account".to_string(),
-            metric_namespace: "example-namespace".to_string(),
-            resource_attributes: Vec::new(),
-            honor_resource_attributes: false,
-            scope_attributes: Vec::new(),
-            honor_scope_attributes: false,
-            disable_exemplars: false,
-        }
-    }
-
-    fn metrics_pdata(call_id: usize) -> OtapPdata {
-        metrics_pdata_with_format(call_id, false)
-    }
-
-    fn metrics_pdata_with_format(call_id: usize, native: bool) -> OtapPdata {
-        let point = NumberDataPoint {
-            time_unix_nano: 1_700_000_000_000_000_000,
-            value: Some(number_data_point::Value::AsDouble(12.5)),
-            ..Default::default()
-        };
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                scope_metrics: vec![ScopeMetrics {
-                    metrics: vec![Metric {
-                        name: "temperature".to_string(),
-                        data: Some(metric::Data::Gauge(Gauge {
-                            data_points: vec![point],
-                        })),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let message = OtlpProtoMessage::Metrics(request.into());
-        let payload = if native {
-            OtapPayload::from_otap(otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap(
-                &message,
-            ))
-        } else {
-            OtapPayload::try_from(message).expect("request should serialize")
-        };
-        OtapPdata::new_default(payload).test_subscribe_to(
+    fn subscribe(data: OtapPdata, call_id: usize) -> OtapPdata {
+        data.test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
             TestCallData::default().into(),
             call_id,
         )
     }
 
-    fn completion_harness() -> (
-        EffectHandler<OtapPdata>,
-        PipelineCompletionMsgReceiver<OtapPdata>,
-    ) {
+    fn metrics_pdata(call_id: usize) -> OtapPdata {
+        subscribe(otlp_pdata(single_point_request()), call_id)
+    }
+
+    fn completion_harness() -> (EffectHandler<OtapPdata>, Completions) {
         completion_harness_with_capacity(4)
     }
 
     fn completion_harness_with_capacity(
         capacity: usize,
-    ) -> (
-        EffectHandler<OtapPdata>,
-        PipelineCompletionMsgReceiver<OtapPdata>,
-    ) {
+    ) -> (EffectHandler<OtapPdata>, Completions) {
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let mut effect_handler = EffectHandler::new(
             NodeId {
@@ -683,7 +633,10 @@ mod tests {
         (effect_handler, completion_rx)
     }
 
-    async fn occupy_completion_channel(effect_handler: &EffectHandler<OtapPdata>) {
+    /// A completion harness whose only slot is already full, so the next ACK
+    /// or NACK blocks.
+    async fn blocked_completion_harness() -> (EffectHandler<OtapPdata>, Completions) {
+        let (effect_handler, completions) = completion_harness_with_capacity(1);
         effect_handler
             .notify_nack(NackMsg::new(
                 "occupy the completion channel",
@@ -691,12 +644,29 @@ mod tests {
             ))
             .await
             .expect("completion channel should accept its first message");
+        (effect_handler, completions)
+    }
+
+    async fn expect_ack(completions: &mut Completions) {
+        match completions.recv().await.expect("completion should arrive") {
+            PipelineCompletionMsg::DeliverAck { .. } => {}
+            PipelineCompletionMsg::DeliverNack { nack } => {
+                panic!("expected ACK, got NACK: {}", nack.reason)
+            }
+        }
+    }
+
+    async fn expect_nack(completions: &mut Completions) -> NackMsg<OtapPdata> {
+        match completions.recv().await.expect("completion should arrive") {
+            PipelineCompletionMsg::DeliverNack { nack } => nack,
+            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected NACK, got ACK"),
+        }
     }
 
     fn message_channel(
         capacity: usize,
     ) -> (
-        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        ControlSender,
         mpsc::Sender<OtapPdata>,
         ExporterInbox<OtapPdata>,
     ) {
@@ -714,15 +684,51 @@ mod tests {
         )
     }
 
-    fn exporter_with_timeout(
-        endpoint: &str,
-        timeout: Duration,
-        token_provider: TestTokenProvider,
-    ) -> GenevaMetricsExporter {
-        exporter_with_publisher(
-            MetricsPublisher::new(endpoint, timeout).expect("publisher should be created"),
-            token_provider,
-        )
+    async fn send_shutdown(control_tx: &ControlSender, deadline: Instant) {
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "test shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown should be queued");
+    }
+
+    async fn collect_telemetry(control_tx: &ControlSender) -> Vec<MetricSetSnapshot> {
+        let (snapshots, reporter) = MetricsReporter::create_new_and_receiver(8);
+        control_tx
+            .send_async(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter,
+            })
+            .await
+            .expect("telemetry collection should be queued");
+        let mut collected = Vec::new();
+        for _ in 0..4 {
+            collected.push(
+                snapshots
+                    .recv_async()
+                    .await
+                    .expect("shared snapshot should arrive"),
+            );
+        }
+        collected
+    }
+
+    /// Runs the exporter alongside `driver`, failing unless both finish within
+    /// `limit` and the exporter shuts down cleanly.
+    async fn run_exporter<T>(
+        exporter: GenevaMetricsExporter,
+        msg_chan: ExporterInbox<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
+        limit: Duration,
+        driver: impl Future<Output = T>,
+    ) -> (TerminalState, T) {
+        let (result, output) = tokio::time::timeout(limit, async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("exporter and test driver should finish within the limit");
+        (result.expect("exporter should shut down cleanly"), output)
     }
 
     fn exporter_with_publisher(
@@ -746,7 +752,19 @@ mod tests {
     }
 
     fn exporter(endpoint: &str, token_provider: TestTokenProvider) -> GenevaMetricsExporter {
-        exporter_with_timeout(endpoint, Duration::from_secs(1), token_provider)
+        // Generous so loaded CI cannot time out local mock-server requests.
+        let publisher = MetricsPublisher::new(endpoint, Duration::from_secs(10))
+            .expect("publisher should be created");
+        exporter_with_publisher(publisher, token_provider)
+    }
+
+    /// Builds an exporter that has already consumed its initial bearer token.
+    async fn ready_exporter(endpoint: &str) -> (GenevaMetricsExporter, TokenController) {
+        let (provider, mut controller) = TestTokenProvider::new(Some("initial-token"));
+        let mut exporter = exporter(endpoint, provider);
+        poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+        controller.wait_until_observed().await;
+        (exporter, controller)
     }
 
     /// Builds an exporter that never touches the network. Each publication is
@@ -774,6 +792,22 @@ mod tests {
         Box::pin(std::future::pending())
     }
 
+    /// Starts the first packet of one input split into two packets.
+    fn start_two_packet_publication(
+        exporter: &mut GenevaMetricsExporter,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> PublicationStart {
+        let data = metrics_pdata(1);
+        let packets: Vec<_> = (0..2)
+            .flat_map(|_| {
+                prepare_publication(&data, &mapping_config())
+                    .expect("prepare packet")
+                    .publications
+            })
+            .collect();
+        exporter.start_next_publication(data, packets.into_iter(), effect_handler)
+    }
+
     fn metric_value<'a>(
         snapshots: &'a [MetricSetSnapshot],
         outcome: &str,
@@ -798,81 +832,65 @@ mod tests {
             .expect("expected shared exporter metric")
     }
 
+    fn assert_metric(snapshots: &[MetricSetSnapshot], outcome: &str, name: &str, expected: u64) {
+        assert_eq!(
+            metric_value(snapshots, outcome, name),
+            &MetricValue::U64(expected),
+            "{outcome} {name}"
+        );
+    }
+
+    /// Mounts a POST response, optionally matching one bearer token, that must be hit `times` times.
+    async fn mock_post(server: &MockServer, token: Option<&str>, status: u16, times: u64) {
+        let mock = Mock::given(method("POST"));
+        let mock = match token {
+            Some(token) => mock.and(header("authorization", format!("Bearer {token}"))),
+            None => mock,
+        };
+        mock.respond_with(ResponseTemplate::new(status))
+            .expect(times)
+            .mount(server)
+            .await;
+    }
+
     /// Scenario: Native OTAP metrics are queued before the bearer provider publishes its initial token.
     /// Guarantees: The start loop publishes and ACKs native metrics after auth arrives, then reports the standard exporter measurements.
     #[tokio::test]
     async fn start_loop_waits_for_initial_auth() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
+        mock_post(&server, None, 200, 1).await;
         let (provider, mut controller) = TestTokenProvider::new(None);
         let exporter = exporter(&server.uri(), provider);
         let (effect_handler, mut completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        let control_guard = control_tx.clone();
 
-        let driver = async move {
+        let driver = async {
             pdata_tx
-                .send_async(metrics_pdata_with_format(1, true))
+                .send_async(subscribe(otap_pdata(single_point_request()), 1))
                 .await
                 .expect("pdata should be queued before auth is ready");
             controller.publish("fresh-token");
             controller.wait_until_observed().await;
+            expect_ack(&mut completions).await;
 
-            match completions.recv().await.expect("completion should arrive") {
-                PipelineCompletionMsg::DeliverAck { .. } => {}
-                PipelineCompletionMsg::DeliverNack { .. } => {
-                    panic!("pdata should wait for auth rather than be NACKed")
-                }
-            }
-
-            let (snapshots, reporter) = MetricsReporter::create_new_and_receiver(8);
-            control_tx
-                .send_async(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: reporter,
-                })
-                .await
-                .expect("telemetry collection should be queued");
-            let mut collected = Vec::new();
-            for _ in 0..4 {
-                collected.push(
-                    snapshots
-                        .recv_async()
-                        .await
-                        .expect("shared snapshot should arrive"),
-                );
-            }
-            assert_eq!(
-                metric_value(&collected, "success", "messages"),
-                &MetricValue::U64(1)
-            );
-            assert_eq!(
-                metric_value(&collected, "success", "items"),
-                &MetricValue::U64(1)
-            );
+            let collected = collect_telemetry(&control_tx).await;
+            assert_metric(&collected, "success", "messages", 1);
+            assert_metric(&collected, "success", "items", 1);
             assert!(!metric_value(&collected, "success", "payload.size").is_zero());
             assert!(!metric_value(&collected, "success", "duration").is_zero());
 
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline: Instant::now(),
-                    reason: "test complete".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
+            send_shutdown(&control_tx, Instant::now()).await;
             drop(pdata_tx);
         };
 
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("exporter should finish after initial auth arrives");
-        drop(control_guard);
-        let terminal_state = start_result.expect("exporter should shut down cleanly");
+        let (terminal_state, ()) = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
+            Duration::from_secs(10),
+            driver,
+        )
+        .await;
         assert!(
             terminal_state.is_empty(),
             "periodic reporting must clear deltas"
@@ -884,11 +902,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_publishes_healthy_buffered_metrics() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(2)
-            .mount(&server)
-            .await;
+        mock_post(&server, None, 200, 2).await;
         let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
         let exporter = exporter(&server.uri(), provider);
         let (effect_handler, mut completions) = completion_harness();
@@ -900,86 +914,32 @@ mod tests {
                 .expect("buffer metrics");
         }
         let deadline = Instant::now() + Duration::from_secs(60);
-        control_tx
-            .send_async(NodeControlMsg::Shutdown {
-                deadline,
-                reason: "drain healthy backlog".to_owned(),
-            })
-            .await
-            .expect("queue shutdown");
+        send_shutdown(&control_tx, deadline).await;
         drop(pdata_tx);
         let driver = async {
             for _ in 0..2 {
-                assert!(matches!(
-                    completions
-                        .recv()
-                        .await
-                        .expect("drained input should complete"),
-                    PipelineCompletionMsg::DeliverAck { .. },
-                ));
+                expect_ack(&mut completions).await;
             }
         };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("healthy backlog should drain");
-        drop(control_tx);
-        let terminal = result.expect("shutdown should succeed");
+
+        let (terminal, ()) = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
+            Duration::from_secs(10),
+            driver,
+        )
+        .await;
         assert_eq!(terminal.deadline(), deadline);
-        assert_eq!(
-            metric_value(terminal.metrics(), "success", "messages"),
-            &MetricValue::U64(2)
-        );
-        assert_eq!(
-            metric_value(terminal.metrics(), "success", "items"),
-            &MetricValue::U64(2)
-        );
+        assert_metric(terminal.metrics(), "success", "messages", 2);
+        assert_metric(terminal.metrics(), "success", "items", 2);
     }
 
     /// Scenario: A split input starts during shutdown draining while upstream remains open.
     /// Guarantees: The shared drain deadline cancels the active packet and prevents later packets without waiting for another inbox message.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_split_publication_while_upstream_remains_open() {
-        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
-            AnyValue, KeyValue, any_value,
-        };
-
-        let points = (0..21_000)
-            .map(|index| NumberDataPoint {
-                attributes: vec![KeyValue {
-                    key: "dimension".to_owned(),
-                    value: Some(AnyValue {
-                        value: Some(any_value::Value::StringValue(format!(
-                            "{index:08}{}",
-                            "x".repeat(1_016)
-                        ))),
-                    }),
-                }],
-                time_unix_nano: 1_700_000_000_000_000_000,
-                value: Some(number_data_point::Value::AsDouble(12.5)),
-                ..Default::default()
-            })
-            .collect();
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                scope_metrics: vec![ScopeMetrics {
-                    metrics: vec![Metric {
-                        name: "temperature".to_owned(),
-                        data: Some(metric::Data::Gauge(Gauge {
-                            data_points: points,
-                        })),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let split_data = OtapPdata::new_default(
-            OtapPayload::try_from(OtlpProtoMessage::Metrics(request.into()))
-                .expect("split input should serialize"),
-        );
+        let split_data = otlp_pdata(oversized_request());
         assert!(
             prepare_publication(&split_data, &mapping_config())
                 .expect("split input should prepare")
@@ -1014,13 +974,7 @@ mod tests {
             .expect("split input should be buffered");
         // Far ahead of the real clock the inbox checks.
         let deadline = (tokio::time::Instant::now() + Duration::from_secs(60)).into_std();
-        control_tx
-            .send_async(NodeControlMsg::Shutdown {
-                deadline,
-                reason: "drain split input".to_owned(),
-            })
-            .await
-            .expect("shutdown should be queued");
+        send_shutdown(&control_tx, deadline).await;
 
         let driver = async {
             requests
@@ -1032,27 +986,9 @@ mod tests {
                 .next()
                 .await
                 .expect("the split input's first packet should start");
-            let (snapshots, reporter) = MetricsReporter::create_new_and_receiver(8);
-            control_tx
-                .send_async(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter: reporter,
-                })
-                .await
-                .expect("telemetry should be queued while upstream remains open");
-            let mut collected = Vec::new();
-            for _ in 0..4 {
-                collected.push(
-                    snapshots
-                        .recv_async()
-                        .await
-                        .expect("shared snapshot should arrive"),
-                );
-            }
-            assert_eq!(
-                metric_value(&collected, "failure", "messages"),
-                &MetricValue::U64(1),
-                "the split publication must expire before inbox processing resumes"
-            );
+            let collected = collect_telemetry(&control_tx).await;
+            // The split publication must expire before inbox processing resumes.
+            assert_metric(&collected, "failure", "messages", 1);
             assert_eq!(
                 tokio::time::Instant::now(),
                 first_started_at + publisher_timeout,
@@ -1060,15 +996,16 @@ mod tests {
             );
             drop(pdata_tx);
         };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(600), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("shutdown work should respect its shared local budget");
-        assert_eq!(
-            result.expect("shutdown should succeed").deadline(),
-            deadline
-        );
+
+        let (terminal, ()) = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
+            Duration::from_secs(600),
+            driver,
+        )
+        .await;
+        assert_eq!(terminal.deadline(), deadline);
         assert!(
             requests.next().await.is_none(),
             "no later packet of the split input may start"
@@ -1082,29 +1019,12 @@ mod tests {
         for refresh_during_request in [true, false] {
             let server = MockServer::start().await;
             for token in ["initial-token", "fresh-token"] {
-                Mock::given(method("POST"))
-                    .and(header("authorization", format!("Bearer {token}")))
-                    .respond_with(ResponseTemplate::new(200))
-                    .expect(1)
-                    .mount(&server)
-                    .await;
+                mock_post(&server, Some(token), 200, 1).await;
             }
-            let (provider, mut controller) = TestTokenProvider::new(Some("initial-token"));
-            let mut exporter =
-                exporter_with_timeout(&server.uri(), Duration::from_secs(10), provider);
-            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
-            controller.wait_until_observed().await;
+            let (mut exporter, mut controller) = ready_exporter(&server.uri()).await;
             let (effect_handler, mut completions) = completion_harness();
-            let data = metrics_pdata(1);
-            let packets = (0..2)
-                .flat_map(|_| {
-                    prepare_publication(&data, &mapping_config())
-                        .expect("prepare packet")
-                        .publications
-                })
-                .collect::<Vec<_>>();
             let PublicationStart::InFlight(mut publication) =
-                exporter.start_next_publication(data, packets.into_iter(), &effect_handler)
+                start_two_packet_publication(&mut exporter, &effect_handler)
             else {
                 panic!("first publication should start with usable authentication");
             };
@@ -1158,15 +1078,9 @@ mod tests {
             .await
             .expect("shutdown should consume refreshed authentication and drain both packets");
             result.expect("shutdown publication work should succeed");
-            assert!(matches!(
-                completions.recv().await.expect("input should complete"),
-                PipelineCompletionMsg::DeliverAck { .. },
-            ));
+            expect_ack(&mut completions).await;
             let snapshots = exporter.metrics.terminal_snapshots();
-            assert_eq!(
-                metric_value(&snapshots, "success", "messages"),
-                &MetricValue::U64(2)
-            );
+            assert_metric(&snapshots, "success", "messages", 2);
         }
     }
 
@@ -1175,16 +1089,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn shutdown_nacks_cancelled_publication() {
         for remaining in [Duration::ZERO, Duration::from_secs(1)] {
-            let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
-            let mut exporter = exporter("http://127.0.0.1:1", provider);
-            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            let (mut exporter, _controller) = ready_exporter("http://127.0.0.1:1").await;
             let (effect_handler, mut completions) = completion_harness();
             let PublicationStart::InFlight(mut publication) =
                 exporter.start_publication(metrics_pdata(1), &effect_handler)
             else {
                 panic!("publication should start");
             };
-            publication.request = Box::pin(std::future::pending());
+            publication.request = stalled_request();
             let deadline = tokio::time::Instant::now() + remaining;
             tokio::time::timeout(
                 Duration::from_secs(10),
@@ -1199,19 +1111,11 @@ mod tests {
             .expect("shutdown must remain bounded")
             .expect("shutdown should finish");
             assert_eq!(tokio::time::Instant::now(), deadline);
-            match tokio::time::timeout(Duration::from_secs(1), completions.recv())
+            let nack = tokio::time::timeout(Duration::from_secs(1), expect_nack(&mut completions))
                 .await
-                .expect("cancelled input should complete")
-                .expect("completion channel should remain open")
-            {
-                PipelineCompletionMsg::DeliverNack { nack } => {
-                    assert!(!nack.permanent);
-                    assert!(nack.reason.contains("shutdown deadline exhausted"));
-                }
-                PipelineCompletionMsg::DeliverAck { .. } => {
-                    panic!("cancelled publication cannot be ACKed")
-                }
-            }
+                .expect("cancelled input should complete");
+            assert!(!nack.permanent);
+            assert!(nack.reason.contains("shutdown deadline exhausted"));
         }
     }
 
@@ -1219,20 +1123,10 @@ mod tests {
     /// Guarantees: Waiting respects the original virtual deadline, never submits the next packet, and retryably NACKs the input.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_wait_for_refreshed_auth() {
-        let (provider, _controller) = TestTokenProvider::new(Some("initial-token"));
-        let mut exporter = exporter("http://127.0.0.1:1", provider);
-        poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+        let (mut exporter, _controller) = ready_exporter("http://127.0.0.1:1").await;
         let (effect_handler, mut completions) = completion_harness();
-        let data = metrics_pdata(1);
-        let packets = (0..2)
-            .flat_map(|_| {
-                prepare_publication(&data, &mapping_config())
-                    .expect("prepare packet")
-                    .publications
-            })
-            .collect::<Vec<_>>();
         let PublicationStart::InFlight(mut publication) =
-            exporter.start_next_publication(data, packets.into_iter(), &effect_handler)
+            start_two_packet_publication(&mut exporter, &effect_handler)
         else {
             panic!("first publication should start");
         };
@@ -1247,21 +1141,13 @@ mod tests {
         .expect("authentication wait must be bounded")
         .expect("shutdown should finish");
         assert!(tokio::time::Instant::now() >= tokio::time::Instant::from_std(deadline));
-        match completions.recv().await.expect("input should complete") {
-            PipelineCompletionMsg::DeliverNack { nack } => assert!(!nack.permanent),
-            PipelineCompletionMsg::DeliverAck { .. } => {
-                panic!("unsubmitted packets cannot be ACKed")
-            }
-        }
+        assert!(
+            !expect_nack(&mut completions).await.permanent,
+            "unsubmitted packets must be retryable"
+        );
         let snapshots = exporter.metrics.terminal_snapshots();
-        assert_eq!(
-            metric_value(&snapshots, "success", "messages"),
-            &MetricValue::U64(1)
-        );
-        assert_eq!(
-            metric_value(&snapshots, "refused", "messages"),
-            &MetricValue::U64(1)
-        );
+        assert_metric(&snapshots, "success", "messages", 1);
+        assert_metric(&snapshots, "refused", "messages", 1);
     }
 
     /// Scenario: One input is split into two publications and the second succeeds or fails.
@@ -1283,21 +1169,9 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
-            let mut exporter = exporter(&server.uri(), provider);
-            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
-            assert!(exporter.auth.is_ready());
+            let (mut exporter, _controller) = ready_exporter(&server.uri()).await;
             let (effect_handler, mut completions) = completion_harness();
-            let data = metrics_pdata(1);
-            let packets = (0..2)
-                .flat_map(|_| {
-                    prepare_publication(&data, &mapping_config())
-                        .expect("prepare packet")
-                        .publications
-                })
-                .collect::<Vec<_>>();
-            let mut work =
-                exporter.start_next_publication(data, packets.into_iter(), &effect_handler);
+            let mut work = start_two_packet_publication(&mut exporter, &effect_handler);
             for _ in 0..2 {
                 let PublicationStart::InFlight(mut publication) = work else {
                     panic!("each packet must be published before input completion");
@@ -1319,37 +1193,23 @@ mod tests {
             completion
                 .await
                 .expect("input completion should be delivered");
-            match completions
-                .recv()
-                .await
-                .expect("input should complete once")
-            {
-                PipelineCompletionMsg::DeliverAck { .. } => assert_eq!(final_status, 200),
-                PipelineCompletionMsg::DeliverNack { nack } => {
-                    assert_ne!(final_status, 200);
-                    assert_eq!(nack.permanent, final_status == 400);
-                }
+            if final_status == 200 {
+                expect_ack(&mut completions).await;
+            } else {
+                let nack = expect_nack(&mut completions).await;
+                assert_eq!(nack.permanent, final_status == 400);
             }
             let snapshots = exporter.metrics.terminal_snapshots();
             let successes = if final_status == 200 { 2 } else { 1 };
-            assert_eq!(
-                metric_value(&snapshots, "success", "messages"),
-                &MetricValue::U64(successes)
-            );
-            assert_eq!(
-                metric_value(&snapshots, "success", "items"),
-                &MetricValue::U64(successes)
-            );
+            assert_metric(&snapshots, "success", "messages", successes);
+            assert_metric(&snapshots, "success", "items", successes);
             if final_status != 200 {
                 let outcome = if matches!(final_status, 400 | 401 | 403 | 429) {
                     "refused"
                 } else {
                     "failure"
                 };
-                assert_eq!(
-                    metric_value(&snapshots, outcome, "messages"),
-                    &MetricValue::U64(1)
-                );
+                assert_metric(&snapshots, outcome, "messages", 1);
             }
             assert!(matches!(
                 completions.try_recv(),
@@ -1358,250 +1218,82 @@ mod tests {
         }
     }
 
-    /// Scenario: The exporter receives shutdown when no HTTP publication is active.
-    /// Guarantees: The terminal state preserves the exact pipeline shutdown deadline.
-    #[tokio::test(start_paused = true)]
-    async fn start_loop_preserves_shutdown_deadline() {
-        let (provider, _controller) = TestTokenProvider::new(None);
-        let exporter = exporter("http://127.0.0.1:1", provider);
-        let (effect_handler, _completions) = completion_harness();
-        let (control_tx, pdata_tx, msg_chan) = message_channel(1);
-        let control_guard = control_tx.clone();
-        let pdata_guard = pdata_tx.clone();
-        // Far ahead of the real clock the inbox checks.
-        let deadline = (tokio::time::Instant::now() + Duration::from_secs(60)).into_std();
-
-        let driver = async move {
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test complete".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
-            drop(pdata_tx);
-        };
-
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(600), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("exporter should preserve shutdown responsiveness");
-        drop(control_guard);
-        drop(pdata_guard);
-        let terminal_state = start_result.expect("exporter should shut down cleanly");
-        assert_eq!(terminal_state.deadline(), deadline);
-    }
-
-    /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the pipeline deadline.
-    /// Guarantees: Only one request is in flight, force-drained pdata is retryably NACKed,
-    /// local timeout bounds publication work, and the terminal state preserves the pipeline deadline.
+    /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the pipeline deadline, with completion delivery free or blocked.
+    /// Guarantees: Only one request is in flight, force-drained pdata is retryably NACKed, the local timeout bounds
+    /// publication work and completion backpressure, and the terminal state preserves the pipeline deadline.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_stalled_publication_and_force_drained_pdata() {
-        let publisher_timeout = Duration::from_secs(60);
-        let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let (exporter, mut requests) =
-            scripted_exporter(publisher_timeout, provider, stalled_request);
-        let (effect_handler, mut completions) = completion_harness();
-        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        let control_guard = control_tx.clone();
-        let pdata_guard = pdata_tx.clone();
-        let started_requests = &mut requests;
+        for blocked_completions in [false, true] {
+            let publisher_timeout = Duration::from_secs(60);
+            let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
+            let (exporter, mut requests) =
+                scripted_exporter(publisher_timeout, provider, stalled_request);
+            let (effect_handler, mut completions) = if blocked_completions {
+                blocked_completion_harness().await
+            } else {
+                completion_harness()
+            };
+            let (control_tx, pdata_tx, msg_chan) = message_channel(4);
 
-        let driver = async move {
-            controller.wait_until_observed().await;
-            pdata_tx
-                .send_async(metrics_pdata(1))
-                .await
-                .expect("first pdata should be queued");
-            started_requests
-                .next()
-                .await
-                .expect("first pdata should start a publication");
-            let request_started_at = tokio::time::Instant::now();
-            pdata_tx
-                .send_async(metrics_pdata(2))
-                .await
-                .expect("second pdata should be buffered behind the active publication");
-
-            // Before the publisher timeout; far ahead of the real clock the inbox checks.
-            let deadline = (request_started_at + Duration::from_secs(30)).into_std();
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test shutdown".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
-
-            loop {
-                match completions
-                    .recv()
+            let driver = async {
+                controller.wait_until_observed().await;
+                pdata_tx
+                    .send_async(metrics_pdata(1))
                     .await
-                    .expect("force-drained pdata completion should arrive")
-                {
-                    PipelineCompletionMsg::DeliverNack { nack } => {
+                    .expect("first pdata should be queued");
+                requests
+                    .next()
+                    .await
+                    .expect("first pdata should start a publication");
+                let request_started_at = tokio::time::Instant::now();
+                pdata_tx
+                    .send_async(metrics_pdata(2))
+                    .await
+                    .expect("second pdata should be buffered behind the active publication");
+                // Before the publisher timeout; far ahead of the real clock the inbox checks.
+                let deadline = (request_started_at + Duration::from_secs(30)).into_std();
+                send_shutdown(&control_tx, deadline).await;
+                if !blocked_completions {
+                    loop {
+                        let nack = expect_nack(&mut completions).await;
                         assert!(!nack.permanent);
                         if nack.reason.contains(SHUTDOWN_AT_CAPACITY_MESSAGE) {
                             break;
                         }
                     }
-                    PipelineCompletionMsg::DeliverAck { .. } => {
-                        panic!("stalled or force-drained pdata should not be ACKed")
-                    }
                 }
-            }
+                (deadline, request_started_at)
+            };
 
-            drop(pdata_tx);
-            (deadline, request_started_at)
-        };
-
-        let (start_result, (deadline, request_started_at)) =
-            tokio::time::timeout(Duration::from_secs(600), async {
-                tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-            })
-            .await
-            .expect("exporter should stop within its local drain timeout");
-        drop(control_guard);
-        drop(pdata_guard);
-        let terminal_state = start_result.expect("exporter should shut down cleanly");
-        assert_eq!(terminal_state.deadline(), deadline);
-        assert_eq!(
-            tokio::time::Instant::now(),
-            request_started_at + publisher_timeout
-        );
-        assert!(
-            requests.next().await.is_none(),
-            "only one publication may be in flight"
-        );
-    }
-
-    /// Scenario: Shutdown begins with a stalled request and a full, undrained completion channel.
-    /// Guarantees: The local drain timeout bounds completion backpressure even before the pipeline deadline is visible.
-    #[tokio::test(start_paused = true)]
-    async fn shutdown_bounds_undrained_completion_channel() {
-        let publisher_timeout = Duration::from_secs(60);
-        let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let (exporter, mut requests) =
-            scripted_exporter(publisher_timeout, provider, stalled_request);
-        let (effect_handler, _completions) = completion_harness_with_capacity(1);
-        occupy_completion_channel(&effect_handler).await;
-        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        let control_guard = control_tx.clone();
-        let pdata_guard = pdata_tx.clone();
-        let started_requests = &mut requests;
-
-        let driver = async move {
-            controller.wait_until_observed().await;
-            pdata_tx
-                .send_async(metrics_pdata(1))
-                .await
-                .expect("first pdata should be queued");
-            started_requests
-                .next()
-                .await
-                .expect("first pdata should start a publication");
-            let request_started_at = tokio::time::Instant::now();
-            pdata_tx
-                .send_async(metrics_pdata(2))
-                .await
-                .expect("second pdata should be buffered behind the active publication");
-
-            // Before the publisher timeout; far ahead of the real clock the inbox checks.
-            let deadline = (request_started_at + Duration::from_secs(30)).into_std();
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test shutdown".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
-            drop(pdata_tx);
-            (deadline, request_started_at)
-        };
-
-        let (start_result, (deadline, request_started_at)) =
-            tokio::time::timeout(Duration::from_secs(600), async {
-                tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-            })
-            .await
-            .expect("completion backpressure must not block shutdown");
-        drop(control_guard);
-        drop(pdata_guard);
-        let terminal_state = start_result.expect("exporter should shut down cleanly");
-        assert_eq!(terminal_state.deadline(), deadline);
-        assert_eq!(
-            tokio::time::Instant::now(),
-            request_started_at + publisher_timeout
-        );
-        assert!(
-            requests.next().await.is_none(),
-            "only one publication may be in flight"
-        );
-    }
-
-    /// Scenario: Shutdown force-drains pdata while authentication is unavailable and the completion channel is full.
-    /// Guarantees: The shared local drain timeout bounds authentication and retryable NACK backpressure.
-    #[tokio::test(start_paused = true)]
-    async fn shutdown_bounds_auth_unready_completion_backpressure() {
-        let publisher_timeout = Duration::from_secs(60);
-        let (provider, _controller) = TestTokenProvider::new(None);
-        let (exporter, mut requests) =
-            scripted_exporter(publisher_timeout, provider, stalled_request);
-        let (effect_handler, _completions) = completion_harness_with_capacity(1);
-        occupy_completion_channel(&effect_handler).await;
-        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        let control_guard = control_tx.clone();
-        let pdata_guard = pdata_tx.clone();
-
-        let driver = async move {
-            pdata_tx
-                .send_async(metrics_pdata(1))
-                .await
-                .expect("pdata should be buffered while authentication is unavailable");
-
-            let shutdown_started_at = tokio::time::Instant::now();
-            let deadline = (shutdown_started_at + Duration::from_secs(30)).into_std();
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test shutdown".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
-            drop(pdata_tx);
-            (deadline, shutdown_started_at)
-        };
-
-        let (start_result, (deadline, shutdown_started_at)) =
-            tokio::time::timeout(Duration::from_secs(600), async {
-                tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-            })
-            .await
-            .expect("authentication NACK backpressure must not block shutdown");
-        drop(control_guard);
-        drop(pdata_guard);
-        let terminal_state = start_result.expect("exporter should shut down cleanly");
-        assert_eq!(terminal_state.deadline(), deadline);
-        assert_eq!(
-            tokio::time::Instant::now(),
-            shutdown_started_at + publisher_timeout
-        );
-        assert!(
-            requests.next().await.is_none(),
-            "no publication may start without credentials"
-        );
+            let (terminal_state, (deadline, request_started_at)) = run_exporter(
+                exporter,
+                msg_chan,
+                effect_handler,
+                Duration::from_secs(600),
+                driver,
+            )
+            .await;
+            assert_eq!(terminal_state.deadline(), deadline);
+            assert_eq!(
+                tokio::time::Instant::now(),
+                request_started_at + publisher_timeout
+            );
+            assert!(
+                requests.next().await.is_none(),
+                "only one publication may be in flight"
+            );
+        }
     }
 
     /// Scenario: Shutdown drains two inputs without authentication while completion delivery is blocked.
-    /// Guarantees: One local timeout bounds the entire drain and final completion wait without changing the terminal pipeline deadline.
+    /// Guarantees: One local timeout bounds authentication waits and NACK backpressure across the entire drain,
+    /// no publication starts, and the terminal pipeline deadline is unchanged.
     #[tokio::test(start_paused = true)]
     async fn shutdown_draining_shares_local_timeout_across_buffered_input() {
-        let (provider, _controller) = TestTokenProvider::new(None);
         let drain_timeout = Duration::from_secs(3);
-        let exporter = exporter_with_timeout("http://127.0.0.1:1", drain_timeout, provider);
-        let (effect_handler, _completions) = completion_harness_with_capacity(1);
-        occupy_completion_channel(&effect_handler).await;
+        let (provider, _controller) = TestTokenProvider::new(None);
+        let (exporter, mut requests) = scripted_exporter(drain_timeout, provider, stalled_request);
+        let (effect_handler, _completions) = blocked_completion_harness().await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
         for call_id in [1, 2] {
             pdata_tx
@@ -1610,26 +1302,24 @@ mod tests {
                 .expect("input should be buffered before shutdown");
         }
         let deadline = Instant::now() + Duration::from_secs(60);
-        control_tx
-            .send_async(NodeControlMsg::Shutdown {
-                deadline,
-                reason: "test shutdown".to_owned(),
-            })
-            .await
-            .expect("shutdown should be queued");
+        send_shutdown(&control_tx, deadline).await;
         drop(pdata_tx);
 
         let started_at = tokio::time::Instant::now();
-        let terminal_state = tokio::time::timeout(
+        let (terminal_state, ()) = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
             Duration::from_secs(10),
-            Box::new(exporter).start(msg_chan, effect_handler),
+            async {},
         )
-        .await
-        .expect("one local timeout should bound the entire shutdown drain")
-        .expect("exporter should shut down cleanly");
-
+        .await;
         assert_eq!(started_at.elapsed(), drain_timeout);
         assert_eq!(terminal_state.deadline(), deadline);
+        assert!(
+            requests.next().await.is_none(),
+            "no publication may start without credentials"
+        );
     }
 
     /// Scenario: A request completes before shutdown while its ACK is blocked by a full completion channel.
@@ -1640,14 +1330,10 @@ mod tests {
         let (exporter, mut requests) = scripted_exporter(Duration::from_secs(60), provider, || {
             Box::pin(std::future::ready(Ok(())))
         });
-        let (effect_handler, _completions) = completion_harness_with_capacity(1);
-        occupy_completion_channel(&effect_handler).await;
+        let (effect_handler, _completions) = blocked_completion_harness().await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        let control_guard = control_tx.clone();
-        let pdata_guard = pdata_tx.clone();
-        let started_requests = &mut requests;
 
-        let driver = async move {
+        let driver = async {
             controller.wait_until_observed().await;
             pdata_tx
                 .send_async(metrics_pdata(1))
@@ -1655,32 +1341,24 @@ mod tests {
                 .expect("pdata should be queued");
             // The ready request resolves and queues its blocked ACK before the
             // exporter yields back to this driver.
-            started_requests
+            requests
                 .next()
                 .await
                 .expect("pdata should start a publication");
-
             // Far ahead of the real clock the inbox checks.
             let deadline = (tokio::time::Instant::now() + Duration::from_secs(30)).into_std();
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline,
-                    reason: "test shutdown".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
-            drop(pdata_tx);
+            send_shutdown(&control_tx, deadline).await;
             deadline
         };
 
-        let (start_result, deadline) = tokio::time::timeout(Duration::from_secs(600), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("completed-request ACK backpressure must not block shutdown");
-        drop(control_guard);
-        drop(pdata_guard);
-        let terminal_state = start_result.expect("exporter should shut down cleanly");
+        let (terminal_state, deadline) = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
+            Duration::from_secs(600),
+            driver,
+        )
+        .await;
         assert_eq!(terminal_state.deadline(), deadline);
         assert_eq!(
             tokio::time::Instant::now(),
@@ -1697,71 +1375,41 @@ mod tests {
     #[tokio::test]
     async fn closed_token_stream_keeps_shutdown_responsive() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(401))
-            .expect(1)
-            .mount(&server)
-            .await;
+        mock_post(&server, None, 401, 1).await;
         let (provider, mut controller) = TestTokenProvider::new(Some("stale-token"));
         let exporter = exporter(&server.uri(), provider);
         let (effect_handler, mut completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        // Keep the control channel alive while the pending shutdown drains pdata.
-        let control_guard = control_tx.clone();
 
-        let driver = async move {
+        let driver = async {
             controller.wait_until_observed().await;
             pdata_tx
                 .send_async(metrics_pdata(1))
                 .await
                 .expect("initial pdata should be queued");
-            let replay = match completions
-                .recv()
-                .await
-                .expect("first completion should arrive")
-            {
-                PipelineCompletionMsg::DeliverNack { nack } => {
-                    assert!(!nack.permanent);
-                    *nack.refused
-                }
-                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
-            };
-
+            let nack = expect_nack(&mut completions).await;
+            assert!(!nack.permanent);
             pdata_tx
-                .send_async(replay)
+                .send_async(*nack.refused)
                 .await
                 .expect("replay should be queued");
             drop(controller);
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline: Instant::now() + Duration::from_secs(60),
-                    reason: "test shutdown".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
+            send_shutdown(&control_tx, Instant::now() + Duration::from_secs(60)).await;
 
-            match completions
-                .recv()
-                .await
-                .expect("forced-drain completion should arrive")
-            {
-                PipelineCompletionMsg::DeliverNack { nack } => {
-                    assert!(!nack.permanent);
-                    assert!(nack.reason.contains("bearer token unavailable"));
-                }
-                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
-            }
-
+            let nack = expect_nack(&mut completions).await;
+            assert!(!nack.permanent);
+            assert!(nack.reason.contains("bearer token unavailable"));
             drop(pdata_tx);
         };
 
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("exporter should finish before the shutdown deadline");
-        drop(control_guard);
-        let _terminal_state = start_result.expect("exporter should shut down cleanly");
+        let _ = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
+            Duration::from_secs(10),
+            driver,
+        )
+        .await;
     }
 
     /// Scenario: The start loop receives a replay after HTTP 401 or 403 and the provider publishes refreshed auth.
@@ -1769,81 +1417,43 @@ mod tests {
     #[tokio::test]
     async fn start_loop_releases_replay_after_auth_refresh() {
         for status in [401, 403] {
-            assert_releases_replay_after_auth_refresh(status).await;
-        }
-    }
+            let server = MockServer::start().await;
+            mock_post(&server, Some("stale-token"), status, 1).await;
+            mock_post(&server, Some("fresh-token"), 200, 1).await;
+            let (provider, mut controller) = TestTokenProvider::new(Some("stale-token"));
+            let exporter = exporter(&server.uri(), provider);
+            let (effect_handler, mut completions) = completion_harness();
+            let (control_tx, pdata_tx, msg_chan) = message_channel(4);
 
-    async fn assert_releases_replay_after_auth_refresh(status: u16) {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(header("authorization", "Bearer stale-token"))
-            .respond_with(ResponseTemplate::new(status))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(header("authorization", "Bearer fresh-token"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let (provider, mut controller) = TestTokenProvider::new(Some("stale-token"));
-        let exporter = exporter(&server.uri(), provider);
-        let (effect_handler, mut completions) = completion_harness();
-        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        // Keep the control channel alive until the exporter consumes shutdown.
-        let control_guard = control_tx.clone();
+            let driver = async {
+                controller.wait_until_observed().await;
+                pdata_tx
+                    .send_async(metrics_pdata(1))
+                    .await
+                    .expect("initial pdata should be queued");
+                let nack = expect_nack(&mut completions).await;
+                assert!(!nack.permanent);
+                assert!(nack.reason.contains(&format!("HTTP {status}")));
+                pdata_tx
+                    .send_async(*nack.refused)
+                    .await
+                    .expect("replay should be queued");
+                controller.publish("fresh-token");
+                controller.wait_until_observed().await;
+                expect_ack(&mut completions).await;
 
-        let driver = async move {
-            controller.wait_until_observed().await;
-            pdata_tx
-                .send_async(metrics_pdata(1))
-                .await
-                .expect("initial pdata should be queued");
-            let replay = match completions
-                .recv()
-                .await
-                .expect("first completion should arrive")
-            {
-                PipelineCompletionMsg::DeliverNack { nack } => {
-                    assert!(!nack.permanent);
-                    assert!(nack.reason.contains(&format!("HTTP {status}")));
-                    *nack.refused
-                }
-                PipelineCompletionMsg::DeliverAck { .. } => panic!("expected transient NACK"),
+                send_shutdown(&control_tx, Instant::now()).await;
+                drop(pdata_tx);
             };
 
-            pdata_tx
-                .send_async(replay)
-                .await
-                .expect("replay should be queued");
-            controller.publish("fresh-token");
-            controller.wait_until_observed().await;
-            match completions
-                .recv()
-                .await
-                .expect("replay completion should arrive")
-            {
-                PipelineCompletionMsg::DeliverAck { .. } => {}
-                PipelineCompletionMsg::DeliverNack { .. } => panic!("expected replay ACK"),
-            }
-
-            control_tx
-                .send_async(NodeControlMsg::Shutdown {
-                    deadline: Instant::now(),
-                    reason: "test complete".to_owned(),
-                })
-                .await
-                .expect("shutdown should be queued");
-            drop(pdata_tx);
-        };
-
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("exporter should finish after replacement-token replay");
-        drop(control_guard);
-        let _terminal_state = start_result.expect("exporter should shut down cleanly");
+            let _ = run_exporter(
+                exporter,
+                msg_chan,
+                effect_handler,
+                Duration::from_secs(10),
+                driver,
+            )
+            .await;
+        }
     }
 }

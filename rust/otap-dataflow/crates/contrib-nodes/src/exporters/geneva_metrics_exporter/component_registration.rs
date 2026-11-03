@@ -33,14 +33,20 @@ pub static GENEVA_METRICS_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory
     validate_config,
 };
 
+fn invalid_config(error: impl std::fmt::Display) -> ConfigError {
+    ConfigError::InvalidUserConfig {
+        error: error.to_string(),
+    }
+}
+
+fn parse_config(value: &serde_json::Value) -> Result<ExporterConfig, ConfigError> {
+    let config: ExporterConfig = serde_json::from_value(value.clone()).map_err(invalid_config)?;
+    config.validate().map_err(invalid_config)?;
+    Ok(config)
+}
+
 fn validate_config(value: &serde_json::Value) -> Result<(), ConfigError> {
-    let config: ExporterConfig =
-        serde_json::from_value(value.clone()).map_err(|error| ConfigError::InvalidUserConfig {
-            error: error.to_string(),
-        })?;
-    config
-        .validate()
-        .map_err(|error| ConfigError::InvalidUserConfig { error })
+    parse_config(value).map(drop)
 }
 
 fn create_exporter(
@@ -50,26 +56,12 @@ fn create_exporter(
     exporter_config: &EngineExporterConfig,
     capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
-    let config: ExporterConfig =
-        serde_json::from_value(node_config.config.clone()).map_err(|error| {
-            ConfigError::InvalidUserConfig {
-                error: error.to_string(),
-            }
-        })?;
-    config
-        .validate()
-        .map_err(|error| ConfigError::InvalidUserConfig { error })?;
-
+    let config = parse_config(&node_config.config)?;
     let token_provider = capabilities
         .require_local::<BearerTokenProvider>()
-        .map_err(|error| ConfigError::InvalidUserConfig {
-            error: error.to_string(),
-        })?;
-    let publisher = MetricsPublisher::new(&config.endpoint, config.timeout).map_err(|error| {
-        ConfigError::InvalidUserConfig {
-            error: error.to_string(),
-        }
-    })?;
+        .map_err(invalid_config)?;
+    let publisher =
+        MetricsPublisher::new(&config.endpoint, config.timeout).map_err(invalid_config)?;
     let mapping_config = (&config).into();
 
     Ok(ExporterWrapper::local(
@@ -90,52 +82,38 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn config_with_auth(auth: Option<serde_json::Value>) -> serde_json::Value {
+        let mut config = json!({
+            "endpoint": "https://example.test/metrics",
+            "monitoring_account": "example-account",
+            "metric_namespace": "example-namespace",
+        });
+        if let Some(auth) = auth {
+            config["auth"] = auth;
+        }
+        config
+    }
+
     /// Scenario: The exporter receives its minimal valid configuration.
     /// Guarantees: Configuration validation succeeds before runtime startup.
     #[test]
     fn validates_minimal_config() {
-        let config = json!({
-            "endpoint": "https://example.test/metrics",
-            "monitoring_account": "example-account",
-            "metric_namespace": "example-namespace",
-            "auth": {
-                "type": "bearer"
-            }
-        });
+        let config = config_with_auth(Some(json!({ "type": "bearer" })));
 
         assert!((GENEVA_METRICS_EXPORTER.validate_config)(&config).is_ok());
     }
 
-    /// Scenario: Exporter configuration omits the required bearer authentication marker.
+    /// Scenario: Configuration omits authentication or selects an unauthenticated mode.
     /// Guarantees: The exporter cannot start without explicitly selecting bearer authentication.
     #[test]
-    fn rejects_missing_bearer_authentication_config() {
-        let config = json!({
-            "endpoint": "https://example.test/metrics",
-            "monitoring_account": "example-account",
-            "metric_namespace": "example-namespace"
-        });
-
-        let error = (GENEVA_METRICS_EXPORTER.validate_config)(&config)
-            .expect_err("missing authentication should be rejected");
-        assert!(error.to_string().contains("missing field `auth`"));
-    }
-
-    /// Scenario: Configuration selects an unauthenticated publication mode.
-    /// Guarantees: Only the bearer authentication marker is accepted.
-    #[test]
-    fn rejects_unauthenticated_config() {
-        let config = json!({
-            "endpoint": "https://example.test/metrics",
-            "monitoring_account": "example-account",
-            "metric_namespace": "example-namespace",
-            "auth": {
-                "type": "none"
-            }
-        });
-
-        let error = (GENEVA_METRICS_EXPORTER.validate_config)(&config)
-            .expect_err("unauthenticated publication should be rejected");
-        assert!(error.to_string().contains("unknown variant `none`"));
+    fn rejects_non_bearer_authentication_config() {
+        for (auth, expected) in [
+            (None, "missing field `auth`"),
+            (Some(json!({ "type": "none" })), "unknown variant `none`"),
+        ] {
+            let error = (GENEVA_METRICS_EXPORTER.validate_config)(&config_with_auth(auth))
+                .expect_err("non-bearer authentication should be rejected");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 }

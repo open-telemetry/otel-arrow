@@ -67,14 +67,11 @@ impl Config {
         }
         let endpoint = reqwest::Url::parse(endpoint)
             .map_err(|error| format!("endpoint must be a valid URL: {error}"))?;
-        if !matches!(endpoint.scheme(), "http" | "https") {
-            return Err("endpoint must use HTTP or HTTPS".to_string());
+        if endpoint.scheme() != "https" {
+            return Err("bearer authentication requires an HTTPS endpoint".to_string());
         }
         if self.timeout.is_zero() {
             return Err("timeout must be greater than zero".to_string());
-        }
-        if endpoint.scheme() != "https" {
-            return Err("bearer authentication requires an HTTPS endpoint".to_string());
         }
         super::otlp_to_geneva::Config::from(self).validate()
     }
@@ -113,111 +110,52 @@ mod tests {
         }
     }
 
-    /// Scenario: A configuration supplies an endpoint and monitoring account.
-    /// Guarantees: The minimal exporter configuration is accepted.
+    /// Scenario: Each field is set to an empty, malformed, non-HTTPS, zero, reserved, or incomplete value.
+    /// Guarantees: Validation rejects every invalid configuration with a field-specific error before exporter startup.
     #[test]
-    fn accepts_minimal_config() {
-        let config = valid_config();
-
-        assert_eq!(config.validate(), Ok(()));
-    }
-
-    /// Scenario: Runtime configuration selects a reserved monitoring-account placeholder.
-    /// Guarantees: Mapping-invalid accounts are rejected before exporter startup.
-    #[test]
-    fn rejects_reserved_monitoring_accounts() {
-        for account in ["Default", "*"] {
-            let mut config = valid_config();
-            config.monitoring_account = account.to_string();
-            assert!(
-                config
-                    .validate()
-                    .expect_err("reserved account")
-                    .contains("reserved")
-            );
-        }
-    }
-
-    /// Scenario: A configuration omits a usable endpoint.
-    /// Guarantees: Invalid endpoint configuration is rejected before startup.
-    #[test]
-    fn rejects_empty_endpoint() {
-        let mut config = valid_config();
-        config.endpoint = " ".to_string();
-
-        assert_eq!(
-            config.validate(),
-            Err("endpoint must not be empty".to_string())
-        );
-    }
-
-    /// Scenario: A configuration supplies a malformed or unsupported endpoint URL.
-    /// Guarantees: Endpoint errors are reported during component validation instead of first publication.
-    #[test]
-    fn rejects_invalid_endpoint_urls() {
-        let mut malformed = valid_config();
-        malformed.endpoint = "not a URL".to_string();
-        let malformed_error = malformed
-            .validate()
-            .expect_err("malformed endpoint should fail");
-        assert!(malformed_error.starts_with("endpoint must be a valid URL:"));
-
-        let mut unsupported_scheme = valid_config();
-        unsupported_scheme.endpoint = "ftp://example.test/metrics".to_string();
-        assert_eq!(
-            unsupported_scheme.validate(),
-            Err("endpoint must use HTTP or HTTPS".to_string())
-        );
-    }
-
-    /// Scenario: A configuration omits the fallback metric namespace.
-    /// Guarantees: OTLP metrics cannot start without a namespace used when no override attribute exists.
-    #[test]
-    fn rejects_empty_metric_namespace() {
-        let mut config = valid_config();
-        config.metric_namespace = " ".to_string();
-
-        assert_eq!(
-            config.validate(),
-            Err("metric_namespace must not be empty".to_string())
-        );
-    }
-
-    /// Scenario: Bearer authentication targets an unencrypted HTTP endpoint.
-    /// Guarantees: Credentials cannot be configured for transmission without TLS.
-    #[test]
-    fn rejects_bearer_auth_for_http_endpoint() {
-        let mut config = valid_config();
-        config.endpoint = "http://example.test/metrics".to_string();
-        config.auth = AuthConfig::Bearer;
-
-        assert_eq!(
-            config.validate(),
-            Err("bearer authentication requires an HTTPS endpoint".to_string())
-        );
-    }
-
-    /// Scenario: Runtime-only constraints contain a zero duration or empty scope selection.
-    /// Guarantees: Invalid runtime state is rejected before exporter startup.
-    #[test]
-    fn rejects_invalid_runtime_constraints() {
-        let mut zero_timeout = valid_config();
-        zero_timeout.timeout = Duration::ZERO;
-
-        let mut invalid_scope = valid_config();
-        invalid_scope.scope_attributes = vec![ScopeAttributes {
-            name: " ".to_string(),
-            keys: vec!["dimension".to_string()],
-        }];
-
-        for (config, expected) in [
-            (zero_timeout, "timeout must be greater than zero"),
+    fn rejects_invalid_config() {
+        let cases: [(fn(&mut Config), &str); 9] = [
+            (|c| c.endpoint = " ".into(), "endpoint must not be empty"),
             (
-                invalid_scope,
+                |c| c.endpoint = "not a URL".into(),
+                "endpoint must be a valid URL:",
+            ),
+            (
+                |c| c.endpoint = "http://example.test/metrics".into(),
+                "bearer authentication requires an HTTPS endpoint",
+            ),
+            (
+                |c| c.endpoint = "ftp://example.test/metrics".into(),
+                "bearer authentication requires an HTTPS endpoint",
+            ),
+            (
+                |c| c.timeout = Duration::ZERO,
+                "timeout must be greater than zero",
+            ),
+            (
+                |c| c.metric_namespace = " ".into(),
+                "metric_namespace must not be empty",
+            ),
+            (|c| c.monitoring_account = "Default".into(), "reserved"),
+            (|c| c.monitoring_account = "*".into(), "reserved"),
+            (
+                |c| {
+                    c.scope_attributes = vec![ScopeAttributes {
+                        name: " ".to_string(),
+                        keys: vec!["dimension".to_string()],
+                    }]
+                },
                 "scope_attributes entries require a name and at least one key",
             ),
-        ] {
-            assert_eq!(config.validate(), Err(expected.to_string()));
+        ];
+        for (invalidate, expected) in cases {
+            let mut config = valid_config();
+            invalidate(&mut config);
+            let error = config.validate().expect_err(expected);
+            assert!(
+                error.contains(expected),
+                "expected {expected:?}, got {error:?}"
+            );
         }
     }
 }

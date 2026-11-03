@@ -50,10 +50,11 @@ impl PublishError {
         match self {
             Self::Request(_) => true,
             Self::Response { status } => {
-                *status == StatusCode::UNAUTHORIZED
-                    || *status == StatusCode::FORBIDDEN
-                    || *status == StatusCode::REQUEST_TIMEOUT
-                    || *status == StatusCode::TOO_MANY_REQUESTS
+                self.is_unauthorized()
+                    || matches!(
+                        *status,
+                        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+                    )
                     || status.is_server_error()
             }
         }
@@ -160,18 +161,26 @@ mod tests {
     use wiremock::matchers::{body_bytes, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn authorization_header() -> HeaderValue {
-        HeaderValue::from_static("test-authorization")
+    async fn publish(endpoint: &str, account: &str, packet: Vec<u8>) -> Result<(), PublishError> {
+        MetricsPublisher::new(endpoint, Duration::from_secs(1))
+            .expect("valid endpoint")
+            .publish(
+                account,
+                packet,
+                reqwest::header::AUTHORIZATION,
+                HeaderValue::from_static("test-authorization"),
+            )
+            .await
     }
 
-    /// Scenario: A protocol v6 packet is published to a healthy endpoint.
-    /// Guarantees: The C++-compatible content headers and packet bytes are sent unchanged.
+    /// Scenario: A protocol v6 packet is published through an account endpoint template.
+    /// Guarantees: The account is path-encoded and the C++-compatible content headers, authorization header, and packet bytes are sent unchanged.
     #[tokio::test]
-    async fn publishes_packet_with_required_headers() {
+    async fn publishes_packet_with_required_headers_and_account_routing() {
         let server = MockServer::start().await;
         let packet = vec![6, 0, 1, 2, 3];
         Mock::given(method("POST"))
-            .and(path("/metrics"))
+            .and(path("/metrics/account%20name"))
             .and(header("content-type", CONTENT_TYPE))
             .and(header(ORIGINAL_CONTENT_SIZE_HEADER, "5"))
             .and(header("authorization", "test-authorization"))
@@ -181,17 +190,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let publisher =
-            MetricsPublisher::new(&format!("{}/metrics", server.uri()), Duration::from_secs(1))
-                .expect("publisher should be created");
-
-        publisher
-            .publish(
-                "example-account",
-                packet,
-                reqwest::header::AUTHORIZATION,
-                authorization_header(),
-            )
+        let endpoint = format!("{}/metrics/{{monitoring_account}}", server.uri());
+        publish(&endpoint, "account name", packet)
             .await
             .expect("publication should succeed");
     }
@@ -216,21 +216,14 @@ mod tests {
                 .expect(0)
                 .mount(&server)
                 .await;
-            let publisher = MetricsPublisher::new(
-                &format!("{}/metrics", server.uri()),
-                Duration::from_secs(30),
-            )
-            .expect("valid endpoint");
 
-            let error = publisher
-                .publish(
-                    "example-account",
-                    vec![6, 0],
-                    reqwest::header::AUTHORIZATION,
-                    authorization_header(),
-                )
-                .await
-                .expect_err("redirect must not count as successful publication");
+            let error = publish(
+                &format!("{}/metrics", server.uri()),
+                "example-account",
+                vec![6, 0],
+            )
+            .await
+            .expect_err("redirect must not count as successful publication");
 
             assert!(
                 matches!(error, PublishError::Response { status: actual } if actual.as_u16() == status),
@@ -241,87 +234,18 @@ mod tests {
         }
     }
 
-    /// Scenario: The endpoint rejects a packet with a non-retryable client error.
-    /// Guarantees: HTTP 400 responses are classified as permanent.
-    #[tokio::test]
-    async fn classifies_client_error_as_permanent() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(400))
-            .mount(&server)
-            .await;
-        let publisher =
-            MetricsPublisher::new(&server.uri(), Duration::from_secs(1)).expect("valid endpoint");
+    /// Scenario: A publication fails with HTTP 400, 401, 403, 408, 429, or 5xx.
+    /// Guarantees: HTTP 400 is permanent; 401, 403, 408, 429, and 5xx remain retryable independently of refusal classification.
+    #[test]
+    fn classifies_error_responses() {
+        for status in [400, 401, 403, 408, 429, 500, 503] {
+            let error = PublishError::Response {
+                status: StatusCode::from_u16(status).expect("valid HTTP status"),
+            };
 
-        let error = publisher
-            .publish(
-                "example-account",
-                vec![6, 0],
-                reqwest::header::AUTHORIZATION,
-                authorization_header(),
-            )
-            .await
-            .expect_err("publication should fail");
-
-        assert!(!error.is_retryable(), "HTTP 400 should be permanent");
-        assert!(!error.is_unauthorized());
-    }
-
-    /// Scenario: Credentials are rejected, an upload times out, or the service is throttled or unavailable.
-    /// Guarantees: HTTP 401, 403, 408, 429, and 5xx responses remain retryable independently of refusal classification.
-    #[tokio::test]
-    async fn classifies_transient_responses_as_retryable() {
-        for status in [401, 403, 408, 429, 500, 503] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .respond_with(ResponseTemplate::new(status))
-                .mount(&server)
-                .await;
-            let publisher = MetricsPublisher::new(&server.uri(), Duration::from_secs(1))
-                .expect("valid endpoint");
-
-            let error = publisher
-                .publish(
-                    "example-account",
-                    vec![6, 0],
-                    reqwest::header::AUTHORIZATION,
-                    authorization_header(),
-                )
-                .await
-                .expect_err("publication should fail");
-
-            assert!(error.is_retryable(), "HTTP {status} should be retryable");
+            assert_eq!(error.is_retryable(), status != 400, "HTTP {status}");
             assert_eq!(error.is_unauthorized(), matches!(status, 401 | 403));
-            assert_eq!(error.is_refusal(), matches!(status, 401 | 403 | 429));
+            assert_eq!(error.is_refusal(), matches!(status, 400 | 401 | 403 | 429));
         }
-    }
-
-    /// Scenario: An authenticated account publication uses an endpoint template.
-    /// Guarantees: The account is path-encoded and the supplied authorization header is sent.
-    #[tokio::test]
-    async fn publishes_with_authorization_header_and_account_routing() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/metrics/account%20name"))
-            .and(header("authorization", "test-authorization"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let publisher = MetricsPublisher::new(
-            &format!("{}/metrics/{{monitoring_account}}", server.uri()),
-            Duration::from_secs(1),
-        )
-        .expect("valid endpoint");
-
-        publisher
-            .publish(
-                "account name",
-                vec![6, 0],
-                reqwest::header::AUTHORIZATION,
-                authorization_header(),
-            )
-            .await
-            .expect("authenticated publication should succeed");
     }
 }
