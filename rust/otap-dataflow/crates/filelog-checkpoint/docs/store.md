@@ -181,11 +181,9 @@ header and footer; the separate checkpoint header adds 24 bytes to the buffer.
 Compaction keeps the old table while preparing the replacement. It does not
 clone that table for encoding. Each validation stage still builds a replay
 table, so validation can determine peak memory. The stages run one at a time.
-See [compaction measurements](compaction-performance.md) for the complete-call
-allocation and timing results.
 
-The old complete file and replacement
-snapshot coexist on disk. Provision space for the actual validated active-file
+The old complete file and replacement snapshot coexist on disk. Provision space
+for the actual validated active-file
 length (up to 1 GiB after thresholds are lowered) plus one replacement header
 and snapshot within the configured snapshot bound. No old-WAL-sized allocation
 is introduced. Allocation failure may abort the process; allocation is not
@@ -227,6 +225,24 @@ integrated crash qualification is still required.
 
 `nix` supplies descriptor-relative access. `rustix` supplies no-replace rename
 on Linux GNU and musl, plus flock without raising the workspace MSRV.
+
+## Measuring compaction
+
+The examples measure a complete `compact()` call, including validation, I/O,
+and syncs. Setup is excluded. Run from `rust/otap-dataflow`, with `TMPDIR` on
+native Linux storage:
+
+```sh
+cargo run --release -p otel-arrow-dfe-filelog-checkpoint \
+  --example compaction_allocations -- 10000 32 4096
+cargo run --release -p otel-arrow-dfe-filelog-checkpoint \
+  --example compaction_latency -- 10000 32 4096
+```
+
+Arguments are record count, fingerprint bytes, and path bytes. Allocation CSV
+output contains these inputs, allocation count, allocated bytes, initial live
+bytes, and peak live bytes. Timing runs without the profiler and reports the
+inputs followed by elapsed nanoseconds. Keep run-specific results in the PR.
 
 [publication]: ../../../docs/filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery
 [failures]: ../../../docs/filelog-checkpoint-format.md#wal-append-failure-and-repair

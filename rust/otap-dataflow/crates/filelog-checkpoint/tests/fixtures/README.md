@@ -35,9 +35,9 @@ The codec takes explicit profile inputs; it does not select receiver defaults.
 
 ## Pre-optimization snapshot compatibility
 
-`checkpoint-encoding-variants.bin` was captured with `encode_checkpoint` at
-commit `655fa30d64b4e278cb12f6e7ca7a4adfdda009fa`, before the bounded encoder
-change. Keep it unchanged; it is an oracle for the previous encoder's bytes.
+`checkpoint-encoding-variants.bin` was captured before the snapshot encoder
+optimization in [PR #4623](https://github.com/open-telemetry/otel-arrow/pull/4623).
+Keep it unchanged; it is an oracle for the previous encoder's bytes.
 It uses generation 9 and checkpoint ID `encoding-variants`. Its ten records
 cover empty, 16-byte, and 65535-byte fingerprints; unavailable, short, full-size,
 and truncated paths; Unix and Windows locators/paths; clean and continuation
