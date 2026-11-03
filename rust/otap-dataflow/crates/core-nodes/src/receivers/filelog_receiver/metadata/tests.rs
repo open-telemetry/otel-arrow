@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::super::config::Config;
 use super::*;
+use otel_arrow_dfe_filelog_checkpoint::ADVISORY_PATH_STORED_MAX_BYTES;
+use std::path::Path;
 
 fn string(key: &'static str, value: &str) -> FileMetadataAttribute {
     FileMetadataAttribute {
@@ -126,10 +129,11 @@ fn invalid_basename_has_no_text_attributes() {
 /// Guarantees: Native mode exports the stored suffix and existing digest, never text.
 #[test]
 fn truncated_path_has_native_evidence_only() {
-    let complete =
-        vec![b'a'; otel_arrow_dfe_filelog_checkpoint::ADVISORY_PATH_STORED_MAX_BYTES + 1];
+    let mut complete = vec![b'/'];
+    complete.extend(vec![b'a'; ADVISORY_PATH_STORED_MAX_BYTES]);
     let path = AdvisoryPath::from_unix_bytes(&complete).unwrap();
     assert!(path.is_truncated());
+    assert_eq!(path.stored_path_bytes(), &complete[1..]);
 
     for policy in [FileMetadata::Name, FileMetadata::Path] {
         assert!(project_file_metadata(policy, &path).as_slice().is_empty());
@@ -138,11 +142,83 @@ fn truncated_path_has_native_evidence_only() {
         project_file_metadata(FileMetadata::Native, &path).into_vec(),
         vec![
             string(PATH_KIND, "unix_bytes"),
-            bytes(PATH_NATIVE, path.stored_path_bytes()),
+            bytes(PATH_NATIVE, &complete[1..]),
             boolean(PATH_TRUNCATED, true),
-            string(PATH_SHA256, &hex::encode(path.full_path_digest())),
+            string(
+                PATH_SHA256,
+                "2b37dd4b2de90dd9a2aa22505d68749f887b5028f24077bee6eab321d25cbd89",
+            ),
         ]
     );
+}
+
+fn projected_size(attributes: &[FileMetadataAttribute]) -> u64 {
+    attributes
+        .iter()
+        .map(|attribute| {
+            let value_len = match &attribute.value {
+                FileMetadataValue::String(value) => value.len(),
+                FileMetadataValue::Bytes(value) => value.len(),
+                FileMetadataValue::Bool(_) => 1,
+            };
+            (attribute.key.len() + value_len) as u64
+        })
+        .sum()
+}
+
+fn configured_record_bound(policy: FileMetadata) -> u64 {
+    let mut config = Config::default();
+    let (include, base) = if cfg!(windows) {
+        ("C:/var/log/*.log", "C:/work")
+    } else {
+        ("/var/log/*.log", "/work")
+    };
+    config.include.push(include.to_owned());
+    config.include_file_metadata = policy;
+    config
+        .compile("default", "main", "filelog", Path::new(base))
+        .unwrap()
+        .inputs()
+        .resources()
+        .record_bytes
+}
+
+/// Scenario: Unix evidence fills the 4,096-byte storage limit, with and without truncation.
+/// Guarantees: Projected key/value bytes fit the existing policy-specific record allowance.
+#[test]
+fn maximum_stored_evidence_fits_record_allowance() {
+    let complete =
+        AdvisoryPath::from_unix_bytes(&vec![b'a'; ADVISORY_PATH_STORED_MAX_BYTES]).unwrap();
+    let mut longer = vec![b'/'];
+    longer.extend(vec![b'a'; ADVISORY_PATH_STORED_MAX_BYTES]);
+    let truncated = AdvisoryPath::from_unix_bytes(&longer).unwrap();
+    assert!(!complete.is_truncated());
+    assert!(truncated.is_truncated());
+    assert_eq!(
+        complete.stored_path_bytes().len(),
+        ADVISORY_PATH_STORED_MAX_BYTES
+    );
+    assert_eq!(
+        truncated.stored_path_bytes().len(),
+        ADVISORY_PATH_STORED_MAX_BYTES
+    );
+
+    let base = configured_record_bound(FileMetadata::None);
+    for evidence in [&complete, &truncated] {
+        for policy in [
+            FileMetadata::None,
+            FileMetadata::Name,
+            FileMetadata::Path,
+            FileMetadata::Native,
+        ] {
+            let attributes = project_file_metadata(policy, evidence);
+            let allowed = configured_record_bound(policy) - base;
+            assert!(
+                projected_size(attributes.as_slice()) <= allowed,
+                "{policy:?} exceeded its configured path-attribute allowance"
+            );
+        }
+    }
 }
 
 /// Scenario: There is no advisory path evidence.
