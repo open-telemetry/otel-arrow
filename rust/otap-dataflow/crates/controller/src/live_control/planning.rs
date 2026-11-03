@@ -2498,6 +2498,13 @@ impl<
 
         if !create_plans.is_empty() {
             let gate = StartGate::new();
+            #[cfg(test)]
+            let gate = self
+                .test_start_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .unwrap_or(gate);
             let gate_guard = StartGateAbortOnDrop(Arc::clone(&gate));
             let expected_built: usize = create_plans
                 .iter()
@@ -2528,16 +2535,45 @@ impl<
             drop(gate_guard);
 
             let mut first_failure = None;
-            for (pipeline_key, action, initial_rollout) in spawned {
-                let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
-                let failed = Self::record_reconcile_rollout(
-                    &mut status,
-                    &pipeline_key,
-                    action,
-                    terminal_rollout,
-                );
-                if first_failure.is_none() {
-                    first_failure = failed;
+            if startup {
+                // Return the first observed failure to the existing global cleanup path instead
+                // of waiting for an unrelated candidate's readiness timeout.
+                while !spawned.is_empty() {
+                    spawned.retain_mut(|(pipeline_key, action, rollout)| {
+                        if let Some(next) = self.rollout_status_snapshot(&rollout.rollout_id) {
+                            *rollout = next;
+                            if !Self::rollout_terminal(rollout) {
+                                return true;
+                            }
+                        }
+                        let failed = Self::record_reconcile_rollout(
+                            &mut status,
+                            pipeline_key,
+                            *action,
+                            rollout.clone(),
+                        );
+                        if first_failure.is_none() {
+                            first_failure = failed;
+                        }
+                        false
+                    });
+                    if first_failure.is_some() || spawned.is_empty() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            } else {
+                for (pipeline_key, action, initial_rollout) in spawned {
+                    let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
+                    let failed = Self::record_reconcile_rollout(
+                        &mut status,
+                        &pipeline_key,
+                        action,
+                        terminal_rollout,
+                    );
+                    if first_failure.is_none() {
+                        first_failure = failed;
+                    }
                 }
             }
             if let Some(failure_reason) = first_failure {

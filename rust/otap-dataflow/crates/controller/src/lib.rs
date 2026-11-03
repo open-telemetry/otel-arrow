@@ -3940,6 +3940,12 @@ groups:
 
     static TEST_OBSERVABILITY_RECEIVER_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
     static TEST_REGULAR_RECEIVER_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_REGULAR_RECEIVER_STARTS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_REGULAR_RECEIVER_READY: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn test_regular_receiver_ready() -> bool {
+        TEST_REGULAR_RECEIVER_READY.load(Ordering::SeqCst)
+    }
 
     pub(super) fn test_receiver_shutdown_counts() -> (usize, usize) {
         (
@@ -3959,6 +3965,11 @@ groups:
             mut ctrl_chan: receiver::ControlChannel<()>,
             effect_handler: receiver::EffectHandler<()>,
         ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            effect_handler.signal_ready();
+            if std::ptr::eq(self.shutdown_counter, &TEST_REGULAR_RECEIVER_SHUTDOWNS) {
+                _ = TEST_REGULAR_RECEIVER_STARTS.fetch_add(1, Ordering::SeqCst);
+                TEST_REGULAR_RECEIVER_READY.store(true, Ordering::SeqCst);
+            }
             loop {
                 let msg = ctrl_chan.recv().await?;
                 match msg {
@@ -3990,14 +4001,17 @@ groups:
             mut ctrl_chan: receiver::ControlChannel<()>,
             effect_handler: receiver::EffectHandler<()>,
         ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            _ = TEST_REGULAR_RECEIVER_STARTS.fetch_add(1, Ordering::SeqCst);
             NEVER_READY_RECEIVER_STARTED.store(true, Ordering::SeqCst);
             loop {
                 match ctrl_chan.recv().await? {
                     NodeControlMsg::DrainIngress { deadline, .. } => {
                         effect_handler.notify_receiver_drained().await?;
+                        _ = TEST_REGULAR_RECEIVER_SHUTDOWNS.fetch_add(1, Ordering::Relaxed);
                         return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                     }
                     NodeControlMsg::Shutdown { deadline, .. } => {
+                        _ = TEST_REGULAR_RECEIVER_SHUTDOWNS.fetch_add(1, Ordering::Relaxed);
                         return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                     }
                     _ => {}
@@ -4122,7 +4136,26 @@ groups:
         })
     }
 
-    struct StartFailingTestReceiver;
+    fn create_ready_test_receiver(
+        pipeline_ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        Ok(create_test_observability_receiver(
+            pipeline_ctx,
+            node,
+            node_config,
+            receiver_config,
+            capabilities,
+        )?
+        .with_startup_readiness())
+    }
+
+    struct StartFailingTestReceiver {
+        wait_for_siblings: bool,
+    }
 
     #[async_trait(?Send)]
     impl receiver::Receiver<()> for StartFailingTestReceiver {
@@ -4131,6 +4164,10 @@ groups:
             _ctrl_chan: receiver::ControlChannel<()>,
             effect_handler: receiver::EffectHandler<()>,
         ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
+            while self.wait_for_siblings && TEST_REGULAR_RECEIVER_STARTS.load(Ordering::SeqCst) < 2
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             Err(otel_arrow_dfe_engine::error::Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
                 kind: otel_arrow_dfe_engine::error::ReceiverErrorKind::Connect,
@@ -4147,10 +4184,18 @@ groups:
         receiver_config: &ReceiverConfig,
         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
-        Ok(
-            ReceiverWrapper::local(StartFailingTestReceiver, node, node_config, receiver_config)
-                .with_startup_readiness(),
+        let wait_for_siblings = node_config
+            .config
+            .get("wait_for_siblings")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(ReceiverWrapper::local(
+            StartFailingTestReceiver { wait_for_siblings },
+            node,
+            node_config,
+            receiver_config,
         )
+        .with_startup_readiness())
     }
 
     fn create_test_observability_processor(
@@ -4184,6 +4229,13 @@ groups:
     }
 
     static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:test:receiver:explicit-ready",
+            create: create_ready_test_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
         ReceiverFactory {
             name: "urn:otel:receiver:internal_telemetry",
             create: create_test_observability_receiver,

@@ -752,9 +752,8 @@ impl exporter::Exporter<()> for TopicFlowExporter {
     }
 }
 
-/// Builds a [`TopicFlowReceiver`]. An optional integer `build_delay_ms` in the node config delays
-/// the build before subscribing, simulating a pipeline that is slow to build, and a `fail_build`
-/// key makes the build fail after that delay. A `block_build` key blocks the build until
+/// Builds a [`TopicFlowReceiver`]. A `fail_build` key makes the build fail before subscribing.
+/// A `block_build` key blocks the build until
 /// `TOPIC_FLOW_BUILD_BLOCK_RELEASED` is set, after setting `TOPIC_FLOW_BUILD_BLOCK_STARTED`.
 fn topic_flow_receiver_create(
     pipeline_ctx: PipelineContext,
@@ -765,13 +764,6 @@ fn topic_flow_receiver_create(
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     use otel_arrow_dfe_engine::topic::{SubscriberOptions, SubscriptionMode};
 
-    if let Some(delay_ms) = node_config
-        .config
-        .get("build_delay_ms")
-        .and_then(|value| value.as_u64())
-    {
-        thread::sleep(Duration::from_millis(delay_ms));
-    }
     if node_config.config.get("block_build").is_some() {
         TOPIC_FLOW_BUILD_BLOCK_STARTED.store(true, Ordering::SeqCst);
         while !TOPIC_FLOW_BUILD_BLOCK_RELEASED.load(Ordering::SeqCst) {
@@ -941,6 +933,70 @@ fn wait_for_topic_flow_within(
 /// Like [`wait_for_topic_flow_within`] with a five-second timeout.
 fn wait_for_topic_flow(group_id: &str, expected: &[(&str, &str)]) -> Vec<(String, String)> {
     wait_for_topic_flow_within(group_id, expected, Duration::from_secs(5))
+}
+
+/// Holds a consumer build until the real reconcile gate reports all unblocked builds complete.
+/// Real pipeline threads need a real-time failure guard; elapsed time never releases the build.
+fn reconcile_topic_flow_with_held_build(
+    runtime: &Arc<ControllerRuntime<()>>,
+    desired: OtelDataflowSpec,
+    group_id: &str,
+    expected_built: usize,
+    startup: bool,
+) -> EngineConfigReconcileStatus {
+    let _block_lock = TOPIC_FLOW_BUILD_BLOCK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    TOPIC_FLOW_BUILD_BLOCK_STARTED.store(false, Ordering::SeqCst);
+    TOPIC_FLOW_BUILD_BLOCK_RELEASED.store(false, Ordering::SeqCst);
+    let release = TopicFlowBuildBlockRelease;
+    let gate = StartGate::new();
+    *runtime
+        .test_start_gate
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
+    let reconcile_runtime = Arc::clone(runtime);
+    let worker = thread::spawn(move || {
+        if startup {
+            reconcile_runtime.reconcile_engine_config_startup(desired, 120)
+        } else {
+            let mut request = reconcile_request(desired, true);
+            request.step_timeout_secs = 120;
+            reconcile_runtime.reconcile_engine_config(request)
+        }
+    });
+    let boundary = (|| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !TOPIC_FLOW_BUILD_BLOCK_STARTED.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return Err("consumer build did not reach its held boundary".to_owned());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        gate.wait_until_built(expected_built, deadline, || None)?;
+        if !gate.is_closed() {
+            return Err("the gate opened while a consumer was still unbuilt".to_owned());
+        }
+        if TOPIC_FLOW_EXPORTERS_STARTED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|(group, _)| group == group_id)
+        {
+            return Err("a producer ran while a consumer was still unbuilt".to_owned());
+        }
+        Ok(())
+    })();
+    drop(release);
+    let status = worker.join();
+    if boundary.is_err() || status.is_err() {
+        let _ = runtime.request_shutdown_all(5);
+        assert!(runtime.wait_until_all_instances_exit_for(Duration::from_secs(20)));
+    }
+    boundary.expect("producers must remain at the closed gate until consumers are built");
+    status
+        .expect("reconcile worker should not panic")
+        .expect("topic reconciliation should return a status")
 }
 
 static STARTUP_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
@@ -4607,6 +4663,44 @@ fn startup_readiness_marker_wins_over_later_runtime_exit() {
         .expect("readiness marker should win over a later runtime exit");
 }
 
+/// Scenario: global shutdown starts while an active candidate neither becomes ready nor exits.
+/// Guarantees: readiness waiting is cancelled before its deadline, but already-reported readiness
+/// still wins. The child-process guard bounds regressions without relying on a short step timeout.
+#[test]
+fn global_shutdown_cancels_pending_pipeline_readiness() {
+    if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+        crate::tests::run_console_reporting_child(
+            "live_control::tests::global_shutdown_cancels_pending_pipeline_readiness",
+        );
+        return;
+    }
+    let runtime = test_runtime(&empty_engine_config());
+    let key = deployed_key("g1", "p1", 0, 0);
+    let _notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .global_shutdown_requested = true;
+    let error = runtime
+        .wait_for_pipeline_ready(&key, Instant::now() + Duration::from_secs(120))
+        .expect_err("shutdown should cancel a stalled readiness wait");
+    assert!(error.contains("engine shutdown requested"), "{error}");
+    runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .runtime_instances
+        .get(&key)
+        .expect("the active candidate remains registered")
+        .startup_ready
+        .store(true, Ordering::Release);
+    runtime
+        .wait_for_pipeline_ready(&key, Instant::now())
+        .expect("already-reported readiness must retain its existing precedence");
+}
+
 fn run_create_undesired_instance_scenario(
     scenario: UndesiredInstanceScenario,
 ) -> Result<(), RolloutExecutionError> {
@@ -6611,10 +6705,17 @@ groups:
 
 /// Scenario: startup begins with no committed deployments and requests one regular pipeline.
 /// Guarantees: reconciliation commits and readies the pipeline before controller extensions run.
+/// Child-process isolation protects the readiness handoff; observed events are awaited separately.
 #[test]
 fn startup_reconciliation_creates_pipeline_before_controller_extensions_run() {
     const OBSERVING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:observe_startup";
 
+    if std::env::var_os("OTAP_CONSOLE_REPORTING_CHILD").is_none() {
+        crate::tests::run_console_reporting_child(
+            "live_control::tests::startup_reconciliation_creates_pipeline_before_controller_extensions_run",
+        );
+        return;
+    }
     let observed_pipeline = Arc::new(Mutex::new(None));
     let observed_pipeline_for_factory = Arc::clone(&observed_pipeline);
     let mut registry = ControllerExtensionRegistry::empty();
@@ -6625,11 +6726,25 @@ fn startup_reconciliation_creates_pipeline_before_controller_extensions_run() {
             let observed_pipeline_for_task = Arc::clone(&observed_pipeline_for_factory);
             Ok(Box::new(move |_cancellation_token| {
                 Box::pin(async move {
+                    assert!(
+                        crate::tests::test_regular_receiver_ready(),
+                        "the receiver must signal readiness before extensions start"
+                    );
                     let pipeline_key = PipelineKey::new("g".into(), "p".into());
-                    let status = observed_state
-                        .snapshot()
-                        .remove(&pipeline_key)
-                        .expect("startup pipeline should be observed before extensions run");
+                    let deadline = Instant::now() + Duration::from_secs(20);
+                    let status = loop {
+                        if let Some(status) = observed_state.snapshot().remove(&pipeline_key)
+                            && status.readiness()
+                            && status.per_instance().len() == 1
+                        {
+                            break status;
+                        }
+                        assert!(
+                            Instant::now() < deadline,
+                            "the startup ready event should be processed"
+                        );
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    };
                     *observed_pipeline_for_task
                         .lock()
                         .expect("observed pipeline mutex should not be poisoned") = Some((
@@ -6651,7 +6766,7 @@ fn startup_reconciliation_creates_pipeline_before_controller_extensions_run() {
         .run_till_shutdown_with_options(
             startup_reconciliation_config(
                 OBSERVING_CONTROLLER_EXTENSION_URN,
-                "urn:test:receiver:example",
+                "urn:test:receiver:explicit-ready",
             ),
             ControllerRunOptions {
                 extensions: registry,
@@ -6723,11 +6838,10 @@ fn startup_reconciliation_failure_stops_controller_startup() {
     }
 }
 
-/// Scenario: startup builds two regular pipelines and releases them together; one runs while the
-/// other fails when its receiver starts.
-/// Guarantees: startup failure stops both the running regular pipeline and system observability
-/// before returning the pipeline-specific error. Runs in a child process so the process-global
-/// shutdown counters cannot be advanced by concurrently running tests.
+/// Scenario: startup releases a never-ready pipeline, a ready pipeline, and a failing receiver.
+/// Guarantees: the receiver error triggers cleanup without waiting for sibling readiness, and
+/// both surviving receivers and system observability stop. Child-process isolation protects
+/// shutdown counters; its guard is below the configured readiness timeout.
 #[test]
 fn startup_reconciliation_failure_cleans_up_launched_pipelines() {
     const UNREACHED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:unreached_cleanup_startup";
@@ -6746,13 +6860,30 @@ engine:
   http_admin:
     bind_address: "127.0.0.1:0"
   controller:
+    startup_step_timeout_secs: 120
     extensions:
       test_extension:
         type: "{UNREACHED_CONTROLLER_EXTENSION_URN}"
 groups:
   g:
     pipelines:
-      a_succeeds:
+      a_never_ready:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:never-ready"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      b_succeeds:
         policies:
           resources:
             core_allocation:
@@ -6777,7 +6908,8 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:start-fails"
-            config: null
+            config:
+              wait_for_siblings: true
           exporter:
             type: "urn:test:exporter:example"
             config: null
@@ -6828,8 +6960,8 @@ groups:
     );
     assert!(after.0 > 0, "system observability receiver did not stop");
     assert_eq!(
-        after.1, 1,
-        "successfully committed regular pipeline receiver did not stop exactly once"
+        after.1, 2,
+        "the ready and never-ready regular receivers must each stop exactly once"
     );
     std::process::exit(0);
 }
@@ -6971,8 +7103,8 @@ groups:
 }
 
 /// Scenario: four new pipelines form a three-topic chain whose IDs sort producer first; every
-/// topic exporter publishes as soon as its pipeline runs, and the downstream consumers are slow to
-/// build.
+/// topic exporter publishes as soon as its pipeline runs, and downstream builds are held until the
+/// producer reaches the closed start gate.
 /// Guarantees: full-config reconciliation builds every new pipeline before running any of them, so
 /// each consumer's subscription exists before its producer publishes and every hop is delivered.
 #[test]
@@ -7015,7 +7147,7 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_1
-              build_delay_ms: 200
+              block_build: true
               subscription:
                 mode: balanced
                 group: workers
@@ -7037,7 +7169,7 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_2
-              build_delay_ms: 200
+              block_build: true
               subscription:
                 mode: balanced
                 group: workers
@@ -7059,7 +7191,7 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_3
-              build_delay_ms: 200
+              block_build: true
               subscription:
                 mode: balanced
                 group: workers
@@ -7075,9 +7207,7 @@ groups:
     let runtime = test_runtime_with_factory(&desired, &TOPIC_FLOW_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
 
-    let status = runtime
-        .reconcile_engine_config(reconcile_request(desired.clone(), true))
-        .expect("topic pipelines should reconcile");
+    let status = reconcile_topic_flow_with_held_build(&runtime, desired, "chain", 1, false);
 
     assert_eq!(
         status.state,
@@ -7103,7 +7233,7 @@ groups:
 /// Builds pipelines `a` and `b` in group `group_id` that exchange topics in both directions. `a`
 /// sends its own ingress to `topic_1` and consumes `topic_2`; `b` consumes `topic_1` and sends to
 /// `topic_2`. When `b_has_ingress` is set, `b` also sends its own ingress to `topic_2`, so both
-/// pipelines carry ingress across the cycle. Topic consumers are slow to build.
+/// pipelines carry ingress across the cycle. Pipeline `b`'s consumer build is explicitly held.
 fn topic_cycle_config(group_id: &str, b_has_ingress: bool) -> OtelDataflowSpec {
     let b_ingress = if b_has_ingress {
         r#"
@@ -7151,7 +7281,6 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_2
-              build_delay_ms: 200
               subscription:
                 mode: balanced
                 group: workers
@@ -7174,7 +7303,7 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_1
-              build_delay_ms: 200
+              block_build: true
               subscription:
                 mode: balanced
                 group: workers
@@ -7202,9 +7331,7 @@ fn reconcile_engine_config_accepts_pipeline_level_topic_cycle() {
     let runtime = test_runtime_with_factory(&desired, &TOPIC_FLOW_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
 
-    let status = runtime
-        .reconcile_engine_config(reconcile_request(desired, true))
-        .expect("topic pipelines should reconcile");
+    let status = reconcile_topic_flow_with_held_build(&runtime, desired, "cycle_live", 1, false);
 
     assert_eq!(
         status.state,
@@ -7237,9 +7364,8 @@ fn startup_reconciliation_delivers_crossing_ingress_between_pipelines() {
     let runtime = test_runtime_with_factory(&desired, &TOPIC_FLOW_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
 
-    let status = runtime
-        .reconcile_engine_config_startup(desired, 5)
-        .expect("startup reconciliation should run");
+    let status =
+        reconcile_topic_flow_with_held_build(&runtime, desired, "crossing_startup", 1, true);
 
     assert_eq!(
         status.state,
@@ -7287,7 +7413,7 @@ groups:
             type: "urn:otel:receiver:topic"
             config:
               topic: topic_1
-              build_delay_ms: 200
+              block_build: true
               fail_build: true
               subscription:
                 mode: balanced
@@ -7341,9 +7467,7 @@ groups:
     let runtime = test_runtime_with_factory(&desired, &TOPIC_FLOW_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
 
-    let status = runtime
-        .reconcile_engine_config(reconcile_request(desired, true))
-        .expect("reconcile should report a status");
+    let status = reconcile_topic_flow_with_held_build(&runtime, desired, "build_failure", 2, false);
 
     assert_eq!(
         status.state,

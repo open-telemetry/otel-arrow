@@ -67,6 +67,11 @@ impl StartGate {
         self.decide(GateDecision::Aborted(reason));
     }
 
+    #[cfg(test)]
+    pub(super) fn is_closed(&self) -> bool {
+        matches!(self.lock().decision, GateDecision::Closed)
+    }
+
     fn decide(&self, decision: GateDecision) {
         let mut state = self.lock();
         if matches!(state.decision, GateDecision::Closed) {

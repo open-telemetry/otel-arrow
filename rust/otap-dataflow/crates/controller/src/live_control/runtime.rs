@@ -1434,6 +1434,10 @@ impl<
                 ));
             }
 
+            if self.global_shutdown_requested() {
+                return Err("engine shutdown requested before pipeline became ready".to_owned());
+            }
+
             if Instant::now() >= deadline {
                 return Err(format!(
                     "timed out waiting for admitted+ready on core {} (generation {})",

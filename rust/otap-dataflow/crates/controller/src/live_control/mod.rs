@@ -115,6 +115,9 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
     state_changed: Condvar,
+    /// Per-runtime test gate used to observe the real reconcile build/run boundary.
+    #[cfg(test)]
+    test_start_gate: Mutex<Option<Arc<StartGate>>>,
 }
 
 /// Keeps observability alive until controller-owned telemetry has been handed off.
@@ -247,6 +250,8 @@ impl<
                 controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
+            #[cfg(test)]
+            test_start_gate: Mutex::new(None),
         }
     }
 
