@@ -115,7 +115,7 @@ pub enum Locator {
 }
 
 impl Locator {
-    pub(crate) fn write(&self, out: &mut Writer) {
+    pub(crate) fn write(&self, out: &mut impl ByteWriter) {
         match *self {
             Self::Unspecified => out.u8(0),
             Self::PosixDevIno { dev, ino } => {
@@ -170,7 +170,7 @@ pub enum FramingResume {
 }
 
 impl FramingResume {
-    pub(crate) fn write(&self, out: &mut Writer) {
+    pub(crate) fn write(&self, out: &mut impl ByteWriter) {
         match *self {
             Self::Clean => out.u8(0),
             Self::Continuation {
@@ -364,7 +364,7 @@ impl AdvisoryPath {
         &self.full_path_digest
     }
 
-    pub(crate) fn write(&self, out: &mut Writer) {
+    pub(crate) fn write(&self, out: &mut impl ByteWriter) {
         out.u8(self.kind.to_wire());
         out.u8(u8::from(self.truncated));
         out.u64(self.full_path_len);
@@ -506,7 +506,7 @@ impl CommittedFrontierGuard {
         }
     }
 
-    pub(crate) fn write(&self, out: &mut Writer) {
+    pub(crate) fn write(&self, out: &mut impl ByteWriter) {
         out.u16(self.window_len);
         out.bytes(&self.digest);
     }
@@ -695,6 +695,106 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Shared scalar encoding for the existing growable writer and bounded snapshots.
+/// Static dispatch keeps the WAL writer's allocation behavior unchanged.
+pub(crate) trait ByteWriter {
+    fn bytes(&mut self, bytes: &[u8]);
+    fn u8(&mut self, value: u8) {
+        self.bytes(&[value]);
+    }
+    fn u16(&mut self, value: u16) {
+        self.bytes(&value.to_be_bytes());
+    }
+    fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_be_bytes());
+    }
+    fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_be_bytes());
+    }
+}
+
+/// Writes only into a fixed output slice. Overflow is latched before copying,
+/// and check/finish returns it in release builds as well as debug builds.
+pub(crate) struct BoundedWriter<'a> {
+    output: &'a mut [u8],
+    position: usize,
+    failed: bool,
+}
+
+impl<'a> BoundedWriter<'a> {
+    pub(crate) fn new(output: &'a mut [u8]) -> Self {
+        Self {
+            output,
+            position: 0,
+            failed: false,
+        }
+    }
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.output[..self.position]
+    }
+    pub(crate) fn check(&self) -> Result<(), EncodeError> {
+        if self.failed {
+            Err(EncodeError::EncodedSizeMismatch)
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn set_u32(&mut self, offset: usize, value: u32) -> Result<(), EncodeError> {
+        self.check()?;
+        let end = offset
+            .checked_add(4)
+            .ok_or(EncodeError::EncodedSizeMismatch)?;
+        let slot = self.output[..self.position]
+            .get_mut(offset..end)
+            .ok_or(EncodeError::EncodedSizeMismatch)?;
+        slot.copy_from_slice(&value.to_be_bytes());
+        Ok(())
+    }
+    pub(crate) fn finish(self) -> Result<(), EncodeError> {
+        self.check()?;
+        if self.position != self.output.len() {
+            return Err(EncodeError::EncodedSizeMismatch);
+        }
+        Ok(())
+    }
+}
+
+impl ByteWriter for BoundedWriter<'_> {
+    fn bytes(&mut self, bytes: &[u8]) {
+        if self.failed {
+            return;
+        }
+        let Some(end) = self.position.checked_add(bytes.len()) else {
+            self.failed = true;
+            return;
+        };
+        let Some(destination) = self.output.get_mut(self.position..end) else {
+            self.failed = true;
+            return;
+        };
+        destination.copy_from_slice(bytes);
+        self.position = end;
+    }
+}
+
+impl ByteWriter for Writer {
+    fn bytes(&mut self, bytes: &[u8]) {
+        Writer::bytes(self, bytes);
+    }
+    fn u8(&mut self, value: u8) {
+        Writer::u8(self, value);
+    }
+    fn u16(&mut self, value: u16) {
+        Writer::u16(self, value);
+    }
+    fn u32(&mut self, value: u32) {
+        Writer::u32(self, value);
+    }
+    fn u64(&mut self, value: u64) {
+        Writer::u64(self, value);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Writer(Vec<u8>);
 
@@ -795,5 +895,50 @@ mod tests {
             })
         );
         assert_eq!(writer.as_slice(), b"existing");
+    }
+}
+
+#[cfg(test)]
+mod bounded_writer_tests {
+    use super::{BoundedWriter, ByteWriter};
+    use crate::EncodeError;
+
+    /// Scenario: A write would exceed the fixed output slice, followed by another smaller write.
+    /// Guarantees: The overflowing write copies no bytes, the failure stays latched, and surrounding bytes stay untouched.
+    #[test]
+    fn bounded_writer_refuses_growth() {
+        let mut bytes = [0xa5; 8];
+        let mut out = BoundedWriter::new(&mut bytes[2..6]);
+        out.bytes(&[1, 2, 3]);
+        out.bytes(&[4, 5]);
+        out.u8(6);
+        assert_eq!(out.as_slice(), &[1, 2, 3]);
+        assert!(matches!(
+            out.finish(),
+            Err(EncodeError::EncodedSizeMismatch)
+        ));
+        assert_eq!(bytes, [0xa5, 0xa5, 1, 2, 3, 0xa5, 0xa5, 0xa5]);
+    }
+
+    /// Scenario: Encoding finishes early, patches outside written output, or fills the calculated size exactly.
+    /// Guarantees: Release-mode checks reject size drift and invalid patches while permitting an exact output.
+    #[test]
+    fn bounded_writer_requires_exact_completion() {
+        let mut bytes = [0; 4];
+        let mut out = BoundedWriter::new(&mut bytes);
+        out.u16(1);
+        assert!(matches!(
+            out.set_u32(0, 1),
+            Err(EncodeError::EncodedSizeMismatch)
+        ));
+        assert!(matches!(
+            out.finish(),
+            Err(EncodeError::EncodedSizeMismatch)
+        ));
+        let mut out = BoundedWriter::new(&mut bytes);
+        out.u32(0);
+        out.set_u32(0, 42).unwrap();
+        out.finish().unwrap();
+        assert_eq!(bytes, 42u32.to_be_bytes());
     }
 }

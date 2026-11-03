@@ -1,6 +1,7 @@
 # Filelog checkpoint v1 fixtures
 
-These deterministic fixtures are generated from the version 1 format document
+Except for `checkpoint-encoding-variants.bin`, these deterministic fixtures are
+generated from the version 1 format document
 by `../generate_fixtures.py`. The generator uses only Python standard-library
 big-endian packing and SHA-256 plus an explicit reflected Castagnoli CRC-32C
 implementation. It does not invoke or import the Rust codec.
@@ -31,3 +32,16 @@ unchanged, including the profile carried by existing snapshot/WAL fixtures.
 `framing-profile-idle-disabled.bin` and `framing_profile_idle_disabled` separately
 cover the zero-millisecond profile using the same independent Python generator.
 The codec takes explicit profile inputs; it does not select receiver defaults.
+
+## Pre-optimization snapshot compatibility
+
+`checkpoint-encoding-variants.bin` was captured with `encode_checkpoint` at
+commit `655fa30d64b4e278cb12f6e7ca7a4adfdda009fa`, before the bounded encoder
+change. Keep it unchanged; it is an oracle for the previous encoder's bytes.
+It uses generation 9 and checkpoint ID `encoding-variants`. Its ten records
+cover empty, 16-byte, and 65535-byte fingerprints; unavailable, short, full-size,
+and truncated paths; Unix and Windows locators/paths; clean and continuation
+framing; Active, Quarantined, and RotatedFinalized states; and the maximum-size
+record combining a Windows locator, continuation, quarantine, and large fields.
+Existing Python-generated golden fixtures remain unchanged and continue to
+provide independent format coverage, including the empty snapshot.
