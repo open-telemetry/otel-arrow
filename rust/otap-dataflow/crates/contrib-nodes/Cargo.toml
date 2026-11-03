@@ -80,6 +80,8 @@ ryu = { workspace = true, optional = true }
 # ClickHouse exporter dependencies (optional, behind feature flag)
 clickhouse = { workspace = true, optional = true }
 clickhouse-ext-arrow = { workspace = true, optional = true }
+hyper-rustls = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
 secrecy = { workspace = true, optional = true }
 serde-transcode = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
@@ -260,6 +262,9 @@ azure-monitor = [
 clickhouse = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
+    "dep:hyper-rustls",
+    "dep:hyper-util",
+    "dep:rustls",
     "dep:secrecy",
     "dep:serde-transcode",
     "dep:serde_cbor",
@@ -317,6 +322,7 @@ rand.workspace = true
 rcgen.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+rustls-pki-types = { workspace = true }
 tokio-rustls.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
