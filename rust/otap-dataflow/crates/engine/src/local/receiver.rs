@@ -263,9 +263,8 @@ impl<PData> EffectHandler<PData> {
         self.node_bindings = Some(bindings);
     }
 
-    /// Forms complete request metadata without removing the legacy send hook.
-    ///
-    /// A receiver rejects the request when this fails.
+    /// Forms complete request metadata from an Arrival. Callers should reject
+    /// requests when this returns an error.
     pub fn form_context(
         &self,
         arrival: &Arrival<'_>,

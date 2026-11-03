@@ -148,6 +148,11 @@ impl ProjectionBinding {
 /// merge of exactly one input, which keeps only that input's peer address.
 /// An output that forwards one input's context unchanged is not a merge and
 /// needs no binding.
+///
+/// Limitation: this binding erases all context except the `network_info`
+/// peer address, even entries every input shares. A merged output should
+/// keep whatever is equal across its inputs; that default and options to
+/// select it are planned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeBinding {
     _compiled: (),
@@ -185,7 +190,9 @@ impl MergeBinding {
 ///
 /// Retains the peer address only when every pushed input observed the same
 /// peer. Transport headers, authorized identity, and materialized composites
-/// are not retained. Finishing without inputs yields empty metadata.
+/// are not retained, even when every input carries equal values; see the
+/// limitation on [`MergeBinding`]. Finishing without inputs yields empty
+/// metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataMerger {
     peer: PeerAddrMerger,

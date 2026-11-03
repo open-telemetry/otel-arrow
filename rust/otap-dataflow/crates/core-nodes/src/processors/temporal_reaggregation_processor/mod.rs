@@ -745,13 +745,7 @@ impl TemporalReaggregationProcessor {
 
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
-                    // Known issue, preserved until context step 3E (#4541) merges:
-                    // this fresh context keeps only the peer address and drops the
-                    // input's transport headers, authorized identity, and composites.
-                    // The untracked branch above forwards the whole input context.
-                    // The planned fix takes `inbound_ctx.clone_detached()` where the
-                    // peer is captured above, before the tracker takes the input
-                    // context, as #3694 did for the transform and partition processors.
+                    // TODO(#4541) Fix in step 3E, see #3694
                     let context = Context::with_capacity(1);
                     let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
                     if let Some(addr) = passthrough_peer {

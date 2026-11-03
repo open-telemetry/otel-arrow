@@ -370,7 +370,7 @@ impl ContextDeclaration {
 pub struct ContextDeclarationProvider {
     /// Declaration callback.
     pub declarations: ContextDeclarationFn,
-    /// Engine-assigned role supplied by the factory rather than configuration.
+    /// Role describes how the caller will Engine-assigned role supplied by the factory rather than configuration.
     role: Option<NodeBindingRole>,
 }
 
