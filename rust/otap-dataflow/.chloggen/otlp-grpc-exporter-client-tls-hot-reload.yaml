@@ -7,4 +7,4 @@ note: "Hot-reload file-backed client TLS material in the OTLP gRPC exporter with
 issues: [4160, 4165]
 
 subtext: |
-  Files are checked every reload_interval (default 5m; null disables; 0s is rejected). Invalid material or pool-build errors retain the old pool; later backend TLS rejection does not roll back. Separate CA/cert/key replacements are not atomic; detectable inconsistencies wait for a later poll.
+  Polls every reload_interval (default 5m; null disables; 0s rejected). Invalid files or pool-build errors keep the old pool; failed builds wait for a newer generation. Backend TLS rejection does not roll back. CA/cert/key updates are not atomic; detectable inconsistencies wait for a later poll.

@@ -55,7 +55,7 @@ use std::future::poll_fn;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tonic::Code;
@@ -90,9 +90,6 @@ const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEve
         );
     },
 };
-
-const TLS_INSTALL_RETRY_MIN: Duration = Duration::from_secs(5);
-const TLS_INSTALL_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
@@ -292,17 +289,13 @@ async fn install_tls_generation(
 }
 
 struct TlsPoolInstallation {
-    pending: Option<Arc<ClientTlsGeneration>>,
-    retry_at: tokio::time::Instant,
-    retry_delay: Duration,
+    last_attempted_generation: Option<u64>,
 }
 
 impl TlsPoolInstallation {
     fn new() -> Self {
         Self {
-            pending: None,
-            retry_at: tokio::time::Instant::now(),
-            retry_delay: TLS_INSTALL_RETRY_MIN,
+            last_attempted_generation: None,
         }
     }
 
@@ -316,12 +309,15 @@ impl TlsPoolInstallation {
         pool: &mut GrpcClientPool,
     ) {
         if self
-            .pending
-            .as_ref()
-            .is_none_or(|pending| pending.number() != generation.number())
+            .last_attempted_generation
+            .is_some_and(|last| generation.number() <= last)
         {
-            self.retry_delay = TLS_INSTALL_RETRY_MIN;
+            return;
         }
+        // Lazy construction does not contact the backend. Settings, cached system
+        // roots, and this snapshot cannot change, so retry only newer generations.
+        // File reread/revalidation remains the provider's separate responsibility.
+        self.last_attempted_generation = Some(generation.number());
         match install_tls_generation(
             settings,
             num_connections,
@@ -333,8 +329,6 @@ impl TlsPoolInstallation {
         .await
         {
             Ok(()) => {
-                self.pending = None;
-                self.retry_delay = TLS_INSTALL_RETRY_MIN;
                 otel_info!(
                     "otlp.exporter.grpc.tls_generation_installed",
                     generation = generation.number()
@@ -345,14 +339,8 @@ impl TlsPoolInstallation {
                     "otlp.exporter.grpc.tls_generation_install_failed",
                     generation = generation.number(),
                     error = %error,
-                    message = "keeping current gRPC channel pool and scheduling retry"
+                    message = "keeping current gRPC channel pool; waiting for a newer TLS generation"
                 );
-                self.pending = Some(generation);
-                self.retry_at = tokio::time::Instant::now() + self.retry_delay;
-                self.retry_delay = self
-                    .retry_delay
-                    .saturating_mul(2)
-                    .min(TLS_INSTALL_RETRY_MAX);
             }
         }
     }
@@ -430,8 +418,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
             LocalTlsReloadTask::start(Rc::clone(tls_provider.as_ref().expect("reload provider")))
         });
         let mut tls_installation = TlsPoolInstallation::new();
-        let tls_install_retry = tokio::time::sleep_until(tls_installation.retry_at);
-        tokio::pin!(tls_install_retry);
 
         otel_info!(
             "otlp.exporter.grpc.channels",
@@ -554,9 +540,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                             &mut grpc_clients,
                                         )
                                         .await;
-                                    if tls_installation.pending.is_some() {
-                                        tls_install_retry.as_mut().reset(tls_installation.retry_at);
-                                    }
                                 }
                             }
                             Err(_) => {
@@ -566,27 +549,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     message = "TLS generation stream closed; keeping current gRPC channel pool"
                                 );
                             }
-                        }
-                        continue;
-                    }
-
-                    () = &mut tls_install_retry, if tls_installation.pending.is_some() => {
-                        let generation = tls_installation.pending
-                            .as_ref()
-                            .expect("retry requires a pending generation")
-                            .clone();
-                        tls_installation
-                            .install(
-                                &self.config.grpc,
-                                num_connections,
-                                max_in_flight,
-                                compression,
-                                generation,
-                                &mut grpc_clients,
-                            )
-                            .await;
-                        if tls_installation.pending.is_some() {
-                            tls_install_retry.as_mut().reset(tls_installation.retry_at);
                         }
                         continue;
                     }
@@ -1506,6 +1468,24 @@ mod tests {
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tempfile::TempDir;
     use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
+    use tracing_subscriber::prelude::*;
+
+    struct ReloadEvents {
+        name: &'static str,
+        events: tokio::sync::mpsc::Sender<()>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReloadEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().name() == self.name {
+                self.events.try_send(()).expect("bounded reload observer");
+            }
+        }
+    }
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -1727,6 +1707,12 @@ mod tests {
         );
 
         let root = dir.path().to_path_buf();
+        let (installed_tx, mut installed_rx) = tokio::sync::mpsc::channel(4);
+        let subscriber = tracing_subscriber::registry().with(ReloadEvents {
+            name: "otlp.exporter.grpc.tls_generation_installed",
+            events: installed_tx,
+        });
+        let _subscriber = tracing::subscriber::set_default(subscriber);
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| async move {
@@ -1741,7 +1727,10 @@ mod tests {
                 rotate_tx.send(()).expect("request server rotation");
                 rotated_ready_rx.await.expect("rotated server ready");
                 rotate(&root, &generation2);
-                ctx.sleep(Duration::from_millis(200)).await;
+                timeout(Duration::from_secs(5), installed_rx.recv())
+                    .await
+                    .expect("TLS generation installation timeout")
+                    .expect("TLS generation installed");
 
                 ctx.send_pdata(subscribed_empty_logs())
                     .await

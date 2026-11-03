@@ -6,21 +6,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
     ExportLogsServiceResponse, logs_service_server::LogsService,
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing_subscriber::prelude::*;
-
-struct ReloadPublications(mpsc::Sender<()>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReloadPublications {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _context: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if event.metadata().name() == "tls.client_reload.updated" {
-            self.0.try_send(()).expect("bounded publication observer");
-        }
-    }
-}
 
 struct TlsFixture {
     dir: TempDir,
@@ -101,147 +86,65 @@ impl TlsFixture {
     }
 }
 
-/// Scenario: a replacement pool cannot be built, then the local build failure
-/// is removed without publishing another TLS generation.
-/// Guarantees: the installed pool stays intact on failure and the same pending
-/// generation installs successfully when its retry deadline arrives.
+/// Scenario: replacement pool construction fails with unchanged settings, and
+/// the same generation is offered repeatedly before a newer generation arrives.
+/// Guarantees: each generation is attempted and reported only once, the active
+/// pool is preserved, and failed snapshots are not retained for retries.
 #[tokio::test]
-async fn failed_installation_retries_without_another_material_update() {
+async fn failed_installation_waits_for_a_newer_generation() {
+    let (failures, mut failed) = mpsc::channel(4);
+    let subscriber = tracing_subscriber::registry().with(ReloadEvents {
+        name: "otlp.exporter.grpc.tls_generation_install_failed",
+        events: failures,
+    });
+    let _subscriber = tracing::subscriber::set_default(subscriber);
     let fixture = TlsFixture::new().await;
     let mut pool = fixture.pool().await;
     let generation = fixture.rotate("client-1").await;
-    let updates = fixture.provider.subscribe();
+    let retired = Arc::downgrade(&generation);
+    let settings = fixture.failing_settings();
     let mut installation = TlsPoolInstallation::new();
-    installation
-        .install(
-            &fixture.failing_settings(),
-            2,
-            3,
-            Some(CompressionEncoding::Gzip),
-            generation.clone(),
-            &mut pool,
-        )
-        .await;
-
+    for _ in 0..7 {
+        installation
+            .install(
+                &settings,
+                2,
+                3,
+                Some(CompressionEncoding::Gzip),
+                generation.clone(),
+                &mut pool,
+            )
+            .await;
+    }
+    failed.try_recv().expect("failed generation reported");
+    assert!(matches!(
+        failed.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(
+        installation.last_attempted_generation,
+        Some(generation.number())
+    );
     assert_eq!(pool.generation, 0);
     assert_eq!(pool.channels.len(), 2);
     assert_eq!(pool.compression, Some(CompressionEncoding::Gzip));
     assert_eq!(pool.logs.len(), 3);
     assert_eq!(pool.metrics.len(), 3);
     assert_eq!(pool.traces.len(), 3);
-    assert!(Arc::ptr_eq(
-        installation.pending.as_ref().expect("pending generation"),
-        &generation
-    ));
-    assert!(
-        tokio::time::sleep_until(installation.retry_at)
-            .now_or_never()
-            .is_none(),
-        "failed installations must not busy-retry"
-    );
-
-    tokio::time::sleep_until(installation.retry_at).await;
-    let pending = installation
-        .pending
-        .as_ref()
-        .expect("retry candidate")
-        .clone();
-    installation
-        .install(
-            &fixture.settings,
-            2,
-            3,
-            Some(CompressionEncoding::Gzip),
-            pending,
-            &mut pool,
-        )
-        .await;
-    assert_eq!(pool.generation, generation.number());
-    assert!(installation.pending.is_none());
-    assert_eq!(installation.retry_delay, TLS_INSTALL_RETRY_MIN);
-    assert_eq!(fixture.provider.current().number(), generation.number());
-    assert!(!updates.has_changed().expect("live generation subscription"));
-}
-
-/// Scenario: an older generation repeatedly fails installation and a newer
-/// generation is published before its backed-off retry deadline.
-/// Guarantees: the newer generation installs immediately, clears the failed
-/// candidate, resets backoff, and releases the obsolete material snapshot.
-#[tokio::test]
-async fn newer_generation_supersedes_a_failed_installation() {
-    let fixture = TlsFixture::new().await;
-    let mut pool = fixture.pool().await;
-    let generation = fixture.rotate("client-1").await;
-    let retired = Arc::downgrade(&generation);
-    let mut installation = TlsPoolInstallation::new();
-    for _ in 0..3 {
-        installation
-            .install(
-                &fixture.failing_settings(),
-                2,
-                3,
-                None,
-                generation.clone(),
-                &mut pool,
-            )
-            .await;
-    }
-    let old_deadline = installation.retry_at;
-    assert_eq!(installation.retry_delay, Duration::from_secs(40));
     drop(generation);
 
     let newer = fixture.rotate("client-2").await;
     installation
-        .install(&fixture.settings, 2, 3, None, newer.clone(), &mut pool)
+        .install(&settings, 2, 3, None, newer.clone(), &mut pool)
         .await;
-
-    assert_eq!(pool.generation, newer.number());
-    assert!(tokio::time::Instant::now() < old_deadline);
-    assert!(installation.pending.is_none());
-    assert_eq!(installation.retry_delay, TLS_INSTALL_RETRY_MIN);
+    failed.try_recv().expect("newer generation attempted");
+    assert!(matches!(
+        failed.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(installation.last_attempted_generation, Some(newer.number()));
+    assert_eq!(pool.generation, 0);
     assert!(retired.upgrade().is_none());
-}
-
-/// Scenario: the same generation fails installation more times than necessary
-/// to reach the retry cap.
-/// Guarantees: retry deadlines follow 5/10/20/40/60-second backoff, remain
-/// capped, preserve the installed pool, and retain only one pending snapshot.
-#[tokio::test]
-async fn installation_failures_have_bounded_backoff_and_pending_state() {
-    let fixture = TlsFixture::new().await;
-    let mut pool = fixture.pool().await;
-    let generation = fixture.rotate("client-1").await;
-    let mut installation = TlsPoolInstallation::new();
-    for seconds in [5, 10, 20, 40, 60, 60, 60] {
-        let before = tokio::time::Instant::now();
-        installation
-            .install(
-                &fixture.failing_settings(),
-                2,
-                3,
-                None,
-                generation.clone(),
-                &mut pool,
-            )
-            .await;
-        let after = tokio::time::Instant::now();
-        let delay = Duration::from_secs(seconds);
-        assert!(installation.retry_at >= before + delay);
-        assert!(installation.retry_at <= after + delay);
-        assert_eq!(pool.generation, 0);
-        assert_eq!(pool.channels.len(), 2);
-        assert_eq!(pool.logs.len(), 3);
-        assert_eq!(Arc::strong_count(&generation), 3);
-    }
-    assert_eq!(installation.retry_delay, TLS_INSTALL_RETRY_MAX);
-
-    let newer = fixture.rotate("client-2").await;
-    let before = tokio::time::Instant::now();
-    installation
-        .install(&fixture.failing_settings(), 2, 3, None, newer, &mut pool)
-        .await;
-    assert!(installation.retry_at <= before + TLS_INSTALL_RETRY_MIN + Duration::from_secs(1));
-    assert_eq!(installation.retry_delay, TLS_INSTALL_RETRY_MIN * 2);
 }
 
 /// Scenario: many successive generations replace a pool while clients checked
@@ -281,7 +184,7 @@ async fn repeated_rotations_release_retired_pools_and_channel_tasks() {
         assert_eq!(pool.logs.len(), 3);
         assert_eq!(pool.metrics.len(), 3);
         assert_eq!(pool.traces.len(), 3);
-        assert!(installation.pending.is_none());
+        assert_eq!(installation.last_attempted_generation, Some(index));
         assert!(retired.upgrade().is_none());
         timeout(Duration::from_secs(2), async {
             while tokio::runtime::Handle::current()
@@ -297,12 +200,12 @@ async fn repeated_rotations_release_retired_pools_and_channel_tasks() {
     }
 }
 
-/// Scenario: shutdown stops a live reload task with an installation retry
-/// pending, and repeated exporter replacements drop the reload guard.
-/// Guarantees: stopping does not wait for the retry deadline, dropping pending
-/// state releases its snapshot, and every stopped or aborted task releases its provider.
+/// Scenario: shutdown follows a failed installation, and repeated exporter
+/// replacements drop the reload guard.
+/// Guarantees: shutdown completes promptly, failed snapshots are not retained,
+/// and every stopped or aborted task releases its provider.
 #[tokio::test]
-async fn shutdown_and_replacement_release_reload_and_retry_state() {
+async fn shutdown_and_replacement_release_reload_state() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let fixture = TlsFixture::new().await;
@@ -324,11 +227,9 @@ async fn shutdown_and_replacement_release_reload_and_retry_state() {
             tokio::task::yield_now().await;
             timeout(Duration::from_secs(1), task.stop())
                 .await
-                .expect("shutdown must not wait for installation retry");
-            assert!(tokio::time::Instant::now() < installation.retry_at);
+                .expect("reload task must stop promptly");
             assert!(task.handle.is_none());
             assert_eq!(Rc::strong_count(&fixture.provider), 1);
-            drop(installation);
             let _newer = fixture.rotate("client-2").await;
             assert!(retired.upgrade().is_none());
 
@@ -418,7 +319,10 @@ fn shutdown_drain_keeps_capacity_and_pending_tls_order() {
 
 fn run_parked_batch_rotation(shutdown_while_full: bool) {
     let (publications, mut published) = mpsc::channel(4);
-    let subscriber = tracing_subscriber::registry().with(ReloadPublications(publications));
+    let subscriber = tracing_subscriber::registry().with(ReloadEvents {
+        name: "tls.client_reload.updated",
+        events: publications,
+    });
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
