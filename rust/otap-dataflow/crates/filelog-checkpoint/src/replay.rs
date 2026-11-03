@@ -204,7 +204,7 @@ impl ReplayState {
 
     /// Iterates the authoritative records in unspecified order.
     #[must_use]
-    pub fn records(&self) -> impl ExactSizeIterator<Item = &SnapshotRecord> {
+    pub fn records(&self) -> impl ExactSizeIterator<Item = &SnapshotRecord> + Clone {
         self.records.values()
     }
 

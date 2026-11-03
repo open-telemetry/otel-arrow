@@ -140,31 +140,23 @@ impl CheckpointStore {
                 return Err(StoreError::InvalidRetention("duplicate file ID"));
             }
         }
-        // Measure using the existing codec and one bounded record's codec scratch
-        // before cloning records or allocating the complete encoded snapshot.
-        let mut snapshot_bytes = (SNAPSHOT_HEADER_BYTES + SNAPSHOT_FOOTER_BYTES) as u64;
-        for record in self
+        let records = self
             .recovered
             .state
             .records()
-            .filter(|record| !removals.contains(&record.file_id))
-        {
-            snapshot_bytes = snapshot_bytes
-                .checked_add(record.encode_frame()?.len() as u64)
-                .ok_or(StoreError::RecoveryLimit("compaction snapshot arithmetic"))?;
-            if snapshot_bytes > self.config.replay.max_snapshot_bytes {
-                return Err(StoreError::RecoveryLimit("compaction snapshot bytes"));
+            .filter(|record| !removals.contains(&record.file_id));
+        let mut prefix = crate::checkpoint::encode_checkpoint_borrowed(
+            generation,
+            &self.checkpoint_id,
+            records,
+            self.config.replay.max_snapshot_bytes,
+        )
+        .map_err(|error| match error {
+            EncodeError::SnapshotTooLarge { .. } => {
+                StoreError::RecoveryLimit("compaction snapshot bytes")
             }
-        }
-        let records: Vec<_> = self
-            .recovered
-            .state
-            .records()
-            .filter(|record| !removals.contains(&record.file_id))
-            .cloned()
-            .collect();
-        let mut prefix = encode_checkpoint(generation, &self.checkpoint_id, &records)?;
-        drop(records);
+            other => StoreError::Encode(other),
+        })?;
         let _ = ReplayState::from_checkpoint(&prefix, &self.checkpoint_id, self.config.replay)?;
         self.verify_authority()?;
         self.verify_length()?;

@@ -172,12 +172,19 @@ The caller supplies snapshot and record budgets through `ReplayConfig` and
 admits total receiver memory, including live recovery staging: the old table,
 recovered state, and retained attempt can coexist. Snapshot input is released
 before WAL scanning, which retains one frame rather than the whole WAL.
-Compaction measures retained records with one bounded record's codec scratch
-before allocating a complete snapshot. It temporarily holds the old table,
-bounded removal IDs, and either a cloned table plus encoded snapshot or the
-snapshot plus one validated/recovered table. Record cloning is limited to this
-synchronous maintenance path. The codec is reused for sizing and encoding,
-which entails two record-encoding passes. The old complete file and replacement
+Compaction calculates the snapshot size without allocating or encoding record
+buffers. It then allocates one output buffer and encodes borrowed records into
+it. Writes cannot grow that buffer, even in release builds. The encoder checks
+both file IDs and live locators for duplicates. The budget includes the snapshot
+header and footer; the separate checkpoint header adds 24 bytes to the buffer.
+
+Compaction keeps the old table while preparing the replacement. It does not
+clone that table for encoding. Each validation stage still builds a replay
+table, so validation can determine peak memory. The stages run one at a time.
+See [compaction measurements](compaction-performance.md) for the complete-call
+allocation and timing results.
+
+The old complete file and replacement
 snapshot coexist on disk. Provision space for the actual validated active-file
 length (up to 1 GiB after thresholds are lowered) plus one replacement header
 and snapshot within the configured snapshot bound. No old-WAL-sized allocation

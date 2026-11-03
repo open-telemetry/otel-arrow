@@ -233,7 +233,8 @@ impl SnapshotRecord {
         out.check()
     }
 
-    pub(crate) fn encode_frame(&self) -> Result<Vec<u8>, EncodeError> {
+    #[cfg(test)]
+    fn encode_frame(&self) -> Result<Vec<u8>, EncodeError> {
         let mut bytes = vec![0; self.encoded_frame_len()?];
         let mut out = BoundedWriter::new(&mut bytes);
         self.encode_frame_into(&mut out)?;
