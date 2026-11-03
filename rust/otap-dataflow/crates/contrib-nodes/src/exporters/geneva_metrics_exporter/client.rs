@@ -15,6 +15,8 @@ pub(crate) struct MetricsPublisher {
     client: Client,
     endpoint: String,
     timeout: Duration,
+    #[cfg(test)]
+    scripted: Option<ScriptedRequests>,
 }
 
 #[derive(Debug, Error)]
@@ -77,6 +79,8 @@ impl MetricsPublisher {
             client,
             endpoint: endpoint.to_owned(),
             timeout,
+            #[cfg(test)]
+            scripted: None,
         })
     }
 
@@ -91,6 +95,10 @@ impl MetricsPublisher {
         auth_header_name: HeaderName,
         auth_header_value: HeaderValue,
     ) -> LocalBoxFuture<'static, Result<(), PublishError>> {
+        #[cfg(test)]
+        if let Some(scripted) = &self.scripted {
+            return (scripted.0)();
+        }
         let original_size = packet.len();
         let endpoint = self.endpoint.replace(
             "{monitoring_account}",
@@ -117,6 +125,32 @@ impl MetricsPublisher {
                 })
             }
         })
+    }
+}
+
+/// Test-only request source that replaces HTTP, letting export-loop tests
+/// control when publications resolve without real I/O or wall-clock timeouts.
+#[cfg(test)]
+struct ScriptedRequests(Box<dyn Fn() -> LocalBoxFuture<'static, Result<(), PublishError>>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for ScriptedRequests {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScriptedRequests")
+    }
+}
+
+#[cfg(test)]
+impl MetricsPublisher {
+    /// Creates a publisher whose requests are produced by `request` instead of HTTP.
+    pub(crate) fn scripted(
+        timeout: Duration,
+        request: impl Fn() -> LocalBoxFuture<'static, Result<(), PublishError>> + 'static,
+    ) -> Self {
+        let mut publisher =
+            Self::new("http://127.0.0.1:1", timeout).expect("static test endpoint should be valid");
+        publisher.scripted = Some(ScriptedRequests(Box::new(request)));
+        publisher
     }
 }
 

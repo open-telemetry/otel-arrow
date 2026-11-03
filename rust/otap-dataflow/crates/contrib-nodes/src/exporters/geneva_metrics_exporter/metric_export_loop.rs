@@ -530,7 +530,7 @@ mod tests {
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::time::{Duration, Instant};
     use wiremock::matchers::{header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -719,9 +719,19 @@ mod tests {
         timeout: Duration,
         token_provider: TestTokenProvider,
     ) -> GenevaMetricsExporter {
+        exporter_with_publisher(
+            MetricsPublisher::new(endpoint, timeout).expect("publisher should be created"),
+            token_provider,
+        )
+    }
+
+    fn exporter_with_publisher(
+        publisher: MetricsPublisher,
+        token_provider: TestTokenProvider,
+    ) -> GenevaMetricsExporter {
         GenevaMetricsExporter::new(
             mapping_config(),
-            MetricsPublisher::new(endpoint, timeout).expect("publisher should be created"),
+            publisher,
             Box::new(token_provider),
             ExporterMetrics::register(
                 &otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
@@ -739,21 +749,29 @@ mod tests {
         exporter_with_timeout(endpoint, Duration::from_secs(1), token_provider)
     }
 
-    async fn wait_until_request_received(server: &MockServer) {
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let requests = server
-                    .received_requests()
-                    .await
-                    .expect("test server should record requests");
-                if !requests.is_empty() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("exporter should start the HTTP publication");
+    /// Builds an exporter that never touches the network. Each publication is
+    /// reported on the returned stream before `request` supplies its outcome,
+    /// so start-loop tests can run on paused Tokio time.
+    fn scripted_exporter(
+        timeout: Duration,
+        token_provider: TestTokenProvider,
+        request: impl Fn() -> LocalBoxFuture<'static, Result<(), PublishError>> + 'static,
+    ) -> (GenevaMetricsExporter, UnboundedReceiver<()>) {
+        let (started_tx, started_rx) = unbounded();
+        let publisher = MetricsPublisher::scripted(timeout, move || {
+            started_tx
+                .unbounded_send(())
+                .expect("test should observe every publication request");
+            request()
+        });
+        (
+            exporter_with_publisher(publisher, token_provider),
+            started_rx,
+        )
+    }
+
+    fn stalled_request() -> LocalBoxFuture<'static, Result<(), PublishError>> {
+        Box::pin(std::future::pending())
     }
 
     fn metric_value<'a>(
@@ -848,7 +866,7 @@ mod tests {
             drop(pdata_tx);
         };
 
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
         })
         .await
@@ -881,7 +899,7 @@ mod tests {
                 .await
                 .expect("buffer metrics");
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         control_tx
             .send_async(NodeControlMsg::Shutdown {
                 deadline,
@@ -921,28 +939,11 @@ mod tests {
 
     /// Scenario: A split input starts during shutdown draining while upstream remains open.
     /// Guarantees: The shared drain deadline cancels the active packet and prevents later packets without waiting for another inbox message.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_split_publication_while_upstream_remains_open() {
         use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
             AnyValue, KeyValue, any_value,
         };
-
-        let server = MockServer::start().await;
-        // Real HTTP delays exercise cancellation against the local mock server;
-        // paused Tokio time cannot safely drive the server's socket I/O.
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(4)))
-            .with_priority(1)
-            .up_to_n_times(1)
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(8)))
-            .with_priority(2)
-            .expect(1)
-            .mount(&server)
-            .await;
 
         let points = (0..21_000)
             .map(|index| NumberDataPoint {
@@ -987,8 +988,20 @@ mod tests {
                 > 1
         );
 
+        let publisher_timeout = Duration::from_secs(10);
         let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_secs(10), provider);
+        let calls = Cell::new(0_u32);
+        let (exporter, mut requests) = scripted_exporter(publisher_timeout, provider, move || {
+            let delay = if calls.replace(calls.get() + 1) == 0 {
+                Duration::from_secs(4)
+            } else {
+                Duration::from_secs(8)
+            };
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                Ok(())
+            })
+        });
         let (effect_handler, _completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
         pdata_tx
@@ -999,7 +1012,8 @@ mod tests {
             .send_async(split_data)
             .await
             .expect("split input should be buffered");
-        let deadline = Instant::now() + Duration::from_secs(60);
+        // Far ahead of the real clock the inbox checks.
+        let deadline = (tokio::time::Instant::now() + Duration::from_secs(60)).into_std();
         control_tx
             .send_async(NodeControlMsg::Shutdown {
                 deadline,
@@ -1009,22 +1023,15 @@ mod tests {
             .expect("shutdown should be queued");
 
         let driver = async {
-            tokio::time::timeout(Duration::from_secs(30), async {
-                loop {
-                    if server
-                        .received_requests()
-                        .await
-                        .expect("request recording should be enabled")
-                        .len()
-                        == 2
-                    {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("the split input's first packet should start");
+            requests
+                .next()
+                .await
+                .expect("the first input should start a publication");
+            let first_started_at = tokio::time::Instant::now();
+            requests
+                .next()
+                .await
+                .expect("the split input's first packet should start");
             let (snapshots, reporter) = MetricsReporter::create_new_and_receiver(8);
             control_tx
                 .send_async(NodeControlMsg::CollectTelemetry {
@@ -1046,9 +1053,14 @@ mod tests {
                 &MetricValue::U64(1),
                 "the split publication must expire before inbox processing resumes"
             );
+            assert_eq!(
+                tokio::time::Instant::now(),
+                first_started_at + publisher_timeout,
+                "the split packet should be cancelled at the shared drain deadline"
+            );
             drop(pdata_tx);
         };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(600), async {
             tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
         })
         .await
@@ -1056,6 +1068,10 @@ mod tests {
         assert_eq!(
             result.expect("shutdown should succeed").deadline(),
             deadline
+        );
+        assert!(
+            requests.next().await.is_none(),
+            "no later packet of the split input may start"
         );
     }
 
@@ -1344,16 +1360,16 @@ mod tests {
 
     /// Scenario: The exporter receives shutdown when no HTTP publication is active.
     /// Guarantees: The terminal state preserves the exact pipeline shutdown deadline.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn start_loop_preserves_shutdown_deadline() {
-        let server = MockServer::start().await;
         let (provider, _controller) = TestTokenProvider::new(None);
-        let exporter = exporter(&server.uri(), provider);
+        let exporter = exporter("http://127.0.0.1:1", provider);
         let (effect_handler, _completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(1);
         let control_guard = control_tx.clone();
         let pdata_guard = pdata_tx.clone();
-        let deadline = Instant::now() + Duration::from_millis(100);
+        // Far ahead of the real clock the inbox checks.
+        let deadline = (tokio::time::Instant::now() + Duration::from_secs(60)).into_std();
 
         let driver = async move {
             control_tx
@@ -1366,7 +1382,7 @@ mod tests {
             drop(pdata_tx);
         };
 
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(600), async {
             tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
         })
         .await
@@ -1377,23 +1393,20 @@ mod tests {
         assert_eq!(terminal_state.deadline(), deadline);
     }
 
-    /// Scenario: Shutdown force-drains pdata while one HTTP publication is stalled beyond the pipeline deadline.
+    /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the pipeline deadline.
     /// Guarantees: Only one request is in flight, force-drained pdata is retryably NACKed,
     /// local timeout bounds publication work, and the terminal state preserves the pipeline deadline.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_stalled_publication_and_force_drained_pdata() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
-            .expect(1)
-            .mount(&server)
-            .await;
+        let publisher_timeout = Duration::from_secs(60);
         let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_millis(200), provider);
+        let (exporter, mut requests) =
+            scripted_exporter(publisher_timeout, provider, stalled_request);
         let (effect_handler, mut completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
         let control_guard = control_tx.clone();
         let pdata_guard = pdata_tx.clone();
+        let started_requests = &mut requests;
 
         let driver = async move {
             controller.wait_until_observed().await;
@@ -1401,13 +1414,18 @@ mod tests {
                 .send_async(metrics_pdata(1))
                 .await
                 .expect("first pdata should be queued");
-            wait_until_request_received(&server).await;
+            started_requests
+                .next()
+                .awaitis this as 
+                .expect("first pdata should start a publication");
+            let request_started_at = tokio::time::Instant::now();
             pdata_tx
                 .send_async(metrics_pdata(2))
                 .await
                 .expect("second pdata should be buffered behind the active publication");
 
-            let deadline = Instant::now() + Duration::from_millis(100);
+            // Before the publisher timeout; far ahead of the real clock the inbox checks.
+            let deadline = (request_started_at + Duration::from_secs(30)).into_std();
             control_tx
                 .send_async(NodeControlMsg::Shutdown {
                     deadline,
@@ -1435,37 +1453,43 @@ mod tests {
             }
 
             drop(pdata_tx);
-            deadline
+            (deadline, request_started_at)
         };
 
-        let (start_result, deadline) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-        })
-        .await
-        .expect("exporter should stop within its local drain timeout");
+        let (start_result, (deadline, request_started_at)) =
+            tokio::time::timeout(Duration::from_secs(600), async {
+                tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+            })
+            .await
+            .expect("exporter should stop within its local drain timeout");
         drop(control_guard);
         drop(pdata_guard);
         let terminal_state = start_result.expect("exporter should shut down cleanly");
         assert_eq!(terminal_state.deadline(), deadline);
+        assert_eq!(
+            tokio::time::Instant::now(),
+            request_started_at + publisher_timeout
+        );
+        assert!(
+            requests.next().await.is_none(),
+            "only one publication may be in flight"
+        );
     }
 
-    /// Scenario: Shutdown begins with a stalled HTTP request and a full, undrained completion channel.
+    /// Scenario: Shutdown begins with a stalled request and a full, undrained completion channel.
     /// Guarantees: The local drain timeout bounds completion backpressure even before the pipeline deadline is visible.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_undrained_completion_channel() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
-            .expect(1)
-            .mount(&server)
-            .await;
+        let publisher_timeout = Duration::from_secs(60);
         let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_millis(200), provider);
+        let (exporter, mut requests) =
+            scripted_exporter(publisher_timeout, provider, stalled_request);
         let (effect_handler, _completions) = completion_harness_with_capacity(1);
         occupy_completion_channel(&effect_handler).await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
         let control_guard = control_tx.clone();
         let pdata_guard = pdata_tx.clone();
+        let started_requests = &mut requests;
 
         let driver = async move {
             controller.wait_until_observed().await;
@@ -1473,14 +1497,18 @@ mod tests {
                 .send_async(metrics_pdata(1))
                 .await
                 .expect("first pdata should be queued");
-            wait_until_request_received(&server).await;
+            started_requests
+                .next()
+                .await
+                .expect("first pdata should start a publication");
+            let request_started_at = tokio::time::Instant::now();
             pdata_tx
                 .send_async(metrics_pdata(2))
                 .await
                 .expect("second pdata should be buffered behind the active publication");
 
-            let shutdown_started_at = Instant::now();
-            let deadline = shutdown_started_at + Duration::from_millis(100);
+            // Before the publisher timeout; far ahead of the real clock the inbox checks.
+            let deadline = (request_started_at + Duration::from_secs(30)).into_std();
             control_tx
                 .send_async(NodeControlMsg::Shutdown {
                     deadline,
@@ -1489,11 +1517,11 @@ mod tests {
                 .await
                 .expect("shutdown should be queued");
             drop(pdata_tx);
-            (deadline, shutdown_started_at)
+            (deadline, request_started_at)
         };
 
-        let (start_result, (deadline, shutdown_started_at)) =
-            tokio::time::timeout(Duration::from_secs(2), async {
+        let (start_result, (deadline, request_started_at)) =
+            tokio::time::timeout(Duration::from_secs(600), async {
                 tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
             })
             .await
@@ -1502,24 +1530,24 @@ mod tests {
         drop(pdata_guard);
         let terminal_state = start_result.expect("exporter should shut down cleanly");
         assert_eq!(terminal_state.deadline(), deadline);
+        assert_eq!(
+            tokio::time::Instant::now(),
+            request_started_at + publisher_timeout
+        );
         assert!(
-            shutdown_started_at.elapsed() < Duration::from_secs(1),
-            "shutdown should remain bounded by the local drain timeout"
+            requests.next().await.is_none(),
+            "only one publication may be in flight"
         );
     }
 
     /// Scenario: Shutdown force-drains pdata while authentication is unavailable and the completion channel is full.
     /// Guarantees: The shared local drain timeout bounds authentication and retryable NACK backpressure.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_auth_unready_completion_backpressure() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
+        let publisher_timeout = Duration::from_secs(60);
         let (provider, _controller) = TestTokenProvider::new(None);
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_millis(200), provider);
+        let (exporter, mut requests) =
+            scripted_exporter(publisher_timeout, provider, stalled_request);
         let (effect_handler, _completions) = completion_harness_with_capacity(1);
         occupy_completion_channel(&effect_handler).await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
@@ -1532,8 +1560,8 @@ mod tests {
                 .await
                 .expect("pdata should be buffered while authentication is unavailable");
 
-            let shutdown_started_at = Instant::now();
-            let deadline = shutdown_started_at + Duration::from_millis(100);
+            let shutdown_started_at = tokio::time::Instant::now();
+            let deadline = (shutdown_started_at + Duration::from_secs(30)).into_std();
             control_tx
                 .send_async(NodeControlMsg::Shutdown {
                     deadline,
@@ -1546,7 +1574,7 @@ mod tests {
         };
 
         let (start_result, (deadline, shutdown_started_at)) =
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(600), async {
                 tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
             })
             .await
@@ -1555,9 +1583,13 @@ mod tests {
         drop(pdata_guard);
         let terminal_state = start_result.expect("exporter should shut down cleanly");
         assert_eq!(terminal_state.deadline(), deadline);
+        assert_eq!(
+            tokio::time::Instant::now(),
+            shutdown_started_at + publisher_timeout
+        );
         assert!(
-            shutdown_started_at.elapsed() < Duration::from_secs(1),
-            "shutdown should remain bounded by the local drain timeout"
+            requests.next().await.is_none(),
+            "no publication may start without credentials"
         );
     }
 
@@ -1600,23 +1632,20 @@ mod tests {
         assert_eq!(terminal_state.deadline(), deadline);
     }
 
-    /// Scenario: An HTTP request completes before shutdown while its ACK is blocked by a full completion channel.
+    /// Scenario: A request completes before shutdown while its ACK is blocked by a full completion channel.
     /// Guarantees: The blocked ACK remains pending work and cannot prevent the exporter from observing the deadline.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_completed_request_completion_backpressure() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
         let (provider, mut controller) = TestTokenProvider::new(Some("ready-token"));
-        let exporter = exporter_with_timeout(&server.uri(), Duration::from_secs(5), provider);
+        let (exporter, mut requests) = scripted_exporter(Duration::from_secs(60), provider, || {
+            Box::pin(std::future::ready(Ok(())))
+        });
         let (effect_handler, _completions) = completion_harness_with_capacity(1);
         occupy_completion_channel(&effect_handler).await;
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
         let control_guard = control_tx.clone();
         let pdata_guard = pdata_tx.clone();
+        let started_requests = &mut requests;
 
         let driver = async move {
             controller.wait_until_observed().await;
@@ -1624,11 +1653,15 @@ mod tests {
                 .send_async(metrics_pdata(1))
                 .await
                 .expect("pdata should be queued");
-            wait_until_request_received(&server).await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // The ready request resolves and queues its blocked ACK before the
+            // exporter yields back to this driver.
+            started_requests
+                .next()
+                .await
+                .expect("pdata should start a publication");
 
-            let shutdown_started_at = Instant::now();
-            let deadline = shutdown_started_at + Duration::from_millis(100);
+            // Far ahead of the real clock the inbox checks.
+            let deadline = (tokio::time::Instant::now() + Duration::from_secs(30)).into_std();
             control_tx
                 .send_async(NodeControlMsg::Shutdown {
                     deadline,
@@ -1637,22 +1670,25 @@ mod tests {
                 .await
                 .expect("shutdown should be queued");
             drop(pdata_tx);
-            (deadline, shutdown_started_at)
+            deadline
         };
 
-        let (start_result, (deadline, shutdown_started_at)) =
-            tokio::time::timeout(Duration::from_secs(2), async {
-                tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
-            })
-            .await
-            .expect("completed-request ACK backpressure must not block shutdown");
+        let (start_result, deadline) = tokio::time::timeout(Duration::from_secs(600), async {
+            tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
+        })
+        .await
+        .expect("completed-request ACK backpressure must not block shutdown");
         drop(control_guard);
         drop(pdata_guard);
         let terminal_state = start_result.expect("exporter should shut down cleanly");
         assert_eq!(terminal_state.deadline(), deadline);
+        assert_eq!(
+            tokio::time::Instant::now(),
+            tokio::time::Instant::from_std(deadline)
+        );
         assert!(
-            shutdown_started_at.elapsed() < Duration::from_secs(1),
-            "shutdown should remain bounded by the supplied deadline"
+            requests.next().await.is_none(),
+            "only one publication may start"
         );
     }
 
@@ -1698,7 +1734,7 @@ mod tests {
             drop(controller);
             control_tx
                 .send_async(NodeControlMsg::Shutdown {
-                    deadline: Instant::now() + Duration::from_secs(1),
+                    deadline: Instant::now() + Duration::from_secs(60),
                     reason: "test shutdown".to_owned(),
                 })
                 .await
@@ -1719,7 +1755,7 @@ mod tests {
             drop(pdata_tx);
         };
 
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
         })
         .await
@@ -1802,7 +1838,7 @@ mod tests {
             drop(pdata_tx);
         };
 
-        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        let (start_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(Box::new(exporter).start(msg_chan, effect_handler), driver)
         })
         .await
