@@ -19,7 +19,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.98.1"
+rust-version = "1.96.1"
 
 [package]
 name = "otel-arrow-dfe"
@@ -319,7 +319,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { version = "0.8.1", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { version = "0.9.0", default-features = false, features = ["tls-rustls"] }
 opentelemetry-resource-detectors = "0.13.0"
 
 [patch.crates-io]

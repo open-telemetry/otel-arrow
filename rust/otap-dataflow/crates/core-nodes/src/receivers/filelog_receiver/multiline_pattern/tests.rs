@@ -620,7 +620,7 @@ fn memory_model_audit_versions() {
         assert!(!audited_versions_match(&older_only, name, version));
     }
     assert!(
-        include_str!("../../../../../../rust-toolchain.toml").contains("channel = \"1.98.1\""),
+        include_str!("../../../../../../rust-toolchain.toml").contains("channel = \"1.96.1\""),
         "re-audit collection growth on toolchain upgrade"
     );
 }
