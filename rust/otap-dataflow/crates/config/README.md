@@ -355,14 +355,16 @@ policies:
 
 > [!NOTE]
 > Named transport-header propagation can refer to a composite member with
-> `product_user:othername_id`. The selected member must exist, and every
-> `transport_header_match` condition must have an exact byte-value match.
-> Header names match case-insensitively, duplicate values use any-match
-> semantics, and unrelated value-bearing members are not evaluated.
+> `product_user:othername_id`. The composite is present only when every
+> value-bearing member is present and every `transport_header_match` condition
+> has an exact byte-value match. Header names match case-insensitively, and
+> duplicate condition values use any-match semantics. Qualified propagation
+> reads the receiver-materialized composite snapshot.
 > A qualified selector cannot share its primitive source with another
 > qualified or unqualified entry. Repeated unqualified selectors, including
 > ASCII case variants, are accepted as equivalent.
-> Propagation overrides retain precedence over composite conditions.
+> Primitive transport-header overrides retain precedence over composite
+> conditions.
 > Other composite consumers are not yet wired at runtime.
 
 ## Engine Observability Pipeline

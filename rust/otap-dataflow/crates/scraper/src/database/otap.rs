@@ -585,7 +585,7 @@ pub enum OtlpMappingError {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
-    use otel_arrow_dfe_pdata_codec::PayloadData;
+    use otel_arrow_dfe_pdata_codec::PdataEncoding;
 
     fn columns() -> Vec<ColumnMetadata> {
         vec![ColumnMetadata {
@@ -744,11 +744,13 @@ mod cache_tests {
                 .expect("encode")
                 .expect("one row");
             let expected = encoder.logs.encode_to_vec();
-            let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(actual)) =
-                encoded.pdata.payload().into_data()
-            else {
-                panic!("OTLP logs bytes");
-            };
+            let payload = encoded.pdata.payload_ref();
+            assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+            assert_eq!(
+                payload.signal_type(),
+                otel_arrow_dfe_config::SignalType::Logs
+            );
+            let actual = payload.encoded_bytes().expect("OTLP bytes");
             assert_eq!(encoded.encoded_bytes, expected.len());
             assert_eq!(actual.as_ref(), expected.as_slice());
         }

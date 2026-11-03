@@ -328,6 +328,7 @@ fn validate_count_and_milliseconds<T>(
         }
     } else if sampling_type & COUNT != 0 {
         let count = required(values.count, COUNT, "count")?;
+        // Unlike existing behavior, counts above u32::MAX are rejected instead of wrapping.
         let _ = u32::try_from(count).map_err(|_| EncodeError::ValueOverflow {
             field: "count",
             value: count,

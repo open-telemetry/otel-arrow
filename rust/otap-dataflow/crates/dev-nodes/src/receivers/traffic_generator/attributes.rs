@@ -5,9 +5,9 @@
 
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use rand::seq::IndexedRandom;
-use weaver_resolved_schema::attribute::Attribute;
-use weaver_semconv::attribute::ValueSpec;
-use weaver_semconv::attribute::{
+use weaver_resolved_schema::v1::attribute::Attribute;
+use weaver_semconv::v1::attribute::ValueSpec;
+use weaver_semconv::v1::attribute::{
     AttributeType, Examples, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
 };
 

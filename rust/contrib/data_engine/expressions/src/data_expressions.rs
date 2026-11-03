@@ -105,6 +105,10 @@ impl DiscardDataExpression {
         self.predicate.as_ref()
     }
 
+    pub fn get_predicate_mut(&mut self) -> Option<&mut LogicalExpression> {
+        self.predicate.as_mut()
+    }
+
     pub(crate) fn try_fold(
         &mut self,
         scope: &PipelineResolutionScope,

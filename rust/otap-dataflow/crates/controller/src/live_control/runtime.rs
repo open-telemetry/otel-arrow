@@ -148,6 +148,8 @@ impl<
         );
         let run_key = pipeline_key.clone();
         let runtime_key = pipeline_key.clone();
+        let startup_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_startup_ready = Arc::clone(&startup_ready);
         let runtime_thread_name = thread_name.clone();
         // The thread upgrades this only after it exits, when it reports the terminal result.
         let runtime = Arc::downgrade(self);
@@ -179,6 +181,7 @@ impl<
                         memory_pressure_rx,
                         tracing_setup,
                         internal_telemetry,
+                        thread_startup_ready,
                     )
                 })) {
                     Ok(Ok(_)) => RuntimeInstanceExit::Success,
@@ -208,6 +211,7 @@ impl<
             pipeline_key,
             control_sender,
             context_bindings,
+            startup_ready,
             _marker: std::marker::PhantomData,
         })
     }
@@ -257,6 +261,7 @@ impl<
                 RuntimeInstanceRecord {
                     control_sender,
                     context_bindings: launched.context_bindings,
+                    startup_ready: launched.startup_ready,
                     lifecycle: RuntimeInstanceLifecycle::Active,
                 },
             );
@@ -1368,27 +1373,33 @@ impl<
             deployed_key.pipeline_id.clone(),
         );
         loop {
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .runtime_instances
+                .get(deployed_key)
+                .is_some_and(|instance| {
+                    instance
+                        .startup_ready
+                        .load(std::sync::atomic::Ordering::Acquire)
+                })
+            {
+                return Ok(());
+            }
+
+            let mut observed_terminal_phase = false;
             if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
                 && let Some(instance) =
                     status.instance_status(deployed_key.core_id, deployed_key.deployment_generation)
             {
-                let accepted = instance.accepted_condition().status == ConditionStatus::True;
-                let ready = instance.ready_condition().status == ConditionStatus::True;
-                if accepted && ready {
-                    return Ok(());
-                }
-                match instance.phase() {
+                observed_terminal_phase = matches!(
+                    instance.phase(),
                     PipelinePhase::Failed(_)
-                    | PipelinePhase::Rejected(_)
-                    | PipelinePhase::Deleted
-                    | PipelinePhase::Stopped => {
-                        return Err(format!(
-                            "pipeline failed to become ready on core {} (generation {})",
-                            deployed_key.core_id, deployed_key.deployment_generation
-                        ));
-                    }
-                    _ => {}
-                }
+                        | PipelinePhase::Rejected(_)
+                        | PipelinePhase::Deleted
+                        | PipelinePhase::Stopped
+                );
             }
 
             if let Some(exit) = self.instance_exit(deployed_key) {
@@ -1399,6 +1410,13 @@ impl<
                     )),
                     RuntimeInstanceExit::Error(error) => Err(error.message),
                 };
+            }
+
+            if observed_terminal_phase {
+                return Err(format!(
+                    "pipeline failed to become ready on core {} (generation {})",
+                    deployed_key.core_id, deployed_key.deployment_generation
+                ));
             }
 
             if Instant::now() >= deadline {

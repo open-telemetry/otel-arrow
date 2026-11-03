@@ -383,6 +383,16 @@ mod tests {
         ciborium::from_reader(bytes).expect("decode cbor")
     }
 
+    /// Scenario: A valid CBOR array exceeds the protobuf output budget.
+    /// Guarantees: Encoding reports buffer exhaustion rather than a CBOR decoding failure.
+    #[test]
+    fn cbor_overflow_is_dropped() {
+        let input = encode(&ciborium::Value::Array(vec![ciborium::Value::Bool(true)]));
+        let mut buf = ProtoBuffer::with_capacity_and_limit(4, 4);
+        let error = proto_encode_cbor_bytes(&input, &mut buf).unwrap_err();
+        assert!(matches!(error, Error::Dropped), "{error:?}");
+    }
+
     #[test]
     fn set_creates_missing_leaf_map_key() {
         let input = encode(&ciborium::Value::Map(vec![(

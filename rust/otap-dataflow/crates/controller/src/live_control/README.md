@@ -117,5 +117,6 @@ all active instances.
 - Future group-level reconfiguration can widen the active-operation conflict
   scope from logical pipeline to pipeline group without changing the existing
   per-pipeline endpoint shape.
-- Rollbacks are best effort. If rollback itself fails, the operation records
-  `rollback_failed` and preserves diagnostics for operators.
+- Rollbacks are best effort. If the target state is not reached within the
+  startup and drain deadlines, the operation records `rollback_failed`,
+  preserves diagnostics, and does not guarantee further convergence.

@@ -1,5 +1,5 @@
 queries:
-  - name: Filter superflous metadata
+  - name: Filter superfluous metadata
     sql: |
       CREATE VIEW metadata_filtered AS
       SELECT *

@@ -3,7 +3,6 @@
 
 //! Create and run a multi-core pipeline
 
-use cfg_if::cfg_if;
 use clap::Parser;
 use otel_arrow_dfe_config::config_provider::{ConfigFormat, resolve_config};
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
@@ -79,9 +78,9 @@ use tikv_jemallocator::Jemalloc;
 // -----------------------------------------------------------------------------
 // Global allocator selection.
 // -----------------------------------------------------------------------------
-cfg_if! {
+cfg_select! {
     // dhat (profiling) -- wins everywhere when enabled
-    if #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))] {
+    all(not(tarpaulin_include), feature = "dhat-heap") => {
         #[global_allocator]
         static GLOBAL: dhat::Alloc = dhat::Alloc;
         static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
@@ -95,17 +94,21 @@ cfg_if! {
                 let mut profiler = DHAT_PROFILER.lock().unwrap();
                 let _ = profiler.take();
         }
+    }
 
     // Windows default: mimalloc
-    } else if #[cfg(all(windows, feature = "mimalloc"))] {
+    all(windows, feature = "mimalloc") => {
         #[global_allocator]
         static GLOBAL: MiMalloc = MiMalloc;
+    }
 
     // Linux default: jemalloc
-    } else if #[cfg(all(not(windows), feature = "jemalloc"))] {
+    all(not(windows), feature = "jemalloc") => {
         #[global_allocator]
         static GLOBAL: Jemalloc = Jemalloc;
     }
+
+    _ => {}
 }
 
 // Crypto provider features are mutually exclusive.

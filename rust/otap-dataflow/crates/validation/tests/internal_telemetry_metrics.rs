@@ -6,10 +6,10 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otel_arrow_dfe_config::DeployedPipelineKey;
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::{DeployedPipelineKey, SignalType};
 use otel_arrow_dfe_core_nodes::receivers::internal_telemetry_receiver::INTERNAL_TELEMETRY_RECEIVER;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
@@ -26,12 +26,11 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::{OTAP_EXPORTER_FACTORIES, OTAP_PIPELINE_FACTORY};
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, metric, number_data_point,
 };
-use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use otel_arrow_dfe_state::store::ObservedStateStore;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
@@ -66,9 +65,9 @@ impl Exporter<OtapPdata> for CaptureExporter {
             match inbox.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    if let PayloadData::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
-                        data.payload_ref().data()
-                    {
+                    if let Some(bytes) = data.payload_ref().encoded_bytes() {
+                        assert_eq!(data.payload_ref().encoding(), Some(&PdataEncoding::OTLP));
+                        assert_eq!(data.signal_type(), SignalType::Metrics);
                         let _ = self.sender.try_send(bytes.to_vec());
                     }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;

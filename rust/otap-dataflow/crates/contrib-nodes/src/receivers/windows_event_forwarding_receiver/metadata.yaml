@@ -1,0 +1,6 @@
+type: wef
+status:
+  class: receiver
+  codeowners:
+    active:
+      - andborja

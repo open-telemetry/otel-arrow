@@ -11,7 +11,7 @@ on:
       - ready_for_review
 
 jobs:
-  request-component-reviews:
+  request-metadata-codeowner-review:
     if: >-
       github.repository_owner == 'open-telemetry' &&
       github.event.pull_request.draft == false &&

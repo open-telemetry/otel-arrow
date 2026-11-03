@@ -3,10 +3,9 @@
 
 use super::otap::parse_utc_timestamp;
 use super::*;
-use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
-use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use prost::Message;
 
 const UNLIMITED_BYTES: u64 = 64 * 1024 * 1024;
@@ -130,12 +129,14 @@ fn encode(page: QueryPage, output: &OutputConfig, max_batch_bytes: u64) -> Encod
 }
 
 fn decode(encoded: EncodedPage) -> LogsData {
-    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
-        encoded.pdata.payload().into_data()
-    else {
-        panic!("expected OTLP logs bytes");
-    };
-    LogsData::decode(bytes).expect("OTLP logs should decode")
+    let payload = encoded.pdata.payload_ref();
+    assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+    assert_eq!(
+        payload.signal_type(),
+        otel_arrow_dfe_config::SignalType::Logs
+    );
+    let bytes = payload.encoded_bytes().expect("OTLP bytes");
+    LogsData::decode(bytes.as_ref()).expect("OTLP logs should decode")
 }
 
 fn body_field<'a>(record: &'a LogRecord, key: &str) -> &'a KeyValue {

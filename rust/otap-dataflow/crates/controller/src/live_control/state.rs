@@ -421,6 +421,11 @@ pub(super) struct RuntimeInstanceRecord {
     pub(super) control_sender: Option<Arc<dyn PipelineAdminSender>>,
     /// Compiled context bindings used by this runtime instance.
     pub(super) context_bindings: Arc<CompiledContextBindings>,
+    /// Write-once marker that synchronously linearizes readiness before later runtime exit.
+    ///
+    /// This is controller/runtime lifecycle coordination only, not shared data-path state.
+    /// See [`LaunchedPipelineThread::startup_ready`] for the event-channel ordering rationale.
+    pub(super) startup_ready: Arc<std::sync::atomic::AtomicBool>,
     pub(super) lifecycle: RuntimeInstanceLifecycle,
 }
 

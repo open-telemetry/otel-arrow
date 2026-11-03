@@ -34,9 +34,13 @@ class RenderTemplateConfig(HookStrategyConfig):
         template_path (str): Path to the Jinja2 template file.
         output_path (str): Path where the rendered file should be written.
         variables (Dict[str, Any]): Key-value pairs to use in rendering the template.
+            These take precedence over the framework-provided 'ctx' mapping below.
         search_paths (List[str]): Additional directories used to resolve
             '{% include %}' / '{% import %}' statements. The template's own
             directory is always searched first.
+
+    Templates additionally receive a 'ctx' mapping with the current framework
+    metadata (e.g. '{{ ctx["test.name"] }}', '{{ ctx["test.suite"] }}')
     """
 
     template_path: str
@@ -76,6 +80,8 @@ tests:
                   variables:
                     env: staging
                     retries: "5"
+                  # Templates may also read framework metadata, e.g.
+                  # {{ ctx["test.name"] }}, without passing it explicitly.
 """,
     )
 
@@ -113,12 +119,20 @@ tests:
         logger.debug(f"Rendering with variables: {variables}")
         logger.debug(f"Output will be written to: {output_path}")
 
+        # Expose the current framework metadata as 'ctx' so templates can
+        # self-identify with the running test (e.g. ctx["test.name"]) without
+        # the suite repeating that value. Explicit 'variables' win on conflict.
+        ctx_metadata = ctx.get_metadata()
+        if not isinstance(ctx_metadata, dict):
+            ctx_metadata = {}
+        render_variables = {"ctx": ctx_metadata, **variables}
+
         try:
             env = Environment(
                 loader=FileSystemLoader([template_dir, *self.config.search_paths])
             )
             template = env.get_template(template_file)
-            rendered = template.render(variables)
+            rendered = template.render(render_variables)
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
 

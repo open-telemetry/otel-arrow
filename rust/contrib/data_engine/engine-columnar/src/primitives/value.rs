@@ -28,6 +28,17 @@ impl<'a> ValueOrRef<'a> {
     pub fn to_string(&self) -> StringValueOrRef<'a> {
         self.into()
     }
+
+    pub fn into_dictionary(
+        self,
+        key_data_type: DictionaryKeyType,
+        key_count: usize,
+    ) -> Dictionary<'a> {
+        match self {
+            ValueOrRef::Null => Dictionary::new_null(key_data_type, key_count),
+            v => Dictionary::new_scalar(key_data_type, key_count, v),
+        }
+    }
 }
 
 impl ValueOrRef<'_> {

@@ -3,6 +3,7 @@
 
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::num::{NonZeroU32, NonZeroU64};
+use std::ops::RangeInclusive;
 
 use crate::{
     otap::{
@@ -125,18 +126,25 @@ impl RecordsGroup {
 
     /// Split `RecordBatch`es as needed when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
-    pub(crate) fn split(self, max_items: NonZeroU64) -> Result<Self> {
-        let max_items = NonZeroU32::new(max_items.get() as u32)
-            .unwrap_or(NonZeroU32::try_from(u32::MAX).expect("u32::MAX is not 0"));
+    pub(crate) fn split(self, max_items: NonZeroU64, origins: &mut Vec<usize>) -> Result<Self> {
+        // The splitter indexes rows with u32. A larger requested upper bound
+        // must not wrap into a small split size; cap it at the internal maximum.
+        let max_items = NonZeroU32::try_from(max_items).unwrap_or(NonZeroU32::MAX);
         Ok(match self {
             RecordsGroup::Logs(mut items) => {
-                RecordsGroup::Logs(split::split::<{ Logs::COUNT }>(&mut items, max_items)?)
+                RecordsGroup::Logs(split_with_origins::<{ Logs::COUNT }>(
+                    &mut items, max_items, origins,
+                )?)
             }
             RecordsGroup::Metrics(mut items) => {
-                RecordsGroup::Metrics(split::split::<{ Metrics::COUNT }>(&mut items, max_items)?)
+                RecordsGroup::Metrics(split_with_origins::<{ Metrics::COUNT }>(
+                    &mut items, max_items, origins,
+                )?)
             }
             RecordsGroup::Traces(mut items) => {
-                RecordsGroup::Traces(split::split::<{ Traces::COUNT }>(&mut items, max_items)?)
+                RecordsGroup::Traces(split_with_origins::<{ Traces::COUNT }>(
+                    &mut items, max_items, origins,
+                )?)
             }
         })
     }
@@ -145,16 +153,26 @@ impl RecordsGroup {
     ///
     /// TODO: The maximum is optional, but there is usually an ID- or
     /// PARENT_ID-width that imposes some kind of limit.
-    pub(crate) fn concatenate(self, max_items: Option<NonZeroU64>) -> Result<Self> {
-        Ok(match self {
-            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(items, max_items)?),
+    pub(crate) fn concatenate(
+        self,
+        max_items: Option<NonZeroU64>,
+        origins: Vec<usize>,
+    ) -> Result<(Self, Vec<RangeInclusive<usize>>)> {
+        let (group, ranges) = match self {
+            RecordsGroup::Logs(items) => {
+                let (items, ranges) = generic_concatenate(items, max_items, origins)?;
+                (RecordsGroup::Logs(items), ranges)
+            }
             RecordsGroup::Metrics(items) => {
-                RecordsGroup::Metrics(generic_concatenate(items, max_items)?)
+                let (items, ranges) = generic_concatenate(items, max_items, origins)?;
+                (RecordsGroup::Metrics(items), ranges)
             }
             RecordsGroup::Traces(items) => {
-                RecordsGroup::Traces(generic_concatenate(items, max_items)?)
+                let (items, ranges) = generic_concatenate(items, max_items, origins)?;
+                (RecordsGroup::Traces(items), ranges)
             }
-        })
+        };
+        Ok((group, ranges))
     }
 
     // FIXME: replace this with an Extend impl to avoid unnecessary allocations
@@ -241,31 +259,56 @@ fn assert_all_empty<const N: usize>(data: &[[Option<RecordBatch>; N]]) {
 // Code for merging batches (concatenation)
 // *************************************************************************************************
 
+fn split_with_origins<const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+    limit: NonZeroU32,
+    origins: &mut Vec<usize>,
+) -> Result<Vec<[Option<RecordBatch>; N]>> {
+    let mut split_origins = Vec::with_capacity(origins.len());
+    let result = split::split_with_sources(items, limit, |index, count| {
+        split_origins.extend(std::iter::repeat_n(origins[index], count));
+    })?;
+    *origins = split_origins;
+    Ok(result)
+}
+
+type GroupedBatches<const N: usize> = (Vec<[Option<RecordBatch>; N]>, Vec<RangeInclusive<usize>>);
+
 fn generic_concatenate<const N: usize>(
     batches: Vec<[Option<RecordBatch>; N]>,
     max_items: Option<NonZeroU64>,
-) -> Result<Vec<[Option<RecordBatch>; N]>> {
+    origins: Vec<usize>,
+) -> Result<GroupedBatches<N>> {
     let mut result = Vec::new();
 
     let mut current = Vec::new();
     let mut current_num_items = 0;
+    let mut ranges = Vec::new();
+    let mut first = 0;
+    let mut last = 0;
 
-    for input in batches {
+    for (input, origin) in batches.into_iter().zip(origins) {
         let blen = num_items(&input);
 
         if !current.is_empty() && size_over_limit(max_items, current_num_items + blen) {
             concatenate_emitter(&mut current, &mut result)?;
+            ranges.push(first..=last);
             current_num_items = 0;
         }
 
+        if current.is_empty() {
+            first = origin;
+        }
+        last = origin;
         current_num_items += blen;
         current.push(input);
     }
 
     if !current.is_empty() {
         concatenate_emitter(&mut current, &mut result)?;
+        ranges.push(first..=last);
     }
-    Ok(result)
+    Ok((result, ranges))
 }
 
 fn concatenate_emitter<const N: usize>(

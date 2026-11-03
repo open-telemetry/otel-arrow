@@ -6,10 +6,11 @@ use crate::arrays::{
     get_i64_array_opt, get_required_array, get_timestamp_nanosecond_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
-use crate::otlp::common::BoundedBuf;
-use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
+use crate::otlp::{
+    ProtoBuffer,
+    attributes::{Attribute32Arrays, encode_key_value},
+    common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
+};
 use crate::proto::consts::field_num::metrics::{
     EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT, EXEMPLAR_FILTERED_ATTRIBUTES, EXEMPLAR_SPAN_ID,
     EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID,

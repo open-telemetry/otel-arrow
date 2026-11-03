@@ -1698,9 +1698,64 @@ impl WrittenDictValues {
 
 /// True if two dictionary values arrays are the same physical array: the
 /// same `Arc`, or the same buffers, offset, length and null buffer (as
-/// Arrow's own concat checks). Never compares values.
+/// Arrow's own concat checks).
+///
+/// Equivalent to `a.to_data().ptr_eq(&b.to_data())`, but without allocating
+/// to produce [`ArrayData`].
 fn same_values(a: &ArrayRef, b: &ArrayRef) -> bool {
-    Arc::ptr_eq(a, b) || (a.len() == b.len() && a.to_data().ptr_eq(&b.to_data()))
+    if Arc::ptr_eq(a, b) {
+        return true;
+    }
+    if a.len() != b.len() || a.data_type() != b.data_type() {
+        return false;
+    }
+    if !same_nulls(a.nulls(), b.nulls()) {
+        return false;
+    }
+
+    match a.data_type() {
+        DataType::Utf8 => same_byte_buffers(a.as_string::<i32>(), b.as_string::<i32>()),
+        DataType::LargeUtf8 => same_byte_buffers(a.as_string::<i64>(), b.as_string::<i64>()),
+        DataType::Binary => same_byte_buffers(a.as_binary::<i32>(), b.as_binary::<i32>()),
+        DataType::LargeBinary => same_byte_buffers(a.as_binary::<i64>(), b.as_binary::<i64>()),
+        DataType::FixedSizeBinary(_) => {
+            a.as_fixed_size_binary().value_data().as_ptr()
+                == b.as_fixed_size_binary().value_data().as_ptr()
+        }
+        DataType::Int64 => same_primitive_buffer::<Int64Type>(a, b),
+        DataType::Float64 => same_primitive_buffer::<Float64Type>(a, b),
+        DataType::Int32 => same_primitive_buffer::<Int32Type>(a, b),
+        DataType::UInt8 => same_primitive_buffer::<UInt8Type>(a, b),
+        DataType::UInt16 => same_primitive_buffer::<UInt16Type>(a, b),
+        DataType::UInt32 => same_primitive_buffer::<UInt32Type>(a, b),
+        DataType::UInt64 => same_primitive_buffer::<UInt64Type>(a, b),
+        _ => a.to_data().ptr_eq(&b.to_data()),
+    }
+}
+
+/// Null buffers as `ArrayData::ptr_eq` sees them. `ArrayData` drops validity
+/// buffers that contain no nulls, so such a buffer equals an absent one.
+fn same_nulls(a: Option<&NullBuffer>, b: Option<&NullBuffer>) -> bool {
+    let a = a.filter(|n| n.null_count() > 0);
+    let b = b.filter(|n| n.null_count() > 0);
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.inner().ptr_eq(b.inner()),
+        _ => false,
+    }
+}
+
+/// `ArrayData` for a byte array holds the (sliced) offsets buffer and the
+/// full values buffer, with offset 0.
+fn same_byte_buffers<T: ByteArrayType>(a: &GenericByteArray<T>, b: &GenericByteArray<T>) -> bool {
+    a.offsets().inner().inner().as_ptr() == b.offsets().inner().inner().as_ptr()
+        && a.values().as_ptr() == b.values().as_ptr()
+}
+
+/// `ArrayData` for a primitive array holds the (sliced) values buffer.
+fn same_primitive_buffer<T: ArrowPrimitiveType>(a: &ArrayRef, b: &ArrayRef) -> bool {
+    a.as_primitive::<T>().values().inner().as_ptr()
+        == b.as_primitive::<T>().values().inner().as_ptr()
 }
 
 /// Produce a struct output column, recursing into its children.
@@ -5092,5 +5147,138 @@ mod write_tests {
         let actual = cast(out.as_ref(), &DataType::UInt32).unwrap();
         let expected = UInt32Array::from(vec![0u32, 1, 2, 103, 101, 100]);
         assert_eq!(actual.as_primitive::<UInt32Type>(), &expected);
+    }
+}
+
+#[cfg(test)]
+mod same_values_tests {
+    use super::*;
+    use arrow::array::{BinaryArray, Float64Array, Int64Array, StringArray, UInt16Array};
+
+    /// Assert `same_values` agrees with `ArrayData::ptr_eq`, and return the
+    /// result.
+    fn check(a: &ArrayRef, b: &ArrayRef) -> bool {
+        let new = same_values(a, b);
+        let expected =
+            Arc::ptr_eq(a, b) || (a.len() == b.len() && a.to_data().ptr_eq(&b.to_data()));
+        assert_eq!(
+            new,
+            expected,
+            "same_values disagrees with ArrayData::ptr_eq for {} (len {} / {}, offset {} / {})",
+            a.data_type(),
+            a.len(),
+            b.len(),
+            a.offset(),
+            b.offset()
+        );
+        new
+    }
+
+    fn value_arrays() -> Vec<ArrayRef> {
+        vec![
+            Arc::new(StringArray::from(vec![
+                Some("a"),
+                None,
+                Some("bb"),
+                Some("ccc"),
+            ])),
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+            Arc::new(BinaryArray::from(vec![
+                b"a".as_ref(),
+                b"bc".as_ref(),
+                b"d".as_ref(),
+                b"ef".as_ref(),
+            ])),
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter([[1u8; 4], [2; 4], [3; 4], [4; 4]].into_iter())
+                    .unwrap(),
+            ),
+            Arc::new(Int64Array::from(vec![Some(1), Some(2), None, Some(4)])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+            Arc::new(UInt16Array::from(vec![1, 2, 3, 4])),
+            Arc::new(BooleanArray::from(vec![true, false, true, false])),
+        ]
+    }
+
+    /// Scenario: the same values `Arc` is compared with itself.
+    /// Guarantees: arrays are the same physical array.
+    #[test]
+    fn same_arc_is_same() {
+        for array in value_arrays() {
+            assert!(check(&array, &Arc::clone(&array)));
+        }
+    }
+
+    /// Scenario: two separately created `Arc`s wrap clones of one array.
+    /// Guarantees: shared buffers are recognized without `Arc` identity.
+    #[test]
+    fn clone_sharing_buffers_is_same() {
+        for array in value_arrays() {
+            let other: ArrayRef = make_array(array.to_data());
+            assert!(!Arc::ptr_eq(&array, &other));
+            assert!(check(&array, &other));
+        }
+    }
+
+    /// Scenario: slices of one parent, with equal and different ranges.
+    /// Guarantees: equal ranges are the same; different offsets are not.
+    #[test]
+    fn slices_of_one_parent() {
+        for array in value_arrays() {
+            assert!(check(&array.slice(1, 2), &array.slice(1, 2)));
+            assert!(!check(&array.slice(0, 2), &array.slice(1, 2)));
+            assert!(!check(&array.slice(0, 2), &array.slice(0, 3)));
+        }
+    }
+
+    /// Scenario: separately built arrays with identical contents.
+    /// Guarantees: values are never compared, so they are not the same.
+    #[test]
+    fn equal_contents_in_distinct_buffers_differ() {
+        for (a, b) in value_arrays().into_iter().zip(value_arrays()) {
+            assert!(!check(&a, &b));
+        }
+    }
+
+    /// Scenario: one side has a validity buffer, either with nulls or with
+    /// none in the selected range.
+    /// Guarantees: a buffer with nulls differs from none; a buffer without
+    /// nulls is treated as absent, as `ArrayData` does.
+    #[test]
+    fn null_buffers() {
+        let values = StringArray::from(vec!["a", "b", "c"]);
+        let plain: ArrayRef = Arc::new(values.clone());
+
+        let with_nulls: ArrayRef = Arc::new(StringArray::new(
+            values.offsets().clone(),
+            values.values().clone(),
+            Some(NullBuffer::from(vec![true, false, true])),
+        ));
+        assert!(!check(&plain, &with_nulls));
+
+        let no_nulls: ArrayRef = Arc::new(StringArray::new(
+            values.offsets().clone(),
+            values.values().clone(),
+            Some(NullBuffer::from(vec![true, true, true])),
+        ));
+        assert!(check(&plain, &no_nulls));
+
+        // A slice of a nullable array that selects only valid rows.
+        let sliced_valid = with_nulls.slice(0, 1);
+        assert!(check(&plain.slice(0, 1), &sliced_valid));
+    }
+
+    /// Scenario: equal-length arrays of different types.
+    /// Guarantees: never the same.
+    #[test]
+    fn different_types_differ() {
+        let arrays = value_arrays();
+        for a in &arrays {
+            for b in &arrays {
+                if a.data_type() != b.data_type() && a.len() == b.len() {
+                    assert!(!check(a, b));
+                }
+            }
+        }
     }
 }

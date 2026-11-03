@@ -6,11 +6,12 @@ use crate::arrays::{
     get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
-use crate::otlp::common::BoundedBuf;
-use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
-use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
+use crate::otlp::{
+    ProtoBuffer,
+    attributes::{Attribute32Arrays, encode_key_value},
+    common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
+    metrics::exemplar::{ExemplarArrays, proto_encode_exemplar},
+};
 use crate::proto::consts::field_num::metrics::{
     HISTOGRAM_DP_ATTRIBUTES, HISTOGRAM_DP_BUCKET_COUNTS, HISTOGRAM_DP_COUNT,
     HISTOGRAM_DP_EXEMPLARS, HISTOGRAM_DP_EXPLICIT_BOUNDS, HISTOGRAM_DP_FLAGS, HISTOGRAM_DP_MAX,
@@ -51,8 +52,8 @@ impl<'a> TryFrom<&'a RecordBatch> for HistogramDpArrays<'a> {
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano = get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?;
-        let histogram_count = get_u64_array_opt(rb, consts::HISTOGRAM_COUNT)?;
-        let histogram_sum = get_f64_array_opt(rb, consts::HISTOGRAM_SUM)?;
+        let histogram_count = get_u64_array_opt(rb, consts::COUNT)?;
+        let histogram_sum = get_f64_array_opt(rb, consts::SUM)?;
         let histogram_bucket_counts = rb
             .column_by_name(consts::HISTOGRAM_BUCKET_COUNTS)
             .map(ListValueAccessor::try_new)
@@ -205,11 +206,9 @@ pub(crate) fn proto_encode_histogram_data_point(
         result_buf.encode_varint(8 * num_values as u64)?; // 8 bytes per value
 
         // write values
-        values
-            .iter()
-            .flatten()
-            .map(u64::to_le_bytes)
-            .try_for_each(|bytes| result_buf.extend_from_slice(&bytes))?;
+        for value in values.iter().flatten() {
+            result_buf.extend_from_slice(&value.to_le_bytes())?;
+        }
     }
 
     if let Some(explicit_bounds) = &hist_dp_arrays.histogram_explicit_bounds
@@ -229,11 +228,9 @@ pub(crate) fn proto_encode_histogram_data_point(
         result_buf.encode_varint(8 * num_values as u64)?; // 8 bytes per value
 
         // write values
-        values
-            .iter()
-            .flatten()
-            .map(f64::to_le_bytes)
-            .try_for_each(|bytes| result_buf.extend_from_slice(&bytes))?;
+        for value in values.iter().flatten() {
+            result_buf.extend_from_slice(&value.to_le_bytes())?;
+        }
     }
 
     if let Some(exemplar_arrays) = exemplar_arrays

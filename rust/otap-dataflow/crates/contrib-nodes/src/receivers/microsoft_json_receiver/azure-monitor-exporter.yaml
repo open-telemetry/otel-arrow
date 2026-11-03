@@ -1,0 +1,105 @@
+# Complete Microsoft JSON -> Azure Monitor Logs Ingestion pipeline example.
+# Configuration only: the receiver currently returns NotImplemented.
+#
+# Before use:
+# - Enable microsoft-json, azure-monitor, azure-identity-auth, and a crypto
+#   provider feature (for example crypto-ring).
+# - Replace the DCR endpoint, immutable DCR ID, and stream name below.
+# - Create a matching DCR/table schema with string tags/data/ext columns and
+#   TimeGenerated. The existing exporter writes JSON-string attributes as strings;
+#   it does not decode them into nested objects. This is not an exact JSON
+#   round trip and does not send events to Application Insights /track.
+# - Add string columns UserAgent, HttpMethod, RequestOrigin, ReceiverInstanceId,
+#   ServiceName, ServiceVersion, and ServiceInstanceId for resource metadata.
+#   The Service* columns use optional environment variables configured in the
+#   envelope mapping. Unset/empty variables produce no resource attribute.
+# - Sign in with Azure CLI / azd for development credentials and grant that
+#   identity permission to send data to the DCR.
+# - For Azure deployment, replace method: development with managedidentity;
+#   set client_id for a user-assigned identity if required.
+# - Adjust allowed_origins for your browser application. The listener is
+#   loopback-only; review network exposure before changing its address.
+# Endpoint files resolve relative to this pipeline configuration directory.
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure_identity:
+            type: urn:microsoft:extension:azure_identity_auth
+            config:
+              method: development
+              scope: https://monitor.azure.com/.default
+
+        nodes:
+          receiver:
+            type: urn:microsoft:receiver:json
+            config:
+              listening_addr: "127.0.0.1:9090"
+              allowed_origins: ["https://example.com"]
+              max_request_body_size: 3145728
+              max_concurrent_requests: 256
+              timeout: 30s
+              header_read_timeout: 5s
+              # Keep request enrichment on resources, not envelope attributes.
+              user_agent_attr_target: resource
+              http_attr_target: resource
+              origin_attr: http.origin
+              instance_id_attr: receiver.instance.id
+              endpoints:
+                "/v2/track":
+                  config_file: azure-monitor-envelope.yaml
+                "/v2.1/track":
+                  config_file: azure-monitor-envelope.yaml
+
+          azure-monitor-exporter:
+            type: urn:microsoft:exporter:azure_monitor
+            capabilities:
+              bearer_token_provider: azure_identity
+            config:
+              api:
+                dcr_endpoint: https://REPLACE.eastus-1.ingest.monitor.azure.com
+                dcr: dcr-REPLACE
+                stream_name: Custom-MicrosoftJson_CL
+                schema:
+                  # Resource attributes are separate from log attributes;
+                  # log_record_mapping.attributes does not export them.
+                  # These columns are additional metadata, not envelope fields.
+                  resource_mapping:
+                    user_agent.original: UserAgent
+                    http.request.method: HttpMethod
+                    http.origin: RequestOrigin
+                    receiver.instance.id: ReceiverInstanceId
+                    service.name: ServiceName
+                    service.version: ServiceVersion
+                    service.instance.id: ServiceInstanceId
+                  log_record_mapping:
+                    attributes:
+                      azure_monitor.envelope.name: name
+                      azure_monitor.envelope.time: time
+                      azure_monitor.envelope.iKey: iKey
+                      azure_monitor.envelope.ver: ver
+                      azure_monitor.envelope.sampleRate: sampleRate
+                      azure_monitor.envelope.seq: seq
+                      azure_monitor.envelope.flags: flags
+                      azure_monitor.envelope.tags: tags
+                      azure_monitor.envelope.data: data
+                      azure_monitor.envelope.ext: ext
+              heartbeat:
+                enabled: false
+
+        connections:
+          - from: receiver
+            to: azure-monitor-exporter

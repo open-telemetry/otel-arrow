@@ -25,7 +25,7 @@ mod pipeline_factory;
 /// An optional third argument installs the data-type-specific context materializer:
 /// ```rust,ignore
 /// use otel_arrow_dfe_engine::{PipelineFactory, build_factory};
-/// use otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan;
+/// use otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan;
 /// use otel_arrow_dfe_engine_macros::pipeline_factory;
 ///
 /// // Define your data type (this would be defined elsewhere)
@@ -43,8 +43,8 @@ mod pipeline_factory;
 /// The materializer must have the signature
 /// `fn(&mut PData, &ContextMaterializationPlan)`. It may be omitted for data
 /// types that do not support context materialization. If a pipeline selects a
-/// constant or randomness composite without a registered materializer,
-/// pipeline construction fails with an invalid-user-configuration error.
+/// composite without a registered materializer, pipeline construction fails
+/// with an invalid-user-configuration error.
 ///
 /// Note: You need to import both `PipelineFactory` and `build_factory`. The
 /// `build_registry()` call is a placeholder that gets replaced by the macro, but

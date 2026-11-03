@@ -65,6 +65,10 @@ impl PipelineExpression {
         &self.expressions
     }
 
+    pub fn get_expressions_mut(&mut self) -> &mut [DataExpression] {
+        &mut self.expressions
+    }
+
     pub(crate) fn push_expression(&mut self, expression: DataExpression) {
         self.expressions.push(expression);
     }

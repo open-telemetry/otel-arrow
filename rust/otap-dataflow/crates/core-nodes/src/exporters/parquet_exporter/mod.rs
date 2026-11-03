@@ -578,10 +578,16 @@ mod test {
         AnyValue, KeyValue, any_value::Value,
     };
     use otel_arrow_dfe_pdata::schema::consts;
-    use otel_arrow_dfe_pdata::{TryFromWithOptions, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
+
+    fn into_otap(payload: OtapPayload) -> OtapArrowRecords {
+        payload
+            .try_into_otap(&CodecService::new().expect("valid codec registry"))
+            .expect("expected native OTAP payload")
+    }
 
     fn logs_scenario(
         num_rows: usize,
@@ -766,7 +772,7 @@ mod test {
                         })
                     }
                     let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
-                    let mut otap_batch = OtapArrowRecords::try_from_with_default(pdata3).unwrap();
+                    let mut otap_batch = into_otap(pdata3);
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
                     let old_column = attrs_batch.remove_column(
@@ -838,23 +844,21 @@ mod test {
             .set_exporter(exporter)
             .run_test(move |ctx| {
                 Box::pin(async move {
-                    let batch1: OtapArrowRecords =
+                    let batch1 = into_otap(
                         fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
                             key: "strkey".to_string(),
                             value: Some(AnyValue::new_string("terry")),
                         }])
-                        .payload()
-                        .try_into_with_default()
-                        .unwrap();
+                        .payload(),
+                    );
 
-                    let batch2: OtapArrowRecords =
+                    let batch2 = into_otap(
                         fixtures::create_single_logs_pdata_with_attrs(vec![KeyValue {
                             key: "intkey".to_string(),
                             value: Some(AnyValue::new_int(418)),
                         }])
-                        .payload()
-                        .try_into_with_default()
-                        .unwrap();
+                        .payload(),
+                    );
 
                     // double check that these contain schemas that are not the same ...
                     let batch1_attrs = batch1.get(ArrowPayloadType::LogAttrs).unwrap();

@@ -4,12 +4,10 @@
 use std::collections::HashMap;
 
 use otel_arrow_dfe_config::SignalType;
-#[cfg(test)]
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::EncodeError;
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 
 use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
@@ -559,6 +557,11 @@ mod tests {
     use super::super::config::TrafficConfig;
     use super::*;
 
+    fn into_otlp(payload: OtapPayload) -> otel_arrow_dfe_pdata::OtlpProtoBytes {
+        otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
+            .expect("OTLP conversion")
+    }
+
     /// Helper to build a minimal `SyntheticGenerator` with no resource attributes.
     fn synthetic_generator() -> SyntheticGenerator {
         SyntheticGenerator {
@@ -782,9 +785,7 @@ mod tests {
 
         // Helper: extract the tenant.id attribute value from a log payload.
         let extract_tenant_id = |payload: OtapPayload| -> Option<String> {
-            let otlp_bytes: OtlpProtoBytes = payload
-                .try_into_with_default()
-                .expect("convert to otlp bytes");
+            let otlp_bytes = into_otlp(payload);
             let bytes = match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(b) => b,
                 _ => panic!("expected logs"),
@@ -870,9 +871,7 @@ mod tests {
 
         // Neither payload should carry a tenant.id attribute.
         for (i, batch) in [batch_1, batch_2].into_iter().enumerate() {
-            let otlp_bytes: OtlpProtoBytes = batch
-                .try_into_with_default()
-                .expect("convert to otlp bytes");
+            let otlp_bytes = into_otlp(batch);
             let bytes = match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(b) => b,
                 _ => panic!("expected logs"),

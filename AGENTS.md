@@ -31,6 +31,12 @@ customary comment syntax:
 Make both statements specific enough for a reviewer to understand the test's
 intent and the behavior that must not regress without reading its implementation.
 
+Author tests that pass independently and alongside other tests, without relying
+on execution order, machine speed, or unrelated global state. Follow
+[Writing Reliable Tests](CONTRIBUTING.md#writing-reliable-tests) and, for Rust,
+the detailed
+[reliable test guidelines](rust/otap-dataflow/CONTRIBUTING.md#reliable-tests).
+
 ## Changelog entries
 
 If your change is user-facing, add a changelog entry by **copying

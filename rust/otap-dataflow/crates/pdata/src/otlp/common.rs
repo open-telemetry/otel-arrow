@@ -1,11 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO(4482): This file is disorganized and should be separated into smaller
+// pieces; at least 50% of the file is encoder support but the other half
+// quite separate. Reorganize this in a separate PR.
+
 use crate::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
-use crate::error::{Error, Result};
+use crate::error::{Error, Result as PDataResult};
 use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
@@ -60,7 +64,7 @@ pub(crate) fn proto_encode_resource(
     resource_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> PDataResult<()> {
     // add attributes
     if let Some(attrs_arrays) = resource_attrs_arrays
         && let Some(res_id) = resource_arrays.id.value_at(index)
@@ -87,7 +91,7 @@ pub(crate) fn proto_encode_resource(
 impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> PDataResult<Self> {
         // Resource column is optional - if it's missing, return all None values
         let resource_column = rb.column_by_name(consts::RESOURCE);
 
@@ -150,7 +154,7 @@ impl ScopeArrays<'_> {
 impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> PDataResult<Self> {
         // Scope column is optional - if it's missing, return all None values
         let scope_column = rb.column_by_name(consts::SCOPE);
 
@@ -191,7 +195,7 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_arrays: Option<&Attribute16Arrays<'_>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> PDataResult<()> {
     if let Some(col) = &scope_arrays.name
         && let Some(val) = col.str_at(index)
     {
@@ -288,7 +292,7 @@ pub(crate) struct AnyValueArrays<'a> {
 impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     type Error = Error;
 
-    fn try_from(rb: &'a RecordBatch) -> Result<Self> {
+    fn try_from(rb: &'a RecordBatch) -> PDataResult<Self> {
         let attr_type = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
         let attr_str = rb
             .column_by_name(consts::ATTRIBUTE_STR)
@@ -321,30 +325,25 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
-/// Suffix appended to truncated strings.
-pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
-
 /// Returned when a buffer write cannot fit within the size limit.
-///
-/// Used as the error type in [`EncodeResult`] which is returned from
-/// buffer write methods. This is used for to indicate truncation, no
-/// distinction is made for partial/total drop.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EncodeFailure {
-    /// Ran out of space.
+    /// Dropped due to space limit.
     Dropped,
 }
 
-/// Result type for buffer write methods.
-pub type EncodeResult = std::result::Result<(), EncodeFailure>;
+impl std::error::Error for EncodeFailure {}
 
-/// Saved buffer position for transactional encoding.
-///
-/// Created internally by [`BoundedBuf::try_encode`].
-#[derive(Debug, Clone, Copy)]
-pub struct Checkpoint {
-    pos: usize,
+impl fmt::Display for EncodeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dropped => write!(f, "dropped"),
+        }
+    }
 }
+
+/// Result type for encoding methods that can fail only because of a size limit.
+pub type EncodeResult<T = ()> = Result<T, EncodeFailure>;
 
 const fn tag_width_limit(tagw: usize) -> usize {
     1 << (7 * tagw)
@@ -354,29 +353,6 @@ const MAX_TAG_WIDTH: usize = 4;
 
 /// The maximum supported protocol buffer size limit (1 << 28) = 256MiB.
 pub const MAX_OTLP_SIZE_LIMIT: usize = tag_width_limit(MAX_TAG_WIDTH);
-
-/// Compute the number of bytes needed to encode a varint value.
-#[inline]
-const fn varint_len(value: u64) -> usize {
-    // Each byte encodes 7 bits; we need ceil(bits_needed / 7), minimum 1.
-    if value == 0 {
-        return 1;
-    }
-    let bits = 64 - value.leading_zeros() as usize;
-    bits.div_ceil(7)
-}
-
-/// Truncate a string to at most `max_bytes` bytes at a UTF-8 character boundary.
-fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
 
 /// Build an `N`-byte zero-valued varint placeholder at compile time.
 const fn make_len_placeholder<const N: usize>() -> [u8; N] {
@@ -394,9 +370,13 @@ const fn make_len_placeholder<const N: usize>() -> [u8; N] {
 ///
 /// Write methods return [`EncodeResult`], enabling `?` propagation through
 /// recursive protobuf encoding. Callers are responsible for counting
-/// dropped fields. The [`try_encode`](Self::try_encode) method provides
+/// dropped fields. The [`try_atomic`](Self::try_atomic) method provides
 /// atomic field-level writes: either the entire field is written, or the
 /// buffer is rolled back to its previous state.
+///
+/// TODO(4482): This interface is too wide: it feaures public methods
+/// as well as ~5 internal methods that could become either private
+/// free functions or part of an internal storage trait.
 pub trait BoundedBuf {
     /// Current write position (encoded byte count).
     fn len(&self) -> usize;
@@ -405,19 +385,24 @@ pub trait BoundedBuf {
     fn limit(&self) -> usize;
 
     /// Set a new write limit.
+    /// TODO(4482): Can be a private storage trait and pub fn on the impls.
     fn set_limit(&mut self, limit: usize);
 
     /// Append bytes if they fit within the limit; otherwise return `Err(Dropped)`
     /// without writing any bytes.
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult;
+    /// TODO(4482): Note that extend_from_slice() is a deprecated alias for
+    //// this method.
+    fn try_extend_slice(&mut self, slice: &[u8]) -> EncodeResult;
 
     /// Truncate the buffer to the given position. Used for rollback.
+    /// TODO(4482): Can be an private storage trait.
     fn truncate(&mut self, pos: usize);
 
     /// Borrow the encoded bytes.
     fn as_slice(&self) -> &[u8];
 
     /// Borrow the encoded bytes mutably (used by [`patch_len_placeholder`]).
+    /// TODO(4482): Can be a private storage trait.
     fn as_mut_slice(&mut self) -> &mut [u8];
 
     /// Reset the buffer to empty (preserves any underlying allocation).
@@ -435,27 +420,28 @@ pub trait BoundedBuf {
         self.limit().saturating_sub(self.len())
     }
 
-    /// Append pre-encoded protocol bytes (alias for [`try_extend`]).
+    /// TODO(4482): This is an alias, and it is harmful because Vec's
+    /// extend_from_slice() is infallible, however a wide impact fix.
     #[inline]
     fn extend_from_slice(&mut self, slice: &[u8]) -> EncodeResult {
-        self.try_extend(slice)
+        self.try_extend_slice(slice)
     }
 
     /// Encodes a varint containing type (3 bits) and tag value.
     #[inline]
-    fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) -> EncodeResult {
-        let key = (field_number << 3) | wire_type;
+    fn encode_field_tag(&mut self, tag: u64, wire_type: u64) -> EncodeResult {
+        let key = (tag << 3) | wire_type;
         self.encode_varint(key)
     }
 
     /// An unsigned varint encoding.
-    #[inline]
+    #[inline(always)]
     fn encode_varint(&mut self, value: u64) -> EncodeResult {
         if value < tag_width_limit(1) as u64 {
-            return self.try_extend(&[value as u8]);
+            return self.try_extend_slice(&[value as u8]);
         }
         if value < tag_width_limit(2) as u64 {
-            return self.try_extend(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
+            return self.try_extend_slice(&[((value & 0x7F) | 0x80) as u8, (value >> 7) as u8]);
         }
         let mut tmp = [0u8; 10];
         let mut i = 0;
@@ -467,7 +453,7 @@ pub trait BoundedBuf {
         }
         tmp[i] = v as u8;
         i += 1;
-        self.try_extend(&tmp[..i])
+        self.try_extend_slice(&tmp[..i])
     }
 
     /// Encodes the signed varint type (e.g. sint32, sint64) using zig-zag encoding.
@@ -479,104 +465,23 @@ pub trait BoundedBuf {
 
     /// Encode a string field by tag number.
     #[inline]
-    fn encode_string(&mut self, field_tag: u64, val: &str) -> EncodeResult {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
+    fn encode_string(&mut self, tag: u64, val: &str) -> EncodeResult {
+        self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
-        self.try_extend(val.as_bytes())
+        self.try_extend_slice(val.as_bytes())
     }
 
     /// Encode a bytes field by tag number.
     #[inline]
-    fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) -> EncodeResult {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
+    fn encode_bytes(&mut self, tag: u64, val: &[u8]) -> EncodeResult {
+        self.encode_field_tag(tag, wire_types::LEN)?;
         self.encode_varint(val.len() as u64)?;
-        self.try_extend(val)
+        self.try_extend_slice(val)
     }
 
-    /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
-    ///
-    /// Returns `Err(Dropped)` if the string is truncated or entirely dropped.
-    fn encode_string_bounded(&mut self, field_tag: u64, val: &str) -> EncodeResult {
-        let full_len = val.len();
-        let tag_bytes = varint_len((field_tag << 3) | wire_types::LEN);
-
-        // Check if the full string fits.
-        let full_field_size = tag_bytes + varint_len(full_len as u64) + full_len;
-        if self.len() + full_field_size <= self.limit() {
-            return self.encode_string(field_tag, val);
-        }
-
-        let suffix_len = TRUNCATION_SUFFIX.len();
-        let avail = self.remaining();
-
-        // Minimum encoding is: tag + 1-byte length varint + suffix bytes
-        // (suffix_len is small enough that a payload of just the suffix
-        // always uses a 1-byte length varint).
-        let min_overhead = tag_bytes + 1 + suffix_len;
-        if avail < min_overhead {
-            return Err(EncodeFailure::Dropped);
-        }
-
-        // After the tag, we have `len_and_payload` bytes for the length
-        // varint plus the payload (content + suffix). We bound the
-        // length-varint width using `len_and_payload` itself; this may
-        // leave at most one byte unused when the actual payload's varint
-        // is shorter (subtracting `len_varint_size` from `len_and_payload`
-        // can drop the value across at most one 2^7 threshold). Closed-
-        // form, never overshoots `avail`. The `min_overhead` check above
-        // guarantees there is room for the varint and the suffix, so
-        // `content_len` is non-negative.
-        let len_and_payload = avail - tag_bytes;
-        let len_varint_size = varint_len(len_and_payload as u64);
-        debug_assert!(
-            len_and_payload >= len_varint_size + suffix_len,
-            "min_overhead check guarantees varint + suffix fit",
-        );
-        let content_len = len_and_payload - len_varint_size - suffix_len;
-
-        // Truncate at a UTF-8 character boundary.
-        let truncated_str = truncate_utf8(val, content_len);
-        let payload_len = truncated_str.len() + suffix_len;
-
-        // Pre-validated: each write fits within the limit.
-        self.encode_field_tag(field_tag, wire_types::LEN)
-            .expect("pre-validated fit");
-        self.encode_varint(payload_len as u64)
-            .expect("pre-validated fit");
-        self.try_extend(truncated_str.as_bytes())
-            .expect("pre-validated fit");
-        self.try_extend(TRUNCATION_SUFFIX)
-            .expect("pre-validated fit");
-        Err(EncodeFailure::Dropped)
-    }
-
-    /// Encode a string field, truncating with a suffix if it won't fit.
-    ///
-    /// Returns:
-    /// - `Ok(false)` if the full string was written.
-    /// - `Ok(true)` if the value was truncated (with `[...]` suffix appended).
-    /// - `Err(Dropped)` if even a minimum truncated form would not fit;
-    ///   the buffer is left unchanged in this case.
-    fn encode_string_truncating(
-        &mut self,
-        field_tag: u64,
-        val: &str,
-    ) -> std::result::Result<bool, EncodeFailure> {
-        let start = self.len();
-        match self.encode_string_bounded(field_tag, val) {
-            Ok(()) => Ok(false),
-            Err(failure) => {
-                if self.len() == start {
-                    Err(failure)
-                } else {
-                    Ok(true)
-                }
-            }
-        }
-    }
-
-    /// Returns the narrowest placeholder width (1-4 bytes) sufficient
-    /// for this buffer's remaining space.
+    /// Returns the narrowest placeholder width sufficient for this
+    /// buffer's remaining space.
+    /// TODO(4482): Can be a private free function.
     #[inline]
     fn placeholder_width(&self) -> usize {
         let rem = self.remaining();
@@ -591,95 +496,46 @@ pub trait BoundedBuf {
         }
     }
 
-    /// Encode a length-delimited field atomically.
-    ///
-    /// Selects the narrowest placeholder width based on the buffer's
-    /// remaining space, then writes the field tag, a length placeholder, the
-    /// closure's content, and patches the length. If any write fails,
-    /// the error propagates via `?`.
+    /// Encode a length-delimited field with variable-width placeholder. Does not
+    /// roll-backup; supports truncation or not.
     #[inline]
-    fn encode_len_delimited<E: From<EncodeFailure>>(
+    fn encode_len_delimited<T, E: From<EncodeFailure>>(
         &mut self,
-        field_tag: u64,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E>
+        tag: u64,
+        f: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E>
     where
         Self: Sized,
     {
         match self.placeholder_width() {
-            1 => self.encode_len_delimited_width::<1, E, _>(field_tag, f),
-            2 => self.encode_len_delimited_width::<2, E, _>(field_tag, f),
-            3 => self.encode_len_delimited_width::<3, E, _>(field_tag, f),
-            _ => self.encode_len_delimited_width::<4, E, _>(field_tag, f),
+            1 => self.encode_len_delimited_width::<1, _, E, _>(tag, f),
+            2 => self.encode_len_delimited_width::<2, _, E, _>(tag, f),
+            3 => self.encode_len_delimited_width::<3, _, E, _>(tag, f),
+            _ => self.encode_len_delimited_width::<4, _, E, _>(tag, f),
         }
     }
 
-    /// Implementation of [`encode_len_delimited`](Self::encode_len_delimited)
-    /// with an explicit `B`-byte placeholder width.
+    /// Implementation of encode_len_delimited with an explicit
+    /// placeholder width. Supports TruncateResult or EncodeResult.
+    /// TODO(4482): Can be a private free function.
     #[inline]
-    fn encode_len_delimited_width<const B: usize, E, F>(
+    fn encode_len_delimited_width<const B: usize, T, E, F>(
         &mut self,
-        field_tag: u64,
+        tag: u64,
         f: F,
-    ) -> std::result::Result<(), E>
+    ) -> Result<T, E>
     where
         E: From<EncodeFailure>,
-        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
+        F: FnOnce(&mut Self) -> Result<T, E>,
         Self: Sized,
     {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
+        self.encode_field_tag(tag, wire_types::LEN)?;
         let len_start_pos = self.len();
-        self.try_extend(&make_len_placeholder::<B>())?;
-        f(self)?;
+        self.try_extend_slice(&make_len_placeholder::<B>())?;
+        let ok = f(self)?;
         let len = self.len() - len_start_pos - B;
         patch_len_placeholder::<B, _>(self, len, len_start_pos);
-        Ok(())
-    }
-
-    /// Like [`encode_len_delimited`], but always patches the length placeholder
-    /// even if the inner closure returns `Err`.
-    ///
-    /// This is intended for nested truncating encoders that may write partial
-    /// content and signal truncation via `Err`. The caller is responsible for
-    /// arranging that any "hard failure" (where no useful bytes were written)
-    /// is rolled back at an outer transaction boundary via [`try_encode`].
-    #[inline]
-    fn encode_len_delimited_partial<E: From<EncodeFailure>>(
-        &mut self,
-        field_tag: u64,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E>
-    where
-        Self: Sized,
-    {
-        match self.placeholder_width() {
-            1 => self.encode_len_delimited_partial_with::<1, E, _>(field_tag, f),
-            2 => self.encode_len_delimited_partial_with::<2, E, _>(field_tag, f),
-            3 => self.encode_len_delimited_partial_with::<3, E, _>(field_tag, f),
-            _ => self.encode_len_delimited_partial_with::<4, E, _>(field_tag, f),
-        }
-    }
-
-    /// Implementation of [`encode_len_delimited_partial`](Self::encode_len_delimited_partial)
-    /// with an explicit `N`-byte placeholder width.
-    #[inline]
-    fn encode_len_delimited_partial_with<const N: usize, E, F>(
-        &mut self,
-        field_tag: u64,
-        f: F,
-    ) -> std::result::Result<(), E>
-    where
-        E: From<EncodeFailure>,
-        F: FnOnce(&mut Self) -> std::result::Result<(), E>,
-        Self: Sized,
-    {
-        self.encode_field_tag(field_tag, wire_types::LEN)?;
-        let len_start_pos = self.len();
-        self.try_extend(&make_len_placeholder::<N>())?;
-        let result = f(self);
-        let len = self.len() - len_start_pos - N;
-        patch_len_placeholder::<N, _>(self, len, len_start_pos);
-        result
+        Ok(ok)
     }
 
     /// Run a closure with a temporarily reduced limit.
@@ -703,22 +559,18 @@ pub trait BoundedBuf {
 
     /// Try to encode a complete field atomically.
     ///
-    /// If the closure returns an error (e.g., `EncodeFailure::Dropped` or any other
-    /// error type), the buffer is rolled back to its state before the
-    /// call and the error is returned.
+    /// If the closure returns an error, the buffer is rolled back to
+    /// its state before the call and the error is returned.
     #[inline]
-    fn try_encode<E>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E>
+    fn try_atomic<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E>
     where
         Self: Sized,
     {
-        let cp = Checkpoint { pos: self.len() };
+        let cp = self.len();
         match f(self) {
-            Ok(()) => Ok(()),
+            Ok(t) => Ok(t),
             Err(e) => {
-                self.truncate(cp.pos);
+                self.truncate(cp);
                 Err(e)
             }
         }
@@ -854,7 +706,7 @@ impl BoundedBuf for ProtoBuffer {
         self.limit = limit;
     }
     #[inline]
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
+    fn try_extend_slice(&mut self, slice: &[u8]) -> EncodeResult {
         if self.buffer.len() + slice.len() <= self.limit {
             self.buffer.extend_from_slice(slice);
             Ok(())
@@ -943,7 +795,7 @@ impl<const N: usize> BoundedBuf for StackProtoBuffer<N> {
         self.limit = limit.min(N);
     }
     #[inline]
-    fn try_extend(&mut self, slice: &[u8]) -> EncodeResult {
+    fn try_extend_slice(&mut self, slice: &[u8]) -> EncodeResult {
         let new_pos = self.pos + slice.len();
         if new_pos <= self.limit {
             self.buf[self.pos..new_pos].copy_from_slice(slice);
@@ -985,25 +837,9 @@ impl<const N: usize> AsMut<[u8]> for StackProtoBuffer<N> {
     }
 }
 
-/// Write an `N`-byte length placeholder for later patching.
-///
-/// Do not call directly, use [`BoundedBuf::encode_len_delimited`].
-#[inline]
-pub fn encode_len_placeholder<const N: usize, B: BoundedBuf>(buf: &mut B) -> EncodeResult {
-    const {
-        assert!(
-            N >= 1 && N <= MAX_TAG_WIDTH,
-            "placeholder must be 1-4 bytes"
-        )
-    }
-    buf.try_extend(&make_len_placeholder::<N>())
-}
-
 /// Patch a previously written length placeholder with the actual length.
-///
-/// Do not call directly, use [`BoundedBuf::encode_len_delimited`].
 #[inline]
-pub fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
+fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
     buf: &mut B,
     len: usize,
     len_start_pos: usize,
@@ -1147,7 +983,7 @@ impl BatchSorter {
         &mut self,
         record_batch: &RecordBatch,
         cursor: &mut SortedBatchCursor,
-    ) -> Result<()> {
+    ) -> PDataResult<()> {
         let mut sort_columns_idx = 0;
         let mut sort_columns: [Option<&UInt16Array>; 3] = [None, None, None];
         for col_name in [consts::RESOURCE, consts::SCOPE] {
@@ -1366,15 +1202,10 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::{
         arrays::MaybeDictArrayAccessor,
-        otlp::common::{
-            BatchSorter, BoundedBuf, ChildIndexIter, EncodeFailure, EncodeResult, ProtoBuffer,
-            Result, SortedBatchCursor, StackProtoBuffer, TRUNCATION_SUFFIX, encode_len_placeholder,
-            patch_len_placeholder,
-        },
         proto::OtlpProtoMessage,
-        proto::consts::wire_types,
         schema::consts,
         testing::{fixtures::*, round_trip::*},
     };
@@ -1382,9 +1213,10 @@ mod test {
         array::{RecordBatch, StructArray, UInt16Array},
         datatypes::{DataType, Field, Fields, Schema, UInt16Type},
     };
-    use prost::Message;
     use std::sync::Arc;
 
+    /// Scenario: child rows have shuffled parent IDs and parents are visited in ascending order.
+    /// Guarantees: each parent yields only its matching row indices, and exhausted iteration ends.
     #[test]
     fn test_child_index_iter_shuffled_order() {
         let mut cursor = SortedBatchCursor::new();
@@ -1419,6 +1251,9 @@ mod test {
         }
     }
 
+    /// Scenario: parents are visited in non-ascending ID order against a shared child cursor.
+    /// Guarantees: visiting a higher ID does not consume a lower ID's child rows.
+    ///
     /// Regression test: parents may be visited in *non-ascending* id order against a shared
     /// cursor. The root visitation order is `(resource_id, scope_id, id)`, so `id` alone is not
     /// always ascending (e.g. after `extend attributes[...]` fills null root ids with `max + 1`).
@@ -1454,6 +1289,8 @@ mod test {
         }
     }
 
+    /// Scenario: no child rows belong to a parent ID between two populated parent IDs.
+    /// Guarantees: the missing parent yields no rows without consuming the next parent's rows.
     #[test]
     fn test_child_index_iter_with_skipped_values() {
         let mut cursor = SortedBatchCursor::new();
@@ -1482,6 +1319,8 @@ mod test {
         }
     }
 
+    /// Scenario: shuffled child rows include a null parent ID.
+    /// Guarantees: null IDs are skipped and each non-null parent yields all its matching rows.
     #[test]
     fn test_child_index_iter_with_nulls() {
         let mut cursor = SortedBatchCursor::new();
@@ -1510,6 +1349,8 @@ mod test {
         }
     }
 
+    /// Scenario: the same root batch is sorted twice using one batch sorter.
+    /// Guarantees: the second sort reuses the existing ID vector allocation.
     #[test]
     fn test_batch_sorter_reuse_alloc() {
         // test that we're able to reuse the batch sorter's sort vec heap allocation
@@ -1563,51 +1404,71 @@ mod test {
     // Logs Tests
     //
 
+    /// Scenario: logs with populated resource and scope metadata round-trip through OTAP.
+    /// Guarantees: log records and their resource and scope metadata remain semantically equivalent.
     #[test]
     fn test_logs_with_full_resource_and_scope() {
         test_logs_round_trip(logs_with_full_resource_and_scope());
     }
 
+    /// Scenario: logs with no resource metadata round-trip through OTAP.
+    /// Guarantees: log records and scope metadata survive without requiring resource metadata.
     #[test]
     fn test_logs_with_no_resource() {
         test_logs_round_trip(logs_with_no_resource());
     }
 
+    /// Scenario: logs with no scope metadata round-trip through OTAP.
+    /// Guarantees: log records and resource metadata survive without requiring scope metadata.
     #[test]
     fn test_logs_with_no_scope() {
         test_logs_round_trip(log_with_no_scope());
     }
 
+    /// Scenario: logs without record attributes round-trip through OTAP.
+    /// Guarantees: record fields remain semantically equivalent without introducing attributes.
     #[test]
     fn test_logs_with_no_attributes() {
         test_logs_round_trip(logs_with_no_attributes());
     }
 
+    /// Scenario: logs with neither resource nor scope metadata round-trip through OTAP.
+    /// Guarantees: log record contents survive without requiring either metadata envelope.
     #[test]
     fn test_logs_with_no_resource_no_scope() {
         test_logs_round_trip(logs_with_no_resource_no_scope());
     }
 
+    /// Scenario: several logs share a scope with no resource metadata and round-trip through OTAP.
+    /// Guarantees: all records retain their distinct timestamps and severities.
     #[test]
     fn test_logs_multiple_records_no_resource() {
         test_logs_round_trip(logs_multiple_records_no_resource());
     }
 
+    /// Scenario: logs span multiple named scopes with no resource metadata.
+    /// Guarantees: an OTAP round trip preserves each record's contents and scope association.
     #[test]
     fn test_logs_multiple_scopes_no_resource() {
         test_logs_round_trip(logs_multiple_scopes_no_resource());
     }
 
+    /// Scenario: logs span multiple resource envelopes with populated and empty scope metadata.
+    /// Guarantees: an OTAP round trip preserves the semantic contents of every log record.
     #[test]
     fn test_logs_multiple_resources_mixed_content() {
         test_logs_round_trip(logs_multiple_resources_mixed_content());
     }
 
+    /// Scenario: a logs scope contains no records and round-trips through OTAP.
+    /// Guarantees: dropping the empty envelope does not introduce any log records.
     #[test]
     fn test_logs_with_empty_log_records() {
         test_logs_round_trip(logs_with_empty_log_records());
     }
 
+    /// Scenario: a log record has an explicitly empty string body and round-trips through OTAP.
+    /// Guarantees: the record retains an empty string body rather than losing the body value.
     #[test]
     fn test_logs_with_body_empty_string() {
         test_logs_round_trip(logs_with_body_empty_string());
@@ -1617,41 +1478,57 @@ mod test {
     // Traces Tests
     //
 
+    /// Scenario: traces with populated resource and scope metadata round-trip through OTAP.
+    /// Guarantees: spans and their resource and scope metadata remain semantically equivalent.
     #[test]
     fn test_traces_with_full_resource_and_scope() {
         test_traces_round_trip(traces_with_full_resource_and_scope());
     }
 
+    /// Scenario: traces with no resource metadata round-trip through OTAP.
+    /// Guarantees: spans and scope metadata survive without requiring resource metadata.
     #[test]
     fn test_traces_with_no_resource() {
         test_traces_round_trip(traces_with_no_resource());
     }
 
+    /// Scenario: traces with no scope metadata round-trip through OTAP.
+    /// Guarantees: spans and resource metadata survive without requiring scope metadata.
     #[test]
     fn test_traces_with_no_scope() {
         test_traces_round_trip(traces_with_no_scope());
     }
 
+    /// Scenario: traces without span attributes round-trip through OTAP.
+    /// Guarantees: span fields remain semantically equivalent without introducing attributes.
     #[test]
     fn test_traces_with_no_attributes() {
         test_traces_round_trip(traces_with_no_attributes());
     }
 
+    /// Scenario: traces with neither resource nor scope metadata round-trip through OTAP.
+    /// Guarantees: span contents survive without requiring either metadata envelope.
     #[test]
     fn test_traces_with_no_resource_no_scope() {
         test_traces_round_trip(traces_with_no_resource_no_scope());
     }
 
+    /// Scenario: several spans share a scope with no resource metadata and round-trip through OTAP.
+    /// Guarantees: all spans retain their distinct identifiers, names, kinds, and timestamps.
     #[test]
     fn test_traces_multiple_spans_no_resource() {
         test_traces_round_trip(traces_multiple_spans_no_resource());
     }
 
+    /// Scenario: spans belong to multiple named scopes with no resource metadata.
+    /// Guarantees: an OTAP round trip preserves each span's contents and scope association.
     #[test]
     fn test_traces_multiple_scopes_no_resource() {
         test_traces_round_trip(traces_multiple_scopes_no_resource());
     }
 
+    /// Scenario: spans span multiple resource envelopes with populated and empty scope metadata.
+    /// Guarantees: an OTAP round trip preserves the semantic contents of every span.
     #[test]
     fn test_traces_multiple_resources_mixed_content() {
         test_traces_round_trip(traces_multiple_resources_mixed_content());
@@ -1661,31 +1538,43 @@ mod test {
     // Metrics Tests
     //
 
+    /// Scenario: a sum metric with populated resource and scope metadata round-trips through OTAP.
+    /// Guarantees: metric data and resource and scope metadata remain semantically equivalent.
     #[test]
     fn test_metrics_sum_with_full_resource_and_scope() {
         test_metrics_round_trip(metrics_sum_with_full_resource_and_scope());
     }
 
+    /// Scenario: a sum metric with no resource metadata round-trips through OTAP.
+    /// Guarantees: metric data and scope metadata survive without requiring resource metadata.
     #[test]
     fn test_metrics_sum_with_no_resource() {
         test_metrics_round_trip(metrics_sum_with_no_resource());
     }
 
+    /// Scenario: a sum metric with no scope metadata round-trips through OTAP.
+    /// Guarantees: metric data and resource metadata survive without requiring scope metadata.
     #[test]
     fn test_metrics_sum_with_no_scope() {
         test_metrics_round_trip(metrics_sum_with_no_scope());
     }
 
+    /// Scenario: a sum metric with neither resource nor scope metadata round-trips through OTAP.
+    /// Guarantees: metric data survives without requiring either metadata envelope.
     #[test]
     fn test_metrics_sum_with_no_resource_no_scope() {
         test_metrics_round_trip(metrics_sum_with_no_resource_no_scope());
     }
 
+    /// Scenario: a named sum metric contains no data points and round-trips through OTAP.
+    /// Guarantees: the metric and its sum properties survive with an empty data point list.
     #[test]
     fn test_metrics_sum_with_no_data_points() {
         test_metrics_round_trip(metrics_sum_with_no_data_points());
     }
 
+    /// Scenario: multiple sum metrics with different aggregation properties share an empty resource.
+    /// Guarantees: an OTAP round trip preserves each metric's values, temporality, and monotonicity.
     #[test]
     fn test_metrics_multiple_sums_no_resource() {
         test_metrics_round_trip(metrics_multiple_sums_no_resource());
@@ -1702,100 +1591,70 @@ mod test {
         assert_eq!(encoded.num_items(), 0, "Expected an empty batch");
     }
 
+    /// Scenario: logs data contains no resource envelopes.
+    /// Guarantees: OTAP encoding produces a batch with zero items.
     #[test]
     fn test_empty_logs() {
         assert_empty_batch(empty_logs().into());
     }
 
+    /// Scenario: a logs resource contains no scope envelopes.
+    /// Guarantees: the empty resource encodes to an OTAP batch with zero items.
     #[test]
     fn test_logs_with_empty_scope_logs() {
         assert_empty_batch(logs_with_empty_scope_logs().into());
     }
 
+    /// Scenario: traces data contains no resource envelopes.
+    /// Guarantees: OTAP encoding produces a batch with zero items.
     #[test]
     fn test_empty_traces() {
         assert_empty_batch(empty_traces().into());
     }
 
+    /// Scenario: a traces resource contains no scope envelopes.
+    /// Guarantees: the empty resource encodes to an OTAP batch with zero items.
     #[test]
     fn test_traces_with_empty_scope_spans() {
         assert_empty_batch(traces_with_empty_scope_spans().into());
     }
 
+    /// Scenario: a traces scope contains no spans.
+    /// Guarantees: the empty scope encodes to an OTAP batch with zero items.
     #[test]
     fn test_traces_with_empty_spans() {
         assert_empty_batch(traces_with_empty_spans().into());
     }
 
+    /// Scenario: metrics data contains no resource envelopes.
+    /// Guarantees: OTAP encoding produces a batch with zero items.
     #[test]
     fn test_empty_metrics() {
         assert_empty_batch(empty_metrics().into());
     }
 
+    /// Scenario: a metrics resource contains no scope envelopes.
+    /// Guarantees: the empty resource encodes to an OTAP batch with zero items.
     #[test]
     fn test_metrics_with_no_scope_metrics() {
         assert_empty_batch(metrics_with_no_scope_metrics().into());
     }
 
+    /// Scenario: a metrics scope contains no metrics.
+    /// Guarantees: the empty scope encodes to an OTAP batch with zero items.
     #[test]
     fn test_metrics_with_no_metrics() {
         assert_empty_batch(metrics_with_no_metrics().into());
     }
 
-    #[test]
-    fn test_encode_len_placeholder_sizes() {
-        fn check<const N: usize>() {
-            let mut buf = ProtoBuffer::default();
-            encode_len_placeholder::<N, _>(&mut buf).unwrap();
-            assert_eq!(buf.len(), N);
-            for i in 0..N - 1 {
-                assert_eq!(buf.as_ref()[i], 0x80, "byte {i} for {N}-byte placeholder");
-            }
-            assert_eq!(buf.as_ref()[N - 1], 0x00);
-        }
-
-        check::<1>();
-        check::<2>();
-        check::<3>();
-        check::<4>();
-    }
-
-    #[test]
-    fn test_patch_len_placeholder_roundtrip() {
-        // Verify that encoding+patching with each placeholder size produces
-        // valid varints that a standard decoder would read correctly.
-        fn check<const N: usize>(test_lengths: &[usize]) {
-            let max_len = (1usize << (7 * N)) - 1;
-            for &len in test_lengths {
-                if len > max_len {
-                    continue;
-                }
-                let mut buf = ProtoBuffer::default();
-                let start = buf.len();
-                encode_len_placeholder::<N, _>(&mut buf).unwrap();
-                patch_len_placeholder::<N, _>(&mut buf, len, start);
-
-                let mut decoded: u64 = 0;
-                for i in 0..N {
-                    decoded |= ((buf.as_ref()[start + i] & 0x7f) as u64) << (i * 7);
-                }
-                assert_eq!(decoded, len as u64, "N={N}, expected len={len}");
-            }
-        }
-
-        let lengths: &[usize] = &[0, 1, 42, 127, 128, 1000, 16383];
-        check::<1>(lengths);
-        check::<2>(lengths);
-        check::<3>(lengths);
-        check::<4>(lengths);
-    }
-
+    /// Scenario: the same nested string is encoded with 127-byte, 128-byte, and default buffers.
+    /// Guarantees: length placeholders use one, two, and four bytes respectively.
     #[test]
     fn test_encode_len_delimited_auto_width() {
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
         let mut buf = StackProtoBuffer::<127>::default();
-        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> Result<()> {
-            Ok(buf.encode_string(1, "hi")?)
+        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> EncodeResult {
+            buf.encode_string(1, "hi")
         })
         .unwrap();
         // tag(1) + placeholder(1) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 6
@@ -1803,8 +1662,8 @@ mod test {
 
         // A 128-byte inline buffer should use a 2-byte placeholder (128 >= 2^7).
         let mut buf = StackProtoBuffer::<128>::default();
-        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> Result<()> {
-            Ok(buf.encode_string(1, "hi")?)
+        buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> EncodeResult {
+            buf.encode_string(1, "hi")
         })
         .unwrap();
         // tag(1) + placeholder(2) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 7
@@ -1812,177 +1671,70 @@ mod test {
 
         // A default (256MiB limit) buffer should use a 4-byte placeholder.
         let mut buf = ProtoBuffer::default();
-        buf.encode_len_delimited(1, |buf| -> Result<()> { Ok(buf.encode_string(1, "hi")?) })
+        buf.encode_len_delimited(1, |buf| -> EncodeResult { buf.encode_string(1, "hi") })
             .unwrap();
         // tag(1) + placeholder(4) + inner_tag(1) + inner_len_varint(1) + "hi"(2) = 9
         assert_eq!(buf.len(), 9);
     }
 
+    /// Scenario: atomic encoding fails after writing, then a length-delimited callback returns a count.
+    /// Guarantees: failure restores the original bytes; success retains bytes and the callback's count.
     #[test]
-    fn try_encode_rolls_back_buffer_on_error() {
+    fn try_atomic_rolls_back_buffer_on_error() {
         let mut buf = ProtoBuffer::default();
         buf.encode_string(1, "before").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
         let snapshot_len = buf.len();
 
-        let res: EncodeResult = buf.try_encode(|b| {
+        let res: EncodeResult = buf.try_atomic(|b| {
             // Write several bytes successfully, then fail.
             b.encode_string(2, "partial-content")?;
             b.encode_varint(0xDEAD_BEEF)?;
             Err(EncodeFailure::Dropped)
         });
-        assert_eq!(res, Err(EncodeFailure::Dropped));
+        assert!(matches!(res, Err(EncodeFailure::Dropped)));
         assert_eq!(buf.len(), snapshot_len, "len must be restored");
         assert_eq!(buf.as_ref(), snapshot.as_slice(), "bytes must be identical");
 
-        // try_encode on Ok preserves all writes.
-        let res: EncodeResult = buf.try_encode(|b| b.encode_string(3, "ok"));
-        assert!(res.is_ok());
+        // try_atomic on Ok preserves all writes.
+        let res: EncodeResult<usize> = buf.try_atomic(|b| {
+            b.encode_len_delimited(3, |b| {
+                b.encode_string(1, "ok")?;
+                Ok(b.len() - snapshot_len)
+            })
+        });
+        assert_eq!(res.unwrap(), buf.len() - snapshot_len);
         assert!(buf.len() > snapshot_len);
     }
 
+    /// Scenario: a length-delimited field overflows an eight-byte buffer during its inner encoding.
+    /// Guarantees: failure leaves the length unpatched, while an atomic wrapper rolls back all bytes.
     #[test]
     fn encode_len_delimited_does_not_patch_on_inner_err() {
-        // Regression: encode_len_delimited (non-partial) on inner Err leaves
-        // an unpatched 0-length placeholder followed by partial content bytes.
-        // The bytes are wire-corrupt and MUST be wrapped in try_encode by
-        // callers (this is the bug that bit encode_body_string).
         let mut buf = StackProtoBuffer::<8>::default();
         let r: EncodeResult = buf.encode_len_delimited(1, |b| {
             // Write enough partial content to force overflow before completion.
             b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA")?;
             Ok(())
         });
-        assert_eq!(r, Err(EncodeFailure::Dropped));
+        assert!(matches!(r, Err(EncodeFailure::Dropped)));
         // tag(1) + placeholder(1) was written, plus partial content bytes.
         // The placeholder is unpatched (still 0x00), so a parser would read
         // the body as 0 bytes and continue at the partial content as garbage.
         assert!(buf.len() >= 2, "tag + placeholder were written");
         assert_eq!(buf.as_ref()[1], 0x00, "placeholder remained unpatched");
 
-        // The safe pattern: wrap in try_encode so partial bytes roll back.
+        // The safe pattern: wrap in try_atomic so partial bytes roll back.
         let mut buf = StackProtoBuffer::<8>::default();
-        let r: EncodeResult = buf.try_encode(|b| {
+        let r: EncodeResult = buf.try_atomic(|b| {
             b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
         });
-        assert_eq!(r, Err(EncodeFailure::Dropped));
-        assert_eq!(buf.len(), 0, "try_encode rolled back partial bytes");
+        assert!(matches!(r, Err(EncodeFailure::Dropped)));
+        assert_eq!(buf.len(), 0, "try_atomic rolled back partial bytes");
     }
 
-    #[test]
-    fn encode_len_delimited_partial_patches_length_on_err() {
-        // Partial mode: even when the inner closure returns Err mid-way, the
-        // length placeholder reflects the bytes actually written, leaving a
-        // valid LEN-prefixed wire field that can be parsed.
-        let mut buf = StackProtoBuffer::<128>::default();
-        // Pre-write a marker field so we can detect mis-parsing of trailing data.
-        buf.encode_string(7, "marker").unwrap();
-        let len_before = buf.len();
-
-        let r: EncodeResult = buf.encode_len_delimited_partial(1, |b| {
-            b.extend_from_slice(b"abcde")?;
-            // Caller signals "partial" via Err to outer logic, but bytes stay.
-            Err(EncodeFailure::Dropped)
-        });
-        assert_eq!(r, Err(EncodeFailure::Dropped));
-
-        // Read back: tag for field 1 (LEN), then patched length, then 5 bytes.
-        let bytes = &buf.as_ref()[len_before..];
-        assert_eq!(bytes[0], (1 << 3) | wire_types::LEN as u8);
-        // Placeholder width 1 expected (small remaining after marker).
-        let payload_len = bytes[1] as usize;
-        assert_eq!(payload_len, 5, "length patched to written-bytes count");
-        assert_eq!(&bytes[2..2 + payload_len], b"abcde");
-
-        // Append another field after the partial one and confirm it parses.
-        buf.encode_string(8, "after").unwrap();
-        // Find "after" by scanning -- it must be intact at the end.
-        assert!(
-            buf.as_ref().windows(5).any(|w| w == b"after"),
-            "subsequent field is intact when partial used"
-        );
-    }
-
-    #[test]
-    fn encode_string_truncating_three_outcomes() {
-        // (a) Full fit -> Ok(false), no suffix.
-        let mut buf = StackProtoBuffer::<64>::default();
-        let r = buf.encode_string_truncating(1, "hi");
-        assert_eq!(r, Ok(false));
-        assert!(!buf.as_ref().windows(5).any(|w| w == TRUNCATION_SUFFIX));
-
-        // (b) Truncated -> Ok(true), output ends with suffix.
-        let mut buf = StackProtoBuffer::<32>::default();
-        let long = "X".repeat(1000);
-        let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Ok(true));
-        assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
-
-        // (c) Hard fail -> Dropped, buffer unchanged.
-        let mut buf = StackProtoBuffer::<4>::default();
-        // Pre-fill so remaining < min_overhead.
-        buf.extend_from_slice(b"abcd").unwrap();
-        let snapshot: Vec<u8> = buf.as_ref().to_vec();
-        let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Err(EncodeFailure::Dropped));
-        assert_eq!(
-            buf.as_ref(),
-            snapshot.as_slice(),
-            "no partial bytes on hard fail"
-        );
-    }
-
-    #[test]
-    fn encode_string_truncating_round_trips_via_prost() {
-        // Encode a truncating string as if it were the "string_value" of an
-        // AnyValue (field 1 = string) and decode via prost to confirm the
-        // bytes form a valid wire message ending in the truncation suffix.
-        let mut buf = StackProtoBuffer::<48>::default();
-        let long = "Y".repeat(500);
-        let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Ok(true));
-
-        // Decode as AnyValue (field 1 = string_value).
-        use crate::proto::opentelemetry::common::v1::AnyValue;
-        let av = AnyValue::decode(buf.to_bytes()).expect("valid wire bytes");
-        let s = match av.value {
-            Some(crate::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s,
-            other => panic!("unexpected AnyValue variant: {:?}", other),
-        };
-        assert!(
-            s.ends_with("[...]"),
-            "decoded value should end with truncation suffix"
-        );
-        assert!(s.starts_with("YY"));
-    }
-
-    #[test]
-    fn truncate_utf8_returns_char_boundary_prefix() {
-        // 4-byte UTF-8 characters (U+1F600, 4 bytes each).
-        let s: String = std::iter::repeat_n('\u{1F600}', 5).collect();
-        assert_eq!(s.len(), 20);
-
-        // For every possible max_bytes, the result must be:
-        //   - a valid &str prefix of `s` (implicit: no panic on slicing)
-        //   - of length <= max_bytes
-        //   - of length >= max_bytes - 3 (since chars are at most 4 bytes)
-        for max_bytes in 0..=s.len() {
-            let out = super::truncate_utf8(&s, max_bytes);
-            assert!(out.len() <= max_bytes, "max_bytes={max_bytes}");
-            assert!(
-                max_bytes < 4 || out.len() >= max_bytes - 3,
-                "max_bytes={max_bytes}, out.len()={}",
-                out.len()
-            );
-            assert!(s.starts_with(out));
-            // out.len() must be a multiple of 4 (each char is 4 bytes).
-            assert_eq!(out.len() % 4, 0, "max_bytes={max_bytes}");
-        }
-
-        // Above the input length, returns the whole string.
-        assert_eq!(super::truncate_utf8(&s, 1000), s.as_str());
-    }
-
+    /// Scenario: a buffer temporarily restricts its remaining capacity to eight bytes without writing.
+    /// Guarantees: the scoped budget applies and the original limit and remaining capacity are restored.
     #[test]
     fn with_max_remaining_restores_outer_limit() {
         let mut buf = StackProtoBuffer::<64>::default();
@@ -1999,6 +1751,8 @@ mod test {
         assert_eq!(buf.remaining(), outer_remaining);
     }
 
+    /// Scenario: a ten-byte remaining-capacity scope is nested inside a fifty-byte scope.
+    /// Guarantees: each budget applies locally and unwinding restores each enclosing limit in turn.
     #[test]
     fn with_max_remaining_nests_correctly() {
         let mut buf = StackProtoBuffer::<128>::default();
@@ -2016,6 +1770,8 @@ mod test {
         assert_eq!(buf.limit(), outer, "fully restored after both scopes");
     }
 
+    /// Scenario: a bounded buffer receives a scoped remaining-capacity request of usize::MAX.
+    /// Guarantees: the request does not overflow or raise the limit beyond the outer buffer limit.
     #[test]
     fn with_max_remaining_saturates_and_honors_outer() {
         let mut buf = StackProtoBuffer::<32>::default();

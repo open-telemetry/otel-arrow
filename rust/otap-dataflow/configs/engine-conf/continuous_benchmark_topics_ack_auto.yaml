@@ -143,7 +143,7 @@ groups:
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 30
-              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git@v1.44.0[model]
           ingress_exporter:
             type: exporter:topic
             config:

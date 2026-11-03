@@ -3,11 +3,14 @@
 
 //! Internal metrics receiver state
 
+use bytes::Bytes;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata_codec::builtins::resolve_otlp;
 use otel_arrow_dfe_telemetry::metrics::otlp::{
     MetricView, MetricViewSelector, MetricViewStream, MetricsOtlpEncoder,
 };
@@ -228,7 +231,7 @@ impl MetricExporter {
             let _ = export.commit();
             return Ok(());
         };
-        let Some(metrics) =
+        let Some(mut metrics) =
             encoder
                 .encode(export.batch())
                 .map_err(|error| Error::PdataConversionError {
@@ -240,7 +243,18 @@ impl MetricExporter {
         };
 
         effect_handler
-            .send_message(OtapPdata::new(Context::default(), metrics.into()))
+            .send_message(OtapPdata::new(
+                Context::default(),
+                // SAFETY: PipelineRuntimeServices validates the immutable global
+                // registry before starting this receiver, including built-in OTLP.
+                resolve_otlp()
+                    .expect("validated OTLP codec")
+                    .admit(SignalType::Metrics, metrics.replace_bytes(Bytes::new()))
+                    .map_err(|error| Error::PdataConversionError {
+                        error: error.to_string(),
+                    })?
+                    .into(),
+            ))
             .await?;
         let _ = export.commit();
         Ok(())

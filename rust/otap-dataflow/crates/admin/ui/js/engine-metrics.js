@@ -19,6 +19,8 @@ export function extractEngineSummary(metricSets, options = {}) {
     cpuUtilCount: 0,
     memoryRssBytesSum: 0,
     memoryRssCount: 0,
+    memoryCommitBytesSum: 0,
+    memoryCommitCount: 0,
     groupCount: 0,
     pipelineCount: 0,
     coreCount: pipelineSets.length,
@@ -54,6 +56,7 @@ export function extractEngineSummary(metricSets, options = {}) {
   engineSets.forEach((set) => {
     let cpuUtil = null;
     let memoryRss = null;
+    let memoryCommit = null;
     (set.metrics || []).forEach((metric) => {
       if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
         return;
@@ -65,7 +68,15 @@ export function extractEngineSummary(metricSets, options = {}) {
       if (metric.name === "memory.rss") {
         memoryRss = metric.value;
       }
+      if (metric.name === "memory.commit") {
+        memoryCommit = metric.value;
+      }
     });
+
+    if (typeof memoryCommit === "number" && Number.isFinite(memoryCommit)) {
+      summary.memoryCommitBytesSum += memoryCommit;
+      summary.memoryCommitCount += 1;
+    }
 
     const isAllZeroSnapshot =
       skipAllZeroSnapshots && cpuUtil === 0 && memoryRss === 0;
@@ -93,6 +104,7 @@ export function deriveEngineCardValues(summary, previous = {}, options = {}) {
   const holdLastValues = options.holdLastValues ?? true;
   let lastCpuUtilPercent = previous.lastCpuUtilPercent ?? null;
   let lastMemoryRssMiB = previous.lastMemoryRssMiB ?? null;
+  let lastMemoryCommitMiB = previous.lastMemoryCommitMiB ?? null;
   let lastUptimeSeconds = previous.lastUptimeSeconds ?? null;
 
   if (!summary) {
@@ -102,12 +114,15 @@ export function deriveEngineCardValues(summary, previous = {}, options = {}) {
       coreCount: 0,
       cpuUtilPercent: Number.isFinite(lastCpuUtilPercent) ? lastCpuUtilPercent : null,
       memoryRssMiB: Number.isFinite(lastMemoryRssMiB) ? lastMemoryRssMiB : null,
+      memoryCommitMiB: Number.isFinite(lastMemoryCommitMiB) ? lastMemoryCommitMiB : null,
       uptimeSeconds: Number.isFinite(lastUptimeSeconds) ? lastUptimeSeconds : null,
       currentCpuUtilPercent: null,
       currentMemoryRssMiB: null,
+      currentMemoryCommitMiB: null,
       currentUptimeSeconds: null,
       lastCpuUtilPercent: Number.isFinite(lastCpuUtilPercent) ? lastCpuUtilPercent : null,
       lastMemoryRssMiB: Number.isFinite(lastMemoryRssMiB) ? lastMemoryRssMiB : null,
+      lastMemoryCommitMiB: Number.isFinite(lastMemoryCommitMiB) ? lastMemoryCommitMiB : null,
       lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) ? lastUptimeSeconds : null,
     };
   }
@@ -121,12 +136,21 @@ export function deriveEngineCardValues(summary, previous = {}, options = {}) {
     Number.isFinite(avgMemoryRssBytes) && avgMemoryRssBytes >= 0
       ? avgMemoryRssBytes / (1024 * 1024)
       : null;
+  const avgMemoryCommitBytes =
+    summary.memoryCommitCount > 0
+      ? summary.memoryCommitBytesSum / summary.memoryCommitCount
+      : null;
+  const currentMemoryCommitMiB =
+    Number.isFinite(avgMemoryCommitBytes) && avgMemoryCommitBytes >= 0
+      ? avgMemoryCommitBytes / (1024 * 1024)
+      : null;
   const currentUptimeSeconds = Number.isFinite(summary.uptimeSeconds)
     ? summary.uptimeSeconds
     : null;
 
   let cpuUtilPercent = currentCpuUtilPercent;
   let memoryRssMiB = currentMemoryRssMiB;
+  let memoryCommitMiB = currentMemoryCommitMiB;
   let uptimeSeconds = currentUptimeSeconds;
 
   if (Number.isFinite(currentCpuUtilPercent)) {
@@ -139,6 +163,11 @@ export function deriveEngineCardValues(summary, previous = {}, options = {}) {
     lastMemoryRssMiB = currentMemoryRssMiB;
   } else if (holdLastValues && Number.isFinite(lastMemoryRssMiB)) {
     memoryRssMiB = lastMemoryRssMiB;
+  }
+  if (Number.isFinite(currentMemoryCommitMiB)) {
+    lastMemoryCommitMiB = currentMemoryCommitMiB;
+  } else if (holdLastValues && Number.isFinite(lastMemoryCommitMiB)) {
+    memoryCommitMiB = lastMemoryCommitMiB;
   }
 
   if (Number.isFinite(currentUptimeSeconds)) {
@@ -153,12 +182,15 @@ export function deriveEngineCardValues(summary, previous = {}, options = {}) {
     coreCount: summary.coreCount || 0,
     cpuUtilPercent,
     memoryRssMiB,
+    memoryCommitMiB,
     uptimeSeconds,
     currentCpuUtilPercent,
     currentMemoryRssMiB,
+    currentMemoryCommitMiB,
     currentUptimeSeconds,
     lastCpuUtilPercent: Number.isFinite(lastCpuUtilPercent) ? lastCpuUtilPercent : null,
     lastMemoryRssMiB: Number.isFinite(lastMemoryRssMiB) ? lastMemoryRssMiB : null,
+    lastMemoryCommitMiB: Number.isFinite(lastMemoryCommitMiB) ? lastMemoryCommitMiB : null,
     lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) ? lastUptimeSeconds : null,
   };
 }

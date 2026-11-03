@@ -64,7 +64,7 @@ from ..hooks.docker.wait_for_status import (
 
 STRATEGY_NAME = "docker"
 
-# Default ulimits applied to every docker container unless overridden. The
+# Default ulimits applied to Linux docker containers unless overridden. The
 # docker daemon's default soft nofile limit (1024) throttles benchmarked
 # engines at high rates, so raise the file-descriptor ceiling by default.
 DEFAULT_ULIMITS: Dict[str, int] = {"nofile": 16384}
@@ -154,9 +154,10 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
         ulimits (Optional[Dict[str, Union[int, DockerUlimit]]]): Resource ulimits to
             apply to the container (docker --ulimit), keyed by limit name (e.g.
             'nofile'). A bare int sets both the soft and hard limit; a
-            DockerUlimit object sets them independently. 'nofile' defaults to
-            16384, but explicitly configured ulimits are merged on top and can
-            override them.
+            DockerUlimit object sets them independently. On Linux containers,
+            'nofile' defaults to 16384, but explicitly configured ulimits are
+            merged on top and can override them. Windows containers do not
+            support ulimits.
     """
 
     image: str
@@ -186,8 +187,9 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
             "Resource ulimits applied to the container (docker --ulimit), keyed "
             "by limit name (e.g. 'nofile'). A bare int sets both the soft and "
             "hard limit to that value; an object with 'soft' and 'hard' sets "
-            "them independently. 'nofile' defaults to 16384; entries here are "
-            "merged on top of the defaults, overriding the default per key."
+            "them independently. On Linux containers, 'nofile' defaults to "
+            "16384; entries here are merged on top of the defaults, overriding "
+            "the default per key. Windows containers do not support ulimits."
         ),
     )
 
@@ -289,10 +291,16 @@ components:
         if self.config.extra_hosts:
             run_kwargs["extra_hosts"] = dict(self.config.extra_hosts)
 
-        # Merge configured ulimits on top of the defaults
-        run_kwargs["ulimits"] = build_ulimits(
-            {**DEFAULT_ULIMITS, **(self.config.ulimits or {})}
-        )
+        docker_os_type = client.info()["OSType"].lower()
+        if docker_os_type == "windows":
+            if self.config.ulimits:
+                raise ValueError(
+                    "Docker ulimits are not supported by Windows containers"
+                )
+        else:
+            run_kwargs["ulimits"] = build_ulimits(
+                {**DEFAULT_ULIMITS, **(self.config.ulimits or {})}
+            )
 
         try:
             container = client.containers.run(**run_kwargs)

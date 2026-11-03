@@ -16,21 +16,16 @@ use serde::{Deserialize, Serialize, ser::Serializer};
 use std::borrow::Cow;
 use std::hash::Hash;
 
-pub mod authorized_identity_policy;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
-/// Context entry names.
 pub mod context;
-/// Declarative context entry policies.
-pub mod context_policy;
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
 pub mod error;
 pub mod extension;
-/// Extension URN type.
 pub mod extension_urn;
 pub mod health;
 pub mod node;
@@ -45,17 +40,12 @@ pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;
-/// Transport header core types and capture/propagation engines.
-pub mod transport_headers;
-/// Transport header capture and propagation policy declarations.
-pub mod transport_headers_policy;
 /// Shared URN parsing primitives used by [`node_urn`] and [`extension_urn`].
 mod urn;
 pub use topic::{
     SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
     TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,
 };
-/// Validation helpers for node configuration.
 pub mod validation;
 
 pub use context::{ContextEntryName, ContextEntryRef};
@@ -70,31 +60,6 @@ pub enum SignalType {
     Metrics,
     /// Signal representing a stream of logs.
     Logs,
-}
-
-/// Payload storage forms retained during the migration to pluggable pdata codecs.
-///
-/// `OtlpBytes` is still used by legacy OTLP producers and batching. It coexists
-/// with `Encoded` so consumers can migrate before receivers switch to codec-based
-/// admission. An `Encoded` payload can also contain OTLP; this enum identifies
-/// storage, not the codec that defines the bytes.
-///
-/// This differs from `PdataView`, the representation-independent inspection API:
-/// when the consumer's accepted encodings include OTLP, both legacy OTLP storage and encoded
-/// OTLP storage yield `PdataView::Encoded` borrowing the original protobuf bytes.
-/// Consumers should use the capability APIs instead of matching storage forms.
-///
-/// The OTLP activation step removes legacy storage and this enum after codec-aware
-/// batching and consumer migration are complete. `PdataFormat` then provides
-/// representation identity for native OTAP and codec-identified encoded payloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SignalFormat {
-    /// OTel-Arrow records
-    OtapRecords,
-    /// Legacy OTLP protobuf storage, retained until the OTLP activation step.
-    OtlpBytes,
-    /// Independently encoded bytes identified by a registered pdata codec, including OTLP.
-    Encoded,
 }
 
 /// The id of a pipeline group.

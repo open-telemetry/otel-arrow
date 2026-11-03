@@ -58,8 +58,12 @@ Receivers ingest data into a pipeline.
 | --- | --- | --- | --- |
 | `receiver:etw` | `etw` | Experimental | Ingests Event Tracing for Windows events as logs. |
 | [`receiver:kafka`](src/receivers/kafka_receiver/README.md) | `kafka` | Experimental | Consumes traces, metrics, and logs from Kafka. |
+| [`urn:microsoft:receiver:json`](src/receivers/microsoft_json_receiver/README.md) | `microsoft-json` | In-Progress; Not Operational; logs | Browser-focused, unauthenticated ingestion of Microsoft Common Schema JSON over HTTP. |
 | [`urn:otel:receiver:oracle`](src/receivers/oracle_receiver/README.md) | `oracle` | Experimental | Polls Oracle queries into logs; explicitly opt-in and requires separately installed Oracle Client libraries. |
+| [`urn:otel:receiver:postgresql`](src/receivers/postgresql_receiver/README.md) | `postgresql` | Experimental | Development-only PostgreSQL polling over unencrypted TCP; explicitly opt-in. |
+| [`urn:otel:receiver:sql_server`](src/receivers/sql_server_receiver/README.md) | `sql-server` | Compatibility may change | Polls SQL Server queries into logs over verified TLS, using capability-based SQL credentials and shared acknowledged checkpoints. |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user-events` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
+| [`urn:otel:receiver:windows_perf_counters`](src/receivers/windows_perf_counters_receiver/README.md) | `windows-perf-counters` | Experimental | Collects local Windows performance counters as metrics. |
 
 ## Processors
 
@@ -86,19 +90,20 @@ Exporters send data out of a pipeline.
 ## Feature Aggregates
 
 - `contrib-nodes`: enables contrib receivers, processors, and exporters, except
-  the explicitly opt-in Oracle and SQL Server integrations.
-- `contrib-receivers`: enables contrib receivers except Oracle and SQL Server.
+  the explicitly opt-in Oracle, SQL Server, and PostgreSQL receivers.
+- `contrib-receivers`: enables contrib receivers except Oracle, SQL Server, and PostgreSQL.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
 - `kafka`: enables both the Kafka receiver and exporter.
 
-Enable `oracle` explicitly to include Oracle. It is excluded from both
-`contrib-receivers` and `contrib-nodes` because Oracle Client libraries must be
-provisioned separately.
+Enable `oracle` or `postgresql` explicitly to include those integrations.
+Oracle requires separately provisioned Oracle Client libraries.
 
 The `sql-server` feature is also explicitly opt-in and excluded from all
-aggregates. See the [SQL Server README](src/receivers/sql_server_receiver/README.md)
-for its capabilities and usage.
+aggregates. It needs no separately installed database client. The root feature
+also enables `flat-file-user-pass-auth`.
+See the [SQL Server README](src/receivers/sql_server_receiver/README.md)
+for its operating contract and qualification limits.
 
 When implemented node features are enabled in the top-level binary, their
 factories are registered into the OTAP pipeline factory maps.

@@ -63,7 +63,9 @@ use otel_arrow_dfe_pdata::schema::consts::metadata;
 use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::eval::{EvalContext, align_value_to_record, scoped_value_to_join_input};
+use crate::pipeline::expr::eval::{
+    EvalContext, align_attrs_to_record, align_value_to_record, scoped_value_to_join_input,
+};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec,
@@ -71,8 +73,8 @@ use crate::pipeline::expr::join::{
 };
 use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, MetricDataPointType, nested_struct_field_type,
-    root_field_supports_dict_encoding, root_field_type,
+    ExprLogicalType, MetricDataPointType, attribute_field_type, data_point_field_type,
+    field_supports_dict_encoding, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{
     ChildRecordKind, DataScope, RecordScope, RootParentStruct, ScopedExpr, ScopedValue,
@@ -115,6 +117,9 @@ pub(crate) struct AssignPipelineStage {
 
     /// Unified execution trees that produce the data to be assigned to the destination.
     sources: Vec<ScopedExpr>,
+
+    /// The record type context from planning, used at runtime for field type resolution.
+    record_type: RecordType,
 
     /// This is used when assigning attributes to keep track of ID/parent ID membership as we
     /// determine which attributes must be updated or inserted
@@ -183,44 +188,63 @@ impl AssignPipelineStage {
                 .map(Rc::new)
                 .collect(),
             dest_columns,
+            record_type: record_type.clone(),
             sources: source_exprs,
             id_bitmap_pool: IdBitmapPool::new(),
         })
     }
 
-    /// Assign the result of the expression evaluation to a column on the root record batch.
-    fn assign_to_root(
+    /// Assign the result of the expression evaluation to a column on the target record batch.
+    fn assign_to_record(
         &self,
         mut otap_batch: OtapArrowRecords,
         mut scoped_value: ScopedValue,
+        eval_ctx: &EvalContext<'_>,
         dest_scope: &DataScope,
         dest_column_name: &str,
     ) -> Result<OtapArrowRecords> {
-        let root_batch = match otap_batch.root_record_batch() {
-            Some(rb) => rb,
-            None => {
-                // nothing to do
-                return Ok(otap_batch);
+        let (target_rb_payload_type, expected_column_logical_type) = match &self.record_type {
+            RecordType::Signal(signal_ctx) => (
+                otap_batch.root_payload_type(),
+                root_field_type(dest_column_name, signal_ctx),
+            ),
+            RecordType::DataPoint(dp_ctx) => (
+                eval_ctx
+                    .data_point_type()
+                    .map(|dp_type| dp_type.payload_type())
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: "missing data point type in eval context in assignment".into(),
+                    })?,
+                data_point_field_type(dest_column_name, dp_ctx),
+            ),
+            RecordType::Attributes => {
+                // The caller shouldn't have used this method, and should have instead used
+                // self::assign_to_attributes. return error ot be defensive.
+                return Err(Error::ExecutionError {
+                    cause: "cannot assign to attributes as record".into(),
+                });
             }
         };
 
-        let expected_column_logical_type = root_field_type(dest_column_name)
-            // safety: this will only return None if the destination column does not exist in OTAP
-            // data model, but this has been validated in the constructor of this type, so it's
-            // safe to expect here
-            .expect("dest column found");
+        let expected_column_logical_type =
+            expected_column_logical_type.ok_or_else(|| Error::ExecutionError {
+                cause: format!("column not found {dest_column_name:?}"),
+            })?;
+
+        let Some(target_rb) = otap_batch.get(target_rb_payload_type) else {
+            // nothing to do
+            return Ok(otap_batch);
+        };
 
         // AnyValue destinations (e.g., body) need special handling: the result may be a
         // concrete typed array that needs wrapping into an AnyValue struct, or it may already
         // be an AnyValue struct that can be assigned directly.
         if expected_column_logical_type == ExprLogicalType::AnyValue {
-            let root_batch = root_batch.clone();
             return self.assign_any_value_to_root(
                 otap_batch,
                 scoped_value,
                 dest_scope,
                 dest_column_name,
-                &root_batch,
             );
         }
 
@@ -258,13 +282,17 @@ impl AssignPipelineStage {
         let mut type_compatible = expected_column_data_type == eval_result_column_type;
 
         // if it's dict encoded, check if the dict values match the expected type
-        let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
+        let column_supports_dict_encoding = field_supports_dict_encoding(dest_column_name);
         if !type_compatible
-            && column_supports_dict_encoding
             && let DataType::Dictionary(_, dict_val_type) = &eval_result_column_type
             && dict_val_type.as_ref() == &expected_column_data_type
         {
-            type_compatible = true
+            type_compatible = true;
+
+            // if dict encoding isn't supported for this column, simply remove the dict encoding
+            if !column_supports_dict_encoding {
+                scoped_value.values = scoped_value.values.cast_to(dict_val_type, None)?;
+            }
         }
 
         // if result is not type compatible, return error
@@ -277,52 +305,36 @@ impl AssignPipelineStage {
             });
         }
 
-        // convert the expression evaluation result to an array, with the correct dict encoding if
-        // the destination column supports it
-        let mut values = eval_result_to_array(
-            &scoped_value.values,
-            column_supports_dict_encoding,
-            root_batch.num_rows(),
-        )?;
-
-        // align the rows in the new values with the rows in the root batch, if not already aligned
-        let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
-
-        if !already_aligned {
-            // if we're here, it means we have received a column value that has the row order
-            // of something other than the root attribute batch, basically meaning the result was
-            // computed from attributes. We'll need to join the result's values column to the root
-            // column to get the values in the correct order ...
-
-            let DataScope::Attribute(attrs_id, _, _) = &scoped_value.scope else {
-                // safety: if the data_scope were anything other than attributes, we'd have taken
-                // the if branch (not the else branch) above when we checked if the data was
-                // already aligned
-                unreachable!("unexpected data_scope")
-            };
-
-            // create a JoinExec implementation that computes joined indices of values to root on
-            // `root.id == attrs.parent_id` and use this to take rows from the result in order.
-            let join_exec = RecordToAttributesJoin::new(*attrs_id);
-            let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
-            let vals_take_indices = join_exec.rows_to_take(
-                &JoinInput::new(
-                    ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
-                    Rc::new(dest_scope.clone()),
-                    root_batch,
-                ),
-                &eval_result,
-                &OtapArrowRecords::Logs(Logs::default()), // empty placeholder
-            )?;
-
-            values = take(&values, &vals_take_indices, None)?;
+        // if the row-order of the results is from some attributes record batch, we will need to
+        // align the rows to the assignment target.
+        let source_scope_attrs_id = match scoped_value.scope {
+            DataScope::Attribute(attrs_id, _, _) | DataScope::AttributesAll(attrs_id) => {
+                Some(attrs_id)
+            }
+            // already aligned to the record / scalar, no alignment needed ..
+            DataScope::Record(_) | DataScope::RootParent(_) | DataScope::StaticScalar => None,
         };
 
+        if let Some(attrs_id) = source_scope_attrs_id {
+            // if we're here, it means we have received a column value that has the row order
+            // of something other than the target attribute batch, basically meaning the result was
+            // computed from attributes. We'll need to join the result's values column to the target
+            // column to get the values in the correct order ...
+            scoped_value = align_attrs_to_record(scoped_value, attrs_id, &otap_batch, eval_ctx)?
+        }
+
+        // convert the expression evaluation result to an array, with the correct dict encoding if
+        // the destination column supports it
+        let values = eval_result_to_array(
+            &scoped_value.values,
+            column_supports_dict_encoding,
+            target_rb.num_rows(),
+        )?;
+
         // replace the root record batch with the new one
-        let root_payload_type = otap_batch.root_payload_type();
         otap_batch.set(
-            root_payload_type,
-            try_upsert_column(dest_column_name, values, root_batch)?,
+            target_rb_payload_type,
+            try_upsert_column(dest_column_name, values, target_rb)?,
         )?;
 
         Ok(otap_batch)
@@ -338,8 +350,11 @@ impl AssignPipelineStage {
         scoped_value: ScopedValue,
         dest_scope: &DataScope,
         dest_column_name: &str,
-        root_batch: &RecordBatch,
     ) -> Result<OtapArrowRecords> {
+        let Some(root_batch) = otap_batch.root_record_batch() else {
+            // nothing to do
+            return Ok(otap_batch);
+        };
         // Convert the evaluation result to an array (no dict encoding for struct columns)
         let mut values = eval_result_to_array(&scoped_value.values, false, root_batch.num_rows())?;
 
@@ -386,31 +401,45 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
-    /// try to assign an all-null column to the root record batch. In practice, this just means
+    /// try to assign an all-null column to the target record batch. In practice, this just means
     /// removing the column from the record batch. This will return an error if it turns out the
     /// column is not nullable.
-    fn assign_null_root_column(
+    fn assign_null_record_column(
         &self,
         mut otap_batch: OtapArrowRecords,
+        eval_ctx: &EvalContext<'_>,
         dest_column_name: &str,
     ) -> Result<OtapArrowRecords> {
-        let root_batch = match otap_batch.root_record_batch() {
-            Some(rb) => rb,
-            None => {
-                // nothing to do
-                return Ok(otap_batch);
+        let target_rb_payload_type = match &self.record_type {
+            RecordType::Signal(_) => otap_batch.root_payload_type(),
+            RecordType::DataPoint(_) => eval_ctx
+                .data_point_type()
+                .map(|dp_type| dp_type.payload_type())
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: "missing data point type in eval context in assignment".into(),
+                })?,
+            RecordType::Attributes => {
+                // The caller shouldn't have used this method, and should have instead used
+                // self::assign_to_attributes. return error ot be defensive.
+                return Err(Error::ExecutionError {
+                    cause: "cannot assign to attributes as record".into(),
+                });
             }
+        };
+        let Some(target_rb) = otap_batch.get(target_rb_payload_type) else {
+            // nothing to do
+            return Ok(otap_batch);
         };
 
         // remove the column if it exists because it's all null result
         // Note: once again we're assuming that if the field is nullable that it is also optional
-        let schema = root_batch.schema_ref();
+        let schema = target_rb.schema_ref();
         let maybe_found_column = schema.fields().find(dest_column_name);
         if let Some((column_index, field)) = maybe_found_column {
             if field.is_nullable() {
-                let mut new_root_batch = root_batch.clone();
-                _ = new_root_batch.remove_column(column_index);
-                otap_batch.set(otap_batch.root_payload_type(), new_root_batch)?;
+                let mut new_rb = target_rb.clone();
+                _ = new_rb.remove_column(column_index);
+                otap_batch.set(target_rb_payload_type, new_rb)?;
             } else {
                 return Err(Error::ExecutionError {
                     cause: format!(
@@ -1119,20 +1148,35 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_result = self.sources[i]
-                .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+            let eval_ctx = EvalContext::new(session_context);
+            let eval_result = self.sources[i].execute_as_value(&otap_batch, &eval_ctx)?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
                     otap_batch = match eval_result {
-                        Some(eval_result) => {
-                            self.assign_to_root(otap_batch, eval_result, dest_scope, dest_col_name)
+                        // an all-null result (e.g. every `coalesce` argument was absent) has
+                        // no type to check against the column, so it's assigned as null
+                        Some(eval_result) if eval_result.values.data_type() == DataType::Null => {
+                            self.assign_null_record_column(otap_batch, &eval_ctx, dest_col_name)
                         }
-                        None => self.assign_null_root_column(otap_batch, dest_col_name),
+                        Some(eval_result) => self.assign_to_record(
+                            otap_batch,
+                            eval_result,
+                            &eval_ctx,
+                            dest_scope,
+                            dest_col_name,
+                        ),
+                        None => {
+                            self.assign_null_record_column(otap_batch, &eval_ctx, dest_col_name)
+                        }
                     }?;
                 }
                 ColumnAccessor::StructCol(struct_col_name, field_name) => {
                     otap_batch = match eval_result {
+                        // as above, an all-null result is assigned as null
+                        Some(eval_result) if eval_result.values.data_type() == DataType::Null => {
+                            self.assign_null_struct_field(otap_batch, struct_col_name, field_name)
+                        }
                         Some(eval_result) => self.assign_to_struct_column(
                             otap_batch,
                             eval_result,
@@ -1458,18 +1502,46 @@ impl PipelineStage for AssignPipelineStage {
                 continue;
             }
 
-            // TODO support - add support for additional assignment targets for metric data points
-            return Err(match self.dest_columns[0] {
-                ColumnAccessor::ColumnName(_) | ColumnAccessor::StructCol(_, _) => {
-                    Error::NotYetSupportedError {
-                        message: "assigning metric data point columns not yet supported".into(),
+            // Assigning to the metric data point record batch. Unlike attribute assignment, this
+            // does not currently support bulk assignment, so we just evaluate the expressions and
+            // update the columns one at a time.
+            for i in 0..self.sources.len() {
+                let eval_result = self.sources[i].execute_as_value(&otap_batch, &eval_ctx)?;
+                let dest_scope = &self.dest_scopes[i];
+                match &self.dest_columns[i] {
+                    ColumnAccessor::ColumnName(dest_col_name) => {
+                        otap_batch = match eval_result {
+                            Some(eval_result)
+                                if eval_result.values.data_type() == DataType::Null =>
+                            {
+                                self.assign_null_record_column(otap_batch, &eval_ctx, dest_col_name)
+                            }
+                            Some(eval_result) => self.assign_to_record(
+                                otap_batch,
+                                eval_result,
+                                &eval_ctx,
+                                dest_scope,
+                                dest_col_name,
+                            ),
+                            None => {
+                                self.assign_null_record_column(otap_batch, &eval_ctx, dest_col_name)
+                            }
+                        }?;
+                    }
+
+                    ColumnAccessor::StructCol(_, _) => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "assigning metric data point columns not yet supported".into(),
+                        });
+                    }
+                    ColumnAccessor::NestedAttribute(_, _, _) | ColumnAccessor::Attributes(_, _) => {
+                        // safety: we've handled both of these in the blocks above
+                        unreachable!(
+                            "already handled column accessor attributes and nested attributes"
+                        )
                     }
                 }
-                ColumnAccessor::NestedAttribute(_, _, _) | ColumnAccessor::Attributes(_, _) => {
-                    // safety: we've handled both of these in the blocks above
-                    unreachable!("already handled column accessor attributes and nested attributes")
-                }
-            });
+            }
         }
 
         Ok(otap_batch)
@@ -2072,12 +2144,32 @@ fn validate_assign(
             // No relationship cardinality validation needs to happen for these columns which
             // are on the root record because they are not one:many with anything else in that
             // could be assigned. Validation in this case only checks the types.
-
-            let dest_type =
-                root_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
-                    cause: format!("cannot assign to non-existent column '{col_name}'"),
-                    query_location: dest_query_location.cloned(),
-                })?;
+            let dest_type = match record_type {
+                RecordType::Signal(ctx) => {
+                    root_field_type(col_name, ctx).ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!(
+                            "cannot assign to field '{col_name}' for signal type {ctx:?}"
+                        ),
+                        query_location: dest_query_location.cloned(),
+                    })?
+                }
+                RecordType::Attributes => {
+                    attribute_field_type(col_name).ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!(
+                            "cannot assign to '{col_name}' in attribute pipeline; \
+                             only 'key' and 'value' are available"
+                        ),
+                        query_location: dest_query_location.cloned(),
+                    })?
+                }
+                RecordType::DataPoint(dp_ctx) => data_point_field_type(col_name, dp_ctx)
+                    .ok_or_else(|| Error::InvalidPipelineError {
+                        cause: format!(
+                            "cannot assign field '{col_name}' to data point type {dp_ctx:?}"
+                        ),
+                        query_location: dest_query_location.cloned(),
+                    })?,
+            };
 
             let source_type = &source_plan.expr_type;
             if !can_assign_type(&dest_type, source_type) {
@@ -2971,7 +3063,8 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::All));
+        let planner =
+            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3008,7 +3101,7 @@ mod test {
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
-                    err_msg.contains("cannot assign to non-existent column 'bad_column'"),
+                    err_msg.contains("cannot assign to field 'bad_column' for signal type"),
                     "unexpected error message: {err_msg:?}"
                 )
             }
@@ -8654,6 +8747,489 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_coalesce_missing_attributes_kql_parser() {
         test_update_attr_coalesce_missing_attributes::<KqlParser>().await
+    }
+
+    /// Runs `query` on `logs_data` and returns the log records of the first scope.
+    async fn exec_coalesce_query<P: Parser>(query: &str, logs_data: LogsData) -> Vec<LogRecord> {
+        let mut result = exec_logs_pipeline::<P>(query, logs_data).await;
+        std::mem::take(&mut result.resource_logs[0].scope_logs[0].log_records)
+    }
+
+    /// Two logs where no record has the attribute `missing` (and the resource has no
+    /// attributes): the first has attribute `y = "y0"` and body `"b0"`, the second only has
+    /// body `"b1"`.
+    fn logs_for_coalesce_absent_arg() -> LogsData {
+        to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                .body(AnyValue::new_string("b0"))
+                .finish(),
+            LogRecord::build().body(AnyValue::new_string("b1")).finish(),
+        ])
+    }
+
+    /// Asserts the result of `coalesce(<absent>, attributes["y"], body)` assigned to
+    /// `attributes["x"]` on [`logs_for_coalesce_absent_arg`].
+    fn assert_coalesce_fell_back_to_y_then_body(records: &[LogRecord]) {
+        assert_eq!(records.len(), 2, "no logs should be dropped");
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new("y", AnyValue::new_string("y0")),
+                KeyValue::new("x", AnyValue::new_string("y0")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![KeyValue::new("x", AnyValue::new_string("b1"))]
+        );
+    }
+
+    /// Scenario: `coalesce` whose first argument is a record attribute that no record in the
+    /// batch has, followed by a present attribute and the body (see #4300).
+    /// Guarantees: the absent argument is treated as null for every record, so each record
+    /// falls back to the first later argument that has a value (`y0` from the attribute on
+    /// the first record, `b1` from the body on the second) instead of the result being null.
+    async fn test_update_attr_coalesce_record_attr_absent_from_batch<P: Parser>() {
+        let query = r#"logs | extend attributes["x"] = coalesce(attributes["missing"], attributes["y"], body)"#;
+        let records = exec_coalesce_query::<P>(query, logs_for_coalesce_absent_arg()).await;
+        assert_coalesce_fell_back_to_y_then_body(&records);
+    }
+
+    /// Scenario: Run the absent-record-attribute `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back past the absent attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_record_attr_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_record_attr_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-record-attribute `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back past the absent attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_record_attr_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_record_attr_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` whose first argument is a resource attribute when the resource has
+    /// no attributes at all, followed by a record attribute and the body.
+    /// Guarantees: an absent resource attribute is treated as null, so each record falls back
+    /// to the record attribute or the body.
+    async fn test_update_attr_coalesce_resource_attr_absent_from_batch<P: Parser>() {
+        let query = r#"logs | extend attributes["x"] = coalesce(resource.attributes["missing"], attributes["y"], body)"#;
+        let records = exec_coalesce_query::<P>(query, logs_for_coalesce_absent_arg()).await;
+        assert_coalesce_fell_back_to_y_then_body(&records);
+    }
+
+    /// Scenario: Run the absent-resource-attribute `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back past the absent resource attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_resource_attr_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_resource_attr_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-resource-attribute `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back past the absent resource attribute.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_resource_attr_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_resource_attr_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` whose first argument is a nested path under a record attribute
+    /// that no record in the batch has.
+    /// Guarantees: an absent nested attribute path is treated as null, so each record falls
+    /// back to the record attribute or the body.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_nested_attr_absent_from_batch() {
+        let query = r#"logs | extend attributes["x"] = coalesce(attributes["missing"]["k"], attributes["y"], body)"#;
+        let records = exec_coalesce_query::<OplParser>(query, logs_for_coalesce_absent_arg()).await;
+        assert_coalesce_fell_back_to_y_then_body(&records);
+    }
+
+    /// Scenario: `coalesce` whose first argument is the body when no record in the batch has a
+    /// body, followed by a record attribute present on every record (arguments joined across
+    /// scopes), or only by root fields and literals (arguments evaluated in the record's own
+    /// scope): another root field, a literal, or a root field and then a literal.
+    /// Guarantees: an absent body is treated as null, so each record gets its own value from
+    /// the next argument that has one.
+    async fn test_update_attr_coalesce_body_absent_from_batch<P: Parser>() {
+        for (query, expected) in [
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, attributes["y"])"#,
+                ["y0", "y1"],
+            ),
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, severity_text)"#,
+                ["s0", "s1"],
+            ),
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, "foo")"#,
+                ["foo", "foo"],
+            ),
+            (
+                r#"logs | extend attributes["x"] = coalesce(body, event_name, "unknown")"#,
+                ["e0", "unknown"],
+            ),
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .severity_text("s0")
+                    .event_name("e0")
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y1"))])
+                    .severity_text("s1")
+                    .finish(),
+            ]);
+            let records = exec_coalesce_query::<P>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            for (i, record) in records.iter().enumerate() {
+                assert_eq!(
+                    record.attributes,
+                    vec![
+                        KeyValue::new("y", AnyValue::new_string(format!("y{i}"))),
+                        KeyValue::new("x", AnyValue::new_string(expected[i])),
+                    ],
+                    "{query}"
+                );
+            }
+        }
+    }
+
+    /// Scenario: Run the absent-body `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back past the absent body.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_body_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_body_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-body `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back past the absent body.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_body_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_body_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` where every argument is absent from the whole batch, with two
+    /// arguments (record and resource attributes) and with three (adding the body, which no
+    /// record has).
+    /// Guarantees: the pipeline does not fail and the result is null, so every record gets
+    /// `attributes["x"]` with an empty value.
+    async fn test_update_attr_coalesce_all_args_absent_from_batch<P: Parser>() {
+        for query in [
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing"], resource.attributes["missing"])"#,
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing"], resource.attributes["missing"], body)"#,
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .finish(),
+                LogRecord::build().finish(),
+            ]);
+            let records = exec_coalesce_query::<P>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            assert_eq!(
+                records[0].attributes,
+                vec![
+                    KeyValue::new("y", AnyValue::new_string("y0")),
+                    KeyValue::new("x", AnyValue { value: None }),
+                ],
+                "{query}"
+            );
+            assert_eq!(
+                records[1].attributes,
+                vec![KeyValue::new("x", AnyValue { value: None })],
+                "{query}"
+            );
+        }
+    }
+
+    /// Scenario: Run the all-absent `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns null without an error.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_all_args_absent_from_batch_opl_parser() {
+        test_update_attr_coalesce_all_args_absent_from_batch::<OplParser>().await
+    }
+
+    /// Scenario: Run the all-absent `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns null without an error.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_all_args_absent_from_batch_kql_parser() {
+        test_update_attr_coalesce_all_args_absent_from_batch::<KqlParser>().await
+    }
+
+    /// Scenario: `coalesce` where every argument before a trailing string literal is absent from
+    /// the whole batch: a single record or resource attribute (evaluated in that attribute's own
+    /// scope), two attribute arguments, or a nested `coalesce` whose own arguments are all
+    /// absent.
+    /// Guarantees: the absent arguments are treated as null, so every record gets the literal
+    /// default instead of a null or an error.
+    async fn test_update_attr_coalesce_absent_args_then_literal<P: Parser>() {
+        for query in [
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing"], "foo")"#,
+            r#"logs | extend attributes["x"] = coalesce(resource.attributes["missing"], "foo")"#,
+            r#"logs | extend attributes["x"] = coalesce(attributes["missing1"], attributes["missing2"], "foo")"#,
+            r#"logs | extend attributes["x"] = coalesce(coalesce(attributes["missing"], resource.attributes["missing"]), "foo")"#,
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .finish(),
+                LogRecord::build().finish(),
+            ]);
+            let records = exec_coalesce_query::<P>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            assert_eq!(
+                records[0].attributes,
+                vec![
+                    KeyValue::new("y", AnyValue::new_string("y0")),
+                    KeyValue::new("x", AnyValue::new_string("foo")),
+                ],
+                "{query}"
+            );
+            assert_eq!(
+                records[1].attributes,
+                vec![KeyValue::new("x", AnyValue::new_string("foo"))],
+                "{query}"
+            );
+        }
+    }
+
+    /// Scenario: Run the absent-then-literal `coalesce` test with the OPL parser.
+    /// Guarantees: OPL planning/evaluation falls back to the literal.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_absent_args_then_literal_opl_parser() {
+        test_update_attr_coalesce_absent_args_then_literal::<OplParser>().await
+    }
+
+    /// Scenario: Run the absent-then-literal `coalesce` test with the KQL parser.
+    /// Guarantees: KQL planning/evaluation falls back to the literal.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_absent_args_then_literal_kql_parser() {
+        test_update_attr_coalesce_absent_args_then_literal::<KqlParser>().await
+    }
+
+    /// Scenario: assign `coalesce(resource.attributes[...], "foo")` back to a resource attribute
+    /// on a batch with two resources and several logs per resource, both when every resource
+    /// has the attribute and when no resource has it.
+    /// Guarantees: each resource gets its own attribute value (the value stays in the resource's
+    /// scope rather than being aligned to the logs), and when the attribute is absent from the
+    /// whole batch every resource gets the literal.
+    #[tokio::test]
+    async fn test_set_resource_attr_coalesce_resource_attr_then_literal() {
+        let logs_data = |r0: Vec<KeyValue>, r1: Vec<KeyValue>| {
+            LogsData::new(vec![
+                ResourceLogs::new(
+                    Resource::build().attributes(r0).finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![LogRecord::build().finish(), LogRecord::build().finish()],
+                    )],
+                ),
+                ResourceLogs::new(
+                    Resource::build().attributes(r1).finish(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![
+                            LogRecord::build().finish(),
+                            LogRecord::build().finish(),
+                            LogRecord::build().finish(),
+                        ],
+                    )],
+                ),
+            ])
+        };
+        let x_of = |logs_data: &LogsData| -> Vec<Option<KeyValue>> {
+            logs_data
+                .resource_logs
+                .iter()
+                .map(|r| {
+                    r.resource
+                        .as_ref()
+                        .and_then(|r| r.attributes.iter().find(|kv| kv.key == "x").cloned())
+                })
+                .collect()
+        };
+        let x = |v: &str| Some(KeyValue::new("x", AnyValue::new_string(v)));
+
+        let query =
+            r#"logs | set resource.attributes["x"] = coalesce(resource.attributes["r"], "foo")"#;
+        let result = exec_logs_pipeline::<OplParser>(
+            query,
+            logs_data(
+                vec![KeyValue::new("r", AnyValue::new_string("r0"))],
+                vec![KeyValue::new("r", AnyValue::new_string("r1"))],
+            ),
+        )
+        .await;
+        assert_eq!(x_of(&result), vec![x("r0"), x("r1")]);
+
+        let query = r#"logs | set resource.attributes["x"] = coalesce(resource.attributes["missing"], "foo")"#;
+        let result = exec_logs_pipeline::<OplParser>(
+            query,
+            logs_data(vec![KeyValue::new("q", AnyValue::new_string("q0"))], vec![]),
+        )
+        .await;
+        assert_eq!(x_of(&result), vec![x("foo"), x("foo")]);
+    }
+
+    /// Scenario: one pipeline runs `coalesce` on a batch where an argument is absent and then on
+    /// a batch where it is present, and the reverse, for arguments joined across scopes, root
+    /// fields only, and an attribute with a literal.
+    /// Guarantees: every batch gets its own correct result: evaluating a batch where an argument
+    /// is absent (as a null column or a null row) doesn't change how a later batch with the
+    /// argument present is evaluated, and vice versa.
+    #[tokio::test]
+    async fn test_update_attr_coalesce_absent_then_present_across_batches() {
+        let absent = || {
+            to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("y0"))])
+                    .severity_text("s0")
+                    .finish(),
+                LogRecord::build().severity_text("s1").finish(),
+            ])
+        };
+        let present = || {
+            to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("a", AnyValue::new_string("a0"))])
+                    .body(AnyValue::new_string("b0"))
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("a", AnyValue::new_int(7))])
+                    .body(AnyValue::new_int(3))
+                    .finish(),
+            ])
+        };
+        let x_of = |logs_data: LogsData| -> Vec<Option<AnyValue>> {
+            logs_data.resource_logs[0].scope_logs[0]
+                .log_records
+                .iter()
+                .map(|l| {
+                    l.attributes
+                        .iter()
+                        .find(|kv| kv.key == "x")
+                        .and_then(|kv| kv.value.clone())
+                })
+                .collect()
+        };
+        let s = |v: &str| Some(AnyValue::new_string(v));
+        let null = || Some(AnyValue { value: None });
+
+        for (query, when_absent, when_present) in [
+            (
+                r#"logs | set attributes["x"] = coalesce(attributes["a"], attributes["y"], body)"#,
+                vec![s("y0"), null()],
+                vec![s("a0"), Some(AnyValue::new_int(7))],
+            ),
+            (
+                r#"logs | set attributes["x"] = coalesce(body, severity_text)"#,
+                vec![s("s0"), s("s1")],
+                vec![s("b0"), Some(AnyValue::new_int(3))],
+            ),
+            (
+                r#"logs | set attributes["x"] = coalesce(attributes["a"], "foo")"#,
+                vec![s("foo"), s("foo")],
+                vec![s("a0"), Some(AnyValue::new_int(7))],
+            ),
+        ] {
+            for absent_first in [true, false] {
+                let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+                let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+                let order = if absent_first {
+                    [(absent(), &when_absent), (present(), &when_present)]
+                } else {
+                    [(present(), &when_present), (absent(), &when_absent)]
+                };
+                for (input, expected) in order {
+                    let result = pipeline
+                        .execute(otlp_to_otap(&OtlpProtoMessage::Logs(input)))
+                        .await
+                        .unwrap();
+                    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+                        panic!("invalid signal type");
+                    };
+                    assert_eq!(
+                        &x_of(result),
+                        expected,
+                        "{query} absent_first={absent_first}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Scenario: assign `coalesce` to the root `severity_text` column where every argument is
+    /// absent from the whole batch, and where absent arguments are followed by a literal.
+    /// Guarantees: the all-absent result is assigned as null (clearing `severity_text`) without
+    /// a type error, and the literal fallback is assigned to every record.
+    #[tokio::test]
+    async fn test_set_root_column_coalesce_absent_args() {
+        for (query, expected) in [
+            (
+                r#"logs | set severity_text = coalesce(attributes["missing"], resource.attributes["missing"])"#,
+                "",
+            ),
+            (
+                r#"logs | set severity_text = coalesce(attributes["missing"], "foo")"#,
+                "foo",
+            ),
+        ] {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build().severity_text("s0").finish(),
+                LogRecord::build().severity_text("s1").finish(),
+            ]);
+            let records = exec_coalesce_query::<OplParser>(query, logs_data).await;
+            assert_eq!(records.len(), 2, "no logs should be dropped: {query}");
+            assert!(
+                records.iter().all(|r| r.severity_text == expected),
+                "{query}: {records:?}"
+            );
+        }
+    }
+
+    /// Scenario: assign `coalesce` to the `instrumentation_scope.name` struct field where every
+    /// argument is absent from the whole batch, and where absent arguments are followed by a
+    /// literal.
+    /// Guarantees: the all-absent result is assigned as null (clearing the scope name) without
+    /// a type error, and the literal fallback is assigned to the scope.
+    #[tokio::test]
+    async fn test_set_struct_field_coalesce_absent_args() {
+        for (query, expected) in [
+            (
+                r#"logs | set instrumentation_scope.name = coalesce(instrumentation_scope.attributes["missing"], resource.attributes["missing"])"#,
+                "",
+            ),
+            (
+                r#"logs | set instrumentation_scope.name = coalesce(instrumentation_scope.attributes["missing"], "foo")"#,
+                "foo",
+            ),
+        ] {
+            let logs_data = LogsData::new(vec![ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope1").finish(),
+                    vec![
+                        LogRecord::build().event_name("event1").finish(),
+                        LogRecord::build().event_name("event2").finish(),
+                    ],
+                )],
+            )]);
+            let result = exec_logs_pipeline::<OplParser>(query, logs_data).await;
+            let scope_logs = &result.resource_logs[0].scope_logs[0];
+            assert_eq!(
+                scope_logs.log_records.len(),
+                2,
+                "no logs should be dropped: {query}"
+            );
+            let scope_name = scope_logs
+                .scope
+                .as_ref()
+                .map(|s| s.name.as_str())
+                .unwrap_or_default();
+            assert_eq!(scope_name, expected, "{query}");
+        }
     }
 
     async fn test_update_attr_to_lower_case_function_call<P: Parser>() {

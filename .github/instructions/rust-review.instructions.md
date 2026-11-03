@@ -46,6 +46,13 @@ When reviewing additions or changes to metrics, follow the
 [system metrics guide][metrics-guide] and
 [item attributes guide][item-attributes-guide].
 
+## 5. Require reliable tests
+
+Follow the [reliable test guidelines][reliable-tests] when authoring or reviewing
+tests. Flag concrete timing dependencies, uncontrolled inputs, unisolated
+resources or measurements, and unjoined background work. Do not accept retries
+or weaker assertions as reliability fixes.
+
 ## Out of scope for review comments
 
 Do not comment on non-ASCII characters in Rust source, or on missing changelog
@@ -55,3 +62,4 @@ review comments about them add noise without adding signal.
 [item-attributes-guide]: ../../rust/otap-dataflow/docs/telemetry/item-attributes.md
 [metrics-guide]: ../../rust/otap-dataflow/docs/telemetry/metrics-guide.md
 [review-guide]: ../../rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md
+[reliable-tests]: ../../rust/otap-dataflow/CONTRIBUTING.md#reliable-tests

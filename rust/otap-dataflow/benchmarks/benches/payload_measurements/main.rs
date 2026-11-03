@@ -271,12 +271,19 @@ fn legacy_representation_paths(c: &mut Criterion) {
         let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
         let otap_records: OtapArrowRecords = otlp_to_otap(&message);
 
+        let forward_service = CodecService::new().expect("valid codec registry");
+        let forward_plan = EncodingPlan::resolve(
+            forward_service.registry(),
+            &PdataEncoding::OTLP,
+            EncodePolicy::default(),
+        )
+        .expect("OTLP encoding plan");
         _ = group.bench_function(BenchmarkId::new("OTLP/forward", record_count), |b| {
             b.iter_batched(
                 || OtapPayload::from(otlp_bytes.clone()),
-                |payload| {
-                    let forwarded: OtlpProtoBytes = payload
-                        .try_into_with_default()
+                |mut payload| {
+                    let forwarded = payload
+                        .encode_bytes(&forward_service, &forward_plan)
                         .expect("matching OTLP forwarding");
                     black_box(forwarded)
                 },
@@ -284,12 +291,12 @@ fn legacy_representation_paths(c: &mut Criterion) {
             )
         });
 
+        let decode_service = CodecService::new().expect("valid codec registry");
         _ = group.bench_function(BenchmarkId::new("OTLP/decode", record_count), |b| {
             b.iter_batched(
                 || OtapPayload::from(otlp_bytes.clone()),
                 |payload| {
-                    let records: OtapArrowRecords =
-                        payload.try_into_with_default().expect("OTLP decode");
+                    let records = payload.try_into_otap(&decode_service).expect("OTLP decode");
                     black_box(records)
                 },
                 BatchSize::SmallInput,
@@ -308,12 +315,13 @@ fn legacy_representation_paths(c: &mut Criterion) {
             )
         });
 
+        let native_service = CodecService::new().expect("valid codec registry");
         _ = group.bench_function(BenchmarkId::new("OTAP/native_move", record_count), |b| {
             b.iter_batched(
                 || OtapPayload::from(otap_records.clone()),
                 |payload| {
-                    let records: OtapArrowRecords = payload
-                        .try_into_with_default()
+                    let records = payload
+                        .try_into_otap(&native_service)
                         .expect("native payload move");
                     black_box(records)
                 },

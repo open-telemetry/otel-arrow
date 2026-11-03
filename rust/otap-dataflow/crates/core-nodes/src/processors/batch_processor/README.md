@@ -10,14 +10,15 @@
 
 ## Overview
 
-The batch processor combines OTAP and OTLP payloads before forwarding them
-downstream. It can preserve the inbound payload format or force output to OTAP
-or OTLP, and it tracks ACK/NACK-sensitive request state across batch flushes.
+The batch processor combines native OTAP records and independently decodable
+encoded batches before forwarding them downstream. Codecs may provide native
+merge/split support; otherwise compatible item-based settings use OTAP fallback.
+The processor owns buffering, flush deadlines, backpressure, and ACK/NACK routing.
 
 Batches are sized against the configured range of acceptable sizes,
-`[min_size, max_size]`. Inputs that already fall in that range are forwarded
-unchanged and while inputs outside the range are buffered for later flushing
-where they can either be split or merged with other batches.
+`[min_size, max_size]`. After preparation in the plan's working representation,
+inputs already in that range bypass buffering and splitting. Matching encodings keep their original
+bytes; fallback or an explicit output format can still require conversion.
 
 ## Flush behavior
 
@@ -70,7 +71,7 @@ config:
   otlp:
     min_size: 262144
     max_size: null
-    sizer: bytes # OTLP supports "bytes" only.
+    sizer: bytes # Native OTLP batching uses bytes; items selects OTAP fallback.
     max_split_fragments: 65536 # Cap on fragments per oversize entry (OTLP only).
     max_split_overhead_bytes: 8388608 # Cap on duplicated wrapper bytes per oversize entry (OTLP only).
     max_split_fragments_per_flush: 65536 # Greedy per-flush split threshold (OTLP only).
@@ -82,9 +83,44 @@ config:
   inbound_request_limit: 1024
   outbound_request_limit: 512
 
-  # Output format: "otap", "otlp", or "preserve" (default: preserve).
+  # Output: "otap", "otlp", a registered codec name, or "preserve" (default).
   format: preserve
 ```
+
+### Codec settings and output selection
+
+`format: preserve` keeps an encoding when its codec supports the requested
+batching unit. Otherwise, item-based batching decodes to OTAP and emits OTAP.
+It does not promise byte preservation for every codec or configuration. Choosing
+an explicit format converts to that output representation, re-encoding after
+OTAP fallback when needed. Selecting an encode-only output codec is supported;
+selecting a decode-only codec as an explicit output is rejected at startup.
+
+Use `codecs` to configure batching by registered encoding name. The `otap` and `otlp`
+blocks remain compatible aliases; declaring settings for the same format twice is an error.
+For example, the following is equivalent to the legacy OTLP settings:
+
+```yaml
+type: processor:batch
+config:
+  format: otlp
+  codecs:
+    otlp-bytes:
+      min_size: 262144
+      max_size: 1048576
+      sizer: bytes
+```
+
+The available names depend on the codecs linked into the binary. Unknown names,
+unsupported sizing, and missing output capabilities fail at startup. Byte
+sizing measures the complete encoded request, including format wrappers and
+intrinsic compression; HTTP/gRPC framing and transport compression are excluded.
+OTAP fallback supports item sizing, not a prediction of final encoded byte size.
+Batch size thresholds and split budgets are unsigned 64-bit values. A batcher
+caps upper bounds at its internal size limit rather than truncating them; large
+configured limits do not allocate buffers in advance.
+Outputs remain independently decodable: native batching does not imply that any
+encoding can be split at arbitrary byte boundaries or concatenated blindly.
 
 Each format object contains:
 
@@ -153,16 +189,21 @@ Each format object contains:
 ## Batching Behavior
 
 Sizes are measured in the format's sizer unit. Signals (logs, metrics, traces)
-and formats (OTAP, OTLP) are buffered independently. Below, `min` is the
+and distinct batching plans are buffered independently. Inputs using the same
+OTAP fallback plan can share a buffer. Below, `min` is the
 effective lower bound (`min_size`, or `max_size` if `min_size` is unset) and
 `max` is `max_size` (infinite if unset).
 
 ### When an input arrives
 
+Preparation first applies any necessary conversion to the working representation.
+Codec conversion failures permanently Nack the recovered input. The following
+rules then use the working representation's size:
+
 1. **Empty input** (size 0): acknowledged immediately and dropped.
-2. **Already acceptable** (`min <= size <= max`): forwarded immediately and
-   unchanged, with its original request context. It is not buffered, merged, or
-   split, and downstream Ack/Nack go straight to the original sender without
+2. **Already acceptable** (`min <= size <= max`): forwarded immediately in the
+   requested output representation, with its original request context. It is not
+   buffered, merged, or split, and downstream Ack/Nack go straight to the original sender without
    using the processor's request-tracking slots. Any data already buffered is
    left in place.
 3. **Otherwise** (smaller than `min`, or larger than `max`): appended to the
@@ -177,7 +218,8 @@ A flush happens when pending data reaches `min` (size flush), when
 flush), or at shutdown.
 
 - All pending data is merged in arrival order. If `max_size` is set,
-  it is split so every output is at most `max_size`. Items are packed to fill
+  it is split toward `max_size`; indivisible encoded entries or split-budget
+  fallbacks can exceed that best-effort bound. Items are packed to fill
   each output to exactly `max_size` when the data allows.
 - If `max_size` is unset, everything pending is merged into a single output with
   no upper bound.

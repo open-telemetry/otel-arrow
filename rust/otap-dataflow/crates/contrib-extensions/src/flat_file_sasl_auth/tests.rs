@@ -53,7 +53,8 @@ fn test_directory() -> TempDir {
 
 fn config_for(path: &Path) -> Config {
     Config {
-        username: TEST_USERNAME.into(),
+        username: Some(TEST_USERNAME.into()),
+        username_file: None,
         password_secret_file: path.to_owned(),
         password_secret_file_refresh: REFRESH_INTERVAL,
         startup_timeout: Duration::from_secs(30),
@@ -65,6 +66,19 @@ fn config_json(path: &Path) -> serde_json::Value {
         "username": TEST_USERNAME,
         "password_secret_file": path,
     })
+}
+
+fn file_config(username_path: &Path, password_path: &Path) -> Config {
+    let mut config = config_for(password_path);
+    config.username = None;
+    config.username_file = Some(username_path.to_owned());
+    config
+}
+
+fn assert_pair(credential: &SaslCredential, username: &str, password: &str) {
+    assert_eq!(credential.expose_username(), username);
+    assert_eq!(credential.expose_password(), password);
+    assert!(credential.expires_on().is_none());
 }
 
 fn make_tracker() -> BackgroundProviderMetricsTracker<FlatFileSaslAuthMetrics> {
@@ -167,7 +181,15 @@ impl RunningExtension {
 fn config_defaults_and_explicit_interval() {
     let path = Path::new("sasl-password");
     let config = parse_config(&config_json(path)).expect("valid config");
-    assert_eq!(config.username.expose_secret(), TEST_USERNAME);
+    assert_eq!(
+        config
+            .username
+            .as_ref()
+            .expect("inline username")
+            .expose_secret(),
+        TEST_USERNAME
+    );
+    assert!(config.username_file.is_none());
     assert_eq!(config.password_secret_file, path);
     assert_eq!(
         config.password_secret_file_refresh,
@@ -184,6 +206,37 @@ fn config_defaults_and_explicit_interval() {
     let config = parse_config(&value).expect("explicit interval is valid");
     assert_eq!(config.password_secret_file_refresh, Duration::from_secs(23));
     validate_config(&value).expect("factory validation accepts the same config");
+}
+
+/// Scenario: Both credentials use files, with an absent, empty, or nonempty inline username.
+/// Guarantees: File precedence skips unused inline validation and preserves refresh/startup defaults.
+#[test]
+fn config_accepts_file_pair_and_ignores_unused_inline_username() {
+    let mut value = serde_json::json!({
+        "username_file": "username",
+        "password_secret_file": "password",
+    });
+    for inline in [None, Some(""), Some(TEST_USERNAME)] {
+        if let Some(inline) = inline {
+            value["username"] = inline.into();
+        }
+        let config = parse_config(&value).expect("file pair accepted");
+        validate_config(&value).expect("factory accepts file pair");
+        assert_eq!(config.username_file.as_deref(), Some(Path::new("username")));
+        assert_eq!(config.password_secret_file, Path::new("password"));
+        assert_eq!(
+            config.password_secret_file_refresh,
+            Duration::from_secs(3600)
+        );
+        assert_eq!(config.startup_timeout, Duration::from_secs(30));
+    }
+    value["username_file"] = "".into();
+    assert!(
+        parse_config(&value)
+            .expect_err("empty selected file path rejected")
+            .to_string()
+            .contains("username_file")
+    );
 }
 
 /// Scenario: Startup timeout is explicitly configured, zero, or not a duration.
@@ -226,6 +279,10 @@ fn config_rejects_missing_empty_and_mistyped_fields() {
         serde_json::json!({"username": "", "password_secret_file": "password"}),
         serde_json::json!({"username": TEST_USERNAME, "password_secret_file": ""}),
         serde_json::json!({"username": null, "password_secret_file": "password"}),
+        serde_json::json!({"username": 42, "password_secret_file": "password"}),
+        serde_json::json!({"username_file": "username"}),
+        serde_json::json!({"username_file": "", "password_secret_file": "password"}),
+        serde_json::json!({"username_file": 42, "password_secret_file": "password"}),
         serde_json::json!({"username": TEST_USERNAME, "password_secret_file": 42}),
     ] {
         assert!(
@@ -245,13 +302,13 @@ fn config_rejects_missing_empty_and_mistyped_fields() {
     assert!(error.to_string().contains("password_secret_file"));
 }
 
-/// Scenario: Config includes unknown fields or removed username-file, inline-password, and AKV forms.
+/// Scenario: Config includes unknown fields, an unsupported refresh alias, inline-password, or AKV forms.
 /// Guarantees: Unsupported secret sources fail validation instead of being silently ignored.
 #[test]
 fn config_rejects_unknown_and_removed_fields() {
     for field in [
         "unexpected",
-        "username_file",
+        "credentials_file_refresh",
         "username_secret_file",
         "username_secret_file_refresh",
         "password_secret",
@@ -400,14 +457,21 @@ async fn acquisition_preserves_sasl_values_and_redacts_debug() {
     std::fs::write(&path, format!("{password}\r\n\r\n")).expect("password written");
     let mut config = config_for(&path);
     let username = "sasl:user\twith\ncontrols";
-    config.username = username.into();
+    config.username = Some(username.into());
     // SASL consumers, not the provider, impose mechanism-specific restrictions.
     let parsed = parse_config(&serde_json::json!({
         "username": username,
         "password_secret_file": path,
     }))
     .expect("colon and control characters are valid SASL username material");
-    assert_eq!(parsed.username.expose_secret(), username);
+    assert_eq!(
+        parsed
+            .username
+            .as_ref()
+            .expect("inline username")
+            .expose_secret(),
+        username
+    );
     let config_debug = format!("{config:?}");
     assert!(!config_debug.contains("sasl:user"));
     let credential = FlatFileSaslAuth::new(config)
@@ -422,14 +486,40 @@ async fn acquisition_preserves_sasl_values_and_redacts_debug() {
     assert!(!debug.contains("private-password"));
 }
 
-fn assert_safe_file_error(error: &Error, path: &Path) {
+/// Scenario: Both files contain SASL values with colons, Unicode, whitespace, and terminal CR/LF.
+/// Guarantees: File username overrides inline, only terminal CR/LF is stripped, and debug output is redacted.
+#[tokio::test]
+async fn acquisition_reads_file_pair_with_username_precedence() {
+    let directory = test_directory();
+    let username_path = directory.path().join("username");
+    let password_path = directory.path().join("password");
+    let username = "  private-username:\u{e9}\tinside\nline  ";
+    let password = "  private-password:\u{e9}\tinside\nline  ";
+    std::fs::write(&username_path, format!("{username}\r\n\r\n")).expect("username written");
+    std::fs::write(&password_path, format!("{password}\r\n")).expect("password written");
+    for inline in [None, Some(""), Some(TEST_USERNAME)] {
+        let mut config = file_config(&username_path, &password_path);
+        config.username = inline.map(Into::into);
+        config.validate().expect("selected file config valid");
+        let credential = FlatFileSaslAuth::new(config)
+            .fetch()
+            .await
+            .expect("file pair acquired");
+        assert_pair(&credential, username, password);
+        let debug = format!("{credential:?}");
+        assert!(!debug.contains("private-username"));
+        assert!(!debug.contains("private-password"));
+    }
+}
+
+fn assert_safe_file_error(error: &Error, path: &Path, field: &str) {
     let display = error.to_string();
-    assert!(display.contains("password_secret_file"), "{display}");
+    assert!(display.contains(field), "{display}");
     assert!(
         display.contains(path.to_string_lossy().as_ref()),
         "{display}"
     );
-    for secret in [TEST_USERNAME, "private-password"] {
+    for secret in [TEST_USERNAME, "private-password", "private-username"] {
         assert!(!display.contains(secret));
         assert!(!format!("{error:?}").contains(secret));
     }
@@ -448,7 +538,7 @@ async fn acquisition_rejects_empty_and_invalid_utf8_with_context() {
             .await
             .expect_err("invalid content is rejected");
         assert!(matches!(error, Error::CredentialAcquisition { .. }));
-        assert_safe_file_error(&error, &path);
+        assert_safe_file_error(&error, &path, "password_secret_file");
     }
 }
 
@@ -466,9 +556,62 @@ async fn acquisition_reports_unreadable_paths_without_secrets() {
             .await
             .expect_err("unreadable password path rejected");
         assert!(matches!(error, Error::ReadCredentialFile { .. }));
-        assert_safe_file_error(&error, &path);
+        assert_safe_file_error(&error, &path, "password_secret_file");
     }
     // Oversized reads are already covered by common::secret_file::tests::rejects_oversized_file.
+}
+
+/// Scenario: Either selected file is missing, a directory, empty, CR/LF-only, or invalid UTF-8.
+/// Guarantees: Both field/path contexts are redacted and username-file failure never falls back inline.
+#[tokio::test]
+async fn acquisition_rejects_either_file_without_inline_fallback() {
+    let directory = test_directory();
+    let username_path = directory.path().join("username");
+    let password_path = directory.path().join("password");
+    for (field, failing_path) in [
+        ("username_file", &username_path),
+        ("password_secret_file", &password_path),
+    ] {
+        for contents in [
+            None,
+            Some(&b""[..]),
+            Some(&b"\r\n"[..]),
+            Some(&b"private-username private-password\xff"[..]),
+        ] {
+            std::fs::write(&username_path, "private-username").expect("valid username");
+            std::fs::write(&password_path, "private-password").expect("valid password");
+            if let Some(contents) = contents {
+                std::fs::write(failing_path, contents).expect("invalid file written");
+            } else {
+                std::fs::remove_file(failing_path).expect("file removed");
+            }
+            let mut config = file_config(&username_path, &password_path);
+            config.username = Some(TEST_USERNAME.into());
+            let error = FlatFileSaslAuth::new(config)
+                .fetch()
+                .await
+                .expect_err("selected file fails");
+            assert_safe_file_error(&error, failing_path, field);
+            assert_eq!(
+                matches!(error, Error::ReadCredentialFile { .. }),
+                contents.is_none()
+            );
+        }
+        let mut config = file_config(&username_path, &password_path);
+        config.username = Some(TEST_USERNAME.into());
+        std::fs::write(&username_path, "private-username").expect("valid username");
+        if field == "username_file" {
+            config.username_file = Some(directory.path().to_owned());
+        } else {
+            config.password_secret_file = directory.path().to_owned();
+        }
+        let error = FlatFileSaslAuth::new(config)
+            .fetch()
+            .await
+            .expect_err("directory rejected");
+        assert!(matches!(error, Error::ReadCredentialFile { .. }));
+        assert_safe_file_error(&error, directory.path(), field);
+    }
 }
 
 /// Scenario: Two subscribers precede acquisition, a third subscribes late, and disk changes without refresh.
@@ -562,6 +705,73 @@ async fn periodic_rotation_publishes_to_independent_sasl_streams() {
         assert_eq!(credential.expose_username(), TEST_USERNAME);
         assert_eq!(credential.expose_password(), "password-two");
         assert!(credential.expires_on().is_none());
+    }
+    let _terminal = running.shutdown().await;
+}
+
+/// Scenario: A running file-backed provider rotates username alone, password alone, then both files.
+/// Guarantees: Each interval publishes a complete pair to independent streams and late subscribers get the latest cache.
+#[tokio::test(start_paused = true)]
+async fn periodic_file_pair_rotation_and_late_subscriptions() {
+    let directory = test_directory();
+    let username_path = directory.path().join("username");
+    let password_path = directory.path().join("password");
+    std::fs::write(&username_path, "user-one").expect("initial username");
+    std::fs::write(&password_path, "password-one").expect("initial password");
+    let extension = make_extension(file_config(&username_path, &password_path));
+    let consumer = extension.clone();
+    let mut first = consumer.credential_stream();
+    let mut second = consumer.credential_stream();
+    let running = start_extension(extension);
+    assert_pair(
+        &observe(first.next()).await.expect("initial publication"),
+        "user-one",
+        "password-one",
+    );
+    assert_pair(
+        &observe(second.next()).await.expect("second publication"),
+        "user-one",
+        "password-one",
+    );
+
+    let mut previous = ("user-one", "password-one");
+    for (username, password) in [
+        ("user-two", "password-one"),
+        ("user-two", "password-two"),
+        ("user-three", "password-three"),
+    ] {
+        std::fs::write(&username_path, format!("{username}\r\n")).expect("username updated");
+        std::fs::write(&password_path, format!("{password}\n")).expect("password updated");
+        tokio::time::advance(REFRESH_INTERVAL - Duration::from_secs(1)).await;
+        assert_pair(
+            &consumer.get_credential().await.expect("cache hit"),
+            previous.0,
+            previous.1,
+        );
+        assert!(first.next().now_or_never().is_none());
+        assert!(second.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for credential in [
+            observe(first.next()).await.expect("first rotation"),
+            observe(second.next()).await.expect("second rotation"),
+        ] {
+            assert_pair(&credential, username, password);
+        }
+        for _ in 0..2 {
+            let mut late = consumer.clone().credential_stream();
+            let credential = late
+                .next()
+                .now_or_never()
+                .expect("immediate cached pair")
+                .expect("stream open");
+            assert_pair(&credential, username, password);
+        }
+        assert_pair(
+            &consumer.get_credential().await.expect("latest cache"),
+            username,
+            password,
+        );
+        previous = (username, password);
     }
     let _terminal = running.shutdown().await;
 }
@@ -749,16 +959,82 @@ async fn initial_failure_has_no_publication_and_retry_recovers() {
         .await;
 }
 
-/// Scenario: Initial file acquisition keeps failing with an explicit three-second startup timeout.
+/// Scenario: The initial username file is missing, empty, or invalid UTF-8, then repaired before retry.
+/// Guarantees: Even with an inline fallback present, readiness and streams wait for a complete valid file pair.
+#[tokio::test(start_paused = true)]
+async fn initial_username_file_failure_gates_readiness_and_recovers() {
+    let local_tasks = LocalSet::new();
+    for contents in [None, Some(&b""[..]), Some(&b"private-username\xff"[..])] {
+        local_tasks
+            .run_until(async {
+                let directory = test_directory();
+                let username_path = directory.path().join("username");
+                let password_path = directory.path().join("password");
+                if let Some(contents) = contents {
+                    std::fs::write(&username_path, contents).expect("invalid username");
+                }
+                std::fs::write(&password_path, "recovered-password").expect("valid password");
+                let mut config = file_config(&username_path, &password_path);
+                config.username = Some(TEST_USERNAME.into());
+                let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config);
+                let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+                let mut stream = consumer.credential_stream();
+                let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
+                    wrapper,
+                    &local_tasks,
+                    &context,
+                );
+                tokio::pin!(ready);
+                observe(async {
+                tokio::select! {
+                    result = &mut ready => panic!("startup completed before recovery: {result:?}"),
+                    failure = failures.recv() => failure.expect("initial username fetch failed"),
+                }
+            }).await;
+                assert!(
+                    ready.as_mut().now_or_never().is_none(),
+                    "arm readiness deadline"
+                );
+                assert!(consumer.subscribe().borrow().is_none());
+                assert!(stream.next().now_or_never().is_none(), "open but silent");
+                tokio::time::advance(Duration::from_secs(4)).await;
+                assert!(ready.as_mut().now_or_never().is_none());
+                std::fs::write(&username_path, "recovered-user").expect("username repaired");
+                tokio::time::advance(Duration::from_secs(6)).await;
+                observe(ready)
+                    .await
+                    .expect("complete pair satisfies readiness");
+                assert_pair(
+                    &observe(stream.next()).await.expect("retry publication"),
+                    "recovered-user",
+                    "recovered-password",
+                );
+                assert_pair(
+                    &consumer.get_credential().await.expect("cache recovered"),
+                    "recovered-user",
+                    "recovered-password",
+                );
+            })
+            .await;
+    }
+}
+
+/// Scenario: Initial password or username file acquisition fails with an explicit three-second startup timeout.
 /// Guarantees: The engine gate expires at that deadline, not before, without publishing a credential.
 #[tokio::test(start_paused = true)]
 async fn initial_failure_times_out_through_engine_readiness_gate() {
     let local_tasks = LocalSet::new();
-    local_tasks
+    for file_username in [false, true] {
+        local_tasks
         .run_until(async {
             let directory = test_directory();
             let path = directory.path().join("missing-password");
             let mut config = config_for(&path);
+            if file_username {
+                let password_path = directory.path().join("password");
+                std::fs::write(&password_path, "password").expect("valid password");
+                config = file_config(&path, &password_path);
+            }
             config.startup_timeout = Duration::from_secs(3);
             let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config);
             let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
@@ -801,6 +1077,7 @@ async fn initial_failure_times_out_through_engine_readiness_gate() {
             assert!(stream.next().now_or_never().is_none(), "no usable credential was published");
         })
         .await;
+    }
 }
 
 /// Scenario: A periodic refresh reads invalid UTF-8 after publishing a good credential, then the file recovers.
@@ -847,5 +1124,94 @@ async fn failed_refresh_retains_snapshot_and_open_stream_until_retry() {
     let recovered = observe(stream.next()).await.expect("retry publication");
     assert_eq!(recovered.expose_username(), TEST_USERNAME);
     assert_eq!(recovered.expose_password(), "new-good-password");
+    let _terminal = running.shutdown().await;
+}
+
+/// Scenario: Either file fails reading or validation while the other file rotates, then the failing file recovers.
+/// Guarantees: No partial pair is published; cache and streams retain the last good pair until bounded retry succeeds.
+#[tokio::test(start_paused = true)]
+async fn failed_either_file_refresh_retains_complete_pair_until_retry() {
+    let directory = test_directory();
+    let username_path = directory.path().join("username");
+    let password_path = directory.path().join("password");
+    std::fs::write(&username_path, "user-good").expect("initial username");
+    std::fs::write(&password_path, "password-good").expect("initial password");
+    let (extension, mut failures) = observed_extension(file_config(&username_path, &password_path));
+    let consumer = extension.clone();
+    let mut first = consumer.credential_stream();
+    let mut second = consumer.clone().credential_stream();
+    let running = start_extension(extension);
+    assert_pair(
+        &observe(first.next()).await.expect("initial publication"),
+        "user-good",
+        "password-good",
+    );
+    assert_pair(
+        &observe(second.next()).await.expect("second publication"),
+        "user-good",
+        "password-good",
+    );
+
+    let mut previous = ("user-good", "password-good");
+    for failing_path in [&username_path, &password_path] {
+        for contents in [
+            None,
+            Some(&b"\r\n"[..]),
+            Some(&b"private-username private-password\xff"[..]),
+        ] {
+            std::fs::write(&username_path, "unpublished-user").expect("username rotated");
+            std::fs::write(&password_path, "unpublished-password").expect("password rotated");
+            if let Some(contents) = contents {
+                std::fs::write(failing_path, contents).expect("invalid file written");
+            } else {
+                std::fs::remove_file(failing_path).expect("file removed");
+            }
+            tokio::time::advance(REFRESH_INTERVAL).await;
+            observe(failures.recv())
+                .await
+                .expect("refresh failure observed");
+            assert!(
+                first.next().now_or_never().is_none(),
+                "failure does not publish or close"
+            );
+            assert!(
+                second.next().now_or_never().is_none(),
+                "independent stream remains open"
+            );
+            assert_pair(
+                &consumer.get_credential().await.expect("last good cache"),
+                previous.0,
+                previous.1,
+            );
+            let cached = consumer
+                .subscribe()
+                .borrow()
+                .clone()
+                .expect("watch retains pair");
+            assert_pair(&cached, previous.0, previous.1);
+            let late = consumer
+                .credential_stream()
+                .next()
+                .now_or_never()
+                .expect("late cache immediate")
+                .expect("late stream open");
+            assert_pair(&late, previous.0, previous.1);
+
+            std::fs::write(&username_path, "user-rotated").expect("username repaired");
+            std::fs::write(&password_path, "password-rotated").expect("password repaired");
+            tokio::time::advance(Duration::from_secs(10)).await;
+            assert_pair(
+                &observe(first.next()).await.expect("retry publication"),
+                "user-rotated",
+                "password-rotated",
+            );
+            assert_pair(
+                &observe(second.next()).await.expect("independent retry"),
+                "user-rotated",
+                "password-rotated",
+            );
+            previous = ("user-rotated", "password-rotated");
+        }
+    }
     let _terminal = running.shutdown().await;
 }

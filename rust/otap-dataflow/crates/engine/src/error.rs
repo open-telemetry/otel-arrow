@@ -264,6 +264,16 @@ pub enum Error {
         source_detail: String,
     },
 
+    /// A receiver opted into startup readiness but dropped its signal without firing it.
+    #[error(
+        "Receiver `{receiver}` dropped its readiness signaller without signaling ready; \
+         pipeline startup aborted"
+    )]
+    ReceiverReadinessSignallerDropped {
+        /// Receiver that failed to signal readiness.
+        receiver: NodeId,
+    },
+
     /// Unknown receiver plugin.
     #[error("Unknown receiver plugin `{plugin_urn}`")]
     UnknownReceiver {
@@ -638,6 +648,7 @@ impl Error {
             Error::ProcessorError { .. } => "ProcessorError",
             Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
             Error::ReceiverError { .. } => "ReceiverError",
+            Error::ReceiverReadinessSignallerDropped { .. } => "ReceiverReadinessSignallerDropped",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",

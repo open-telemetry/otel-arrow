@@ -1,0 +1,24 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  postgres:
+    build:
+      context: .
+    environment:
+      POSTGRES_DB: receiver_fixture
+      POSTGRES_PASSWORD: postgres-admin
+    ports:
+      - "127.0.0.1:${POSTGRESQL_FIXTURE_PORT:-5432}:5432"
+    volumes:
+      - ${POSTGRESQL_FIXTURE_EXPORT_DIR:-./out}:/tls-export
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -h 127.0.0.1 -U postgres -d receiver_fixture &&
+          PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U postgres -d receiver_fixture -Atqc
+          'SELECT count(*) FROM public.receiver_events' >/dev/null
+      interval: 1s
+      timeout: 5s
+      retries: 30

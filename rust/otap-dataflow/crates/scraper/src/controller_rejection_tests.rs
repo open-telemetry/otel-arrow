@@ -87,12 +87,14 @@ fn receiver_for(
 }
 
 fn decoded_source(pdata: &OtapPdata) -> String {
-    let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
-        pdata.clone().payload().into_data()
-    else {
-        panic!("expected OTLP logs")
-    };
-    let logs = LogsData::decode(bytes).expect("logs");
+    let payload = pdata.payload_ref();
+    assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+    assert_eq!(
+        payload.signal_type(),
+        otel_arrow_dfe_config::SignalType::Logs
+    );
+    let bytes = payload.encoded_bytes().expect("OTLP logs");
+    let logs = LogsData::decode(bytes.as_ref()).expect("logs");
     let resource = logs.resource_logs[0].resource.as_ref().expect("resource");
     let Some(any_value::Value::StringValue(id)) = resource
         .attributes

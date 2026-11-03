@@ -105,7 +105,7 @@ resolved schema:
 - Treat the endpoint as sensitive because it can reveal topology and
   identifiers.
 
-## Metrics and diagnostic endpoints (/metrics, /status)
+## Metrics and diagnostic endpoints (/api/v1/metrics, /api/v1/status)
 
 If the system exposes metrics scrape endpoints (for example Prometheus-style) or
 diagnostic endpoints:

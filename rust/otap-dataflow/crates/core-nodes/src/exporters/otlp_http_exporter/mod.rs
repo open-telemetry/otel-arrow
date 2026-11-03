@@ -54,8 +54,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-#[cfg(test)]
-use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_pdata_codec::{EncodePolicy, PdataEncoding};
 use otel_arrow_dfe_telemetry::diagnostics::DiagnosticErrorKind;
 use prost::Message as _;
@@ -1738,6 +1736,7 @@ mod test {
         EffectHandler<OtapPdata>,
         Option<Box<dyn HttpClientAuthProvider>>,
     ) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let runtime = Runtime::new().unwrap();
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
@@ -3653,21 +3652,15 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload().into_data() {
-                                    PayloadData::OtapRecords(otap_batch) => {
-                                        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-                                        assert!(
-                                            logs_batch.num_rows() > 0,
-                                            "expected record batches to be returned in Nack, but it was empty"
-                                        );
-                                    }
-                                    other_payload => {
-                                        panic!(
-                                            "received unexpected payload type in Nack: {:?}",
-                                            other_payload
-                                        );
-                                    }
-                                }
+                                let payload = nack.refused.payload();
+                                let otap_batch = payload
+                                    .otap_ref()
+                                    .expect("expected native OTAP payload in Nack");
+                                let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+                                assert!(
+                                    logs_batch.num_rows() > 0,
+                                    "expected record batches to be returned in Nack, but it was empty"
+                                );
 
                                 if ack_count >= num_expected_nacks {
                                     break;
@@ -3683,6 +3676,8 @@ mod test {
             })
     }
 
+    /// Scenario: An HTTP export failure returns a subscribed OTLP logs payload.
+    /// Guarantees: The Nack retains nonempty bytes with the original encoding and signal.
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
@@ -3740,20 +3735,16 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload().into_data() {
-                                    PayloadData::OtlpBytes(proto_bytes) => {
-                                        assert!(
-                                            !proto_bytes.as_bytes().is_empty(),
-                                            "expected payload bytes to be returned in Nack, but it was empty"
-                                        );
-                                    }
-                                    other_payload => {
-                                        panic!(
-                                            "received unexpected payload type in Nack: {:?}",
-                                            other_payload
-                                        );
-                                    }
-                                }
+                                let payload = nack.refused.payload();
+                                let view = payload
+                                    .encoded_view()
+                                    .expect("expected encoded payload in Nack");
+                                assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+                                assert_eq!(view.signal_type(), SignalType::Logs);
+                                assert!(
+                                    !view.bytes().is_empty(),
+                                    "expected payload bytes to be returned in Nack, but it was empty"
+                                );
 
                                 if ack_count >= num_expected_nacks {
                                     break;

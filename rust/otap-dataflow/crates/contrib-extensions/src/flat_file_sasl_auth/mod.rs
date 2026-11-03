@@ -113,7 +113,7 @@ fn create(
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static FLAT_FILE_SASL_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: FLAT_FILE_SASL_AUTH_URN,
-    description: "Active+Shared SaslCredentialProvider with an inline username and refreshed password file",
+    description: "Active+Shared SaslCredentialProvider with an inline or file-backed username and refreshed credential files",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
         shared: FlatFileSaslAuthExtension => [SaslCredentialProvider]

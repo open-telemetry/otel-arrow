@@ -27,7 +27,6 @@ use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node, test_pipe
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
-use otel_arrow_dfe_pdata_codec::PayloadData;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -394,10 +393,11 @@ fn producer_validation(
                 }
                 match time::timeout(Duration::from_millis(500), ctx.recv()).await {
                     Ok(Ok(pdata)) => {
-                        let PayloadData::OtapRecords(records) = pdata.payload().into_data() else {
-                            panic!("Expected OtapArrowRecords payload from ETW receiver");
-                        };
-                        batches.push(records);
+                        let records = pdata
+                            .payload_ref()
+                            .otap_ref()
+                            .expect("expected native OTAP payload from ETW receiver");
+                        batches.push(records.clone());
                     }
                     Ok(Err(_)) | Err(_) => { /* channel error or timeout: keep polling */ }
                 }
