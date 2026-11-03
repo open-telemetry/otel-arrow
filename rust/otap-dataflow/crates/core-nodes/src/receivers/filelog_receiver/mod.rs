@@ -8,6 +8,7 @@
 pub mod config;
 pub mod decoder;
 pub mod framer;
+pub mod metadata;
 pub mod multiline;
 pub mod multiline_pattern;
 
