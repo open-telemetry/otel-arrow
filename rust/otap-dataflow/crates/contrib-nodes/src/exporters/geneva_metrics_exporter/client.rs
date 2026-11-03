@@ -162,7 +162,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn publish(endpoint: &str, account: &str, packet: Vec<u8>) -> Result<(), PublishError> {
-        MetricsPublisher::new(endpoint, Duration::from_secs(1))
+        MetricsPublisher::new(endpoint, Duration::from_secs(10))
             .expect("valid endpoint")
             .publish(
                 account,

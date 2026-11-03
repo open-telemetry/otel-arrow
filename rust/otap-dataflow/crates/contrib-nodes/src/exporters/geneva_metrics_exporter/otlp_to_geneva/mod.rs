@@ -38,7 +38,7 @@ use super::encoder::{
 #[cfg(test)]
 use attributes::{MAX_DIMENSION_NAME_UTF16_UNITS, MAX_DIMENSION_VALUE_UTF16_UNITS};
 use attributes::{
-    NAMESPACE_ATTRIBUTE, apply_scope_resource_overrides, attribute_string,
+    NAMESPACE_ATTRIBUTE, Namespaces, apply_scope_resource_overrides, attribute_string,
     default_resource_context, point_context, resource_context, selected_scope_dimensions,
 };
 use exemplars::map_exemplars;
@@ -151,14 +151,21 @@ where
         cardinality_overflows: Vec::new(),
     };
 
+    let namespaces = Namespaces::default();
     for resource_metrics in metrics.resources() {
         let mut resource = match resource_metrics.resource() {
-            Some(resource) => resource_context(resource.attributes(), config)?,
-            None => default_resource_context(config),
+            Some(resource) => resource_context(resource.attributes(), config, &namespaces)?,
+            None => default_resource_context(config, &namespaces),
         };
 
         for scope_metrics in resource_metrics.scopes() {
-            map_scope(&scope_metrics, &mut resource, config, &mut outcome)?;
+            map_scope(
+                &scope_metrics,
+                &mut resource,
+                config,
+                &namespaces,
+                &mut outcome,
+            )?;
         }
     }
 
@@ -172,12 +179,14 @@ struct ScopeContext<'a> {
     namespace: &'a Rc<str>,
     dimensions: &'a [super::encoder::Dimension],
     config: &'a Config,
+    namespaces: &'a Namespaces,
 }
 
 fn map_scope<S>(
     scope_metrics: &S,
     resource: &mut ResourceContext,
     config: &Config,
+    namespaces: &Namespaces,
     outcome: &mut MappingOutcome,
 ) -> Result<(), MappingError>
 where
@@ -187,7 +196,7 @@ where
         .scope()
         .filter(|scope| scope.name().is_some_and(|name| !name.is_empty()))
     {
-        attribute_string(scope.attributes(), NAMESPACE_ATTRIBUTE)?
+        attribute_string(scope.attributes(), NAMESPACE_ATTRIBUTE, namespaces)?
             .unwrap_or_else(|| resource.namespace.clone())
     } else {
         resource.namespace.clone()
@@ -205,6 +214,7 @@ where
         namespace: &scope_namespace,
         dimensions: &scope_dimensions,
         config,
+        namespaces,
     };
 
     for otlp_metric in scope_metrics.metrics() {
@@ -929,6 +939,35 @@ mod tests {
                 assert!(Rc::ptr_eq(&inherited.value, &dimension.value));
             }
         }
+    }
+
+    /// Scenario: Many points each set the same point-level namespace attribute.
+    /// Guarantees: Mapping allocates each distinct namespace once per request instead of once per point.
+    #[test]
+    fn shares_repeated_point_namespaces() {
+        let point = gauge_point(vec![string_attribute(
+            NAMESPACE_ATTRIBUTE,
+            "point-namespace",
+        )]);
+        let scope = scope_with_metrics(vec![otlp_metric(
+            "temperature",
+            metric::Data::Gauge(Gauge {
+                data_points: vec![point; 128],
+            }),
+        )]);
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.packet.metrics.len(), 128);
+        let first = &mapped.packet.metrics[0].namespace;
+        assert_eq!(&**first, "point-namespace");
+        assert!(
+            mapped
+                .packet
+                .metrics
+                .iter()
+                .all(|metric| Rc::ptr_eq(first, &metric.namespace))
+        );
     }
 
     /// Scenario: Successive scopes override, omit, and clear one exact-case resource dimension.
