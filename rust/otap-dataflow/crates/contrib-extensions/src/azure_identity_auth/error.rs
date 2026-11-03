@@ -23,4 +23,15 @@ pub enum Error {
         /// Underlying Azure SDK error.
         source: azure_core::Error,
     },
+
+    /// The managed-identity blocking task failed to complete.
+    #[error("managed identity task failed: {source}")]
+    ManagedIdentityTask {
+        /// Underlying task panic or cancellation.
+        source: tokio::task::JoinError,
+    },
+
+    /// The caller stopped waiting for a managed-identity acquisition.
+    #[error("managed identity token acquisition was cancelled")]
+    ManagedIdentityCancelled,
 }
