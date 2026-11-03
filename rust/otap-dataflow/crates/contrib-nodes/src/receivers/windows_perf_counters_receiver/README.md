@@ -785,21 +785,38 @@ collection still in progress is not sent.
 
 Self-metrics and events use *scrape* for a collection.
 
-### Metric Set
+### Metric Sets
+
+#### `receiver.windows_perf_counters.scrapes`
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.windows_perf_counters.scrapes.collections` | `{scrape}` | `outcome` | Number of collections partitioned by terminal outcome (`success`, `failure`). |
+
+<!-- markdownlint-enable MD013 -->
+
+#### `receiver.windows_perf_counters.drops`
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.windows_perf_counters.drops.batches` | `{batch}` | `reason` | Number of dropped batches partitioned by reason (`downstream_send_error`). |
+
+<!-- markdownlint-enable MD013 -->
 
 #### `receiver.windows_perf_counters`
 
 <!-- markdownlint-disable MD013 -->
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.windows_perf_counters.scrapes` | `{scrape}` | Collections in which at least one counter was collected successfully. |
-| `receiver.windows_perf_counters.scrape.failures` | `{scrape}` | Collections in which at least one counter could not be collected, plus startup if a counter's query could not be opened or sampled. A collection where some counters succeed and others fail counts once in both `scrapes` and `scrape.failures`. |
-| `receiver.windows_perf_counters.scrape.overruns` | `{tick}` | Collections skipped because the previous collection was still running. |
-| `receiver.windows_perf_counters.scrape.duration` | `s` | Time from requesting a collection to receiving its results. |
-| `receiver.windows_perf_counters.counter.add.failures` | `{failure}` | Failures to add a counter, including retries. |
-| `receiver.windows_perf_counters.active.counters` | `{counter}` | Counters currently added, whether or not they produce values. |
-| `receiver.windows_perf_counters.batches.dropped` | `{batch}` | Batches dropped because downstream was full or closed. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.windows_perf_counters.scrape.overruns` | `{tick}` | | Collections skipped because the previous collection was still running. |
+| `receiver.windows_perf_counters.scrape.duration` | `s` | | Time from requesting a collection to receiving its results. |
+| `receiver.windows_perf_counters.counter.add.failures` | `{failure}` | | Failures to add a counter, including retries. |
+| `receiver.windows_perf_counters.active.counters` | `{counter}` | | Counters currently added, whether or not they produce values. |
 
 <!-- markdownlint-enable MD013 -->
 

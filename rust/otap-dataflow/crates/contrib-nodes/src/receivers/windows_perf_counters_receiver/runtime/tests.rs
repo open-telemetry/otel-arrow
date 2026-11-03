@@ -1,8 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::super::metrics::{
+    WindowsPerfCountersDropAttributes, WindowsPerfCountersDropReason,
+    WindowsPerfCountersScrapeAttributes,
+};
 use super::super::test_utils::spawn_children;
 use super::*;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 
 /// Scenario: For each counter failure kind (add, read, collect, recreate), counter 0 fails in three
 /// reports while counter 1, which maps the same path, succeeds; then counter 0 succeeds while
@@ -59,9 +64,27 @@ fn counter_failures_warn_once_per_counter_episode() {
         let counters = &h.receiver.diagnostics.counters;
         assert!(!open(&counters[0]), "own success ends the episode");
         assert!(open(&counters[1]), "another counter opens its own episode");
-        let metrics = &h.receiver.metrics;
-        assert_eq!(metrics.scrapes.get(), scrapes);
-        assert_eq!(metrics.scrape_failures.get(), scrapes);
+        let metrics = &mut h.receiver.metrics;
+        assert_eq!(
+            metrics
+                .scrapes
+                .get(WindowsPerfCountersScrapeAttributes {
+                    outcome: Outcome::Success,
+                })
+                .collections
+                .get(),
+            scrapes
+        );
+        assert_eq!(
+            metrics
+                .scrapes
+                .get(WindowsPerfCountersScrapeAttributes {
+                    outcome: Outcome::Failure,
+                })
+                .collections
+                .get(),
+            scrapes
+        );
     }
 }
 
@@ -248,7 +271,7 @@ async fn due_tick_is_handled_before_report() {
         assert!(futures::poll!(&mut collect).is_pending());
         assert_eq!(scrapes.0.borrow().len(), 1, "no catch-up scrape");
     }
-    assert_eq!(h.receiver.metrics.scrape_overruns.get(), 1);
+    assert_eq!(h.receiver.metrics.operational.scrape_overruns.get(), 1);
     assert!(h.receiver.diagnostics.overrunning);
 }
 
@@ -285,8 +308,28 @@ async fn failed_scrape_still_publishes_healthy_points() {
             .unwrap();
         assert!(futures::poll!(&mut collect).is_pending());
     }
-    assert_eq!(h.receiver.metrics.scrape_failures.get(), 1);
-    assert_eq!(h.receiver.metrics.scrapes.get(), 1);
+    assert_eq!(
+        h.receiver
+            .metrics
+            .scrapes
+            .get(WindowsPerfCountersScrapeAttributes {
+                outcome: Outcome::Failure,
+            })
+            .collections
+            .get(),
+        1
+    );
+    assert_eq!(
+        h.receiver
+            .metrics
+            .scrapes
+            .get(WindowsPerfCountersScrapeAttributes {
+                outcome: Outcome::Success,
+            })
+            .collections
+            .get(),
+        1
+    );
     assert!(h.output.try_recv().is_ok(), "healthy point published");
 }
 
@@ -334,7 +377,7 @@ async fn timeout_expiry_opens_overrun_until_on_time_completion() {
         h.receiver.diagnostics.overrunning,
         "expiry opens new episode"
     );
-    assert_eq!(h.receiver.metrics.scrape_overruns.get(), 0);
+    assert_eq!(h.receiver.metrics.operational.scrape_overruns.get(), 0);
 }
 
 /// Scenario: The start report carries a query that could not be opened or primed.
@@ -357,8 +400,28 @@ async fn startup_failure_counts_scrape_failure() {
         tokio::pin!(collect);
         assert!(futures::poll!(&mut collect).is_pending());
     }
-    assert_eq!(h.receiver.metrics.scrape_failures.get(), 1);
-    assert_eq!(h.receiver.metrics.scrapes.get(), 0);
+    assert_eq!(
+        h.receiver
+            .metrics
+            .scrapes
+            .get(WindowsPerfCountersScrapeAttributes {
+                outcome: Outcome::Failure,
+            })
+            .collections
+            .get(),
+        1
+    );
+    assert_eq!(
+        h.receiver
+            .metrics
+            .scrapes
+            .get(WindowsPerfCountersScrapeAttributes {
+                outcome: Outcome::Success,
+            })
+            .collections
+            .get(),
+        0
+    );
 }
 
 /// Scenario: Batches are sent until the downstream channel is full, one is drained, then the
@@ -381,26 +444,36 @@ fn full_or_closed_downstream_counts_dropped_batches() {
             .unwrap();
         OtapPdata::new(Context::default(), records.into())
     };
+    let drops = |h: &mut Harness| {
+        h.receiver
+            .metrics
+            .drops
+            .get(WindowsPerfCountersDropAttributes {
+                reason: WindowsPerfCountersDropReason::DownstreamSendError,
+            })
+            .batches
+            .get()
+    };
     for _ in 0..4 {
         let data = batch(&h.receiver.config.counters);
         h.receiver.send(&h.effect_handler, data).unwrap();
     }
-    assert_eq!(h.receiver.metrics.batches_dropped.get(), 0);
+    assert_eq!(drops(&mut h), 0);
     let data = batch(&h.receiver.config.counters);
     h.receiver.send(&h.effect_handler, data).unwrap();
-    assert_eq!(h.receiver.metrics.batches_dropped.get(), 1);
+    assert_eq!(drops(&mut h), 1);
     assert!(h.receiver.diagnostics.dropping);
 
     assert!(h.output.try_recv().is_ok());
     let data = batch(&h.receiver.config.counters);
     h.receiver.send(&h.effect_handler, data).unwrap();
-    assert_eq!(h.receiver.metrics.batches_dropped.get(), 1);
+    assert_eq!(drops(&mut h), 1);
     assert!(!h.receiver.diagnostics.dropping);
 
     drop(h.output);
     let data = batch(&h.receiver.config.counters);
     h.receiver.send(&h.effect_handler, data).unwrap();
-    assert_eq!(h.receiver.metrics.batches_dropped.get(), 2);
+    assert_eq!(drops(&mut h), 2);
 }
 
 /// Decoded string attributes of one data point.
