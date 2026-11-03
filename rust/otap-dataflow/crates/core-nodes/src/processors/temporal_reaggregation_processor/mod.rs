@@ -745,7 +745,6 @@ impl TemporalReaggregationProcessor {
 
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
-                    // TODO(#4541) Fix in step 3E, see #3694
                     let context = Context::with_capacity(1);
                     let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
                     if let Some(addr) = passthrough_peer {

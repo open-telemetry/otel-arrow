@@ -135,22 +135,25 @@ impl SinkBinding {
 
     /// Emits the existing primitive and materialized propagation results in order.
     ///
-    /// Fails when the metadata does not match this node's compiled context
-    /// bindings; an exporter permanently nacks the input. The current
-    /// implementation always succeeds.
+    /// # Errors
+    ///
+    /// Fails with [`ContextError::ContextMismatch`] before emitting anything
+    /// when a composite in the metadata was materialized under a different
+    /// plan or declaration than this binding. An exporter permanently nacks
+    /// the input.
     pub fn propagate<'a>(
         &'a self,
         metadata: &'a Metadata,
         mut emit: impl FnMut(PropagatedValue<'a>),
     ) -> Result<(), ContextError> {
+        let materialized = self
+            .policy
+            .materialized_headers(metadata.materialized_context())?;
         for header in metadata
             .transport_headers()
             .into_iter()
             .flat_map(|headers| self.policy.propagate(headers))
-            .chain(
-                self.policy
-                    .materialized_headers(metadata.materialized_context()),
-            )
+            .chain(materialized)
         {
             emit(PropagatedValue {
                 wire_name: header.header_name,
@@ -173,9 +176,9 @@ pub struct NodeBindings {
     /// Sorted by selector and unique, as produced by sorted declarations.
     pub(super) values: Box<[ValueRead]>,
     pub(super) headers: Option<HeadersRead>,
-    /// Present when the node declares produced entries.
+    /// For 1:1 Context projection when the node declares produced entries.
     pub(super) projection: Option<ProjectionBinding>,
-    /// Present only when a processor declares `Merges`.
+    /// For many:1 Present only when a processor declares `Merges`.
     pub(super) merge: Option<MergeBinding>,
 }
 

@@ -97,25 +97,25 @@ impl ValueRead {
 
     /// Applies a compiled stored-name lookup or composite projection without allocating.
     ///
-    /// Missing values return `None`. An identity claim read retains the claim's
-    /// cardinality, so an empty multi-valued claim is present. A composite read
-    /// retains the whole entry's presence gate and source cardinalities. Each
-    /// member yields at most the number of values the selector's `take` requests.
-    /// Identity `All` reads visit every matching claim in capture-policy order;
-    /// `Exists` and `First` stop at the first matching claim.
+    /// Missing values return `Ok(None)`. An identity claim read retains the
+    /// claim's cardinality, so an empty multi-valued claim is present. A
+    /// composite read retains the whole entry's presence gate and source
+    /// cardinalities. Each member yields at most the number of values the
+    /// selector's `take` requests. Identity `All` reads visit every matching
+    /// claim in capture-policy order; `Exists` and `First` stop at the first
+    /// matching claim.
     ///
-    /// Fails when the metadata does not match this node's compiled context
-    /// bindings; a processor or exporter permanently nacks the input. The
-    /// current implementation always succeeds.
+    /// # Errors
+    ///
+    /// Fails with [`ContextError::ContextMismatch`] when a composite in the
+    /// metadata was materialized under a different plan or declaration than
+    /// this binding. A processor or exporter permanently nacks the input.
     pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Result<Option<Read<'a>>, ContextError> {
-        Ok(self.read_present(metadata))
-    }
-
-    /// Returns the selected value, or `None` when it is absent.
-    fn read_present<'a>(&'a self, metadata: &'a Metadata) -> Option<Read<'a>> {
         let backend = match &self.backend {
             ValueReadBackend::TransportHeader { name, matching } => {
-                let headers = metadata.transport_headers()?;
+                let Some(headers) = metadata.transport_headers() else {
+                    return Ok(None);
+                };
                 let name = name.as_str();
                 let mut remaining = match matching {
                     ContextNameMatching::Exact => HeaderMatches::Exact(headers.find_by_name(name)),
@@ -126,30 +126,32 @@ impl ValueRead {
                         }
                     }
                 };
-                ReadBackend::Headers {
-                    first: remaining.next()?,
-                    remaining,
-                }
+                let Some(first) = remaining.next() else {
+                    return Ok(None);
+                };
+                ReadBackend::Headers { first, remaining }
             }
             ValueReadBackend::AuthorizedIdentity { name, matching } => {
-                let mut remaining = IdentityMatches::new(
-                    metadata.authorized_identity_entries()?.iter(),
-                    name.as_str(),
-                    *matching,
-                );
-                ReadBackend::AuthorizedIdentity {
-                    first: remaining.next()?,
-                    remaining,
-                }
+                let Some(entries) = metadata.authorized_identity_entries() else {
+                    return Ok(None);
+                };
+                let mut remaining = IdentityMatches::new(entries.iter(), name.as_str(), *matching);
+                let Some(first) = remaining.next() else {
+                    return Ok(None);
+                };
+                ReadBackend::AuthorizedIdentity { first, remaining }
             }
             ValueReadBackend::Composite { plan, projection } => {
-                ReadBackend::Composite(metadata.resolve_materialized_context(plan, projection)?)
+                match metadata.resolve_materialized_context(plan, projection)? {
+                    Some(projection) => ReadBackend::Composite(projection),
+                    None => return Ok(None),
+                }
             }
         };
-        Some(Read {
+        Ok(Some(Read {
             backend,
             take: self.selector.take,
-        })
+        }))
     }
 }
 
@@ -782,6 +784,8 @@ mod tests {
 
     /// Scenario: composite reads select aliases, identity claims, and constants from one arrival.
     /// Guarantees: compiled projections match the legacy resolver, including empty-many cardinality.
+    /// Reading through a binding compiled from a changed declaration is a mismatch error, not
+    /// an absent entry.
     #[test]
     fn composite_reads_match_projections_and_presence_gates() {
         let composite = ContextEntryDeclaration {
@@ -873,6 +877,7 @@ mod tests {
             let mut expected = Vec::new();
             metadata
                 .resolve_materialized_context(&binding.materialization, &projection)
+                .expect("legacy read matches")
                 .expect("legacy read")
                 .visit_members(|member| {
                     expected.push((
@@ -956,12 +961,10 @@ mod tests {
                 ContextMaterializationPlan::compile(&[changed]).expect("changed materialization");
             let changed_read =
                 ValueRead::compile(read.selector(), &changed_plan).expect("changed read");
-            assert!(
-                changed_read
-                    .read(&metadata)
-                    .expect("read succeeds")
-                    .is_none()
-            );
+            assert!(matches!(
+                changed_read.read(&metadata),
+                Err(ContextError::ContextMismatch)
+            ));
         }
     }
 

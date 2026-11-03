@@ -149,10 +149,7 @@ impl ProjectionBinding {
 /// An output that forwards one input's context unchanged is not a merge and
 /// needs no binding.
 ///
-/// Limitation: this binding erases all context except the `network_info`
-/// peer address, even entries every input shares. A merged output should
-/// keep whatever is equal across its inputs; that default and options to
-/// select it are planned.
+/// TODO(3872): this binding erases all context except the `network_info`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeBinding {
     _compiled: (),

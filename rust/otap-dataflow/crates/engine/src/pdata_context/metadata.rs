@@ -15,7 +15,7 @@ use std::sync::Arc;
 use super::Claims;
 use crate::capability::auth::ClaimValue;
 use crate::pdata_context::{
-    ContextDomain, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
+    ContextDomain, ContextError, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
     ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
     MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
 };
@@ -102,12 +102,15 @@ impl Metadata {
     }
 
     /// Resolves an existing materialized composite projection.
-    #[must_use]
+    ///
+    /// Returns `Ok(None)` when the entry is not materialized and fails when
+    /// the projection does not belong to `plan`; see
+    /// [`MaterializedContext::resolve`].
     pub fn resolve_materialized_context<'a>(
         &'a self,
         plan: &'a ContextMaterializationPlan,
         projection: &'a ContextProjection,
-    ) -> Option<MaterializedContextProjection<'a>> {
+    ) -> Result<Option<MaterializedContextProjection<'a>>, ContextError> {
         self.materialized.resolve(plan, projection)
     }
 

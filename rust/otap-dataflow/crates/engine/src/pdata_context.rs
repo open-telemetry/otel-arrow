@@ -287,8 +287,6 @@ pub enum ContextDeclaration {
         policy: AuthorizedIdentityPolicy,
     },
     /// Declares that a processor merges several inputs into one output.
-    ///
-    /// Only processors may declare this. The node receives a merge binding.
     Merges,
 }
 
@@ -457,19 +455,15 @@ impl NodeContextDeclarations {
 }
 
 impl ContextDeclarationProvider {
-    /// Creates a declaration provider from a declaration callback.
-    #[must_use]
-    pub const fn new(declarations: ContextDeclarationFn) -> Self {
-        Self { declarations }
-    }
-
     /// Creates a declaration provider for a configuration type.
     #[must_use]
     pub const fn from_typed_config<T>() -> Self
     where
         T: ConfigNodeContextDeclaration,
     {
-        Self::new(typed_context_declarations::<T>)
+        Self {
+            declarations: typed_context_declarations::<T>,
+        }
     }
 
     /// Creates a provider for a processor that merges several inputs into one output.
@@ -479,7 +473,9 @@ impl ContextDeclarationProvider {
     /// returns `Merges` alongside its other declarations instead.
     #[must_use]
     pub const fn merging() -> Self {
-        Self::new(merge_context_declarations)
+        Self {
+            declarations: merge_context_declarations,
+        }
     }
 }
 
@@ -1737,8 +1733,10 @@ groups:
         .resolve()
     }
 
-    /// Scenario: one pipeline holds a producing receiver, producing processor, merging processor, and plain nodes.
-    /// Guarantees: only producing processors receive a projection (a producing receiver forms context at arrival instead), only the processor declaring Merges receives a merge binding, and arrival is unaffected.
+    /// Scenario: a pipeline contains producing, merging, and plain nodes.
+    /// Guarantees: the receiver gets an arrival binding, the producing processor
+    /// gets a projection for only its declared entries, and the merging processor
+    /// gets a merge binding. Plain nodes get neither projection nor merge bindings.
     #[test]
     fn projection_and_merge_bindings_follow_declarations() {
         let compiled = test_pipeline_factory()
