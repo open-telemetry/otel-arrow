@@ -193,10 +193,10 @@ impl LeaseGuard {
             return Err(LeaseError::Integrity);
         }
         let key = (self.locator.device, self.locator.inode);
-        if !state
+        if state
             .entries
             .get(&key)
-            .is_some_and(|entry| entry.owner == self.owner.id)
+            .is_none_or(|entry| entry.owner != self.owner.id)
         {
             state.failed = true;
             return Err(LeaseError::Integrity);
@@ -225,10 +225,10 @@ impl LeaseGuard {
         let key = (self.locator.device, self.locator.inode);
         let held = self.owner.held.load(Ordering::Relaxed);
         if held == 0
-            || !state
+            || state
                 .entries
                 .get(&key)
-                .is_some_and(|entry| entry.owner == self.owner.id)
+                .is_none_or(|entry| entry.owner != self.owner.id)
         {
             state.failed = true;
             return Err(LeaseError::Integrity);
