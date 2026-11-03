@@ -12,6 +12,17 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.64.0
+
+### :bulb: Enhancements :bulb:
+
+- `all`: Lower the minimum supported Rust version from 1.98.1 to 1.96.1. ([#4013](https://github.com/open-telemetry/otel-arrow/issues/4013))
+- `dependencies`: Upgrade various Rust dependencies. ([#4616](https://github.com/open-telemetry/otel-arrow/issues/4616))
+- `pipeline`: Allow the Geneva exporter to consume Entra tokens from Azure Identity Auth. ([#4457](https://github.com/open-telemetry/otel-arrow/issues/4457))
+  Azure Identity Auth owns token acquisition, caching, refresh, and readiness. Token lookups time out after five seconds and keep failure causes. In-progress managed identity acquisition can delay pipeline shutdown. Requires geneva-uploader 0.9.0.
+
+<!-- previous-version -->
+
 ## v0.63.0
 
 ### :stop_sign: Breaking changes :stop_sign:
