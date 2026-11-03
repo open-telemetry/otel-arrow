@@ -2517,12 +2517,11 @@ impl<
                     }
                 }
             }
-            let build_deadline = Instant::now() + Duration::from_secs(step_timeout_secs);
             let interrupted = || {
                 self.global_shutdown_requested()
                     .then(|| "engine shutdown requested before new pipelines started".to_owned())
             };
-            match gate.wait_until_built(expected_built, build_deadline, interrupted) {
+            match gate.wait_for_builds(expected_built, step_timeout_secs, interrupted) {
                 Ok(()) => gate.open(),
                 Err(reason) => gate.abort(reason),
             }

@@ -77,6 +77,18 @@ impl StartGate {
 
     /// Waits until `expected` instances are built, the gate is aborted, the deadline passes, or
     /// `interrupted` returns a reason (polled every 50ms), for example an engine shutdown.
+    /// A zero timeout retains the same one-second minimum as rollout readiness.
+    pub(crate) fn wait_for_builds(
+        &self,
+        expected: usize,
+        timeout_secs: u64,
+        interrupted: impl Fn() -> Option<String>,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.wait_until_built(expected, deadline, interrupted)
+    }
+
+    /// Waits for built instances until an explicit deadline or interruption.
     pub(crate) fn wait_until_built(
         &self,
         expected: usize,
@@ -203,7 +215,29 @@ impl Drop for StartGateTicket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::thread;
+
+    /// Scenario: a zero or positive step timeout is supplied while a build is still pending.
+    /// Guarantees: the build can finish on a later gate check without an immediate timeout.
+    #[test]
+    fn zero_step_timeout_allows_a_pending_build_to_finish() {
+        for timeout_secs in [0, 1] {
+            let gate = StartGate::new();
+            let checks = Cell::new(0);
+            gate.wait_for_builds(1, timeout_secs, || {
+                let check = checks.get() + 1;
+                checks.set(check);
+                if check == 2 {
+                    gate.report_built();
+                }
+                None
+            })
+            .expect("a pending build should retain the rollout's one-second minimum");
+            assert_eq!(checks.get(), 2);
+            assert!(matches!(gate.lock().decision, GateDecision::Closed));
+        }
+    }
 
     // Scenario: two tickets on one gate; the first reports built and waits
     // while the second has not built yet.
