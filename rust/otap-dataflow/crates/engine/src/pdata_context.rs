@@ -286,12 +286,19 @@ pub enum ContextDeclaration {
         /// Resolved authorized identity policy.
         policy: AuthorizedIdentityPolicy,
     },
+    /// Declares that a processor merges several inputs into one output.
+    ///
+    /// Only processors may declare this. The node receives a merge binding.
+    Merges,
 }
 
 impl ContextDeclaration {
     /// Returns whether the declaration describes component reads or writes.
     fn is_component_declaration(&self) -> bool {
-        matches!(self, Self::Produces { .. } | Self::Consumes { .. })
+        matches!(
+            self,
+            Self::Produces { .. } | Self::Consumes { .. } | Self::Merges
+        )
     }
 
     /// Validates selected sources and computes their original-header-name retention needs.
@@ -341,7 +348,8 @@ impl ContextDeclaration {
             }
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
-            | Self::AuthorizedIdentityCapture { .. } => {}
+            | Self::AuthorizedIdentityCapture { .. }
+            | Self::Merges => {}
             Self::HeaderPropagation { policy } => {
                 requirements
                     .original_name_retention
@@ -370,18 +378,6 @@ impl ContextDeclaration {
 pub struct ContextDeclarationProvider {
     /// Declaration callback.
     pub declarations: ContextDeclarationFn,
-    /// Role describes how the caller will Engine-assigned role supplied by the factory rather than configuration.
-    role: Option<NodeBindingRole>,
-}
-
-/// Engine-assigned binding roles that component declarations do not express.
-///
-/// Roles are compiler input fixed by a node factory. They are not serialized
-/// configuration and not part of the declaration set a node validates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NodeBindingRole {
-    /// Combines the metadata of several inputs into one output.
-    Merge,
 }
 
 /// Derives deterministic declarations from serialized node configuration.
@@ -464,10 +460,7 @@ impl ContextDeclarationProvider {
     /// Creates a declaration provider from a declaration callback.
     #[must_use]
     pub const fn new(declarations: ContextDeclarationFn) -> Self {
-        Self {
-            declarations,
-            role: None,
-        }
+        Self { declarations }
     }
 
     /// Creates a declaration provider for a configuration type.
@@ -481,28 +474,18 @@ impl ContextDeclarationProvider {
 
     /// Creates a provider for a processor that merges several inputs into one output.
     ///
-    /// The node declares no context reads or writes and receives a merge binding.
-    /// Use [`Self::with_merge_role`] for a merging processor that also declares context.
+    /// The node declares only [`ContextDeclaration::Merges`] and receives a
+    /// merge binding. A merging processor that also reads or produces context
+    /// returns `Merges` alongside its other declarations instead.
     #[must_use]
     pub const fn merging() -> Self {
-        Self::new(no_context_declarations).with_merge_role()
-    }
-
-    /// Assigns the merge role to a provider, keeping its declarations.
-    ///
-    /// Only processor factories may carry the merge role.
-    #[must_use]
-    pub const fn with_merge_role(self) -> Self {
-        Self {
-            declarations: self.declarations,
-            role: Some(NodeBindingRole::Merge),
-        }
+        Self::new(merge_context_declarations)
     }
 }
 
-/// Returns no declarations for providers that only assign an engine role.
-fn no_context_declarations(_: &serde_json::Value) -> Result<NodeContextDeclarations, Error> {
-    Ok(NodeContextDeclarations::default())
+/// Declares only a merge, independent of configuration.
+fn merge_context_declarations(_: &serde_json::Value) -> Result<NodeContextDeclarations, Error> {
+    Ok([ContextDeclaration::Merges].into_iter().collect())
 }
 
 /// Deserializes typed node configuration and derives its context declarations.
@@ -545,12 +528,9 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
-    /// Whether this node can form arrival metadata, even without capture policies.
-    receiver: bool,
-    /// Whether this node can project produced values into a derived context.
-    processor: bool,
-    /// Engine-assigned role from the node's factory, if any.
-    role: Option<NodeBindingRole>,
+    /// Node kind. Receivers can form arrival metadata even without capture
+    /// policies; processors can project produced values into a derived context.
+    kind: NodeKind,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
     /// Selected composite definitions in canonical order with their full presence gates.
@@ -562,6 +542,7 @@ struct PreparedNodeContextDeclarations {
 impl PreparedNodeContextDeclarations {
     /// Validates selections, canonicalizes composite definitions, and derives runtime requirements.
     fn new(
+        kind: NodeKind,
         declarations: NodeContextDeclarations,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<Self, Error> {
@@ -586,7 +567,8 @@ impl PreparedNodeContextDeclarations {
                         selector: ContextConsumerSelector::AllCaptured { .. },
                     }
                     | ContextDeclaration::HeaderCapture { .. }
-                    | ContextDeclaration::AuthorizedIdentityCapture { .. } => {}
+                    | ContextDeclaration::AuthorizedIdentityCapture { .. }
+                    | ContextDeclaration::Merges => {}
                 }
                 names
             })
@@ -609,9 +591,7 @@ impl PreparedNodeContextDeclarations {
             },
         )?;
         Ok(Self {
-            receiver: false,
-            processor: false,
-            role: None,
+            kind,
             declarations,
             composites,
             requirements,
@@ -762,6 +742,7 @@ impl CompiledNodeState {
         let mut values = Vec::new();
         let mut headers = None;
         let mut produced = Vec::new();
+        let mut merge = None;
         for declaration in prepared.declarations {
             match declaration {
                 ContextDeclaration::Consumes { selector } => {
@@ -805,6 +786,10 @@ impl CompiledNodeState {
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
                     authorized_identity_capture = Some(policy);
                 }
+                ContextDeclaration::Merges => {
+                    merge = Some(MergeBinding::new());
+                    component_declarations.push(ContextDeclaration::Merges);
+                }
             }
         }
 
@@ -812,7 +797,7 @@ impl CompiledNodeState {
             component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
             bindings: Arc::new(NodeBindings {
-                arrival: (prepared.receiver
+                arrival: (prepared.kind == NodeKind::Receiver
                     || header_capture.is_some()
                     || authorized_identity_capture.is_some())
                 .then_some(ArrivalBinding {
@@ -828,9 +813,9 @@ impl CompiledNodeState {
                 },
                 headers,
                 // Only processors derive an output context from an input context.
-                projection: (prepared.processor && !produced.is_empty())
+                projection: (prepared.kind == NodeKind::Processor && !produced.is_empty())
                     .then(|| ProjectionBinding::new(produced)),
-                merge: (prepared.role == Some(NodeBindingRole::Merge)).then(MergeBinding::new),
+                merge,
             }),
         })
     }
@@ -1057,7 +1042,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             );
             let mut declarations_by_node = HashMap::new();
             for (node_id, node_config) in pipeline.pipeline.node_iter() {
-                let (component_declarations, role) = self.node_context_declarations(
+                let component_declarations = self.node_context_declarations(
                     node_config.kind(),
                     node_config.r#type.as_ref(),
                     &node_config.config,
@@ -1072,12 +1057,12 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     .into_iter()
                     .chain(wrapper_declarations)
                     .collect();
-                let mut declarations =
-                    PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
-                        .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
-                declarations.receiver = node_config.kind() == NodeKind::Receiver;
-                declarations.processor = node_config.kind() == NodeKind::Processor;
-                declarations.role = role;
+                let declarations = PreparedNodeContextDeclarations::new(
+                    node_config.kind(),
+                    declarations,
+                    &pipeline.policies.context,
+                )
+                .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
             let _ = declarations.insert(pipeline_key, declarations_by_node);
@@ -1139,14 +1124,13 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(declarations)
     }
 
-    /// Validates node configuration, rejects engine-owned factory declarations,
-    /// and returns the factory's engine-assigned binding role, if any.
+    /// Validates node configuration and rejects engine-owned factory declarations.
     fn node_context_declarations(
         &self,
         kind: NodeKind,
         urn: &str,
         config: &serde_json::Value,
-    ) -> Result<(NodeContextDeclarations, Option<NodeBindingRole>), EngineError> {
+    ) -> Result<NodeContextDeclarations, EngineError> {
         let missing_factory = || {
             EngineError::ConfigError(Box::new(Error::InvalidUserConfig {
                 error: format!("node factory `{urn}` is not registered"),
@@ -1178,16 +1162,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         // Validate before collecting declarations. Nodes are not constructed yet.
         validate_config(config).map_err(|error| EngineError::ConfigError(Box::new(error)))?;
 
-        let role = context_declarations.and_then(|provider| provider.role);
-        if role == Some(NodeBindingRole::Merge) && kind != NodeKind::Processor {
-            return Err(EngineError::ConfigError(Box::new(
-                Error::InvalidUserConfig {
-                    error: format!(
-                        "node factory `{urn}` declared a merge binding role, which only processors support"
-                    ),
-                },
-            )));
-        }
         let declarations = context_declarations
             .map(|provider| {
                 (provider.declarations)(config)
@@ -1209,7 +1183,20 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 },
             )));
         }
-        Ok((declarations, role))
+        if kind != NodeKind::Processor
+            && declarations
+                .iter()
+                .any(|declaration| *declaration == ContextDeclaration::Merges)
+        {
+            return Err(EngineError::ConfigError(Box::new(
+                Error::InvalidUserConfig {
+                    error: format!(
+                        "node factory `{urn}` declared a context merge, which only processors support"
+                    ),
+                },
+            )));
+        }
+        Ok(declarations)
     }
 }
 
@@ -1274,10 +1261,13 @@ mod tests {
         /// Whether the entry is declared in the authorized-identity domain.
         #[serde(default)]
         identity: bool,
+        /// Whether the node also declares a merge.
+        #[serde(default)]
+        merge: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
-        /// Declares the configured produced entry.
+        /// Declares the configured produced entry and an optional merge.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Produces {
                 domain: if self.identity {
@@ -1288,6 +1278,7 @@ mod tests {
                 entry: self.entry.clone(),
             }]
             .into_iter()
+            .chain(self.merge.then_some(ContextDeclaration::Merges))
             .collect()
         }
     }
@@ -1427,7 +1418,7 @@ mod tests {
         },
     ];
 
-    /// Registers the type router and processors with produce or merge context roles.
+    /// Registers the type router and processors that produce or merge context.
     static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 5] = [
         crate::ProcessorFactory {
             name: "urn:otel:processor:type_router",
@@ -1464,10 +1455,9 @@ mod tests {
         crate::ProcessorFactory {
             name: "urn:test:processor:merge-produce",
             create: unused_test_processor,
-            context_declarations: Some(
-                ContextDeclarationProvider::from_typed_config::<TestProducerConfig>()
-                    .with_merge_role(),
-            ),
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                TestProducerConfig,
+            >()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 TestProducerConfig,
@@ -1531,7 +1521,8 @@ groups:
             pipeline("group", "pipeline"),
             HashMap::from([(
                 ConfigNodeId::from("node"),
-                PreparedNodeContextDeclarations::new(effective, &[]).expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(NodeKind::Exporter, effective, &[])
+                    .expect("valid declarations"),
             )]),
         )])
     }
@@ -1746,10 +1737,10 @@ groups:
         .resolve()
     }
 
-    /// Scenario: one pipeline holds a producing receiver, producing processor, merge-role processor, and plain nodes.
-    /// Guarantees: only producing processors receive a projection (a producing receiver forms context at arrival instead), merge follows only the factory role, and arrival is unaffected.
+    /// Scenario: one pipeline holds a producing receiver, producing processor, merging processor, and plain nodes.
+    /// Guarantees: only producing processors receive a projection (a producing receiver forms context at arrival instead), only the processor declaring Merges receives a merge binding, and arrival is unaffected.
     #[test]
-    fn projection_and_merge_bindings_follow_declarations_and_roles() {
+    fn projection_and_merge_bindings_follow_declarations() {
         let compiled = test_pipeline_factory()
             .compile_initial_context(&resolve_role_pipeline(
                 "urn:test:processor:merge",
@@ -1799,28 +1790,28 @@ groups:
         }
     }
 
-    /// Scenario: a non-processor factory declares the merge role.
+    /// Scenario: an exporter factory declares Merges.
     /// Guarantees: compilation fails with the factory URN instead of attaching a merge binding to that node.
     #[test]
-    fn merge_role_requires_processor_factory() {
+    fn merge_declaration_requires_processor() {
         let Err(EngineError::ConfigError(error)) = test_pipeline_factory().compile_initial_context(
             &resolve_role_pipeline("urn:test:processor:plain", "{}", "urn:test:exporter:merge"),
         ) else {
-            panic!("merge role on an exporter must be rejected");
+            panic!("merge declaration on an exporter must be rejected");
         };
         let message = error.to_string();
         assert!(message.contains("urn:test:exporter:merge"), "{message}");
-        assert!(message.contains("merge binding role"), "{message}");
+        assert!(message.contains("context merge"), "{message}");
     }
 
-    /// Scenario: a merge-role processor factory also declares a produced entry.
+    /// Scenario: a processor declares Merges alongside a produced entry.
     /// Guarantees: the node receives both the merge binding and a projection for its declared entry, and producing processors in one pipeline reject each other's handles.
     #[test]
-    fn merge_role_keeps_provider_declarations() {
+    fn merge_declaration_combines_with_produces() {
         let compiled = test_pipeline_factory()
             .compile_initial_context(&resolve_role_pipeline(
                 "urn:test:processor:merge-produce",
-                "{entry: merged}",
+                "{entry: merged, merge: true}",
                 "urn:test:exporter:example",
             ))
             .expect("context compiles");
@@ -1884,7 +1875,7 @@ groups:
     }
 
     /// Scenario: projection and merge adapters are removed from a compiled snapshot.
-    /// Guarantees: live-update comparison ignores the adapters, so merge-role nodes add no comparison input.
+    /// Guarantees: live-update comparison ignores the adapters and compares a merging node by its Merges declaration.
     #[test]
     fn projection_and_merge_adapters_preserve_live_update_inputs() {
         let compiled = test_pipeline_factory()
@@ -1900,7 +1891,10 @@ groups:
             .by_pipeline
             .get_mut(&key)
             .expect("pipeline");
-        assert!(nodes[&ConfigNodeId::from("merge")].is_empty());
+        assert_eq!(
+            nodes[&ConfigNodeId::from("merge")].component_declarations,
+            [ContextDeclaration::Merges].into_iter().collect()
+        );
         for node in nodes.values_mut() {
             let bindings = Arc::make_mut(&mut node.bindings);
             bindings.projection = None;
@@ -1934,8 +1928,12 @@ groups:
                 .or_default()
                 .insert(
                     node.into(),
-                    PreparedNodeContextDeclarations::new(NodeContextDeclarations::default(), &[])
-                        .expect("empty declarations"),
+                    PreparedNodeContextDeclarations::new(
+                        NodeKind::Exporter,
+                        NodeContextDeclarations::default(),
+                        &[],
+                    )
+                    .expect("empty declarations"),
                 );
         }
         let requirements = ContextRuntimeRequirements::compile(&declarations);
@@ -2146,6 +2144,7 @@ groups:
     fn composite_member_requirements_preserve_source_domain_and_gate() {
         let context = [mixed_composite()];
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(
                 member_target("tenant", "header_id"),
                 ContextEntrySelectorForm::OriginalKeyValue,
@@ -2175,6 +2174,7 @@ groups:
             ContextEntrySelectorForm::StoredKeyValue,
         ] {
             let prepared = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
                 consumer(member_target("tenant", "identity_id"), form),
                 &context,
             )
@@ -2197,6 +2197,7 @@ groups:
             ]
         );
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(whole.clone(), ContextEntrySelectorForm::StoredKeyValue),
             &context,
         )
@@ -2210,6 +2211,7 @@ groups:
         let mut headers_only = mixed_composite();
         _ = headers_only.definition.0.remove(1);
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(whole, ContextEntrySelectorForm::OriginalKeyValue),
             &[headers_only],
         )
@@ -2245,6 +2247,7 @@ groups:
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(
                 member_target("route", "route_name"),
                 ContextEntrySelectorForm::Value,
@@ -2255,6 +2258,7 @@ groups:
         assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member_target("route", "route_name"), whole] {
             let error = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
                 &context,
             )
@@ -2278,6 +2282,7 @@ groups:
             HashMap::from([(
                 ConfigNodeId::from("node"),
                 PreparedNodeContextDeclarations::new(
+                    NodeKind::Exporter,
                     consumer(
                         member_target("route", "route_name"),
                         ContextEntrySelectorForm::Value,
@@ -2315,6 +2320,7 @@ groups:
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(member.clone(), ContextEntrySelectorForm::Value),
             &context,
         )
@@ -2322,6 +2328,7 @@ groups:
         assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member, whole] {
             let error = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
                 &context,
             )
@@ -2373,8 +2380,12 @@ groups:
                 "original wire name requested for AuthorizedIdentity context entry `id`",
             ),
         ] {
-            let error = PreparedNodeContextDeclarations::new(consumer(target, form), &context)
-                .expect_err("invalid selection must fail");
+            let error = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
+                consumer(target, form),
+                &context,
+            )
+            .expect_err("invalid selection must fail");
             assert!(error.to_string().contains(expected), "{error}");
         }
     }
@@ -3186,7 +3197,7 @@ default:
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(declarations, &[])
+                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, &[])
                     .expect("valid declarations"),
             )]),
         )]);

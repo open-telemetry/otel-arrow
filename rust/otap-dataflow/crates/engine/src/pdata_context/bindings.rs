@@ -175,7 +175,7 @@ pub struct NodeBindings {
     pub(super) headers: Option<HeadersRead>,
     /// Present when the node declares produced entries.
     pub(super) projection: Option<ProjectionBinding>,
-    /// Present only when the node's factory assigns the merge role.
+    /// Present only when a processor declares `Merges`.
     pub(super) merge: Option<MergeBinding>,
 }
 
@@ -221,7 +221,7 @@ impl NodeBindings {
         self.projection.as_ref()
     }
 
-    /// Returns the merge for a processor whose factory assigned the merge role.
+    /// Returns the merge for a processor that declared `Merges`.
     #[must_use]
     pub fn merge(&self) -> Option<&MergeBinding> {
         self.merge.as_ref()
