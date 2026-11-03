@@ -52,7 +52,8 @@ fn prepare_publication_at(
         .encoded_view()
         .filter(|view| view.encoding() == &PdataEncoding::OTLP)
     {
-        // Only top-level framing is validated; other content is read best-effort (see #4029).
+        // Only top-level framing is validated; other malformed content is skipped (see #4029).
+        // Invalid UTF-8 in a string field still rejects the request, as protobuf decoding does.
         let metrics = RawMetricsData::try_new(view.bytes()).map_err(PrepareError::Decode)?;
         otlp_to_geneva::map_metrics(&metrics, config, receive_time)?
     } else {
@@ -253,6 +254,26 @@ mod tests {
         assert_eq!(prepared.publications.len(), 1);
         assert!(!prepared.publications[0].bytes.is_empty());
         assert_eq!(prepared.rejected_data_points, 0);
+    }
+
+    /// Scenario: A well-formed gauge is followed by a metric whose name is the invalid UTF-8 byte 0xff.
+    /// Guarantees: Like protobuf decoding, invalid UTF-8 rejects the whole request instead of publishing part of it.
+    #[test]
+    fn rejects_invalid_utf8_strings() {
+        let mut bytes = Vec::new();
+        OtlpProtoMessage::Metrics(single_point_request().into())
+            .encode(&mut bytes)
+            .expect("request should serialize");
+        // ResourceMetrics > ScopeMetrics > Metric whose name is the single byte 0xff.
+        bytes.extend_from_slice(&[0x0a, 0x07, 0x12, 0x05, 0x12, 0x03, 0x0a, 0x01, 0xff]);
+
+        let error = prepare_publication(&raw_otlp(&bytes), &mapping_config())
+            .expect_err("invalid UTF-8 should reject the request");
+
+        assert!(matches!(
+            error,
+            PrepareError::Mapping(otlp_to_geneva::MappingError::InvalidUtf8(_))
+        ));
     }
 
     /// Scenario: The resource_metrics field, or the resource field nested inside it, uses a varint instead of a length-delimited wire type.

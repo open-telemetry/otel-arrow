@@ -26,7 +26,7 @@ const CARDINALITY_OVERFLOW_ATTRIBUTE: &str = "otel.metric.overflow";
 
 pub(super) fn default_resource_context(config: &Config) -> ResourceContext {
     ResourceContext {
-        namespace: config.metric_namespace.clone(),
+        namespace: config.metric_namespace.as_str().into(),
         original_dimensions: Vec::new(),
         dimensions: Vec::new(),
     }
@@ -111,7 +111,7 @@ where
         return Ok((None, None));
     }
 
-    let namespace = namespace.unwrap_or_else(|| scope.namespace.to_string());
+    let namespace = namespace.unwrap_or_else(|| Rc::clone(scope.namespace));
     if let Some(dimensions) = dimensions {
         let overflow = cardinality_overflow
             .then(|| overflow_diagnostic(scope, namespace.clone(), metric_name));
@@ -129,15 +129,15 @@ where
     ))
 }
 
-fn non_empty_or(value: Option<String>, default: &str) -> String {
+fn non_empty_or(value: Option<Rc<str>>, default: &str) -> Rc<str> {
     value
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default.to_string())
+        .unwrap_or_else(|| default.into())
 }
 
 fn overflow_diagnostic(
     scope: &ScopeContext<'_>,
-    namespace: String,
+    namespace: Rc<str>,
     metric_name: Option<&str>,
 ) -> CardinalityOverflow {
     CardinalityOverflow {
@@ -365,7 +365,7 @@ fn ascii_lowercase_utf16(code_unit: u16) -> u16 {
 pub(super) fn attribute_string<A>(
     attributes: impl IntoIterator<Item = A>,
     key: &str,
-) -> Result<Option<String>, Utf8Error>
+) -> Result<Option<Rc<str>>, Utf8Error>
 where
     A: AttributeView,
 {
@@ -378,7 +378,7 @@ where
     Ok(matched.filter(|value| !value.is_empty()))
 }
 
-fn string_value<A>(attribute: &A) -> Result<Option<String>, Utf8Error>
+fn string_value<A>(attribute: &A) -> Result<Option<Rc<str>>, Utf8Error>
 where
     A: AttributeView,
 {
@@ -388,10 +388,10 @@ where
     let Some(value) = value.as_string() else {
         return Ok(None);
     };
-    Ok(Some(str::from_utf8(value)?.to_string()))
+    Ok(Some(str::from_utf8(value)?.into()))
 }
 
-fn routing_value<A>(attribute: &A) -> Result<String, Utf8Error>
+fn routing_value<A>(attribute: &A) -> Result<Rc<str>, Utf8Error>
 where
     A: AttributeView,
 {
@@ -424,9 +424,10 @@ mod tests {
         scope_dimensions: &[Dimension],
         config: &Config,
     ) -> Option<PointContext> {
+        let scope_namespace = scope_namespace.into();
         let scope = ScopeContext {
             resource,
-            namespace: scope_namespace,
+            namespace: &scope_namespace,
             dimensions: scope_dimensions,
             config,
         };
@@ -442,9 +443,10 @@ mod tests {
         metric_name: &str,
     ) -> Option<CardinalityOverflow> {
         let config = config();
+        let scope_namespace = scope_namespace.into();
         let scope = ScopeContext {
             resource,
-            namespace: scope_namespace,
+            namespace: &scope_namespace,
             dimensions: &[],
             config: &config,
         };
@@ -462,7 +464,7 @@ mod tests {
             .expect("test attributes should contain valid UTF-8")
     }
 
-    fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<String> {
+    fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<Rc<str>> {
         super::attribute_string(KeyValueIter::new(attributes.iter()), key)
             .expect("test attributes should contain valid UTF-8")
     }
@@ -503,7 +505,7 @@ mod tests {
 
     fn resource_with_dimensions(dimensions: Vec<Dimension>) -> ResourceContext {
         ResourceContext {
-            namespace: "resource-namespace".to_string(),
+            namespace: "resource-namespace".into(),
             original_dimensions: dimensions.clone(),
             dimensions,
         }
@@ -528,7 +530,7 @@ mod tests {
     fn uses_configured_resource_defaults() {
         let context = resource_context(&[], &config());
 
-        assert_eq!(context.namespace, "default-namespace");
+        assert_eq!(&*context.namespace, "default-namespace");
         assert!(context.dimensions.is_empty());
     }
 
@@ -549,8 +551,8 @@ mod tests {
             &mapping_config,
         );
 
-        assert_eq!(legacy.namespace, "legacy-namespace");
-        assert_eq!(current.namespace, "current-namespace");
+        assert_eq!(&*legacy.namespace, "legacy-namespace");
+        assert_eq!(&*current.namespace, "current-namespace");
     }
 
     /// Scenario: Final resource namespace attributes are empty or non-string after earlier non-empty values.
@@ -566,7 +568,7 @@ mod tests {
             &mapping_config,
         );
 
-        assert_eq!(context.namespace, "default-namespace");
+        assert_eq!(&*context.namespace, "default-namespace");
     }
 
     /// Scenario: Resource attributes contain selected and unselected string dimensions.
@@ -603,7 +605,7 @@ mod tests {
         )
         .expect("point context should be valid");
 
-        assert_eq!(point.namespace, "point-namespace");
+        assert_eq!(&*point.namespace, "point-namespace");
         assert_eq!(point.dimensions, vec![dimension("region", "west")]);
     }
 
@@ -1258,8 +1260,8 @@ mod tests {
         ];
 
         assert_eq!(
-            attribute_string(&attributes, NAMESPACE_ATTRIBUTE),
-            Some("last".to_string())
+            attribute_string(&attributes, NAMESPACE_ATTRIBUTE).as_deref(),
+            Some("last")
         );
     }
 }

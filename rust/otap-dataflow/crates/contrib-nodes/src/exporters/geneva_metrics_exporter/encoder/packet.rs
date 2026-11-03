@@ -839,7 +839,7 @@ mod tests {
         let dimensions = vec![dimension("region", "eastus")];
         let metric = |name: &str, sampling_type: u32, values: MetricValues| Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64,
-            namespace: "Compatibility".to_string(),
+            namespace: "Compatibility".into(),
             name: name.to_string(),
             dimensions: dimensions.clone(),
             sampling_type,
@@ -913,7 +913,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: DEFAULT_TIME_BUCKET as i64 + 12,
-                namespace: "MetricNamespace".to_string(),
+                namespace: "MetricNamespace".into(),
                 name: "MetricName".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -936,7 +936,7 @@ mod tests {
             include_bytes!("fixtures/CompatibilityFixtureRawTypedMetricsWithMilliseconds.bin");
         let metric = |values: [&str; 2], seconds: i64, sum: f64, milliseconds: u32| Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64 + seconds,
-            namespace: "MetricNamespace".to_string(),
+            namespace: "MetricNamespace".into(),
             name: "MetricName".to_string(),
             dimensions: vec![
                 dimension("DimensionName1", values[0]),
@@ -987,7 +987,7 @@ mod tests {
     fn removes_empty_histogram_flag() {
         let metric = Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64,
-            namespace: "namespace".to_string(),
+            namespace: "namespace".into(),
             name: "metric".to_string(),
             dimensions: Vec::new(),
             sampling_type: SUM | COUNT | HISTOGRAM,
@@ -1300,7 +1300,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: DEFAULT_TIME_BUCKET as i64,
-                namespace: "namespace".to_string(),
+                namespace: "namespace".into(),
                 name: "metric".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -1528,7 +1528,7 @@ mod tests {
             current_time_bucket: MAX_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: (MAX_TIME_BUCKET + 1) as i64,
-                namespace: "namespace".to_string(),
+                namespace: "namespace".into(),
                 name: "metric".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -1556,7 +1556,7 @@ mod tests {
 
         let metric = |milliseconds| Metric {
             time_bucket: MAX_TIME_BUCKET as i64,
-            namespace: "namespace".to_string(),
+            namespace: "namespace".into(),
             name: "metric".to_string(),
             dimensions: Vec::new(),
             sampling_type: SUM | COUNT | HIGH_RESOLUTION_TIMESTAMP,
@@ -1598,7 +1598,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: -1,
-                namespace: "namespace".to_string(),
+                namespace: "namespace".into(),
                 name: "metric".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -1799,7 +1799,7 @@ mod tests {
     fn interns_shared_metadata_and_distinct_values() {
         let metric = |value: &str| Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64,
-            namespace: "namespace".to_string(),
+            namespace: "namespace".into(),
             name: "metric".to_string(),
             dimensions: vec![dimension("region", value)],
             sampling_type: SUM | COUNT,

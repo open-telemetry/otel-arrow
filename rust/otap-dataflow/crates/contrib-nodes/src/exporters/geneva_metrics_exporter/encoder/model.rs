@@ -85,8 +85,8 @@ pub struct Packet {
 pub struct Metric {
     /// Metric timestamp as whole seconds since the .NET epoch.
     pub time_bucket: i64,
-    /// Metric namespace.
-    pub namespace: String,
+    /// Metric namespace, shared by points that inherit it.
+    pub namespace: Rc<str>,
     /// Metric name.
     pub name: String,
     /// Ordered dimension name/value pairs.

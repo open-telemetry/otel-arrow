@@ -8,6 +8,7 @@ mod config;
 mod exemplars;
 mod histograms;
 
+use std::rc::Rc;
 use std::str::{self, Utf8Error};
 
 #[cfg(test)]
@@ -76,7 +77,7 @@ pub struct CardinalityOverflow {
     /// Monitoring account configured for the mapping.
     pub monitoring_account: String,
     /// Namespace selected for the faulting metric.
-    pub namespace: String,
+    pub namespace: Rc<str>,
     /// Name of the faulting metric.
     pub metric_name: String,
 }
@@ -97,14 +98,14 @@ pub enum MappingError {
 
 #[derive(Clone, Debug)]
 struct ResourceContext {
-    namespace: String,
+    namespace: Rc<str>,
     dimensions: Vec<super::encoder::Dimension>,
     original_dimensions: Vec<super::encoder::Dimension>,
 }
 
 #[derive(Clone, Debug)]
 struct PointContext {
-    namespace: String,
+    namespace: Rc<str>,
     dimensions: Vec<super::encoder::Dimension>,
 }
 
@@ -168,7 +169,7 @@ where
 /// keep point-mapping function signatures short.
 struct ScopeContext<'a> {
     resource: &'a ResourceContext,
-    namespace: &'a str,
+    namespace: &'a Rc<str>,
     dimensions: &'a [super::encoder::Dimension],
     config: &'a Config,
 }
@@ -834,7 +835,7 @@ mod tests {
 
         assert_eq!(mapped.rejected_data_points, 0);
         let metric = &mapped.packet.metrics[0];
-        assert_eq!(metric.namespace, "point-namespace");
+        assert_eq!(&*metric.namespace, "point-namespace");
         assert_eq!(metric.name, "requests");
         assert_eq!(
             metric.sampling_type,
@@ -861,7 +862,7 @@ mod tests {
             mapped.cardinality_overflows,
             vec![CardinalityOverflow {
                 monitoring_account: "default-account".to_string(),
-                namespace: "point-namespace".to_string(),
+                namespace: "point-namespace".into(),
                 metric_name: "requests".to_string(),
             }]
         );
@@ -880,12 +881,10 @@ mod tests {
         );
     }
 
-    /// Scenario: Many points inherit large resource and scope dimension strings.
-    /// Guarantees: Mapping shares both inherited names and values across points instead of duplicating their storage.
+    /// Scenario: Many points inherit a resource namespace and large resource and scope dimension strings.
+    /// Guarantees: Mapping shares the inherited namespace, dimension names, and dimension values across points instead of duplicating their storage.
     #[test]
     fn shares_inherited_dimension_strings() {
-        use std::rc::Rc;
-
         let value = "x".repeat(MAX_DIMENSION_VALUE_UTF16_UNITS);
         let mut scope = scope_with_metrics(vec![otlp_metric(
             "temperature",
@@ -898,7 +897,13 @@ mod tests {
             attributes: vec![string_attribute("scope", &value)],
             ..Default::default()
         });
-        let request = request(vec![string_attribute("resource", &value)], scope);
+        let request = request(
+            vec![
+                string_attribute(NAMESPACE_ATTRIBUTE, "resource-namespace"),
+                string_attribute("resource", &value),
+            ],
+            scope,
+        );
         let mut mapping_config = config();
         mapping_config.resource_attributes = vec!["*".to_string()];
         mapping_config.scope_attributes = vec![ScopeAttributes {
@@ -910,14 +915,16 @@ mod tests {
 
         assert_eq!(mapped.rejected_data_points, 0);
         assert_eq!(mapped.packet.metrics.len(), 128);
-        let first = &mapped.packet.metrics[0].dimensions;
-        assert_eq!(first.len(), 2);
-        for dimension in first {
+        let first = &mapped.packet.metrics[0];
+        assert_eq!(&*first.namespace, "resource-namespace");
+        assert_eq!(first.dimensions.len(), 2);
+        for dimension in &first.dimensions {
             assert_eq!(dimension.value.as_ref(), value.as_str());
         }
         for metric in &mapped.packet.metrics[1..] {
-            assert_eq!(metric.dimensions.len(), first.len());
-            for (inherited, dimension) in first.iter().zip(&metric.dimensions) {
+            assert!(Rc::ptr_eq(&first.namespace, &metric.namespace));
+            assert_eq!(metric.dimensions.len(), first.dimensions.len());
+            for (inherited, dimension) in first.dimensions.iter().zip(&metric.dimensions) {
                 assert!(Rc::ptr_eq(&inherited.name, &dimension.name));
                 assert!(Rc::ptr_eq(&inherited.value, &dimension.value));
             }
@@ -1450,7 +1457,10 @@ mod tests {
             mapped.cardinality_overflows[0].metric_name,
             "invalid-dimension"
         );
-        assert_eq!(mapped.cardinality_overflows[0].namespace, "late-namespace");
+        assert_eq!(
+            &*mapped.cardinality_overflows[0].namespace,
+            "late-namespace"
+        );
         assert!(mapped.cardinality_overflows[1].metric_name.is_empty());
     }
 
@@ -1515,7 +1525,7 @@ mod tests {
         assert_eq!(resource_mapped.rejected_data_points, 1);
         assert_eq!(scope_mapped.rejected_data_points, 1);
         assert_eq!(
-            scope_mapped.cardinality_overflows[0].namespace,
+            &*scope_mapped.cardinality_overflows[0].namespace,
             "resource-namespace"
         );
         assert_eq!(empty_name_mapped.rejected_data_points, 0);
@@ -1580,12 +1590,12 @@ mod tests {
             .expect("request should map");
 
         assert_eq!(mapped.rejected_data_points, 1);
-        assert_eq!(mapped.packet.metrics[0].namespace, "metricsextension");
+        assert_eq!(&*mapped.packet.metrics[0].namespace, "metricsextension");
         assert_eq!(
             mapped
                 .cardinality_overflows
                 .iter()
-                .map(|overflow| (overflow.namespace.as_str(), overflow.metric_name.as_str()))
+                .map(|overflow| (&*overflow.namespace, overflow.metric_name.as_str()))
                 .collect::<Vec<_>>(),
             vec![
                 ("MetricsExtension", "banned-namespace"),
