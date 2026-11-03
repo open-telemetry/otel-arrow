@@ -1416,7 +1416,7 @@ mod tests {
                 .expect("first pdata should be queued");
             started_requests
                 .next()
-                .awaitis this as 
+                .await
                 .expect("first pdata should start a publication");
             let request_started_at = tokio::time::Instant::now();
             pdata_tx
