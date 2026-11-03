@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793733439344,
+  "lastUpdate": 1793747211974,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -78891,6 +78891,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/35b01d57cc12f2025d2f5daffe7f04f4d9ae914f"
         },
         "date": 1793733096163,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5007436e4ea28a6e06f6310ba6649c78e6c21846",
+          "message": "feat(metrics): migrate user_events receiver metrics to enum attributes (#4609)\n\nThis PR addresses part of #3530 by migrating the `user_events_receiver`\nmetrics to dimensioned enum attributes.\n\n### Changes\n- Migrated legacy flat drop counters (`dropped_memory_pressure`,\n`dropped_no_subscription`, `dropped_pending_overflow`,\n`dropped_send_error`) to a dimensioned metric\n`receiver.user_events.drops.samples` keyed by a strongly-typed\n`UserEventsDropReason` enum attribute (`reason`).\n- Retained operational throughput and latency counters under\n`receiver.user_events`.\n- Updated receiver state transitions, batch flush error paths, and\nsnapshot extraction to record against the new metric sets.\n- Updated unit tests with scenario and guarantee doc comments covering\nenum representation stability and drop isolation across reasons.\n- Documented metrics in `README.md` and added a changelog entry.",
+          "timestamp": "2026-11-03T22:24:53Z",
+          "tree_id": "8d09f720fe99afa8ec2767a4c52dec4de529a560",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5007436e4ea28a6e06f6310ba6649c78e6c21846"
+        },
+        "date": 1793747186837,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
