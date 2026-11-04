@@ -25,7 +25,7 @@ jobs:
           echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -34,21 +34,21 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Python (non-OL8)
         if: ${{ steps.detect_os.outputs.id != 'ol' }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build dataflow_engine
         run: |
@@ -185,91 +185,91 @@ jobs:
 
       - name: Upload syslog results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: syslog-nightly-results
           path: tools/pipeline_perf_test/results/nightly_syslog/gh-actions-benchmark/*.json
 
       - name: Upload syslog TCP results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: syslog-tcp-nightly-results
           path: tools/pipeline_perf_test/results/nightly_syslog_tcp/gh-actions-benchmark/*.json
 
       - name: Upload standard load batch size results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: standardload-batch-size-nightly-results
           path: tools/pipeline_perf_test/results/nightly_100klrps_batch_sizes/gh-actions-benchmark/*.json
 
       - name: Upload backpressure results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: backpressure-nightly-results
           path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
 
       - name: Upload filter results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: filter-nightly-results
           path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
 
       - name: Upload batch processor results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: batch-processor-nightly-results
           path: tools/pipeline_perf_test/results/nightly_batch_processor/gh-actions-benchmark/*.json
 
       - name: Upload otelcol filter results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: filter-otelcol-results
           path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
 
       - name: Upload otelcol syslog TCP results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: syslog-tcp-otelcol-results
           path: tools/pipeline_perf_test/results/nightly_syslog_tcp_otelcol/gh-actions-benchmark/*.json
 
       - name: Upload saturation results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: saturation-nightly-results
           path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
 
       - name: Upload idle state results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: idle-state-nightly-results
           path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
 
       - name: Upload idle state memory scaling metrics
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: idle-memory-scaling-nightly-results
           path: tools/pipeline_perf_test/results/idle-memory-scaling.json
 
       - name: Upload scaling efficiency metrics
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scaling-efficiency-nightly-results
           path: tools/pipeline_perf_test/results/scaling-efficiency.json
 
       - name: Upload passthrough results for processing
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: passthrough-nightly-results
           path: tools/pipeline_perf_test/results/continuous_passthrough/gh-actions-benchmark/*.json
@@ -327,7 +327,7 @@ jobs:
 
       - name: Upload ClickHouse comparison results for processing
         if: ${{ steps.validate_clickhouse_results.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: clickhouse-nightly-results
           if-no-files-found: error
@@ -354,7 +354,7 @@ jobs:
           docker image prune -f 2>/dev/null || true
 
   update-benchmarks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [pipeline-perf-test]
     if: ${{ !cancelled() }}
     permissions:
@@ -366,91 +366,91 @@ jobs:
           persist-credentials: false
 
       - name: Download syslog artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: syslog-nightly-results*
           merge-multiple: true
           path: syslog_results
 
       - name: Download syslog TCP artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: syslog-tcp-nightly-results*
           merge-multiple: true
           path: syslog_tcp_results
 
       - name: Download standard load batch size artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: standardload-batch-size-nightly-results*
           merge-multiple: true
           path: standardload_batch_size_results
 
       - name: Download backpressure artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: backpressure-nightly-results*
           merge-multiple: true
           path: backpressure_results
 
       - name: Download filter artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: filter-nightly-results*
           merge-multiple: true
           path: filter_results
 
       - name: Download batch processor artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: batch-processor-nightly-results*
           merge-multiple: true
           path: batch_processor_results
 
       - name: Download otelcol filter artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: filter-otelcol-results*
           merge-multiple: true
           path: filter_otelcol_results
 
       - name: Download otelcol syslog TCP artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: syslog-tcp-otelcol-results*
           merge-multiple: true
           path: syslog_tcp_otelcol_results
 
       - name: Download saturation artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: saturation-nightly-results*
           merge-multiple: true
           path: saturation_results
 
       - name: Download idle state artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: idle-state-nightly-results*
           merge-multiple: true
           path: idle_state_results
 
       - name: Download idle memory scaling artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: idle-memory-scaling-nightly-results*
           merge-multiple: true
           path: idle_memory_scaling_results
 
       - name: Download scaling efficiency metrics
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: scaling-efficiency-nightly-results*
           merge-multiple: true
           path: scaling_efficiency_results
 
       - name: Download passthrough artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: passthrough-nightly-results*
           merge-multiple: true
@@ -458,7 +458,7 @@ jobs:
 
       - name: Download ClickHouse comparison artifacts
         if: ${{ needs['pipeline-perf-test'].outputs.clickhouse_results_ready == 'true' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: clickhouse-nightly-results*
           merge-multiple: true
@@ -530,7 +530,7 @@ jobs:
 
       - name: Update benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_output.json
@@ -543,7 +543,7 @@ jobs:
 
       - name: Update syslog TCP benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_tcp_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_tcp_output.json
@@ -556,7 +556,7 @@ jobs:
 
       - name: Update standard load batch size benchmark data
         if: ${{ !cancelled() && hashFiles('standardload_batch_size_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: standardload_batch_size_output.json
@@ -569,7 +569,7 @@ jobs:
 
       - name: Update benchmark data and deploy to GitHub Pages
         if: ${{ !cancelled() && hashFiles('backpressure_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: backpressure_output.json
@@ -582,7 +582,7 @@ jobs:
 
       - name: Update filter benchmark data
         if: ${{ !cancelled() && hashFiles('filter_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: filter_output.json
@@ -595,7 +595,7 @@ jobs:
 
       - name: Update batch processor benchmark data
         if: ${{ !cancelled() && hashFiles('batch_processor_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: batch_processor_output.json
@@ -608,7 +608,7 @@ jobs:
 
       - name: Update filter otelcol benchmark data
         if: ${{ !cancelled() && hashFiles('filter_otelcol_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: filter_otelcol_output.json
@@ -621,7 +621,7 @@ jobs:
 
       - name: Update syslog TCP otelcol benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_tcp_otelcol_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_tcp_otelcol_output.json
@@ -634,7 +634,7 @@ jobs:
 
       - name: Update saturation benchmark data
         if: ${{ !cancelled() && hashFiles('saturation_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: saturation_output.json
@@ -647,7 +647,7 @@ jobs:
 
       - name: Update idle state benchmark data
         if: ${{ !cancelled() && hashFiles('idle_state_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: idle_state_output.json
@@ -660,7 +660,7 @@ jobs:
 
       - name: Update idle state memory scaling data
         if: ${{ !cancelled() && hashFiles('idle_memory_scaling_results/idle-memory-scaling.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: idle_memory_scaling_results/idle-memory-scaling.json
@@ -673,7 +673,7 @@ jobs:
 
       - name: Update scaling efficiency data
         if: ${{ !cancelled() && hashFiles('scaling_efficiency_results/scaling-efficiency.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customBiggerIsBetter"
           output-file-path: scaling_efficiency_results/scaling-efficiency.json
@@ -686,7 +686,7 @@ jobs:
 
       - name: Update passthrough benchmark data
         if: ${{ !cancelled() && hashFiles('passthrough_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: passthrough_output.json
@@ -699,7 +699,7 @@ jobs:
 
       - name: Update ClickHouse throughput benchmark data
         if: ${{ !cancelled() && hashFiles('clickhouse_throughput_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customBiggerIsBetter"
           output-file-path: clickhouse_throughput_output.json
@@ -712,7 +712,7 @@ jobs:
 
       - name: Update ClickHouse resource benchmark data
         if: ${{ !cancelled() && hashFiles('clickhouse_resources_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           tool: "customSmallerIsBetter"
           output-file-path: clickhouse_resources_output.json
@@ -735,6 +735,6 @@ jobs:
       - pipeline-perf-test
       - update-benchmarks
     if: always()
-    uses: open-telemetry/shared-workflows/.github/workflows/workflow-failure-issue.yml@dde3047a8f219c296772c17936b9d02bb7447af5 # v0.12.0
+    uses: open-telemetry/shared-workflows/.github/workflows/workflow-failure-issue.yml@efc55838c9769c5476e0a5cf7183a8c5b4ae70a5 # v0.24.0
     with:
       success: ${{ needs.pipeline-perf-test.result == 'success' && needs.update-benchmarks.result == 'success' }}
