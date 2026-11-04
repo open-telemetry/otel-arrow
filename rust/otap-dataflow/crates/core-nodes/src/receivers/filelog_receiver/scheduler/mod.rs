@@ -406,12 +406,20 @@ impl<I: ReaderIo> Scheduler<I> {
         }
         self.probe_ready = false;
     }
-    pub(crate) fn next_deadline(&self, permission: Permission) -> Option<Instant> {
-        if !permission.allowed() || self.sink_stopped || self.terminal.is_some() {
+    pub(crate) fn next_deadline(
+        &self,
+        permission: Permission,
+        sink: &impl BatchSink,
+    ) -> Option<Instant> {
+        if self.terminal.is_some() {
+            return None;
+        }
+        let reader = if !permission.allowed() || self.sink_stopped {
             None
         } else {
             self.deadlines.first().map(|(at, _)| *at)
-        }
+        };
+        reader.into_iter().chain(sink.next_deadline()).min()
     }
     fn park_until(&mut self, id: usize, now: Instant, delay: Duration) -> Result<(), Fault> {
         let at = now.checked_add(delay).ok_or(Fault::DeadlineOverflow)?;
@@ -467,7 +475,14 @@ impl<I: ReaderIo> Scheduler<I> {
             turn.reason = Reason::Cancelled;
             return turn;
         }
-        if !permission.allowed() || self.sink_stopped {
+        let flow = sink.poll(now);
+        if sink.failed() {
+            self.clear_probe(None);
+            self.terminal = Some(Fault::SinkRejected);
+            turn.reason = Reason::Terminal(Fault::SinkRejected);
+            return turn;
+        }
+        if !permission.allowed() || self.sink_stopped || flow == Flow::Stop {
             self.clear_probe(None);
             self.resources_changed();
             turn.reason = Reason::Paused;
@@ -529,6 +544,10 @@ impl<I: ReaderIo> Scheduler<I> {
             &mut turn,
         );
         let reason = match reason {
+            Ok(_) if sink.failed() => {
+                self.terminal = Some(Fault::SinkRejected);
+                Reason::Terminal(Fault::SinkRejected)
+            }
             Ok(r) => r,
             Err(f) => {
                 self.terminal = Some(f);
@@ -628,6 +647,9 @@ impl<I: ReaderIo> Scheduler<I> {
                     None => self.resident.first().copied(),
                 };
                 let Some((stamp, victim)) = victim else {
+                    if sink.flush() == Flow::Stop {
+                        return Ok(Reason::Paused);
+                    }
                     return Ok(Reason::Descriptors);
                 };
                 *after = Some((stamp, victim));
