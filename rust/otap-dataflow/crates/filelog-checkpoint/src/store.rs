@@ -322,6 +322,35 @@ impl CheckpointStore {
         })
     }
 
+    /// Whether an append crossed the write-attempt boundary without a settled outcome.
+    /// Inspect immediately after an append error: true requires retaining ownership
+    /// until resolution or teardown. False means that attempted append wrote nothing;
+    /// it does not clear authority or sync failures, nor make every error retryable.
+    #[must_use]
+    pub fn has_unresolved_append(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Whether this instance can attempt pending recovery without bypassing a
+    /// latched authority or sync failure. The caller must also classify the error.
+    #[must_use]
+    pub fn can_resolve_pending(&self) -> bool {
+        self.pending.is_some() && self.usable().is_ok()
+    }
+
+    /// Inject a one-shot failure after writing this many bytes of the next frame.
+    /// `usize::MAX` writes the complete frame and then reports failure.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn inject_write_failure_after(&mut self, bytes: usize) {
+        self.io.fail_write_after = Some(bytes);
+    }
+
+    /// Inject a one-shot failure at a named synchronization barrier.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn inject_sync_failure(&mut self, operation: &'static str) {
+        self.io.fail_sync = Some(operation);
+    }
+
     /// Immutable applied state, unavailable while a write outcome is unresolved.
     pub fn state(&self) -> Result<&ReplayState, StoreError> {
         self.ready()?;
@@ -408,9 +437,7 @@ impl CheckpointStore {
             .checked_add(1)
             .ok_or(StoreError::CompactionRequired)?;
         let must_sync = durability == Durability::Sync
-            || operations
-                .iter()
-                .any(|op| !matches!(op, Operation::UpdateProgress(progress) if !progress.finalize));
+            || operations.iter().any(|op| !op.is_ordinary_progress());
         let frame = encode_transaction(&Transaction {
             sequence,
             operations,
