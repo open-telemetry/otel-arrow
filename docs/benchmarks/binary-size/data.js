@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793817969896,
+  "lastUpdate": 1793823025363,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -79729,6 +79729,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 108.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "42589365+simathih@users.noreply.github.com",
+            "name": "Siddhartha Mathiharan",
+            "username": "simathih"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "401f8b1cd20741f59b42489c163473454fd31f98",
+          "message": "chore(filelog): project bounded Unix file metadata (#4628)\n\nAdd standalone filelog metadata projection and six focused regression\ntests.\n\n- Support `none`, `name`, `path`, and `native` policies using bounded\nadvisory evidence without filesystem access.\n- Validate Unix path and basename UTF-8 independently, preserving valid\nfilenames even when parent directories contain invalid UTF-8.\n- Preserve exact native suffix bytes and the existing complete-path\ndigest for truncated evidence.\n- Omit textual metadata for truncated evidence and all metadata for\nunavailable or unsupported Windows evidence.\n\nReceiver wiring, batch-builder integration, and Windows path conversion\nremain separate.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4612\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUsing pinned Rust 1.98.1 on Linux through WSL, from\n`rust/otap-dataflow`:\n\n| Command | Result |\n| --- | --- |\n| `cargo check -p otel-arrow-dfe-core-nodes` | Passed |\n| `cargo test -p otel-arrow-dfe-core-nodes\nreceivers::filelog_receiver::metadata -- --nocapture` | Passed: 6 tests;\nrepeated without retries |\n| `cargo test -p otel-arrow-dfe-core-nodes receivers::filelog_receiver\n-- --nocapture` | Passed: 401 tests |\n| `cargo clippy -p otel-arrow-dfe-core-nodes --all-targets -- -D\nwarnings` | Passed |\n| `cargo xtask check` | Structure, inventory, formatting, workspace\nClippy, and no_std builds passed; workspace tests failed on two\nunchanged Azure Data Explorer tests |\n\nThe two full-suite failures were:\n- `retry_after_is_bounded_by_operation_deadline`\n- `request_deadline_records_http_response_outcome`\n\nBoth failed mock verification because zero requests were received\ninstead of one.\n\nAdditional checks:\n- `cargo fmt --all -- --check`: passed on Windows.\n- `python tools\\sanitycheck.py`: passed from the repository root.\n- `git --no-pager diff --cached --check`: passed.\n\nWindows compilation and tests were attempted but blocked by missing MSVC\n`link.exe`.\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nNone. This is internal groundwork for the unwired filelog receiver, so\nno changelog entry is needed. The PR title includes `chore`.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 4ae88e62-109c-43a5-8ba7-030956d206f9",
+          "timestamp": "2026-11-04T19:22:09Z",
+          "tree_id": "70133827e3a4b0a2d83822154c284b7c92ab875a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/401f8b1cd20741f59b42489c163473454fd31f98"
+        },
+        "date": 1793823003331,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.27,
             "unit": "MB"
           }
         ]
