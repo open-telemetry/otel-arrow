@@ -1,0 +1,50 @@
+# platform: windows-only
+# Basic exact-counter example using built-in Windows performance objects.
+# From rust\otap-dataflow:
+# cargo run --features windows-perf-counters --bin df_engine -- -c configs\windows-perf-counters-console.yaml
+
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          memory:
+            type: receiver:windows_perf_counters
+            config:
+              metrics:
+                windows.memory.available:
+                  unit: By
+                  description: Physical memory immediately available for allocation.
+                  gauge: {}
+                windows.processor.time:
+                  unit: "%"
+                  description: Average processor utilization across all logical processors.
+                  gauge: {}
+              perfcounters:
+                - object: Memory
+                  counters:
+                    - name: Available Bytes
+                      metric: windows.memory.available
+                - object: Processor
+                  instances: ["_Total"]
+                  counters:
+                    - name: "% Processor Time"
+                      metric: windows.processor.time
+              initial_delay: 1s
+              collection_interval: 30s
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+              unicode: false
+              color: false
+        connections:
+          - from: memory
+            to: console

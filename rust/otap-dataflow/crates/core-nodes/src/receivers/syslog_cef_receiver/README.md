@@ -556,17 +556,17 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### Shared Receiver Metrics
 
+This receiver opts into the shared `receiver.received` and
+`receiver.processing` metric sets. See the
+[shared receiver contract](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for their definitions and telemetry policy. Entity context includes the fixed
+`protocol` (`tcp` or `udp`); classified messages use `signal=logs`.
+
 Each UDP datagram or emitted TCP frame records one shared receiver observation
 when receiver-local handling terminates. TCP payload size excludes the newline
 delimiter. Processing duration covers active admission and encoded-frame
 append work. It excludes batch buffering, deferred parsing and Arrow
 construction, and pipeline handoff.
-
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
-| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible after transport framing is removed, grouped by fixed entity attribute `protocol` set to `tcp` or `udp`, `signal=logs`, and terminal `outcome`. |
-| `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by fixed entity attribute `protocol` set to `tcp` or `udp` and `signal=logs`. |
 
 `outcome=success` means receiver-local admission and encoded-frame append
 completed. It does not certify that content parsing or Arrow construction

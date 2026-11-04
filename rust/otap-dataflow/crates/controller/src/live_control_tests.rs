@@ -17,8 +17,9 @@ use otel_arrow_dfe_engine::listener_group::ListenerProtocol;
 use otel_arrow_dfe_engine::local::{exporter, receiver};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::pdata_context::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
-    NodeContextDeclarations,
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
+    ContextEntryTake, ContextEntryTarget, ContextNameMatching, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
@@ -102,17 +103,36 @@ fn wait_for_context_bindings_test_capture() -> std::sync::Weak<CompiledContextBi
 struct ContextBindingsTestConfig {
     produces: ContextEntryName,
     #[serde(default)]
+    /// When set, also reads the produced entry: `false` takes `Exists`, `true` takes `All`.
+    consumes_all: Option<bool>,
+    #[serde(default)]
     probe_controller_lock: bool,
 }
 
 impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        vec![ContextDeclaration::Produces {
+        let produces = ContextDeclaration::Produces {
             domain: ContextDomain::TransportHeader,
             entry: self.produces.clone(),
-        }]
-        .into_iter()
-        .collect()
+        };
+        let consumes = self.consumes_all.map(|all| ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: Box::new([ContextEntrySelector {
+                    target: ContextEntryTarget::Primitive {
+                        domain: ContextDomain::TransportHeader,
+                        name: self.produces.clone(),
+                        matching: ContextNameMatching::Exact,
+                    },
+                    form: ContextEntrySelectorForm::Value,
+                    take: if all {
+                        ContextEntryTake::All
+                    } else {
+                        ContextEntryTake::Exists
+                    },
+                }]),
+            },
+        });
+        std::iter::once(produces).chain(consumes).collect()
     }
 }
 
@@ -5371,6 +5391,56 @@ connections:
             },
         )
         .expect_err("target pipeline context binding changes should be rejected");
+
+    match error {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("g1:p1"), "{message}");
+            assert!(message.contains("restart the engine"), "{message}");
+        }
+        other => panic!("expected invalid request, got {other:?}"),
+    }
+}
+
+/// Scenario: reconfiguration keeps the same consumed entry but changes its read take from
+/// `Exists` to `All`, as when validation switches from a key check to a key-value check.
+/// Guarantees: an unchanged take is accepted, while a changed take is rejected with a restart
+/// requirement because take is part of the compiled read binding.
+#[test]
+fn reconfigure_rejects_context_read_take_changes_to_target_pipeline() {
+    let pipeline_yaml = |all: bool| {
+        format!(
+            r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Tenant
+      consumes_all: {all}
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#
+        )
+    };
+    let config = engine_config_with_pipeline(&pipeline_yaml(false).replace('\n', "\n        "));
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let request = |all: bool| ReconfigureRequest {
+        pipeline: PipelineConfig::from_yaml("g1".into(), "p1".into(), &pipeline_yaml(all))
+            .expect("replacement should parse"),
+        step_timeout_secs: 5,
+        drain_timeout_secs: 5,
+    };
+
+    let _ = runtime
+        .prepare_rollout_plan("g1", "p1", &request(false))
+        .expect("an unchanged take should keep context bindings compatible");
+    let error = runtime
+        .prepare_rollout_plan("g1", "p1", &request(true))
+        .expect_err("a changed take should be rejected");
 
     match error {
         ControlPlaneError::InvalidRequest { message } => {

@@ -5,7 +5,7 @@
 //!
 //! Once the TCP listener is bound the receiver builds three OTLP-specific gRPC servers (logs,
 //! metrics, traces). Each server is backed by the shared codecs in `otap_grpc::otlp::server`,
-//! producing lazily-decoded [`OtapPdata`](OtapPdata) that are pushed straight into
+//! producing lazily-decoded [`OtapPdata`](otel_arrow_dfe_otap::pdata::OtapPdata) that are pushed straight into
 //! the pipeline. The `AckRegistry` aggregates the per-signal subscription maps that connect
 //! incoming requests with their ACK/NACK responses when `wait_for_result` is enabled.
 //!
@@ -183,7 +183,7 @@ impl Protocols {
 ///
 /// Several optimisations keep the hot path inexpensive:
 /// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
-///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server_new::OtlpBytesCodec), allowing downstream stages
+///   `OtlpBytesCodec`, allowing downstream stages
 ///   to decode lazily.
 /// - `AckRegistry` maintains per-signal ACK subscription slots so `wait_for_result` lookups avoid
 ///   extra bookkeeping and route responses directly back to callers.
