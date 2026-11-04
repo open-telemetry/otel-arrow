@@ -209,3 +209,15 @@ For each database, an authorized operator must:
    row and checkpoint evidence, failure/reconnect evidence, and pass/fail/blocked
    status. Do not infer combined AKV qualification from file-provider database
    fixtures or standalone SDK tests.
+
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+
+The `extension.azure_key_vault_user_pass_auth` telemetry scope records:
+
+- `publishes`: Counter of complete credentials published, unit `{credential}`.
+- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).

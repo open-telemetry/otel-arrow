@@ -277,9 +277,10 @@ Only two things are Azure-specific:
   `azure_identity` credential for the configured scope, and
   `log_refresh_failure()` emits the `azure_identity_auth.token_refresh_failed`
   event.
-- `AzureIdentityAuthMetrics` (metric set `extension.azure_identity_auth`)
-  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
-  latency histogram to the generic tracker.
+- `AzureIdentityAuthMetrics` (telemetry scopes `extension.auth`, `extension.azure_identity_auth`)
+  implements `BackgroundProviderMetrics`, exposing its dimensioned acquisition
+  counter (`outcome`), publish counter, and latency histogram to the
+  generic tracker.
 
 The `expiry_buffer` is fixed at `TOKEN_EXPIRY_BUFFER_SECS` (299 s) for this
 extension; it is not user-configurable.
@@ -451,12 +452,11 @@ statically configured request headers and performs no token refresh.
 Metrics are recorded in both the background refresh loop and the slow-path
 `get_token()` branch, and flushed via `ExtensionControlMsg::CollectTelemetry`.
 
-| Metric (set: `extension.azure_identity_auth`) | Type        | Description                                              |
-|-----------------------------------------------|-------------|----------------------------------------------------------|
-| `auth_successes`                              | Counter     | Successful credential acquisitions.                      |
-| `auth_failures`                               | Counter     | Failed credential acquisitions.                          |
-| `auth_token_publish`                          | Counter     | Tokens published to consumers via the watch channel.     |
-| `auth_success_latency`                        | Mmsc (ms)   | Latency of successful acquisitions (min/max/sum/count).  |
+| Metric | Set | Type | Description |
+| --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | Credential acquisitions partitioned by outcome. |
+| `publishes` | `extension.azure_identity_auth` | Counter | Tokens published to consumers via the watch channel. |
+| `latency` | `extension.azure_identity_auth` | Mmsc (ms) | Latency of successful acquisitions (min/max/sum/count). |
 
 ## Lifecycle
 
@@ -611,7 +611,7 @@ End-to-end scenario (local development):
 - A pipeline declares the extension with `method: development` and binds it to
   the Azure Monitor exporter via `capabilities: { bearer_token_provider: ... }`.
 - Verify the exporter only begins exporting once the extension publishes a
-  token, and that `auth_successes` / `auth_token_publish` increment.
+  token, and that `acquisitions` (with `outcome: success`) / `publishes` increment.
 
 Additional scenario coverage:
 
@@ -629,9 +629,9 @@ Additional scenario coverage:
   refreshes before expiry and the fast path keeps hitting the cache (no
   per-call credential round-trip in steady state).
 - **Slow-path coalescing.** Concurrent `get_token()` calls on a cold cache
-  result in a single credential call (one `auth_successes` increment), not a
+  result in a single credential call (one `acquisitions` with `outcome: success` increment), not a
   stampede.
-- **Refresh failure / retry.** A failing credential increments `auth_failures`,
+- **Refresh failure / retry.** A failing credential increments `acquisitions` with `outcome: failure`,
   the loop reschedules with bounded exponential backoff plus jitter, and a
   subsequent success recovers without restarting the extension.
 - **Shutdown ordering.** The exporter drains before the extension receives

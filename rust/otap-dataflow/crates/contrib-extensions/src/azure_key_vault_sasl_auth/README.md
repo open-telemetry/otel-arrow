@@ -191,3 +191,15 @@ desired.
 
 Automated tests inject deterministic SDK transports/credentials and use no
 real Azure resources, accounts, or secrets.
+
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+
+The `extension.azure_key_vault_sasl_auth` telemetry scope records:
+
+- `publishes`: Counter of complete credentials published, unit `{credential}`.
+- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).

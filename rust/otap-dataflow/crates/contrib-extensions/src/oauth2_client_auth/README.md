@@ -238,14 +238,13 @@ Config validation rejects:
 
 ## Telemetry
 
-Metric set: `extension.oauth2_client_auth`.
+Metric sets: `extension.auth` (shared acquisitions), `extension.oauth2_client_auth` (operational).
 
-| Metric | Type | Unit | Description |
-| --- | --- | --- | --- |
-| `auth_successes` | Counter | `{acquisition}` | Successful token acquisitions. |
-| `auth_failures` | Counter | `{acquisition}` | Failed token acquisitions. |
-| `auth_token_publish` | Counter | `{token}` | Tokens published to consumers. |
-| `auth_success_latency` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
+| Metric | Metric set | Type | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Token acquisitions partitioned by `outcome` (`success`, `failure`). |
+| `publishes` | `extension.oauth2_client_auth` | Counter | `{token}` | Tokens published to consumers. |
+| `latency` | `extension.oauth2_client_auth` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
 
 Events:
 
@@ -261,8 +260,20 @@ Events:
 | Panic at runtime with "No provider set" | The binary was built without a `crypto-*` feature. See [Building](#building). |
 | Startup aborts with a readiness timeout | The first token was not acquired within `startup_timeout`. Check `token_url` reachability, credentials, and the `oauth2_client_auth.token_refresh_failed` event. |
 | Config rejected at startup | See [Validation rules](#validation-rules); the error names the offending field. |
-| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `auth_failures` and the refresh-failure event. |
+| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `acquisitions` (with `outcome="failure"`) and the refresh-failure event. |
 | Signing key errors on `jwt-bearer` | The build has no JWT signing backend, or the key is not a supported PEM RSA key. |
+
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+
+The `extension.oauth2_client_auth` telemetry scope records:
+
+- `publishes`: Counter of published tokens, unit `{token}`.
+- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).
 
 ## Related Docs
 

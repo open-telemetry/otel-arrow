@@ -548,9 +548,14 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T, C: Extensi
             self.inner.source.shutdown_in_flight(),
         )
         .await;
-        let snapshot = self.inner.metrics.lock().ok().map(|m| m.snapshot());
-        match snapshot {
-            Some(snapshot) => TerminalState::new(deadline, [snapshot]),
+        let snapshots = self
+            .inner
+            .metrics
+            .lock()
+            .ok()
+            .map(|mut m| m.terminal_snapshots());
+        match snapshots {
+            Some(snapshots) => TerminalState::new(deadline, snapshots),
             None => TerminalState::default(),
         }
     }

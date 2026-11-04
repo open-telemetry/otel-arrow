@@ -183,14 +183,13 @@ Config validation rejects:
 
 ## Telemetry
 
-Metric set: `extension.azure_identity_auth`.
+Metric sets: `extension.auth` (shared acquisitions), `extension.azure_identity_auth` (operational).
 
-| Metric | Type | Unit | Description |
-| --- | --- | --- | --- |
-| `auth_successes` | Counter | `{acquisition}` | Successful credential acquisitions. |
-| `auth_failures` | Counter | `{acquisition}` | Failed credential acquisitions. |
-| `auth_token_publish` | Counter | `{token}` | Tokens published to consumers. |
-| `auth_success_latency` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
+| Metric | Metric set | Type | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Credential acquisitions partitioned by `outcome` (`success`, `failure`). |
+| `publishes` | `extension.azure_identity_auth` | Counter | `{token}` | Tokens published to consumers. |
+| `latency` | `extension.azure_identity_auth` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
 
 Events:
 
@@ -206,7 +205,19 @@ Events:
 | Startup aborts with a readiness timeout | The first token was not acquired within `startup_timeout`. Check identity assignment, network reachability of IMDS or Entra ID, and the `azure_identity_auth.token_refresh_failed` event. |
 | Config rejected at startup | See [Validation rules](#validation-rules); the error names the offending field. |
 | `403` from the Azure service despite successful acquisition | The identity lacks a role assignment on the target resource, or `scope` targets the wrong resource. |
-| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `auth_failures` and the refresh-failure event. |
+| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `acquisitions` (with `outcome="failure"`) and the refresh-failure event. |
+
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+
+The `extension.azure_identity_auth` telemetry scope records:
+
+- `publishes`: Counter of published tokens, unit `{token}`.
+- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).
 
 ## Related Docs
 

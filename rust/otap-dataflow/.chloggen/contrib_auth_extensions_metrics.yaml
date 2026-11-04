@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: "Migrate background auth extensions to dimensional outcome attributes"
+issues: [3530]
+subtext: |
+  Migration: Replace acquisition success/failure counters with shared `extension.auth` metric set `acquisitions` filtered by `outcome`. Rename `auth_token_publish`/`auth_publishes`/`credential_publishes` to `publishes` and `auth_success_latency`/`acquisition_success_latency` to `latency`.
