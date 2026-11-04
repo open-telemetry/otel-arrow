@@ -626,7 +626,9 @@ impl SignalGenerator for SyntheticGenerator {
 mod tests {
     use super::super::config::TrafficConfig;
     use super::*;
-    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+        AnyValue, any_value::Value as AnyValueValue,
+    };
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
@@ -713,7 +715,6 @@ mod tests {
             "codec": {
                 "encoding": "trafficgen-test",
                 "profile": "default",
-                "seed": 42,
                 "timestamp_unix_nano": 42
             },
             "traffic_config": {
@@ -776,7 +777,7 @@ mod tests {
     }
 
     /// Scenario: Codec-backed trafficgen runs both generation strategies using a test-only codec.
-    /// Guarantees: Payloads retain the selected encoding and seed, decode to the requested count, and replay only in pre-generated mode.
+    /// Guarantees: Payloads retain the selected encoding, decode to consecutive records of the requested count, and replay only in pre-generated mode.
     #[test]
     fn codec_generation_integrates_with_trafficgen_strategies() {
         let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
@@ -798,7 +799,17 @@ mod tests {
             let logs = decode_codec_logs(first, &service);
             let records = &logs.resource_logs[0].scope_logs[0].log_records;
             assert_eq!(records.len(), 2);
-            assert_eq!(records[0].body, Some(AnyValue::new_string("42")));
+            let Some(AnyValue {
+                value: Some(AnyValueValue::StringValue(first)),
+            }) = &records[0].body
+            else {
+                panic!("expected a generated sequence");
+            };
+            let sequence = first.parse::<u64>().unwrap();
+            assert_eq!(
+                records[1].body,
+                Some(AnyValue::new_string(sequence.wrapping_add(1).to_string()))
+            );
             producer.record_production(2);
             let second = producer
                 .next_run()
@@ -929,6 +940,10 @@ mod tests {
             let error = config.validate().unwrap_err().to_string();
             assert!(error.contains(expected), "{error}");
         }
+        let mut value = codec_config_value();
+        value["codec"]["seed"] = 42.into();
+        let error = serde_json::from_value::<Config>(value).unwrap_err();
+        assert!(error.to_string().contains("unknown field `seed`"));
     }
 
     fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
