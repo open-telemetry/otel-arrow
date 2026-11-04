@@ -156,6 +156,8 @@ pub struct CodecRegistration {
     batcher: Option<CodecBatcherRegistration>,
     /// Stateless item scan required for decoding or native item batching.
     count_items: Option<ItemCounter>,
+    /// Optional synthetic payload construction.
+    generator: Option<crate::CodecGeneratorRegistration>,
 }
 
 impl CodecRegistration {
@@ -174,6 +176,7 @@ impl CodecRegistration {
             encoder: None,
             batcher: None,
             count_items: None,
+            generator: None,
         }
     }
 
@@ -234,6 +237,13 @@ impl CodecRegistration {
         self.count_items = Some(count_items);
         self
     }
+
+    /// Adds optional synthetic payload generation.
+    #[must_use]
+    pub const fn with_generator(mut self, generator: crate::CodecGeneratorRegistration) -> Self {
+        self.generator = Some(generator);
+        self
+    }
 }
 
 /// Trusted codec extensions compiled into this binary.
@@ -279,6 +289,29 @@ impl ResolvedCodec {
     #[must_use]
     pub const fn metadata(self) -> &'static CodecMetadata {
         self.0.metadata
+    }
+
+    /// Returns generation profiles, or an empty list if unsupported.
+    #[must_use]
+    pub fn generation_profiles(self) -> &'static [crate::GenerationProfile] {
+        self.0
+            .generator
+            .as_ref()
+            .map_or(&[], |registration| registration.profiles())
+    }
+
+    /// Validates settings and creates an independent pipeline-local generator.
+    pub fn create_generator(
+        self,
+        config: &crate::GenerationConfig,
+    ) -> Result<crate::CodecGenerator, crate::GenerationError> {
+        let registration = self.0.generator.as_ref().ok_or_else(|| {
+            crate::GenerationError::Configuration(format!(
+                "codec `{}` has no synthetic generator",
+                self.encoding()
+            ))
+        })?;
+        crate::CodecGenerator::new(self, registration, config)
     }
 
     /// Canonical encoding identity.

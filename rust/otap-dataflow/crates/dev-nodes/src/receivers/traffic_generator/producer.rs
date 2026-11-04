@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
-use otel_arrow_dfe_pdata_codec::OtapPayload;
+use otel_arrow_dfe_pdata_codec::{CodecGenerator, GenerationError, OtapPayload};
 use prost::EncodeError;
 use weaver_forge::v1::registry::ResolvedRegistry;
 
@@ -43,6 +44,9 @@ impl TrafficProducer {
     /// `data_source` and builds either a `Fresh` or `Replay` production
     /// strategy from `generation_strategy`.
     pub fn from_config(config: &Config) -> Result<Self, GenerateError> {
+        config
+            .validate()
+            .map_err(|error| GenerateError::Configuration(error.to_string()))?;
         let traffic_config = config.get_traffic_config();
 
         // Build the concrete SignalGenerator based on the data source.
@@ -68,6 +72,10 @@ impl TrafficProducer {
                     num_data_points_per_metric: traffic_config.num_data_points_per_metric(),
                 })
             }
+            DataSource::Codec => Box::new(CodecSignalGenerator {
+                generators: config.codec_generators()?,
+                timestamp_unix_nano: config.codec_timestamp_unix_nano(),
+            }),
         };
 
         // Build the production strategy.
@@ -420,6 +428,9 @@ pub type GenerateResult = Result<OtapPayload, GenerateError>;
 /// Errors that can occur during signal generation.
 #[derive(thiserror::Error, Debug)]
 pub enum GenerateError {
+    /// Codec-owned generation failed.
+    #[error(transparent)]
+    CodecGeneration(#[from] GenerationError),
     /// Failed to encode the generated signal into the OTAP payload format.
     #[error("Failed to encode: {source:?}")]
     Encoding {
@@ -435,9 +446,8 @@ pub enum GenerateError {
 /// Trait for generating OTAP payloads containing telemetry signals.
 ///
 /// Implementations produce synthetic logs, metrics, or traces and encode them
-/// into [`OtapPayload`] values. In practice encoding is infallible because
-/// the only failure mode is insufficient buffer capacity, and `BytesMut` can
-/// grow up to `isize::MAX`.
+/// into [`OtapPayload`] values. Codec-backed implementations can reject
+/// requests or output that violates their configured bounds.
 pub trait SignalGenerator {
     /// Generate a log payload containing `count` log records.
     fn generate_logs(&mut self, count: usize) -> GenerateResult;
@@ -445,6 +455,66 @@ pub trait SignalGenerator {
     fn generate_metrics(&mut self, count: usize) -> GenerateResult;
     /// Generate a traces payload containing `count` spans.
     fn generate_traces(&mut self, count: usize) -> GenerateResult;
+}
+
+struct CodecSignalGenerator {
+    generators: Vec<(SignalType, CodecGenerator)>,
+    timestamp_unix_nano: Option<i64>,
+}
+
+impl CodecSignalGenerator {
+    fn generate(&mut self, signal: SignalType, count: usize) -> GenerateResult {
+        self.generate_with_clock(signal, count, || {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| {
+                    GenerationError::Output(format!(
+                        "system clock precedes the Unix epoch: {error}"
+                    ))
+                })?;
+            i64::try_from(elapsed.as_nanos()).map_err(|error| {
+                GenerationError::Output(format!(
+                    "system timestamp exceeds i64 nanoseconds: {error}"
+                ))
+            })
+        })
+    }
+
+    fn generate_with_clock(
+        &mut self,
+        signal: SignalType,
+        count: usize,
+        now: impl FnOnce() -> Result<i64, GenerationError>,
+    ) -> GenerateResult {
+        let generator = self
+            .generators
+            .iter_mut()
+            .find(|(kind, _)| *kind == signal)
+            .ok_or_else(|| {
+                GenerateError::Configuration(format!(
+                    "no codec generator configured for {signal:?}"
+                ))
+            })?;
+        let timestamp = match self.timestamp_unix_nano {
+            Some(timestamp) => timestamp,
+            None => now()?,
+        };
+        Ok(generator.1.generate(count, timestamp)?)
+    }
+}
+
+impl SignalGenerator for CodecSignalGenerator {
+    fn generate_logs(&mut self, count: usize) -> GenerateResult {
+        self.generate(SignalType::Logs, count)
+    }
+
+    fn generate_metrics(&mut self, count: usize) -> GenerateResult {
+        self.generate(SignalType::Metrics, count)
+    }
+
+    fn generate_traces(&mut self, count: usize) -> GenerateResult {
+        self.generate(SignalType::Traces, count)
+    }
 }
 
 /// Signal generator backed by the Weaver semantic conventions registry.
@@ -556,10 +626,313 @@ impl SignalGenerator for SyntheticGenerator {
 mod tests {
     use super::super::config::TrafficConfig;
     use super::*;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::{
+        CodecGeneratorRegistration, CodecMetadata, CodecRegistration, GenerationProfile,
+        PdataEncoding, PdataGenerator, ResolvedCodec, builtins::OtlpBestEffortDecoder,
+        register_pdata_codec,
+    };
+    use prost::Message;
 
-    fn into_otlp(payload: OtapPayload) -> otel_arrow_dfe_pdata::OtlpProtoBytes {
-        otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
-            .expect("OTLP conversion")
+    static FIXTURE_METADATA: CodecMetadata =
+        CodecMetadata::new(PdataEncoding::new("trafficgen-test"), &[SignalType::Logs]);
+
+    register_pdata_codec!(
+        TRAFFICGEN_TEST_CODEC,
+        CodecRegistration::new(&FIXTURE_METADATA)
+            .with_decoder(|_| Box::new(OtlpBestEffortDecoder))
+            .with_item_counter(|_, bytes| {
+                LogsData::decode(bytes).ok().map(|logs| {
+                    logs.resource_logs
+                        .iter()
+                        .flat_map(|resource| &resource.scope_logs)
+                        .map(|scope| scope.log_records.len())
+                        .sum()
+                })
+            })
+            .with_generator(CodecGeneratorRegistration::new(
+                &[GenerationProfile {
+                    name: "default",
+                    signals: &[SignalType::Logs],
+                }],
+                |codec, config| {
+                    Ok(Box::new(FixtureGenerator {
+                        codec,
+                        sequence: config.seed,
+                    }))
+                },
+            )),
+    );
+
+    struct FixtureGenerator {
+        codec: ResolvedCodec,
+        sequence: u64,
+    }
+
+    impl PdataGenerator for FixtureGenerator {
+        fn generate(
+            &mut self,
+            count: usize,
+            timestamp_unix_nano: i64,
+        ) -> Result<OtapPayload, GenerationError> {
+            let log_records = (0..count)
+                .map(|_| {
+                    let record = LogRecord {
+                        time_unix_nano: timestamp_unix_nano as u64,
+                        observed_time_unix_nano: timestamp_unix_nano as u64,
+                        body: Some(AnyValue::new_string(self.sequence.to_string())),
+                        ..Default::default()
+                    };
+                    self.sequence = self.sequence.wrapping_add(1);
+                    record
+                })
+                .collect();
+            let logs = LogsData {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            Ok(self
+                .codec
+                .admit(SignalType::Logs, logs.encode_to_vec().into())?
+                .into())
+        }
+    }
+
+    fn codec_config_value() -> serde_json::Value {
+        serde_json::json!({
+            "data_source": "codec",
+            "codec": {
+                "encoding": "trafficgen-test",
+                "profile": "default",
+                "seed": 42,
+                "timestamp_unix_nano": 42
+            },
+            "traffic_config": {
+                "signals_per_second": 2,
+                "max_batch_size": 2,
+                "log_weight": 1
+            }
+        })
+    }
+
+    fn decode_codec_logs(
+        payload: OtapPayload,
+        service: &otel_arrow_dfe_pdata_codec::CodecService,
+    ) -> LogsData {
+        let otlp: OtlpProtoBytes = payload
+            .try_into_otap(service)
+            .unwrap()
+            .try_into_with_default()
+            .unwrap();
+        let OtlpProtoBytes::ExportLogsRequest(bytes) = otlp else {
+            panic!("expected logs");
+        };
+        LogsData::decode(bytes).unwrap()
+    }
+
+    /// Scenario: Codec-backed trafficgen uses a controlled per-batch clock or a fixed override.
+    /// Guarantees: Default timestamps refresh per batch, fixed overrides bypass the clock, and clock errors propagate.
+    #[test]
+    fn codec_generation_selects_current_or_fixed_timestamps() {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        for fixed in [None, Some(7_i64)] {
+            let mut value = codec_config_value();
+            value["codec"]["timestamp_unix_nano"] = serde_json::json!(fixed);
+            let config: Config = serde_json::from_value(value).unwrap();
+            let mut generator = CodecSignalGenerator {
+                generators: config.codec_generators().unwrap(),
+                timestamp_unix_nano: config.codec_timestamp_unix_nano(),
+            };
+            for now in [42, 43] {
+                let payload = generator
+                    .generate_with_clock(SignalType::Logs, 2, || {
+                        assert!(fixed.is_none(), "fixed timestamps must not read the clock");
+                        Ok(now)
+                    })
+                    .unwrap();
+                let logs = decode_codec_logs(payload, &service);
+                for record in &logs.resource_logs[0].scope_logs[0].log_records {
+                    assert_eq!(record.observed_time_unix_nano, fixed.unwrap_or(now) as u64);
+                }
+            }
+            if fixed.is_none() {
+                assert!(matches!(
+                    generator.generate_with_clock(SignalType::Logs, 2, || {
+                        Err(GenerationError::Output("clock failed".into()))
+                    }),
+                    Err(error) if error.to_string().contains("clock failed")
+                ));
+            }
+        }
+    }
+
+    /// Scenario: Codec-backed trafficgen runs both generation strategies using a test-only codec.
+    /// Guarantees: Payloads retain the selected encoding and seed, decode to the requested count, and replay only in pre-generated mode.
+    #[test]
+    fn codec_generation_integrates_with_trafficgen_strategies() {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        for strategy in ["fresh", "pre_generated"] {
+            let mut value = codec_config_value();
+            value["generation_strategy"] = strategy.into();
+            let config: Config = serde_json::from_value(value).unwrap();
+            let mut producer = TrafficProducer::from_config(&config).unwrap();
+            let mut first = producer
+                .next_run()
+                .unwrap()
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(first.num_items(), 2);
+            assert_eq!(first.encoding().unwrap(), FIXTURE_METADATA.encoding());
+            let first_bytes = first.encoded_bytes().unwrap().clone();
+            let logs = decode_codec_logs(first, &service);
+            let records = &logs.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(records.len(), 2);
+            assert_eq!(records[0].body, Some(AnyValue::new_string("42")));
+            producer.record_production(2);
+            let second = producer
+                .next_run()
+                .unwrap()
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                first_bytes == *second.encoded_bytes().unwrap(),
+                strategy == "pre_generated"
+            );
+        }
+    }
+
+    /// Scenario: Codec-backed trafficgen explicitly configures a fixed timestamp in either strategy.
+    /// Guarantees: The configured override reaches decoded records unchanged across successive runs.
+    #[test]
+    fn codec_generation_preserves_fixed_timestamps() {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        let timestamp = 1_704_067_200_123_456_000_u64;
+        for strategy in ["fresh", "pre_generated"] {
+            let mut value = codec_config_value();
+            value["codec"]["timestamp_unix_nano"] = timestamp.into();
+            value["generation_strategy"] = strategy.into();
+            let config: Config = serde_json::from_value(value).unwrap();
+            let mut producer = TrafficProducer::from_config(&config).unwrap();
+            for _ in 0..2 {
+                let payload = producer
+                    .next_run()
+                    .unwrap()
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                let logs = decode_codec_logs(payload, &service);
+                let records = &logs.resource_logs[0].scope_logs[0].log_records;
+                assert_eq!(records.len(), 2);
+                for record in records {
+                    assert_eq!(record.observed_time_unix_nano, timestamp);
+                    assert_eq!(record.time_unix_nano, timestamp);
+                }
+                producer.record_production(2);
+            }
+        }
+    }
+
+    /// Scenario: A codec-backed producer reaches its signal limit partway through a batch.
+    /// Guarantees: Both strategies emit a valid partial final batch and stop at exactly the configured total.
+    #[test]
+    fn codec_generation_honors_partial_final_batch() {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        for strategy in ["fresh", "pre_generated"] {
+            let mut value = codec_config_value();
+            value["generation_strategy"] = strategy.into();
+            value["traffic_config"]["max_signal_count"] = 3.into();
+            let config: Config = serde_json::from_value(value).unwrap();
+            let mut producer = TrafficProducer::from_config(&config).unwrap();
+            let mut counts = Vec::new();
+            while let Some(run) = producer.next_run().unwrap() {
+                let count = run
+                    .map(|payload| {
+                        payload
+                            .unwrap()
+                            .try_into_otap(&service)
+                            .unwrap()
+                            .num_items() as u64
+                    })
+                    .sum();
+                counts.push(count);
+                producer.record_production(count);
+            }
+            assert_eq!(counts, [2, 1]);
+        }
+    }
+
+    /// Scenario: Trafficgen is configured with missing or incompatible codec generation options.
+    /// Guarantees: Validation rejects unsupported encodings, profiles, signals, and synthetic-only settings before receiver startup.
+    #[test]
+    fn codec_generation_validates_trafficgen_configuration() {
+        let changes = [
+            ("codec", serde_json::Value::Null, "requires `codec`"),
+            (
+                "codec",
+                serde_json::json!({"encoding": "missing", "profile": "default"}),
+                "no pdata codec",
+            ),
+            (
+                "codec",
+                serde_json::json!({"encoding": "otlp-bytes", "profile": "default"}),
+                "no synthetic generator",
+            ),
+            (
+                "codec",
+                serde_json::json!({"encoding": "trafficgen-test", "profile": "missing"}),
+                "no profile",
+            ),
+            (
+                "codec",
+                serde_json::json!({
+                    "encoding": "trafficgen-test",
+                    "profile": "default",
+                    "timestamp_unix_nano": -1
+                }),
+                "timestamp_unix_nano must not be negative",
+            ),
+            ("data_source", "synthetic".into(), "require data_source"),
+            (
+                "resource_attributes",
+                serde_json::json!({"tenant.id": "test"}),
+                "does not support synthetic",
+            ),
+            (
+                "traffic_config",
+                serde_json::json!({"log_weight": 0, "metric_weight": 1, "max_batch_size": 2}),
+                "cannot decode Metrics",
+            ),
+            (
+                "traffic_config",
+                serde_json::json!({"log_weight": 1, "log_body_size_bytes": 100}),
+                "does not support synthetic",
+            ),
+        ];
+        for (field, replacement, expected) in changes {
+            let mut value = codec_config_value();
+            value[field] = replacement;
+            let config: Config = serde_json::from_value(value).unwrap();
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
+        TryIntoWithOptions::try_into_with_default(payload).expect("OTLP conversion")
     }
 
     /// Helper to build a minimal `SyntheticGenerator` with no resource attributes.
