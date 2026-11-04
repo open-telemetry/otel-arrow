@@ -71,6 +71,52 @@ migration. Configuration and storage share the checkpoint crate's ID encoding,
 compatibility digest, and size calculations. See the [checkpoint format][checkpoint]
 for the exact rules.
 
+## Fingerprint ambiguity
+
+Fingerprint evidence is a bounded raw prefix after `ignored_header_bytes`, not a
+unique file identifier. For a changed locator, a nonempty equal common prefix
+can associate the candidate with retained Active state even when the file is
+shorter than `fingerprint_bytes`. The candidate then follows
+`identity.on_recovery_mismatch`, rather than `start_at` or `ignore_older_than`.
+This intentionally favors replay of surviving copied bytes over skipping them.
+
+The configured window is a maximum, not a minimum amount of stored evidence.
+A file observed while tiny can leave one-byte evidence even with the default
+1,000-byte window, until growth is observed and persisted.
+
+Smaller windows, including the 16-byte minimum, increase false associations.
+Independent files can share timestamps or headers; a larger window reduces but
+does not eliminate that ambiguity. Under `beginning`, false association can
+replay existing content; under `fail`, it can quarantine a new unrelated file.
+Under `skip_to_end`, association starts at EOF and can skip unread copied bytes.
+An identical retained full path also associates a changed locator, even without
+matching fingerprints, and can quarantine the replacement under `fail`.
+No association transfers the old file's ID, epoch or committed offset.
+
+### Example: a copy contains unread logs
+
+Filelog has saved acknowledged progress at byte 1,000 of a 2,000-byte `app.log`.
+While it is stopped, someone copies the file to `archive.log` and removes the
+original. Assume the saved record is still Active, the copy is included, and its
+prefix matches.
+
+With `start_at: end`, an unrelated new file would start at byte 2,000. Association
+instead uses `identity.on_recovery_mismatch`: the default `beginning` reads the
+copy from byte zero. That may repeat the first 1,000 bytes, but preserves the
+chance to collect the unread tail. The copy gets a new identity; it does not
+inherit the saved offset.
+
+### Example: two unrelated JSON logs
+
+Suppose the saved fingerprint for `orders.log` is just `{`, because that was all
+the file contained when observed. A new, unrelated `payments.log` also starts
+with `{`. With that evidence still retained, the common prefix can associate
+them even when `fingerprint_bytes` is 1,000.
+
+Under `fail`, the new file can be quarantined. Under `beginning`, it is read from
+the start. This is why fingerprint matching is a policy choice with possible
+false matches, not proof that two files are the same.
+
 ## Memory checks
 
 Configuration rejects arithmetic overflow and values above the limits in the
