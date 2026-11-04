@@ -285,9 +285,7 @@ impl ContextAction {
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
-    /// Declares a primitive a receiver produces at arrival, without granting
-    /// write authority. Processors list produced entries in `Edits` or
-    /// `Merges` instead.
+    /// Declares a static context producer (e.g. traffic generator).
     Produces {
         /// Source authority domain.
         domain: ContextDomain,
@@ -314,22 +312,18 @@ pub enum ContextDeclaration {
         /// Resolved authorized identity policy.
         policy: AuthorizedIdentityPolicy,
     },
-    /// Declares that a processor forms each output from one input.
-    ///
-    /// The output is the input with `actions` applied in order. A processor
-    /// emitting several outputs per input forms one and clones it.
+    /// Declares that a processor forms a Context using one input
+    /// Context. With a single input context, the processor has broad
+    /// edit capabilities.
     Edits {
         /// Actions applied to the input.
         actions: Box<[ContextAction]>,
     },
-    /// Declares that a processor merges several inputs into one output.
-    ///
-    /// The output keeps each `keeps` entry only when every input carries it
-    /// with equal values, and the peer address only when every input agrees.
-    /// Everything else is dropped; `actions` are then applied in order to the
-    /// merged output.
+    /// Declares that a processor forms a Context using multiple input
+    /// Contexts.  With multiple inputs, the user has to declare which
+    /// entries to keep.
     Merges {
-        /// Transport headers and whole composites kept when all inputs agree.
+        /// Maintain these context entry targets provided they are equal.
         keeps: Box<[ContextEntryTarget]>,
         /// Actions applied to the merged output.
         actions: Box<[ContextAction]>,
@@ -337,15 +331,32 @@ pub enum ContextDeclaration {
 }
 
 impl ContextDeclaration {
-    /// Returns whether the declaration describes component reads or writes.
-    fn is_component_declaration(&self) -> bool {
-        matches!(
-            self,
-            Self::Produces { .. }
-                | Self::Consumes { .. }
-                | Self::Edits { .. }
-                | Self::Merges { .. }
-        )
+    /// Returns whether this is an exclusive kind of processor binding.
+    fn is_processor_materialization(&self) -> bool {
+        matches!(self, Self::Edits { .. } | Self::Merges { .. })
+    }
+
+    /// Returns why a factory of `kind` may not return this declaration,
+    /// printed after ", which"
+    fn kind_violation(&self, kind: NodeKind) -> Option<&'static str> {
+        match (self, kind) {
+            (
+                Self::HeaderCapture { .. }
+                | Self::HeaderPropagation { .. }
+                | Self::AuthorizedIdentityCapture { .. },
+                _,
+            ) => Some("is managed by the engine"),
+            (Self::Consumes { .. }, NodeKind::Processor | NodeKind::Exporter) => None,
+            (Self::Consumes { .. }, NodeKind::Receiver) => Some("is not allowed for receivers"),
+            (Self::Produces { .. }, NodeKind::Receiver) => None,
+            (Self::Produces { .. }, NodeKind::Processor | NodeKind::Exporter) => {
+                Some("is only supported by receivers")
+            }
+            (Self::Edits { .. } | Self::Merges { .. }, NodeKind::Processor) => None,
+            (Self::Edits { .. } | Self::Merges { .. }, NodeKind::Receiver | NodeKind::Exporter) => {
+                Some("is only supported by processors")
+            }
+        }
     }
 
     /// Validates selected sources and computes their original-header-name retention needs.
@@ -516,22 +527,21 @@ impl ContextDeclarationProvider {
         }
     }
 
-    /// Creates a provider for a processor that merges several inputs into one output.
-    ///
-    /// The node declares only an empty [`ContextDeclaration::Merges`] and
-    /// receives a merge binding. A merging processor that also reads, keeps,
-    /// or produces context returns its own declarations instead.
+    /// Default Context merging function that maintains only network_info.
     #[must_use]
     pub const fn merging() -> Self {
         Self {
-            declarations: merge_context_declarations,
+            declarations: default_merge_context_declarations,
         }
     }
 }
 
-/// Declares only a merge, independent of configuration.
-fn merge_context_declarations(_: &serde_json::Value) -> Result<NodeContextDeclarations, Error> {
+fn default_merge_context_declarations(
+    _: &serde_json::Value,
+) -> Result<NodeContextDeclarations, Error> {
     Ok([ContextDeclaration::Merges {
+        // TODO(3926) network_info is a special case, should be listed
+        // in `keeps` and users should be able to disable.
         keeps: Box::new([]),
         actions: Box::new([]),
     }]
@@ -579,8 +589,7 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
-    /// Node kind. Receivers can form arrival metadata even without capture
-    /// policies; processors can project produced values into a derived context.
+    /// Node kind.
     kind: NodeKind,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
@@ -861,24 +870,26 @@ impl CompiledNodeState {
             }
         }
 
+        let arrival = (prepared.kind == NodeKind::Receiver
+            || header_capture.is_some()
+            || authorized_identity_capture.is_some())
+        .then_some(ArrivalBinding {
+            header_capture,
+            authorized_identity_capture,
+            materialization: materialization_plan.clone(),
+        });
+
+        let sink = header_propagation.map(|policy| SinkBinding { policy });
+
+        values.sort_by(|left: &ValueRead, right| left.selector().cmp(right.selector()));
+        values.dedup_by(|left, right| left.selector() == right.selector());
         Ok(Self {
             component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
             bindings: Arc::new(NodeBindings {
-                arrival: (prepared.kind == NodeKind::Receiver
-                    || header_capture.is_some()
-                    || authorized_identity_capture.is_some())
-                .then_some(ArrivalBinding {
-                    header_capture,
-                    authorized_identity_capture,
-                    materialization: materialization_plan.clone(),
-                }),
-                sink: header_propagation.map(|policy| SinkBinding { policy }),
-                values: {
-                    values.sort_by(|left: &ValueRead, right| left.selector().cmp(right.selector()));
-                    values.dedup_by(|left, right| left.selector() == right.selector());
-                    values.into_boxed_slice()
-                },
+                arrival,
+                sink,
+                values: values.into_boxed_slice(),
                 headers,
                 edit,
                 merge,
@@ -1190,7 +1201,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(declarations)
     }
 
-    /// Validates node configuration and rejects engine-owned factory declarations.
+    /// Validates node configuration and rejects declarations invalid for the node kind.
     fn node_context_declarations(
         &self,
         kind: NodeKind,
@@ -1235,49 +1246,24 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             })
             .transpose()?
             .unwrap_or_default();
-        // Capture and propagation declarations belong to the engine.
-        if let Some(declaration) = declarations
-            .iter()
-            .find(|declaration| !declaration.is_component_declaration())
-        {
-            return Err(EngineError::ConfigError(Box::new(
-                Error::InvalidUserConfig {
-                    error: format!(
-                        "node factory `{urn}` returned engine-owned context declaration \
-                         `{declaration:?}`"
-                    ),
-                },
-            )));
-        }
         let config_error =
             |error: String| EngineError::ConfigError(Box::new(Error::InvalidUserConfig { error }));
-        let formations = declarations
-            .iter()
-            .filter(|declaration| {
-                matches!(
-                    declaration,
-                    ContextDeclaration::Edits { .. } | ContextDeclaration::Merges { .. }
-                )
-            })
-            .count();
-        let produces = declarations
-            .iter()
-            .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }));
-        if kind != NodeKind::Processor && formations > 0 {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared a context edit or merge, which only processors support"
-            )));
+        for declaration in declarations.iter() {
+            if let Some(reason) = declaration.kind_violation(kind) {
+                return Err(config_error(format!(
+                    "node factory `{urn}` returned a `{declaration:?}` context declaration, \
+                     which {reason}"
+                )));
+            }
         }
-        if kind == NodeKind::Processor && produces {
+        if declarations
+            .iter()
+            .filter(|declaration| declaration.is_processor_materialization())
+            .count()
+            > 1
+        {
             return Err(config_error(format!(
-                "node factory `{urn}` declared produced entries; a processor lists the \
-                 entries it produces as Edits or Merges `Add` actions"
-            )));
-        }
-        if formations > 1 {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared more than one context edit or merge; a \
-                 processor forms its output context by exactly one"
+                "node factory `{urn}` declared more than one context edit or merge"
             )));
         }
         Ok(declarations)
@@ -1454,7 +1440,7 @@ mod tests {
     }
 
     /// Registers test receivers without constructing runtime nodes.
-    static TEST_RECEIVERS: [crate::ReceiverFactory<()>; 3] = [
+    static TEST_RECEIVERS: [crate::ReceiverFactory<()>; 4] = [
         crate::ReceiverFactory {
             name: "urn:test:receiver:example",
             create: unused_test_receiver,
@@ -1480,10 +1466,21 @@ mod tests {
                 TestProducerConfig,
             >,
         },
+        crate::ReceiverFactory {
+            name: "urn:test:receiver:consumes",
+            create: unused_test_receiver,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                TestDeclarationConfig,
+            >()),
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                TestDeclarationConfig,
+            >,
+        },
     ];
 
     /// Registers ordinary exporters and a typed context consumer for compilation tests.
-    static TEST_EXPORTERS: [crate::ExporterFactory<()>; 5] = [
+    static TEST_EXPORTERS: [crate::ExporterFactory<()>; 6] = [
         crate::ExporterFactory {
             name: "urn:test:exporter:example",
             create: unused_test_exporter,
@@ -1514,6 +1511,17 @@ mod tests {
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 TestDeclarationConfig,
+            >,
+        },
+        crate::ExporterFactory {
+            name: "urn:test:exporter:produces",
+            create: unused_test_exporter,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                TestProducerConfig,
+            >()),
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                TestProducerConfig,
             >,
         },
         crate::ExporterFactory {
@@ -1919,7 +1927,10 @@ groups:
         };
         let message = error.to_string();
         assert!(message.contains("urn:test:exporter:merge"), "{message}");
-        assert!(message.contains("context edit or merge"), "{message}");
+        assert!(
+            message.contains("only supported by processors"),
+            "{message}"
+        );
     }
 
     /// Scenario: a processor factory declares both Edits and Merges.
@@ -1962,10 +1973,38 @@ groups:
         };
         let message = error.to_string();
         assert!(message.contains("urn:test:processor:produces"), "{message}");
-        assert!(
-            message.contains("Edits or Merges `Add` actions"),
-            "{message}"
-        );
+        assert!(message.contains("only supported by receivers"), "{message}");
+    }
+
+    /// Scenario: a receiver declares a context read and an exporter declares a produced entry.
+    /// Guarantees: both are rejected naming the factory URN and the kind restriction, because
+    /// receivers have no input context to read and exporters form no output context.
+    #[test]
+    fn reads_require_input_and_produces_require_output() {
+        let factory = test_pipeline_factory();
+        for (kind, urn, config, reason) in [
+            (
+                NodeKind::Receiver,
+                "urn:test:receiver:consumes",
+                serde_json::json!({"entry": "tenant"}),
+                "not allowed for receivers",
+            ),
+            (
+                NodeKind::Exporter,
+                "urn:test:exporter:produces",
+                serde_json::json!({"entry": "tenant"}),
+                "only supported by receivers",
+            ),
+        ] {
+            let Err(EngineError::ConfigError(error)) =
+                factory.node_context_declarations(kind, urn, &config)
+            else {
+                panic!("`{urn}` declarations must be rejected");
+            };
+            let message = error.to_string();
+            assert!(message.contains(urn), "{message}");
+            assert!(message.contains(reason), "{message}");
+        }
     }
 
     /// Scenario: a receiver factory declares a produced entry in the authorized-identity domain.

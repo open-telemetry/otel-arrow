@@ -56,12 +56,9 @@ pub struct ArrivalBinding {
 }
 
 impl ArrivalBinding {
-    /// Captures headers and identity, records the peer, then materializes composites.
-    ///
-    /// Fails when the formed metadata does not meet the node's context
-    /// requirements, for example when an entry listed in its `required_in`
-    /// policy is absent. `required_in` is not yet enforced, so the current
-    /// implementation always succeeds.
+    /// Captures headers and identity, records the peer, then
+    /// materializes composites. Fails when the node's context
+    /// requirements are not met.
     pub fn form(
         &self,
         arrival: &Arrival<'_>,
@@ -133,14 +130,9 @@ impl SinkBinding {
         &self.policy
     }
 
-    /// Emits the existing primitive and materialized propagation results in order.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`ContextError::ContextMismatch`] before emitting anything
-    /// when a composite in the metadata was materialized under a different
-    /// plan or declaration than this binding. An exporter permanently nacks
-    /// the input.
+    /// Emits the existing primitive and materialized propagation
+    /// results in order. Fails when the context does not meet the
+    /// node's context requirements.
     pub fn propagate<'a>(
         &'a self,
         metadata: &'a Metadata,
