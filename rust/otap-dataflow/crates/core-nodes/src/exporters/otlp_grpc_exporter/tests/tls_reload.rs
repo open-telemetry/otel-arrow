@@ -602,17 +602,25 @@ async fn inflight_rpc_survives_rotation_and_preserves_completion_routing() {
         .expect("server task");
 }
 
-/// Scenario: a running exporter observes regular-file CA and client-identity
-/// rotation while the backend switches to a different issuing CA.
+/// Scenario: a running exporter observes regular-file client-identity rotation
+/// while the backend switches to a different issuing CA; the CA bundle trusts
+/// both issuers and stays unchanged, so a partially copied identity can only
+/// fail the cert/key match check and is never installed.
 /// Guarantees: exports before and after rotation Ack without restart on both
 /// Windows and Unix, and exporter shutdown terminates its local reload task.
 #[test]
 fn grpc_exporter_hot_reloads_regular_file_mtls_generation() {
-    fn copy_material(root: &Path, generation: &Path) {
+    fn copy_identity(root: &Path, generation: &Path) {
+        for name in ["client.crt", "client.key"] {
+            let _ =
+                std::fs::copy(generation.join(name), root.join(name)).expect("copy TLS material");
+        }
+    }
+    fn copy_all(root: &Path, generation: &Path) {
         for name in ["ca.crt", "client.crt", "client.key"] {
             let _ =
                 std::fs::copy(generation.join(name), root.join(name)).expect("copy TLS material");
         }
     }
-    run_grpc_exporter_mtls_rotation(copy_material, copy_material);
+    run_grpc_exporter_mtls_rotation(false, copy_all, copy_identity);
 }

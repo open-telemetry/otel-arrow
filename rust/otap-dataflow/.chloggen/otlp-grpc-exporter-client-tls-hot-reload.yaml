@@ -2,9 +2,9 @@ change_type: enhancement
 
 component: pipeline
 
-note: "Hot-reload file-backed client TLS material in the OTLP gRPC exporter without restarting the collector."
+note: "The OTLP gRPC exporter now hot-reloads file-backed client TLS material every 5m by default, without a restart."
 
 issues: [4160, 4165]
 
 subtext: |
-  Polls every reload_interval (default 5m; null disables; 0s rejected). Invalid files or pool-build errors keep the old pool; failed builds wait for a newer generation. Backend TLS rejection does not roll back. CA/cert/key updates are not atomic; detectable inconsistencies wait for a later poll.
+  Set tls.reload_interval to change the period; null disables reload and 0s now fails startup. Invalid files or channel-build errors keep the current channels until a newer update. A backend TLS rejection is not rolled back. CA/cert/key replacements are not atomic.

@@ -5,11 +5,11 @@
 //!
 //! Detects changes to file-backed client TLS material by periodically
 //! re-reading and re-validating the configured sources, then publishes each
-//! validated generation through an [`ArcSwap`] so exporters can rebuild their
+//! validated generation through an [`arc_swap::ArcSwap`] so exporters can rebuild their
 //! transports without a process restart.
 //!
 //! The loop is transport-agnostic: it produces validated
-//! [`LoadedClientTlsMaterial`], and callers build tonic channels or reqwest
+//! [`crate::tls_utils::LoadedClientTlsMaterial`], and callers build tonic channels or reqwest
 //! clients from it. Keeping it independent of `tonic`/`reqwest` is deliberate so
 //! the engine-owned TLS reload service can host it later without touching
 //! exporter code.
@@ -105,7 +105,7 @@ impl ClientTlsProvider {
     /// Loads the initial generation and returns a provider, or `Ok(None)` when
     /// the connection does not use a configured TLS block (plaintext `http://`
     /// or `insecure` with no custom CA) -- the same decision as
-    /// [`load_client_tls_material`].
+    /// `load_client_tls_material`.
     ///
     /// Fails if the initial material is missing or invalid, or if an active
     /// provider is configured with a zero reload interval. In particular, the
@@ -149,7 +149,7 @@ impl ClientTlsProvider {
     }
 
     /// Subscribes to published generation numbers. A consumer can await
-    /// `changed()` and then rebuild its transport from [`current`].
+    /// `changed()` and then rebuild its transport from [`Self::current`].
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.notify.subscribe()
     }

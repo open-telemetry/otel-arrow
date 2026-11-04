@@ -409,14 +409,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
         })?;
         drop(initial_tls_generation);
 
-        let reload_enabled = tls_provider.as_ref().is_some_and(|provider| {
-            provider.is_file_backed() && provider.reload_interval().is_some()
-        });
-        let mut tls_updates =
-            reload_enabled.then(|| tls_provider.as_ref().expect("reload provider").subscribe());
-        let mut tls_reload_task = reload_enabled.then(|| {
-            LocalTlsReloadTask::start(Rc::clone(tls_provider.as_ref().expect("reload provider")))
-        });
+        // Only a file-backed provider with a reload interval needs to outlive
+        // startup; otherwise the snapshot is dropped here.
+        let reload_provider = tls_provider
+            .filter(|provider| provider.is_file_backed() && provider.reload_interval().is_some());
+        let reload_enabled = reload_provider.is_some();
+        let mut tls_updates = reload_provider
+            .as_ref()
+            .map(|provider| (Rc::clone(provider), provider.subscribe()));
+        let mut tls_reload_task = reload_provider.map(LocalTlsReloadTask::start);
         let mut tls_installation = TlsPoolInstallation::new();
 
         otel_info!(
@@ -519,27 +520,26 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     tls_update = async {
                         match tls_updates.as_mut() {
-                            Some(updates) => updates.changed().await,
+                            Some((_, updates)) => updates.changed().await,
                             None => std::future::pending().await,
                         }
                     }, if tls_updates.is_some() => {
                         match tls_update {
                             Ok(()) => {
-                                let generation = tls_provider
-                                    .as_ref()
-                                    .expect("TLS updates require a provider")
-                                    .current();
-                                if generation.number() > grpc_clients.generation {
-                                    tls_installation
-                                        .install(
-                                            &self.config.grpc,
-                                            num_connections,
-                                            max_in_flight,
-                                            compression,
-                                            generation,
-                                            &mut grpc_clients,
-                                        )
-                                        .await;
+                                if let Some((provider, _)) = tls_updates.as_ref() {
+                                    let generation = provider.current();
+                                    if generation.number() > grpc_clients.generation {
+                                        tls_installation
+                                            .install(
+                                                &self.config.grpc,
+                                                num_connections,
+                                                max_in_flight,
+                                                compression,
+                                                generation,
+                                                &mut grpc_clients,
+                                            )
+                                            .await;
+                                    }
                                 }
                             }
                             Err(_) => {
@@ -1537,15 +1537,19 @@ mod tests {
         assert_eq!(current_pool.logs.len(), 1);
     }
 
-    fn write_client_tls_material(dir: &Path, ca: &GeneratedCa, client_name: &str) {
+    fn write_client_identity(dir: &Path, ca: &GeneratedCa, client_name: &str) {
         let client = ca.issue_leaf(
             client_name,
             Some(client_name),
             Some(ExtendedKeyUsage::ClientAuth),
         );
-        std::fs::write(dir.join("ca.crt"), &ca.cert_pem).expect("write CA");
         std::fs::write(dir.join("client.crt"), &client.cert_pem).expect("write client cert");
         std::fs::write(dir.join("client.key"), &client.key_pem).expect("write client key");
+    }
+
+    fn write_client_tls_material(dir: &Path, ca: &GeneratedCa, client_name: &str) {
+        std::fs::write(dir.join("ca.crt"), &ca.cert_pem).expect("write CA");
+        write_client_identity(dir, ca, client_name);
     }
 
     fn mtls_server_config(ca: &GeneratedCa, server_name: &str) -> ServerTlsConfig {
@@ -1604,6 +1608,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         run_grpc_exporter_mtls_rotation(
+            true,
             |root, generation| {
                 symlink(generation, root.join("..data")).expect("link initial generation");
                 for name in ["ca.crt", "client.crt", "client.key"] {
@@ -1620,7 +1625,12 @@ mod tests {
         );
     }
 
+    /// When `rotate_ca` is false, both generations ship one CA bundle trusting
+    /// both issuers and only the client identity rotates. Separate file writes
+    /// are not atomic, so a rotated CA could otherwise be installed with the
+    /// previous identity and be rejected by the restarted backend.
     fn run_grpc_exporter_mtls_rotation(
+        rotate_ca: bool,
         prepare: impl FnOnce(&Path, &Path),
         rotate: impl FnOnce(&Path, &Path) + 'static,
     ) {
@@ -1632,8 +1642,17 @@ mod tests {
         let generation2 = dir.path().join("..generation-2");
         std::fs::create_dir(&generation1).expect("create generation 1");
         std::fs::create_dir(&generation2).expect("create generation 2");
-        write_client_tls_material(&generation1, &ca1, "client-1");
-        write_client_tls_material(&generation2, &ca2, "client-2");
+        if rotate_ca {
+            write_client_tls_material(&generation1, &ca1, "client-1");
+            write_client_tls_material(&generation2, &ca2, "client-2");
+        } else {
+            let bundle = format!("{}{}", ca1.cert_pem, ca2.cert_pem);
+            for generation in [&generation1, &generation2] {
+                std::fs::write(generation.join("ca.crt"), &bundle).expect("write CA bundle");
+            }
+            write_client_identity(&generation1, &ca1, "client-1");
+            write_client_identity(&generation2, &ca2, "client-2");
+        }
         prepare(dir.path(), &generation1);
 
         let server_runtime = Runtime::new().expect("server runtime");
