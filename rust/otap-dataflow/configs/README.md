@@ -13,6 +13,20 @@ future.
 
 ## Available Configurations
 
+### `trafficgen-syslog-console.yaml`
+
+Five trafficgen receivers feed one console exporter, covering all syslog/CEF
+profiles without sockets. Run from `rust/otap-dataflow`:
+
+```bash
+cargo run --bin df_engine --no-default-features \
+  --features dev-tools,syslog-cef,crypto-ring \
+  -- --config configs/trafficgen-syslog-console.yaml
+```
+
+Expect 50 decoded logs (10 per profile), distinguished by `input.format`.
+After generation stops, press `Ctrl-C` to stop the engine.
+
 ### `trafficgen-file.yaml`
 
 Generates logs, metrics, and traces and writes each signal to an exclusive OTLP

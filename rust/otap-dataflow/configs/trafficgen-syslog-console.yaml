@@ -1,0 +1,106 @@
+# Run from rust/otap-dataflow:
+# cargo run --bin df_engine --no-default-features --features dev-tools,syslog-cef,crypto-ring -- --config configs/trafficgen-syslog-console.yaml
+# Prints 10 decoded logs per profile (50 total), then waits for Ctrl-C.
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          rfc3164:
+            type: receiver:traffic_generator
+            config:
+              data_source: codec
+              generation_strategy: fresh
+              codec:
+                encoding: syslog-batch
+                profile: rfc3164
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 10
+                max_batch_size: 5
+                log_weight: 1
+                metric_weight: 0
+                trace_weight: 0
+          rfc5424:
+            type: receiver:traffic_generator
+            config:
+              data_source: codec
+              generation_strategy: fresh
+              codec:
+                encoding: syslog-batch
+                profile: rfc5424
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 10
+                max_batch_size: 5
+                log_weight: 1
+                metric_weight: 0
+                trace_weight: 0
+          cef:
+            type: receiver:traffic_generator
+            config:
+              data_source: codec
+              generation_strategy: fresh
+              codec:
+                encoding: syslog-batch
+                profile: cef
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 10
+                max_batch_size: 5
+                log_weight: 1
+                metric_weight: 0
+                trace_weight: 0
+          cef_rfc3164:
+            type: receiver:traffic_generator
+            config:
+              data_source: codec
+              generation_strategy: fresh
+              codec:
+                encoding: syslog-batch
+                profile: cef_rfc3164
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 10
+                max_batch_size: 5
+                log_weight: 1
+                metric_weight: 0
+                trace_weight: 0
+          cef_rfc5424:
+            type: receiver:traffic_generator
+            config:
+              data_source: codec
+              generation_strategy: fresh
+              codec:
+                encoding: syslog-batch
+                profile: cef_rfc5424
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 10
+                max_batch_size: 5
+                log_weight: 1
+                metric_weight: 0
+                trace_weight: 0
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+
+        connections:
+          - from: rfc3164
+            to: console
+          - from: rfc5424
+            to: console
+          - from: cef
+            to: console
+          - from: cef_rfc3164
+            to: console
+          - from: cef_rfc5424
+            to: console
