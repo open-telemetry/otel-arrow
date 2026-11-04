@@ -170,6 +170,13 @@ pub enum FramingResume {
 }
 
 impl FramingResume {
+    pub(crate) const fn encoded_len(self) -> usize {
+        match self {
+            Self::Clean => 1,
+            Self::Continuation { .. } => 21,
+        }
+    }
+
     pub(crate) fn write(&self, out: &mut impl ByteWriter) {
         match *self {
             Self::Clean => out.u8(0),

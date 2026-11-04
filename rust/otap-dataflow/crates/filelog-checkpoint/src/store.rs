@@ -121,6 +121,16 @@ pub enum StoreError {
     /// WAL admission would be exceeded; no bytes or live state changed.
     #[error("checkpoint compaction required before append")]
     CompactionRequired,
+    /// The prospective logical snapshot exceeds admission; no write was attempted.
+    #[error(
+        "checkpoint snapshot size {size} exceeds max_snapshot_bytes={max}; reduce retained state through vetted retention or use admitted larger bounds; compaction alone cannot free live-state space"
+    )]
+    SnapshotLimit {
+        /// Exact encoded snapshot section size after the proposed operation.
+        size: u64,
+        /// Configured snapshot section limit.
+        max: u64,
+    },
     /// A compaction generation cannot wrap or reuse a published number.
     #[error("checkpoint compaction generation exhausted")]
     GenerationExhausted,
@@ -164,8 +174,9 @@ fn io(operation: &'static str, source: impl Into<std::io::Error>) -> StoreError 
 /// including older fingerprint evidence. Receiver callers should use
 /// [`crate::CheckpointBounds::for_population`] to size this budget.
 /// `validate()` checks resource ceilings, but does not prove that every table
-/// allowed by `max_tracked_files` fits. With an undersized budget, appends can
-/// succeed until the WAL fills, then compaction returns `RecoveryLimit`.
+/// allowed by `max_tracked_files` fits. Appends reject prospective snapshot growth
+/// above this budget before writing. Historical WAL replay remains readable;
+/// already-over-budget tables permit only size-neutral or reducing appends.
 #[derive(Debug, Clone, Copy)]
 pub struct StoreConfig {
     /// Record, snapshot, and framing-profile admission.
@@ -505,6 +516,14 @@ impl CheckpointStore {
             unreachable!("encoder produced a complete transaction");
         };
         let prepared = self.recovered.state.prepare(transaction)?;
+        if prepared.snapshot_bytes > self.config.replay.max_snapshot_bytes
+            && prepared.snapshot_bytes > self.recovered.state.snapshot_bytes()
+        {
+            return Err(StoreError::SnapshotLimit {
+                size: prepared.snapshot_bytes,
+                max: self.config.replay.max_snapshot_bytes,
+            });
+        }
         self.verify_authority()?;
         self.verify_length()?;
         // Install the retained attempt before any fallible write. A returned

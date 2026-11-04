@@ -220,29 +220,6 @@ fn compaction_generation_overflow() {
     assert!(!namespace(dir.path()).join(COMPACT).exists());
 }
 
-/// Scenario: WAL mutations grow the snapshot beyond its independently configured byte budget.
-/// Guarantees: Compaction rejects before allocating the complete snapshot, writing, or advancing generation.
-#[test]
-fn compaction_snapshot_admission() {
-    let (dir, root) = root();
-    let config = StoreConfig {
-        replay: ReplayConfig::new(100, 84, &profile()).unwrap(),
-        ..config()
-    };
-    let mut store = CheckpointStore::open(&root, ID, config).unwrap();
-    let _ = store
-        .append(vec![registration()], Durability::Sync)
-        .unwrap();
-    let before = fs::read(namespace(dir.path()).join(DB)).unwrap();
-    assert!(matches!(
-        store.compact(),
-        Err(StoreError::RecoveryLimit("compaction snapshot bytes"))
-    ));
-    assert_eq!(store.state().unwrap().generation(), 0);
-    assert_eq!(fs::read(namespace(dir.path()).join(DB)).unwrap(), before);
-    assert!(!namespace(dir.path()).join(COMPACT).exists());
-}
-
 /// Scenario: A temporary write stops at zero, partial-header, or partial-snapshot bytes.
 /// Guarantees: Old authority and the complete removal set remain unchanged until recovery cleans the temporary.
 #[test]
@@ -357,7 +334,11 @@ fn compaction_restart_at_publication_boundaries() {
         );
         assert!(!namespace(dir.path()).join(COMPACT).exists());
         let events = &reopened.io.events;
-        if let Some(cleanup) = events.iter().position(|e| *e == "before temporary removal") {
+        if generation == 0 {
+            let cleanup = events
+                .iter()
+                .position(|e| *e == "before temporary removal")
+                .expect("old generation recovery must clean its temporary");
             assert!(
                 events
                     .iter()
@@ -697,4 +678,90 @@ fn compaction_invalid_temporary_preserves_authority() {
         assert!(!path.join(COMPACT).exists());
         assert_eq!(store.compact().unwrap().generation, 1);
     }
+}
+
+/// Scenario: Temporary namespace verification observes a substituted inode or unsafe permissions.
+/// Guarantees: Restoring the name cannot clear the failure or authorize recovery cleanup/publication.
+#[test]
+fn compaction_temporary_substitution_is_terminal() {
+    for unsafe_mode in [false, true] {
+        let (dir, root) = root();
+        let mut store = store(&root);
+        let _ = store
+            .append(vec![registration()], Durability::Sync)
+            .unwrap();
+        let path = namespace(dir.path());
+        let before = fs::read(path.join(DB)).unwrap();
+        let temporary = path.join(COMPACT);
+        let held = dir.path().join("held-temporary");
+        let action_path = temporary.clone();
+        let action_held = held.clone();
+        store.io.before_compaction_verify = Some(Box::new(move || {
+            if unsafe_mode {
+                fs::set_permissions(&action_path, fs::Permissions::from_mode(0o644)).unwrap();
+            } else {
+                fs::rename(&action_path, &action_held).unwrap();
+                artifact(&action_path, b"substitute");
+            }
+        }));
+        assert!(matches!(
+            store.compact(),
+            Err(StoreError::AuthorityChanged | StoreError::Untrusted(_))
+        ));
+        if unsafe_mode {
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+        } else {
+            fs::remove_file(&temporary).unwrap();
+            fs::rename(&held, &temporary).unwrap();
+        }
+        let events = store.io.events.len();
+        assert!(!store.can_recover_compaction());
+        assert!(matches!(
+            store.recover_compaction(),
+            Err(StoreError::AuthorityChanged)
+        ));
+        assert!(matches!(store.state(), Err(StoreError::AuthorityChanged)));
+        assert!(matches!(store.compact(), Err(StoreError::AuthorityChanged)));
+        assert_eq!(store.io.events.len(), events);
+        assert!(temporary.exists());
+        assert_eq!(fs::read(path.join(DB)).unwrap(), before);
+    }
+}
+
+/// Scenario: Reopen fails after known successful replacement, then the exact old bytes reappear.
+/// Guarantees: Recovery rejects old authority, performs no cleanup/barriers, and latches the failure.
+#[test]
+fn compaction_recovery_rejects_restored_old_authority() {
+    let (dir, root) = root();
+    let mut store = store(&root);
+    let _ = store
+        .append(vec![registration()], Durability::Sync)
+        .unwrap();
+    let path = namespace(dir.path()).join(DB);
+    let old = fs::read(&path).unwrap();
+    store.io.fail_step = Some("reopen compacted checkpoint");
+    assert!(matches!(
+        store.compact(),
+        Err(StoreError::Io {
+            operation: "reopen compacted checkpoint",
+            ..
+        })
+    ));
+    let published = fs::read(&path).unwrap();
+    fs::write(&path, &old).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), old);
+    let events = store.io.events.len();
+    assert!(matches!(
+        store.recover_compaction(),
+        Err(StoreError::AuthorityChanged)
+    ));
+    assert_eq!(store.io.events.len(), events);
+    fs::write(&path, published).unwrap();
+    assert!(!store.can_recover_compaction());
+    assert!(matches!(
+        store.recover_compaction(),
+        Err(StoreError::AuthorityChanged)
+    ));
+    assert!(matches!(store.state(), Err(StoreError::AuthorityChanged)));
+    assert_eq!(store.io.events.len(), events);
 }

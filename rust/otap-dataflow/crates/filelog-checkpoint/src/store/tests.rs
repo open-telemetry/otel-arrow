@@ -1606,3 +1606,5 @@ fn prewrite_rejection_has_no_unresolved_append() {
 }
 
 mod compaction;
+
+mod snapshot_admission;

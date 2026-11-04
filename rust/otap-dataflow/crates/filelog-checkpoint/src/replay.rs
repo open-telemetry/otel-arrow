@@ -50,6 +50,9 @@ pub enum ReplayError {
     /// Encoded bytes failed codec validation before application.
     #[error(transparent)]
     Decode(#[from] DecodeError),
+    /// Exact snapshot-size calculation failed.
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
     /// Caller configuration cannot describe a valid replay context.
     #[error("invalid replay configuration: {0}")]
     InvalidConfig(&'static str),
@@ -121,6 +124,7 @@ pub struct ReplayState {
     config: ReplayConfig,
     generation: u64,
     last_sequence: u64,
+    snapshot_bytes: u64,
     // Dense positions allow bounded scans without copying IDs or walking empty buckets.
     records: IndexMap<FileId, SnapshotRecord>,
     live_locators: HashMap<Locator, FileId>,
@@ -130,6 +134,7 @@ pub struct ReplayState {
 // unchanged state that produced them, under exclusive store ownership.
 pub(crate) struct PreparedTransaction {
     sequence: u64,
+    pub(crate) snapshot_bytes: u64,
     changes: PreparedChanges,
 }
 
@@ -173,6 +178,7 @@ impl ReplayState {
             config,
             generation: snapshot.generation,
             last_sequence: 0,
+            snapshot_bytes: (wal_offset - crate::CHECKPOINT_HEADER_BYTES) as u64,
             records: IndexMap::new(),
             live_locators: HashMap::new(),
         };
@@ -196,6 +202,13 @@ impl ReplayState {
     #[must_use]
     pub const fn last_sequence(&self) -> u64 {
         self.last_sequence
+    }
+
+    /// Exact encoded size of the current logical snapshot, excluding the container header.
+    /// Historical WAL replay may reconstruct a table above the selected snapshot budget.
+    #[must_use]
+    pub const fn snapshot_bytes(&self) -> u64 {
+        self.snapshot_bytes
     }
 
     /// Returns one immutable stored record.
@@ -290,9 +303,10 @@ impl ReplayState {
             transaction.operations.first(),
             Some(Operation::UpdateProgress(_))
         ) {
-            self.validate_progress_operations(&transaction.operations)?;
+            let snapshot_bytes = self.validate_progress_operations(&transaction.operations)?;
             return Ok(PreparedTransaction {
                 sequence: transaction.sequence,
+                snapshot_bytes,
                 changes: PreparedChanges::Progress(transaction.operations),
             });
         }
@@ -366,8 +380,22 @@ impl ReplayState {
                 ));
             }
         }
+        // Charge only touched records, once per final staged value. This also
+        // handles multiple operations on one ID and atomic remove/register groups.
+        let mut snapshot_bytes = self.snapshot_bytes;
+        for (id, record) in &staged {
+            let before = self
+                .records
+                .get(id)
+                .map_or(Ok(0), SnapshotRecord::encoded_frame_len)?;
+            let after = record
+                .as_ref()
+                .map_or(Ok(0), SnapshotRecord::encoded_frame_len)?;
+            snapshot_bytes = replace_size(snapshot_bytes, before, after)?;
+        }
         Ok(PreparedTransaction {
             sequence: transaction.sequence,
+            snapshot_bytes,
             changes: PreparedChanges::Other {
                 records: staged,
                 claims,
@@ -378,6 +406,7 @@ impl ReplayState {
     pub(crate) fn commit(&mut self, prepared: PreparedTransaction) {
         debug_assert_eq!(self.last_sequence.checked_add(1), Some(prepared.sequence));
         self.last_sequence = prepared.sequence;
+        self.snapshot_bytes = prepared.snapshot_bytes;
         let (staged, claims) = match prepared.changes {
             PreparedChanges::Progress(operations) => {
                 self.commit_progress(&operations);
@@ -411,7 +440,8 @@ impl ReplayState {
 
     // Pure progress touches only fixed-size fields. Validate the complete set
     // against immutable records first, then commit without copying evidence.
-    fn validate_progress_operations(&self, operations: &[Operation]) -> Result<(), ReplayError> {
+    fn validate_progress_operations(&self, operations: &[Operation]) -> Result<u64, ReplayError> {
+        let mut snapshot_bytes = self.snapshot_bytes;
         for operation in operations {
             let Operation::UpdateProgress(op) = operation else {
                 unreachable!("scanner validated progress-only transaction");
@@ -421,8 +451,14 @@ impl ReplayState {
                 .get(&op.file_id)
                 .ok_or_else(|| invalid(op.file_id, "target file is absent"))?;
             validate_progress(record, op)?;
+            // Progress does not clone records; only framing changes its wire size.
+            snapshot_bytes = replace_size(
+                snapshot_bytes,
+                record.framing_resume.encoded_len(),
+                op.new_framing_resume.encoded_len(),
+            )?;
         }
-        Ok(())
+        Ok(snapshot_bytes)
     }
 
     fn commit_progress(&mut self, operations: &[Operation]) {
@@ -440,6 +476,15 @@ impl ReplayState {
             }
         }
     }
+}
+
+fn replace_size(total: u64, before: usize, after: usize) -> Result<u64, EncodeError> {
+    total
+        .checked_sub(before as u64)
+        .and_then(|n| n.checked_add(after as u64))
+        .ok_or(EncodeError::ArithmeticOverflow {
+            context: "logical snapshot bytes",
+        })
 }
 
 fn invalid(file_id: FileId, reason: &'static str) -> ReplayError {

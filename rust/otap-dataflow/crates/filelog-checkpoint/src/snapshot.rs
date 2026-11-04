@@ -158,10 +158,7 @@ impl SnapshotRecord {
             Locator::PosixDevIno { .. } => 17,
             Locator::WindowsVolumeFileId { .. } => 25,
         };
-        let resume = match self.framing_resume {
-            FramingResume::Clean => 1,
-            FramingResume::Continuation { .. } => 21,
-        };
+        let resume = self.framing_resume.encoded_len();
         // Fixed payload fields (including variable-field prefixes and advisory
         // metadata) plus the frame's four-byte length and four-byte CRC.
         let fixed = 155usize + 8;

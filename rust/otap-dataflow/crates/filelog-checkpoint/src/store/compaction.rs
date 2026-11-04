@@ -140,6 +140,21 @@ impl CheckpointStore {
                 return Err(StoreError::InvalidRetention("duplicate file ID"));
             }
         }
+        let mut snapshot_bytes = self.recovered.state.snapshot_bytes();
+        for id in &removals {
+            let record = self.recovered.state.get(id).expect("validated removal");
+            snapshot_bytes = snapshot_bytes
+                .checked_sub(record.encoded_frame_len()? as u64)
+                .ok_or(EncodeError::ArithmeticOverflow {
+                    context: "retained snapshot bytes",
+                })?;
+        }
+        if snapshot_bytes > self.config.replay.max_snapshot_bytes {
+            return Err(StoreError::SnapshotLimit {
+                size: snapshot_bytes,
+                max: self.config.replay.max_snapshot_bytes,
+            });
+        }
         let records = self
             .recovered
             .state
@@ -150,13 +165,7 @@ impl CheckpointStore {
             &self.checkpoint_id,
             records,
             self.config.replay.max_snapshot_bytes,
-        )
-        .map_err(|error| match error {
-            EncodeError::SnapshotTooLarge { .. } => {
-                StoreError::RecoveryLimit("compaction snapshot bytes")
-            }
-            other => StoreError::Encode(other),
-        })?;
+        )?;
         let _ = ReplayState::from_checkpoint(&prefix, &self.checkpoint_id, self.config.replay)?;
         self.verify_authority()?;
         self.verify_length()?;
@@ -216,7 +225,15 @@ impl CheckpointStore {
         drop(staged);
         drop(prefix);
         self.io.sync(&temp, "compaction file sync")?;
-        self.namespace.verify(COMPACT, &temp)?;
+        self.io.step("verify compaction temporary")?;
+        let verification = self.namespace.verify(COMPACT, &temp);
+        if matches!(
+            &verification,
+            Err(StoreError::AuthorityChanged | StoreError::Untrusted(_))
+        ) {
+            self.authority_failed = true;
+        }
+        verification?;
         drop(temp);
         self.verify_authority()?;
         self.verify_length()?;

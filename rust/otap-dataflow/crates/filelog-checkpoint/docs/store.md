@@ -144,7 +144,10 @@ The store holds the namespace lock throughout publication:
 
 `CompactionStagingInvalid` means the temporary failed validation before
 replacement. The active file is unchanged, but the attempt needs cleanup.
-`AuthorityChanged` means an active-file or ownership check failed.
+`AuthorityChanged` means an active-file or ownership check failed. Observed
+substitution or untrusted metadata at temporary verification also latches an
+authority failure. Restoring the name or permissions cannot authorize cleanup
+or another publication through that store.
 
 `has_unresolved_compaction()` identifies an attempt that still needs resolution.
 State use, append, sync, and another compaction stay blocked. If recovery is
@@ -189,13 +192,38 @@ and snapshot within the configured snapshot bound. No old-WAL-sized allocation
 is introduced. Allocation failure may abort the process; allocation is not
 fallibly reserved.
 
-If constructing `StoreConfig` directly, allow enough snapshot space for the
-full retained table, including older fingerprint evidence. Receiver callers
-should use `CheckpointBounds::for_population` to size that budget. Validation
-checks resource ceilings; it does not guarantee that the chosen record count
-fits the snapshot budget. An undersized budget can allow appends until the WAL
-is full, then prevent compaction with `RecoveryLimit`. Retrying with the same
-state and limits will not make it fit.
+Receiver callers use `CheckpointBounds::for_population` to size the snapshot
+budget, including headroom for older fingerprint evidence. Configuration
+admission alone cannot guarantee that every mixed historical/current population
+fits. Every append therefore preflights the exact resulting snapshot size,
+including its header and footer, before writing or changing authoritative state.
+`SnapshotLimit { size, max }` reports the calculated size and configured limit.
+Equality is allowed. Compaction alone cannot free space occupied by live records.
+
+Replay maintains the size incrementally. Non-progress transactions account for
+only their final touched records, including fingerprint/path updates, resets,
+registration and removal. Progress accounts for clean/continuation framing
+changes (20 bytes); quarantine evidence adds 22 bytes. No whole-table scan or
+clone is added to append admission. The size commits atomically with records
+and sequence and is reconstructed during pending recovery and restart.
+
+Existing WALs remain readable: replay does not apply this new append rejection.
+Within the existing file/replay bounds, historical WALs may reconstruct a logical
+table above the selected snapshot budget. Such a table accepts size-neutral or
+size-reducing appends, subject to the existing WAL thresholds; further growth is
+rejected. The original snapshot-section admission is unchanged. Compaction must
+fit the entire resulting snapshot, so an over-budget table needs enough
+caller-vetted retention in one compaction, or separately validated larger bounds.
+Storage never invents removal eligibility, drops evidence, or resets checkpoints.
+If the WAL is already full, reducing WAL appends cannot bypass its thresholds.
+
+`IdentityOwner` stops on a required `SnapshotLimit`, including admission or
+progress. This is a receiver-owner failure, not an automatic per-source failure
+or quarantine. Unwritten admissions release their leases; committed reader
+leases stay with their readers. Optional fingerprint growth instead remains
+queued and does not prevent required progress sync. Its caller must defer retries
+until space can change. Runtime retention and recovery orchestration remain
+integration work; restarting with identical state and bounds does not add space.
 
 `StoreConfig` uses the [interacting WAL bound][publication]:
 `min(max_wal_bytes, max_wal_transactions * WAL_MAX_TX_FRAME_BYTES)`.

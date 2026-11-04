@@ -418,6 +418,8 @@ pub(super) struct Io {
     #[cfg(test)]
     pub events: Vec<&'static str>,
     #[cfg(test)]
+    pub before_compaction_verify: Option<Box<dyn FnOnce()>>,
+    #[cfg(test)]
     pub sync_fds: Vec<std::os::fd::RawFd>,
 }
 
@@ -429,6 +431,11 @@ impl Io {
         #[cfg(test)]
         {
             self.events.push(_operation);
+            if _operation == "verify compaction temporary"
+                && let Some(action) = self.before_compaction_verify.take()
+            {
+                action();
+            }
             if self.fail_step == Some(_operation) {
                 self.fail_step = None;
                 return Err(io(
