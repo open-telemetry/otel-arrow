@@ -48,9 +48,6 @@ pub struct CodecConfig {
     pub encoding: String,
     /// Named generation profile advertised by the codec.
     pub profile: String,
-    /// Starting point for reproducible contents.
-    #[serde(default)]
-    pub seed: u64,
     /// Fixed timestamp override; omitted values use current time per generated batch.
     #[serde(default)]
     pub timestamp_unix_nano: Option<i64>,
@@ -365,7 +362,7 @@ impl Config {
                 .create_generator(&GenerationConfig {
                     profile: config.profile.clone(),
                     signal,
-                    seed: config.seed,
+                    seed: rand::random(),
                     max_batch_size: traffic.max_batch_size,
                     max_batch_bytes: config.max_batch_bytes,
                 })
