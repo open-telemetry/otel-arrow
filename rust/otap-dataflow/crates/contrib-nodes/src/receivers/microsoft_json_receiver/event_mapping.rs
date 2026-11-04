@@ -145,6 +145,9 @@ impl CompiledEndpoint {
             None
         };
         let rules = selected.map_or(self.rules.as_slice(), |entry| entry.rules.as_slice());
+        let ancestor_constraints = selected.map_or(self.ancestor_constraints.as_slice(), |entry| {
+            entry.ancestor_constraints.as_slice()
+        });
         let mut logical = Cow::Borrowed(event);
         // Inject defaults before the single mapping pass, so nested defaults
         // obey the same validation, allowed-key and unmapped policies.
@@ -176,6 +179,7 @@ impl CompiledEndpoint {
         inspect_json(&logical, self.limits, &mut budget)?;
         let mut state = Mapper {
             endpoint: self,
+            ancestor_constraints,
             event,
             budget,
             output: MappedLog::default(),
@@ -241,6 +245,7 @@ impl CompiledEndpoint {
 
 struct Mapper<'a> {
     endpoint: &'a CompiledEndpoint,
+    ancestor_constraints: &'a [usize],
     event: &'a Value,
     budget: Budget,
     output: MappedLog,
@@ -300,27 +305,30 @@ impl Mapper<'_> {
             logical.push(part.to_owned());
         }
         // Flattened SDK keys must not bypass constraints on virtual parents.
-        for (index, container) in rules.iter().enumerate() {
+        self.budget.charge(self.ancestor_constraints.len())?;
+        for &index in self.ancestor_constraints {
+            let container = &rules[index];
+            let Some((child, prefix)) = container.ancestor_child(path, &mut self.budget)? else {
+                continue;
+            };
+            let mut shadowed = false;
+            for earlier in &rules[..index] {
+                if earlier.matches(&prefix, &mut self.budget)? {
+                    shadowed = true;
+                    break;
+                }
+            }
+            if shadowed {
+                continue;
+            }
             if let Some(keys) = &container.rule.allowed_keys
-                && let Some((child, _)) = container.ancestor_child(path, &mut self.budget)?
                 && !allowed_child(keys, child, &mut self.budget)?
             {
                 return Err(MappingError::Rejected(
                     "unlisted flattened child key".into(),
                 ));
             }
-            if matches!(container.rule.target, Some(MappingTarget::Drop))
-                && let Some((_, prefix)) = container.ancestor_child(path, &mut self.budget)?
-            {
-                let mut shadowed = false;
-                for earlier in &rules[..index] {
-                    if earlier.matches(&prefix, &mut self.budget)? {
-                        shadowed = true;
-                        break;
-                    }
-                }
-                suppress_unmapped |= !shadowed;
-            }
+            suppress_unmapped |= matches!(container.rule.target, Some(MappingTarget::Drop));
         }
         let replacement;
         let value = if let Some(remap) = self.remap.filter(|_| path.as_slice() == ["iKey"]) {
@@ -698,6 +706,7 @@ fn transform_value(
     budget: &mut Budget,
 ) -> Result<Option<Value>, MappingError> {
     if let ValueTransform::Format { template } = transform {
+        budget.charge(template.len().saturating_mul(2))?;
         let Some(raw) = scalar(value) else {
             return Ok(None);
         };
@@ -714,17 +723,12 @@ fn transform_value(
         }
         budget.charge(size)?;
     }
-    if let ValueTransform::SplitTake { delimiter, index } = transform {
+    if let ValueTransform::SplitTake { delimiter, .. } = transform {
         let Some(raw) = value.as_str() else {
             return Ok(None);
         };
-        budget.charge(raw.len())?;
-        let part = if *index < 0 {
-            raw.rsplit(delimiter).nth(index.unsigned_abs() as usize - 1)
-        } else {
-            raw.split(delimiter).nth(*index as usize)
-        };
-        return Ok(part.map(|s| Value::String(s.to_owned())));
+        budget.charge(raw.len().saturating_mul(2).saturating_add(delimiter.len()))?;
+        return Ok(transform.apply(value));
     }
     budget.charge(json_size(value, limit)?)?;
     Ok(transform.apply(value))

@@ -4,15 +4,244 @@
 use super::config::{Config, EndpointConfig};
 use super::error::MappingError;
 use super::event_mapping::{DropReason, MappedLog, MappingContext, MappingOutcome};
-use super::field_mapping::{CompiledEndpoint, load_endpoints};
-use otel_arrow_dfe_config::data_limits::{
-    Budget, CONFIG_FILE_BYTES, DataLimitError, Limits, inspect_json, json_size, read_config,
-};
+use super::field_mapping::{CONFIG_FILE_BYTES, CompiledEndpoint, load_endpoints, read_config};
+use otel_arrow_dfe_config::data_limits::{Budget, DataLimitError, Limits, inspect_json, json_size};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 fn no_environment(_: &str) -> Result<String, std::env::VarError> {
     Err(std::env::VarError::NotPresent)
+}
+
+/// Scenario: many ordinary rules follow an early wildcard match, then become ancestor constraints.
+/// Guarantees: compiled scans exclude ordinary rules, while large constraint scans exhaust finite mapping work.
+#[test]
+fn ancestor_constraint_scans_are_filtered_and_budgeted() {
+    let mut rules = vec![json!({"path": "*", "target": {"kind": "attribute"}})];
+    rules.extend((0..1024).map(|i| json!({"path": format!("unused{i}"), "validate": {}})));
+    let config = serde_json::from_value(json!({"rules": rules})).expect("config");
+    let mut ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+    assert!(ep.ancestor_constraints.is_empty());
+    ep.limits.work = 500_000;
+    let event = Value::Object((0..128).map(|i| (format!("field{i}"), json!(i))).collect());
+    assert_eq!(accepted(&ep, event.clone()).attributes.len(), 128);
+
+    for rule in &mut rules[1..] {
+        rule["allowed_keys"] = json!(["x"]);
+    }
+    let config = serde_json::from_value(json!({"rules": rules})).expect("constrained config");
+    let mut ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+    assert_eq!(ep.ancestor_constraints, (1..1025).collect::<Vec<_>>());
+    ep.limits.work = 500_000;
+    assert!(
+        ep.map_event(&json!({"field": 1}), &MappingContext::default())
+            .is_ok()
+    );
+    assert_eq!(
+        ep.map_event(&event, &MappingContext::default()),
+        Err(MappingError::Limit("traversal work"))
+    );
+}
+
+/// Scenario: endpoint/filter configuration reads encounter UTF-8, oversize text, invalid bytes and a missing path.
+/// Guarantees: local reads retain the exact byte cap and report encoding and filesystem failures explicitly.
+#[test]
+fn configuration_text_reads_are_limited() {
+    let dir = tempfile::tempdir().expect("directory");
+    let path = dir.path().join("config.yaml");
+    std::fs::write(&path, "x".repeat(CONFIG_FILE_BYTES)).expect("write");
+    assert_eq!(
+        read_config(&path).expect("exact limit").len(),
+        CONFIG_FILE_BYTES
+    );
+    std::fs::write(&path, "x".repeat(CONFIG_FILE_BYTES + 1)).expect("write");
+    assert_eq!(
+        read_config(&path),
+        Err(MappingError::Limit("configuration file bytes"))
+    );
+    std::fs::write(&path, [0xff]).expect("write");
+    assert!(matches!(read_config(&path), Err(MappingError::File(_))));
+    assert!(matches!(
+        read_config(&dir.path().join("missing")),
+        Err(MappingError::File(_))
+    ));
+}
+
+/// Scenario: specific and wildcard container allow-lists overlap in base and override mappings.
+/// Guarantees: the first matching parent's constraints win for both nested and dotted inputs.
+#[test]
+fn ancestor_allow_lists_respect_first_match_precedence() {
+    for (rules, accepted_key, rejected_key) in [
+        (
+            json!([
+                {"path": "ext.app", "allowed_keys": ["id", "ver"]},
+                {"path": "ext.*", "allowed_keys": ["x"]}
+            ]),
+            "id",
+            "x",
+        ),
+        (
+            json!([
+                {"path": "ext.*", "allowed_keys": ["x"]},
+                {"path": "ext.app", "allowed_keys": ["id", "ver"]}
+            ]),
+            "x",
+            "id",
+        ),
+        (
+            json!([
+                {"path": "ext.app", "validate": {}},
+                {"path": "ext.*", "allowed_keys": ["x"]}
+            ]),
+            "id",
+            "x.other",
+        ),
+    ] {
+        let config: EndpointConfig = serde_json::from_value(json!({
+            "rules": rules,
+        }))
+        .expect("config");
+        let ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+        for event in [
+            json!({"ext": {"app": {accepted_key: "app"}}}),
+            json!({"ext.app": {accepted_key: "app"}}),
+        ] {
+            assert_eq!(accepted(&ep, event.clone()).body, Some(event));
+        }
+        if config.rules[0].allowed_keys.is_some() {
+            for event in [
+                json!({"ext": {"app": {rejected_key: "app"}}}),
+                json!({"ext.app": {rejected_key: "app"}}),
+            ] {
+                assert!(matches!(
+                    ep.map_event(&event, &MappingContext::default()),
+                    Err(MappingError::Rejected(_))
+                ));
+            }
+        }
+        let mut override_config = config;
+        override_config.rules = serde_json::from_value(json!([
+            {"path": "name", "target": {"kind": "event_name"}}
+        ]))
+        .expect("selector");
+        override_config.event_overrides = serde_json::from_value(json!({
+            "Example": {"rules": rules}
+        }))
+        .expect("override");
+        let ep = CompiledEndpoint::compile(&override_config, None, &no_environment)
+            .expect("override compile");
+        for event in [
+            json!({"name": "Example", "ext": {"app": {accepted_key: "app"}}}),
+            json!({"name": "Example", "ext.app": {accepted_key: "app"}}),
+        ] {
+            assert!(ep.map_event(&event, &MappingContext::default()).is_ok());
+        }
+    }
+}
+
+/// Scenario: an empty wildcard value is formatted by a large placeholder-only template into a drop target.
+/// Guarantees: template scanning consumes work even when the transform and destination emit no bytes.
+#[test]
+fn empty_format_drop_fanout_is_work_bounded() {
+    let template = "{value}".repeat(2048);
+    let config = serde_json::from_value(json!({
+        "rules": [{
+            "path": "*",
+            "also": [{
+                "target": {"kind": "drop"},
+                "transform": {"kind": "format", "template": template}
+            }]
+        }]
+    }))
+    .expect("config");
+    let mut ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+    ep.limits.work = 8192;
+    assert_eq!(
+        ep.map_event(&json!({"a": ""}), &MappingContext::default()),
+        Err(MappingError::Limit("traversal work"))
+    );
+    ep.limits.work = 128 * 1024;
+    assert!(
+        ep.map_event(&json!({"a": ""}), &MappingContext::default())
+            .is_ok()
+    );
+    let event = Value::Object((0..32).map(|i| (format!("k{i}"), json!(""))).collect());
+    assert_eq!(
+        ep.map_event(&event, &MappingContext::default()),
+        Err(MappingError::Limit("traversal work"))
+    );
+}
+
+/// Scenario: negative split indices select forward parts separated by overlapping delimiters.
+/// Guarantees: mapper transforms agree with apply(), including out-of-range and minimum i32 indices.
+#[test]
+fn split_transforms_preserve_forward_delimiter_semantics() {
+    use super::config::ValueTransform;
+    for (raw, delimiter) in [("a---b", "--"), ("aaaaa", "aa"), ("a-b-c", "-")] {
+        for index in [i32::MIN, -4, -2, -1, 0, 1, 3] {
+            let transform = ValueTransform::SplitTake {
+                delimiter: delimiter.into(),
+                index,
+            };
+            let expected = transform.apply(&json!(raw));
+            if raw == "a---b" && index == -1 {
+                assert_eq!(expected, Some(json!("-b")));
+            }
+            let config = serde_json::from_value(json!({
+                "rules": [{
+                    "path": "value",
+                    "also": [{
+                        "target": {"kind": "attribute", "key": "part"},
+                        "transform": {"kind": "split_take", "delimiter": delimiter, "index": index}
+                    }]
+                }]
+            }))
+            .expect("config");
+            let ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+            let result = ep.map_event(&json!({"value": raw}), &MappingContext::default());
+            match expected {
+                Some(part) => {
+                    let MappingOutcome::Accepted(log) = result.expect("map") else {
+                        panic!("expected accepted log");
+                    };
+                    assert_eq!(
+                        log.attributes["part"], part,
+                        "{raw:?} {delimiter:?} {index}"
+                    );
+                }
+                None => assert!(matches!(result, Err(MappingError::Rejected(_)))),
+            }
+        }
+    }
+}
+
+/// Scenario: a split transform reduces a source string larger than the mapping's output allowance.
+/// Guarantees: input work is charged without incorrectly applying the output byte cap to the unsplit value.
+#[test]
+fn split_transform_can_shrink_large_input() {
+    let config = serde_json::from_value(json!({
+        "rules": [{
+            "path": "value",
+            "also": [{
+                "target": {"kind": "attribute", "key": "part"},
+                "transform": {"kind": "split_take", "delimiter": "--", "index": -1}
+            }]
+        }]
+    }))
+    .expect("config");
+    let ep = CompiledEndpoint::with_limits(
+        &config,
+        None,
+        &no_environment,
+        Limits {
+            output_bytes: 512,
+            ..Limits::default()
+        },
+    )
+    .expect("compile");
+    let log = accepted(&ep, json!({"value": format!("{}--part", "a".repeat(2048))}));
+    assert_eq!(log.attributes["part"], "part");
+    assert!(log.body.is_none());
 }
 
 /// Scenario: wildcard parents consume literal dotted keys before virtual child-key validation.
@@ -1588,7 +1817,7 @@ fn endpoint_file_loading_is_confined_bounded_and_atomic() {
     .expect("over limit");
     assert_eq!(
         read_config(&dir.path().join("endpoint.yaml")),
-        Err(DataLimitError::Limit("configuration file bytes"))
+        Err(MappingError::Limit("configuration file bytes"))
     );
 }
 

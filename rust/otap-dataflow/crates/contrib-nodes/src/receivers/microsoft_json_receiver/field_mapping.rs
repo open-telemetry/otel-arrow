@@ -11,9 +11,28 @@ use super::config::{
 };
 use super::error::MappingError;
 use super::ikey_filter::{self, IkeyValidator};
-use otel_arrow_dfe_config::data_limits::{Budget, Limits, inspect_json, read_config};
+use otel_arrow_dfe_config::data_limits::{Budget, Limits, inspect_json};
 use std::collections::{BTreeMap, HashSet};
+use std::io::Read;
 use std::path::Path;
+
+/// Maximum endpoint or external filter configuration-text file size.
+pub(crate) const CONFIG_FILE_BYTES: usize = 1024 * 1024;
+
+/// Read capped UTF-8 component configuration before parsing it.
+pub(crate) fn read_config(path: &Path) -> Result<String, MappingError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| MappingError::File(format!("{}: {e}", path.display())))?;
+    let mut bytes = Vec::new();
+    _ = file
+        .take((CONFIG_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| MappingError::File(format!("{}: {e}", path.display())))?;
+    if bytes.len() > CONFIG_FILE_BYTES {
+        return Err(MappingError::Limit("configuration file bytes"));
+    }
+    String::from_utf8(bytes).map_err(|e| MappingError::File(format!("{}: {e}", path.display())))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledRule {
@@ -113,12 +132,14 @@ pub(crate) struct CompiledOverride {
     pub pattern: String,
     pub action: EventAction,
     pub rules: Vec<CompiledRule>,
+    pub ancestor_constraints: Vec<usize>,
 }
 
 #[derive(Debug)]
 pub(crate) struct CompiledEndpoint {
     pub config: EndpointConfig,
     pub rules: Vec<CompiledRule>,
+    pub ancestor_constraints: Vec<usize>,
     pub overrides: Vec<CompiledOverride>,
     pub ikey_validator: Option<IkeyValidator>,
     pub env_resource_attrs: BTreeMap<String, serde_json::Value>,
@@ -266,10 +287,12 @@ impl CompiledEndpoint {
                 return Err(MappingError::Limit("compiled rules"));
             }
             validate_event_name_rules(&merged)?;
+            let ancestor_constraints = compile_ancestor_constraints(&merged, &mut budget)?;
             overrides.push(CompiledOverride {
                 pattern: pattern.clone(),
                 action: entry.action.clone(),
                 rules: merged,
+                ancestor_constraints,
             });
         }
         // Exact overrides precede globs; overlapping globs use the longest prefix.
@@ -374,15 +397,33 @@ impl CompiledEndpoint {
             }
         }
         config.query_string_headers = query_headers;
+        let ancestor_constraints = compile_ancestor_constraints(&rules, &mut budget)?;
         Ok(Self {
             config,
             rules,
+            ancestor_constraints,
             overrides,
             ikey_validator,
             env_resource_attrs,
             limits,
         })
     }
+}
+
+fn compile_ancestor_constraints(
+    rules: &[CompiledRule],
+    budget: &mut Budget,
+) -> Result<Vec<usize>, MappingError> {
+    budget.charge(rules.len())?;
+    Ok(rules
+        .iter()
+        .enumerate()
+        .filter_map(|(index, rule)| {
+            (rule.rule.allowed_keys.is_some()
+                || matches!(rule.rule.target, Some(MappingTarget::Drop)))
+            .then_some(index)
+        })
+        .collect())
 }
 
 fn validate_event_name_rules(rules: &[CompiledRule]) -> Result<(), MappingError> {
