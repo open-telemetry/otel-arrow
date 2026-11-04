@@ -255,3 +255,11 @@ harness = false
 name = "filelog_scan"
 harness = false
 path = "benches/filelog_scan/main.rs"
+
+[[test]]
+name = "filelog_decoder_allocations"
+harness = false
+
+[[test]]
+name = "filelog_framer_allocations"
+harness = false
