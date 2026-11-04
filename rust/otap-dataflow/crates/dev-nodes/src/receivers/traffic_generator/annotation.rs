@@ -22,14 +22,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde_yaml::{Mapping, Value};
-use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_semconv::YamlValue;
 use weaver_semconv::v1::attribute::{
     AttributeType, PrimitiveOrArrayTypeSpec, TemplateTypeSpec, ValueSpec as SemconvValueSpec,
 };
 use weaver_semconv::v1::group::InstrumentSpec;
-
-use super::semconv_model::SemconvModel;
 
 /// The annotation namespace read by the traffic generator.
 pub const NAMESPACE: &str = "traffic-generator";
@@ -287,6 +284,11 @@ pub fn metric_value_is_int(annotations: Option<&BTreeMap<String, YamlValue>>) ->
 // ---------------------------------------------------------------------------
 
 /// An annotation error located in the registry.
+///
+/// Produced by [`SemconvModel::compile`], which validates every
+/// `traffic-generator` annotation in the registry.
+///
+/// [`SemconvModel::compile`]: crate::receivers::traffic_generator::semconv_model::SemconvModel::compile
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegistryAnnotationError {
     /// Group id the error belongs to.
@@ -315,18 +317,6 @@ pub fn format_errors(errors: &[RegistryAnnotationError]) -> String {
         out.push_str(&e.to_string());
     }
     out
-}
-
-/// Parse every `traffic-generator` annotation in the registry.
-///
-/// Signal groups (metric, span, event) are checked against their signal
-/// type, and every attribute annotation against its attribute type. Returns
-/// every error found so they can be reported together at startup.
-///
-/// This compiles the registry ([`SemconvModel::compile`]) and discards the
-/// result; use `compile` directly when the compiled model is needed.
-pub fn validate_registry(registry: &ResolvedRegistry) -> Result<(), Vec<RegistryAnnotationError>> {
-    SemconvModel::compile(registry).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------

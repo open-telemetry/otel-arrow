@@ -590,16 +590,3 @@ impl<T> MappedSampler<T> {
         &self.outputs[self.index.sample(rng)]
     }
 }
-
-/// Draw one value from a value spec.
-///
-/// Compiles a [`ValueSampler`] for a single draw; generation code compiles
-/// samplers once and reuses them instead.
-pub fn sample_value<R: Rng + ?Sized>(spec: &ValueSpec, integer: bool, rng: &mut R) -> Scalar {
-    ValueSampler::new(spec, integer).sample_value(rng)
-}
-
-/// Draw a non-negative count from a value spec.
-pub fn sample_count<R: Rng + ?Sized>(spec: &ValueSpec, rng: &mut R) -> usize {
-    ValueSampler::new(spec, true).sample_count(rng)
-}

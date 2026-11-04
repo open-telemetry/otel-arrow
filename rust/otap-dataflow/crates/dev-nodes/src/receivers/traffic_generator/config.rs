@@ -16,7 +16,7 @@ use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 
-use super::annotation::{format_errors, validate_registry};
+use super::annotation::format_errors;
 use super::semconv_model::SemconvModel;
 
 /// Source of telemetry data schema and attributes
@@ -296,24 +296,6 @@ impl Config {
         self.enable_ack_nack
     }
 
-    /// Resolve and return the ResolvedRegistry.
-    /// Returns None if data_source is Synthetic.
-    ///
-    /// Every `traffic-generator` annotation in the registry is validated; an
-    /// error lists each invalid annotation (group, attribute, key path).
-    pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
-        match self.data_source {
-            DataSource::Synthetic => Ok(None),
-            DataSource::SemanticConventions => {
-                let resolved_registry = self.resolve_registry()?;
-                // Reject invalid `traffic-generator` annotations so callers
-                // never receive a registry the generator cannot compile.
-                validate_registry(&resolved_registry).map_err(|errors| format_errors(&errors))?;
-                Ok(Some(resolved_registry))
-            }
-        }
-    }
-
     /// Resolve the registry and compile it for signal generation.
     /// Returns None if data_source is Synthetic.
     ///
@@ -333,7 +315,10 @@ impl Config {
     }
 
     /// Resolve the semantic conventions registry at `registry_path`.
-    fn resolve_registry(&self) -> Result<ResolvedRegistry, String> {
+    ///
+    /// Does not validate `traffic-generator` annotations; use
+    /// [`Self::get_semconv_model`] to obtain a validated, compiled model.
+    pub(crate) fn resolve_registry(&self) -> Result<ResolvedRegistry, String> {
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
             .map_err(|err| err.to_string())?;

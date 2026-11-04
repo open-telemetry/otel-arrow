@@ -32,11 +32,11 @@ use super::annotation::{
     self, AnnotationError, AttributeSpec, DEFAULT_HISTOGRAM_BOUNDS, Distribution, Range, Scalar,
     ScalarKind, ValueSpec,
 };
-use super::attributes::{AttributeGen, get_attribute_name_value};
+use super::attributes::AttributeGen;
 use super::config::{Config, TrafficConfig, default_registry_path};
 use super::sampler::{
     IndexSampler, NumberSampler, ValueSampler, lognormal_params, normal_cdf, normal_inverse_sf,
-    normal_quantile, normal_sf, sample_count, sample_value,
+    normal_quantile, normal_sf,
 };
 use super::semconv_model::SemconvModel;
 use super::semconv_signal::{
@@ -172,6 +172,13 @@ fn any_scalar(v: &AnyValue) -> Scalar {
     }
 }
 
+/// Compile `attribute` (its annotation must be valid) and draw one pair.
+fn gen_kv(attribute: &Attribute, rng: &mut StdRng) -> KeyValue {
+    AttributeGen::try_new(attribute)
+        .unwrap_or_else(|e| panic!("{}: {e}", attribute.name))
+        .sample(rng)
+}
+
 fn kv_scalar(kv: &KeyValue) -> Scalar {
     any_scalar(kv.value.as_ref().expect("kv value"))
 }
@@ -193,9 +200,8 @@ fn registry() -> &'static ResolvedRegistry {
             default_registry_path(),
         );
         config
-            .get_registry()
+            .resolve_registry()
             .expect("vendored registry resolves")
-            .expect("semantic conventions data source")
     })
 }
 
@@ -1733,10 +1739,10 @@ fn sampling_is_reproducible_for_a_seed() {
     assert_eq!(draw(&s, 1_000), draw(&s, 1_000));
 }
 
-/// Scenario: `sample_value` and `sample_count` are called on continuous and
-/// discrete specs.
-/// Guarantees: Continuous int specs yield `Scalar::Int`, doubles yield
-/// `Scalar::Double`, discrete values are returned as written, and
+/// Scenario: `ValueSampler::sample_value` and `ValueSampler::sample_count`
+/// are called on samplers compiled from continuous and discrete specs.
+/// Guarantees: Continuous int samplers yield `Scalar::Int`, double samplers
+/// yield `Scalar::Double`, discrete values are returned as written, and
 /// `sample_count` never goes negative.
 #[test]
 fn sample_value_output_types() {
@@ -1745,17 +1751,23 @@ fn sample_value_output_types() {
         distribution: Distribution::Uniform,
     };
     let mut r = rng();
-    assert!(matches!(sample_value(&spec, true, &mut r), Scalar::Int(_)));
     assert!(matches!(
-        sample_value(&spec, false, &mut r),
+        ValueSampler::new(&spec, true).sample_value(&mut r),
+        Scalar::Int(_)
+    ));
+    assert!(matches!(
+        ValueSampler::new(&spec, false).sample_value(&mut r),
         Scalar::Double(_)
     ));
-    let neg = ValueSpec::Discrete {
-        values: vec![Scalar::Int(-3)],
-        weights: None,
-    };
-    assert_eq!(sample_value(&neg, true, &mut r), Scalar::Int(-3));
-    assert_eq!(sample_count(&neg, &mut r), 0);
+    let neg = ValueSampler::new(
+        &ValueSpec::Discrete {
+            values: vec![Scalar::Int(-3)],
+            weights: None,
+        },
+        true,
+    );
+    assert_eq!(neg.sample_value(&mut r), Scalar::Int(-3));
+    assert_eq!(neg.sample_count(&mut r), 0);
 }
 
 // ===========================================================================
@@ -1786,18 +1798,15 @@ fn attribute_value_scalars() {
         Some("{ values: [false] }"),
     );
     for _ in 0..2_000 {
-        match kv_scalar(&get_attribute_name_value(int, &mut r)) {
+        match kv_scalar(&gen_kv(int, &mut r)) {
             Scalar::Int(i) => assert!((1024..=2048).contains(&i)),
             other => panic!("{other:?}"),
         }
-        match kv_scalar(&get_attribute_name_value(double, &mut r)) {
+        match kv_scalar(&gen_kv(double, &mut r)) {
             Scalar::Double(d) => assert!((0.0..=1.0).contains(&d)),
             other => panic!("{other:?}"),
         }
-        assert_eq!(
-            kv_scalar(&get_attribute_name_value(boolean, &mut r)),
-            Scalar::Bool(false)
-        );
+        assert_eq!(kv_scalar(&gen_kv(boolean, &mut r)), Scalar::Bool(false));
     }
 }
 
@@ -1821,7 +1830,7 @@ fn attribute_value_arrays_and_templates() {
     );
     let mut keys = HashSet::new();
     for _ in 0..500 {
-        let kv = get_attribute_name_value(arr, &mut r);
+        let kv = gen_kv(arr, &mut r);
         let Some(AnyValueKind::ArrayValue(a)) = kv.value.as_ref().and_then(|v| v.value.as_ref())
         else {
             panic!("expected array")
@@ -1833,7 +1842,7 @@ fn attribute_value_arrays_and_templates() {
                 .all(|v| matches!(any_scalar(v), Scalar::String(s) if s == "a" || s == "b"))
         );
 
-        let kv = get_attribute_name_value(tmpl, &mut r);
+        let kv = gen_kv(tmpl, &mut r);
         let _ = keys.insert(kv.key.clone());
         let Some(AnyValueKind::ArrayValue(a)) = kv.value.as_ref().and_then(|v| v.value.as_ref())
         else {
@@ -1866,14 +1875,8 @@ fn attribute_value_enums() {
     let mut a = HashSet::new();
     let mut p = HashSet::new();
     for _ in 0..1_000 {
-        let _ = a.insert(format!(
-            "{:?}",
-            kv_scalar(&get_attribute_name_value(annotated, &mut r))
-        ));
-        let _ = p.insert(format!(
-            "{:?}",
-            kv_scalar(&get_attribute_name_value(&plain, &mut r))
-        ));
+        let _ = a.insert(format!("{:?}", kv_scalar(&gen_kv(annotated, &mut r))));
+        let _ = p.insert(format!("{:?}", kv_scalar(&gen_kv(&plain, &mut r))));
     }
     assert_eq!(a.len(), 2);
     assert_eq!(p.len(), 4, "unannotated enum must vary across members");
@@ -1888,34 +1891,36 @@ fn attribute_value_falls_back_to_examples() {
     attr.examples = Some(Examples::Ints(vec![7, 9]));
     for _ in 0..100 {
         assert!(matches!(
-            kv_scalar(&get_attribute_name_value(&attr, &mut r)),
+            kv_scalar(&gen_kv(&attr, &mut r)),
             Scalar::Int(7 | 9)
         ));
     }
 }
 
-/// Scenario: An attribute carries an invalid annotation and is generated
-/// anyway (startup validation would normally reject it first).
-/// Guarantees: Generation does not panic and falls back to the examples.
+/// Scenario: An attribute that has examples carries an invalid annotation (a
+/// continuous range on a string attribute) and is compiled.
+/// Guarantees: Compilation fails with the annotation key path instead of
+/// silently falling back to the examples, so an invalid annotation always
+/// fails receiver startup.
 #[test]
 fn attribute_with_invalid_annotation_falls_back() {
-    let mut r = rng();
     let mut attr = attribute(
         "x",
         primitive(PrimitiveOrArrayTypeSpec::String),
         Some("{ range: { min: 0, max: 1 } }"),
     );
     attr.examples = Some(Examples::Strings(vec!["fallback".to_owned()]));
-    assert_eq!(
-        kv_scalar(&get_attribute_name_value(&attr, &mut r)),
-        Scalar::String("fallback".to_owned())
+    expect_err(
+        AttributeGen::try_new(&attr),
+        &format!("{}.range", annotation::NAMESPACE),
+        "continuous form is not allowed for string",
     );
 }
 
 /// Scenario: A registry containing invalid attribute and group annotations is
 /// validated.
-/// Guarantees: `validate_registry` reports every invalid annotation with its
-/// group, attribute, and key path, so startup fails with a complete list.
+/// Guarantees: `SemconvModel::compile` reports every invalid annotation with
+/// its group, attribute, and key path, so startup fails with a complete list.
 #[test]
 fn validate_registry_reports_every_error() {
     let mut bad = registry().clone();
@@ -1937,7 +1942,7 @@ fn validate_registry_reports_every_error() {
         Some("{ range: { min: 0, max: 1 } }"),
     ));
 
-    let errors = annotation::validate_registry(&bad).expect_err("invalid annotations");
+    let errors = SemconvModel::compile(&bad).expect_err("invalid annotations");
     assert_eq!(errors.len(), 2, "{}", annotation::format_errors(&errors));
     assert!(errors.iter().any(|e| {
         e.group == span_id
@@ -2095,7 +2100,7 @@ fn generated_spans_and_logs_respect_annotations() {
 /// the receiver starts without configuration errors.
 #[test]
 fn vendored_registry_annotations_all_validate() {
-    if let Err(errors) = annotation::validate_registry(registry()) {
+    if let Err(errors) = SemconvModel::compile(registry()) {
         panic!("{}", annotation::format_errors(&errors));
     }
     assert!(!groups_of(GroupType::Metric).is_empty());
@@ -2144,28 +2149,32 @@ fn vendored_registry_annotation_coverage() {
     );
 }
 
-/// Scenario: A config is resolved through `get_registry` for both data
+/// Scenario: A config is compiled through `get_semconv_model` for both data
 /// sources.
-/// Guarantees: The semantic conventions source returns the validated
-/// registry and the synthetic source returns None.
+/// Guarantees: The semantic conventions source returns the validated model
+/// compiled from the vendored registry, and the synthetic source returns None.
 #[test]
 fn config_registry_paths() {
     let config = Config::new(
         TrafficConfig::new(None, None, 10, 1, 1, 1),
         default_registry_path(),
     );
-    assert!(config.get_registry().expect("valid").is_some());
+    let compiled = config
+        .get_semconv_model()
+        .expect("valid")
+        .expect("semantic conventions data source");
+    assert_eq!(compiled.spans.len(), model().spans.len());
     let synthetic = config.with_data_source(super::config::DataSource::Synthetic);
-    assert!(synthetic.get_registry().expect("valid").is_none());
+    assert!(synthetic.get_semconv_model().expect("valid").is_none());
 }
 
 // ===========================================================================
 // Compiled model and samplers
 // ===========================================================================
 
-/// Scenario: A precompiled `ValueSampler` and the per-call `sample_value`
-/// helper are driven by identically seeded RNGs for discrete, weighted, and
-/// every continuous distribution (int and double output).
+/// Scenario: A precompiled `ValueSampler` and a `ValueSampler` rebuilt for
+/// every draw are driven by identically seeded RNGs for discrete, weighted,
+/// and every continuous distribution (int and double output).
 /// Guarantees: Compiling a sampler once and reusing it draws exactly the same
 /// value sequence as rebuilding it for every draw, so the optimization does
 /// not change generated values.
@@ -2217,7 +2226,7 @@ fn compiled_value_sampler_matches_per_call_sampling() {
         for _ in 0..500 {
             assert_eq!(
                 compiled.sample_value(&mut a),
-                sample_value(&spec, integer, &mut b),
+                ValueSampler::new(&spec, integer).sample_value(&mut b),
                 "{spec:?} integer={integer}"
             );
         }
@@ -2260,10 +2269,11 @@ fn compiled_model_mirrors_registry_groups() {
     }
 }
 
-/// Scenario: A corrupted registry is compiled directly.
-/// Guarantees: `SemconvModel::compile` reports the same errors as
-/// `validate_registry` (group error first, then attribute errors), so
-/// compiling once at startup preserves the full error report.
+/// Scenario: A registry with an invalid event-group annotation and an invalid
+/// attribute annotation on the same group is compiled.
+/// Guarantees: `SemconvModel::compile` reports both errors, the group error
+/// first (without an attribute) and then the attribute error, so the startup
+/// error report is complete and stably ordered.
 #[test]
 fn compile_reports_same_errors_as_validation() {
     let mut bad = registry().clone();
@@ -2286,8 +2296,6 @@ fn compile_reports_same_errors_as_validation() {
     let event_id = event.id.clone();
 
     let compiled = SemconvModel::compile(&bad).expect_err("invalid annotations");
-    let validated = annotation::validate_registry(&bad).expect_err("invalid annotations");
-    assert_eq!(compiled, validated);
     assert_eq!(compiled.len(), 2);
     assert_eq!(compiled[0].group, event_id);
     assert!(compiled[0].attribute.is_none());
@@ -2303,7 +2311,7 @@ fn compile_reports_same_errors_as_validation() {
 fn compiled_fallbacks_cover_expected_values() {
     let mut r = rng();
     let collect = |attr: &Attribute, r: &mut StdRng| -> HashSet<String> {
-        let g = AttributeGen::new_or_fallback(attr);
+        let g = AttributeGen::try_new(attr).expect("unannotated attribute compiles");
         (0..500)
             .map(|_| format!("{:?}", kv_scalar(&g.sample(r))))
             .collect()

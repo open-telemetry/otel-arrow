@@ -177,13 +177,6 @@ impl AttributeGen {
         }
     }
 
-    /// Like [`AttributeGen::try_new`], but falls back to the non-annotated
-    /// behavior when the annotation is invalid.
-    #[must_use]
-    pub fn new_or_fallback(attribute: &Attribute) -> Self {
-        Self::try_new(attribute).unwrap_or_else(|_| Self::fallback(attribute))
-    }
-
     /// Compile an attribute from an already parsed annotation spec.
     #[must_use]
     pub fn from_spec(attribute: &Attribute, spec: &AttributeSpec) -> Self {
@@ -221,15 +214,6 @@ impl AttributeGen {
         };
         KeyValue::new(name, value)
     }
-}
-
-/// For the given attribute, return a name/value pair.
-///
-/// Compiles the attribute for a single draw; signal generation compiles each
-/// attribute once ([`AttributeGen`]) and reuses it. If the annotation fails to
-/// parse the attribute falls back to the non-annotated behavior.
-pub fn get_attribute_name_value<R: Rng + ?Sized>(attribute: &Attribute, rng: &mut R) -> KeyValue {
-    AttributeGen::new_or_fallback(attribute).sample(rng)
 }
 
 // ---------------------------------------------------------------------------
