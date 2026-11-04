@@ -37,6 +37,14 @@
       "matchStrings": ["WEAVER_VERSION:\\s*(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "open-telemetry/weaver",
       "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the pinned Renovate config validator",
+      "managerFilePatterns": ["/^\\.github/workflows/repo-lint\\.yaml$/"],
+      "matchStrings": ["--package renovate@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
     }
   ],
   // Weekly updates arrive Friday (UTC) ahead of Monday release preparation.
@@ -168,6 +176,23 @@
       "schedule": [
         "before 8am on the first day of the month"
       ]
+    },
+    {
+      // renovate 44 requires Node 24; do not upgrade this job independently.
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/repo-lint.yaml"],
+      "matchDepNames": ["node"],
+      "allowedVersions": "24.x"
+    },
+    {
+      // release Rust versions follow deliberate MSRV decisions.
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [
+        ".github/workflows/prepare-release.yml",
+        ".github/workflows/push-release.yml"
+      ],
+      "matchDepNames": ["rust"],
+      "enabled": false
     },
     {
       // update docker digest hashes only once a month
