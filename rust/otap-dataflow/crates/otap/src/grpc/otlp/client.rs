@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementations of OTLP grpc service clients that can accept serialized bytes as the
+//! Implementations of OTLP gRPC service clients that can accept serialized bytes as the
 //! request payload.
 //!
 //! The motivation behind this client implementation is that our telemetry pipelines will be

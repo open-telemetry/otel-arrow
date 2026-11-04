@@ -15,16 +15,16 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 use otel_arrow_dfe_otap::compression::CompressionMethod;
-use otel_arrow_dfe_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
-use otel_arrow_dfe_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
-use otel_arrow_dfe_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
-use otel_arrow_dfe_otap::otap_grpc::{
+use otel_arrow_dfe_otap::grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
+use otel_arrow_dfe_otap::grpc::otap::ack::{RouteResponse, SharedState};
+use otel_arrow_dfe_otap::grpc::otap::server::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
-    OtapStreamTaskManager, Settings, common,
+    OtapStreamTaskManager, Settings,
 };
+use otel_arrow_dfe_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
-use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, otap_grpc};
+use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, grpc};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -80,7 +80,7 @@ const MIN_CONCURRENT_STREAMS: u32 = 3;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(flatten)]
-    grpc: otap_grpc::GrpcServerSettings,
+    grpc: grpc::settings::GrpcServerSettings,
 
     /// Deprecated: use `request_compression` and `response_compression` instead.
     ///
@@ -280,7 +280,7 @@ impl OTAPReceiver {
     /// Mirrors the OTLP receiver: a default (0) adopts the channel capacity, and any larger value
     /// is clamped to it so backpressure flows upstream automatically.
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
-        common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
+        grpc::settings::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
     }
 
     fn route_ack_response(
@@ -639,7 +639,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         }
 
         // Also applies the request timeout, if configured.
-        let mut server_builder = common::apply_server_tuning(Server::builder(), &self.config.grpc);
+        let mut server_builder =
+            grpc::server::apply_server_tuning(Server::builder(), &self.config.grpc);
 
         // Apply the HTTP/2 `max_concurrent_streams` limit with OTAP-specific policy.
         //
