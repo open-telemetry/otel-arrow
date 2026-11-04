@@ -289,6 +289,31 @@ storage can override `prepare_encode`. A synchronous consumer can borrow the
 prepared bytes, while an asynchronous sender calls `EncodeOutput::into_bytes`
 before `.await` to detach ownership from codec state.
 
+### Synthetic generation for trafficgen
+
+A codec can attach an optional `CodecGeneratorRegistration` using
+`CodecRegistration::with_generator`.
+`ResolvedCodec::generation_profiles` advertises named profiles and their
+supported signals. `ResolvedCodec::create_generator` validates the request and
+creates independent pipeline-local state without requiring an encoder.
+
+Implement `PdataGenerator` alongside the codec, reusing its builders rather
+than reproducing framing in trafficgen. The factory must validate settings and
+allocation bounds before generating anything. Honor the supplied seed and
+per-call timestamp; do not read the wall clock or use uncontrolled randomness.
+Each call must return exactly the requested primary-signal count in an
+independently decodable encoded payload. State and output must remain bounded.
+The shared wrapper rejects mismatched encodings, signals, item counts, and
+excessive output bytes; these checks do not replace codec-side allocation limits.
+`GenerationConfig` carries the profile, signal, seed, and allocation bounds.
+The caller supplies timestamps to `CodecGenerator::generate` per batch;
+trafficgen owns current-time selection and optional fixed overrides.
+
+Trafficgen owns pacing and fresh/pre-generated strategies. Codecs without a
+generator remain valid and fail explicit generation requests at configuration
+validation. Generation requires no separate feature gate; the engine's existing
+`dev-tools` feature controls inclusion of the trafficgen receiver.
+
 ## Execution and asynchronous ownership
 
 Ordinary codec decoder and encoder methods execute synchronously while the

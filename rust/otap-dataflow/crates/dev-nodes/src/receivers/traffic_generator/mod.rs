@@ -144,7 +144,7 @@ fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config:
         }
     })?;
 
-    config.get_traffic_config().validate()?;
+    config.validate()?;
     Ok(config)
 }
 
@@ -186,7 +186,14 @@ impl TrafficGeneratorReceiver {
             producer.record_production(run_produced);
             run_produced = 0;
 
-            let Ok(Some(mut current_run)) = producer.next_run() else {
+            let Some(mut current_run) =
+                producer.next_run().map_err(|error| Error::ReceiverError {
+                    receiver: handler.receiver_id(),
+                    kind: ReceiverErrorKind::Other,
+                    error: format!("Failed to generate data: {error}"),
+                    source_detail: String::new(),
+                })?
+            else {
                 return wait_for_terminal(
                     ctrl_msg_recv,
                     handler,
@@ -359,7 +366,14 @@ impl TrafficGeneratorReceiver {
             producer.record_production(run_produced);
             run_produced = 0;
 
-            let Ok(Some(mut current_run)) = producer.next_run() else {
+            let Some(mut current_run) =
+                producer.next_run().map_err(|error| Error::ReceiverError {
+                    receiver: handler.receiver_id(),
+                    kind: ReceiverErrorKind::Other,
+                    error: format!("Failed to generate data: {error}"),
+                    source_detail: String::new(),
+                })?
+            else {
                 return wait_for_terminal(
                     ctrl_msg_recv,
                     handler,
