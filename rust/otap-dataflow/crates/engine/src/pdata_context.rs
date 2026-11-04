@@ -256,6 +256,32 @@ pub enum ContextConsumerSelector {
     },
 }
 
+/// One step of a processor's `Edits` or `Merges` declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ContextAction {
+    /// Appends the values the processor supplies for this transport header
+    /// when it forms each output.
+    Add {
+        /// Produced transport-header entry.
+        entry: ContextEntryName,
+    },
+    /// Removes matching transport headers or one whole composite.
+    Delete {
+        /// Deleted entry.
+        target: ContextEntryTarget,
+    },
+}
+
+impl ContextAction {
+    /// Returns the composites named by delete actions.
+    fn composite_names(actions: &[Self]) -> impl Iterator<Item = &ContextEntryName> {
+        actions.iter().filter_map(|action| match action {
+            Self::Add { .. } => None,
+            Self::Delete { target } => target.composite_name(),
+        })
+    }
+}
+
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
@@ -290,24 +316,23 @@ pub enum ContextDeclaration {
     },
     /// Declares that a processor forms each output from one input.
     ///
-    /// The output is the input without `deletes`, plus produced `adds`. A
-    /// processor emitting several outputs per input forms one and clones it.
+    /// The output is the input with `actions` applied in order. A processor
+    /// emitting several outputs per input forms one and clones it.
     Edits {
-        /// Transport-header entries the processor produces.
-        adds: Box<[ContextEntryName]>,
-        /// Transport headers and whole composites removed from the input.
-        deletes: Box<[ContextEntryTarget]>,
+        /// Actions applied to the input.
+        actions: Box<[ContextAction]>,
     },
     /// Declares that a processor merges several inputs into one output.
     ///
     /// The output keeps each `keeps` entry only when every input carries it
-    /// with equal values, and the peer address only when every input agrees,
-    /// plus produced `adds`. Everything else is dropped.
+    /// with equal values, and the peer address only when every input agrees.
+    /// Everything else is dropped; `actions` are then applied in order to the
+    /// merged output.
     Merges {
-        /// Transport-header entries the processor produces.
-        adds: Box<[ContextEntryName]>,
         /// Transport headers and whole composites kept when all inputs agree.
         keeps: Box<[ContextEntryTarget]>,
+        /// Actions applied to the merged output.
+        actions: Box<[ContextAction]>,
     },
 }
 
@@ -507,8 +532,8 @@ impl ContextDeclarationProvider {
 /// Declares only a merge, independent of configuration.
 fn merge_context_declarations(_: &serde_json::Value) -> Result<NodeContextDeclarations, Error> {
     Ok([ContextDeclaration::Merges {
-        adds: Box::new([]),
         keeps: Box::new([]),
+        actions: Box::new([]),
     }]
     .into_iter()
     .collect())
@@ -588,13 +613,14 @@ impl PreparedNodeContextDeclarations {
                     ContextDeclaration::HeaderPropagation { policy } => {
                         policy.visit_composite_names(|name| names.push(name.clone()));
                     }
-                    ContextDeclaration::Edits {
-                        deletes: targets, ..
+                    ContextDeclaration::Edits { actions } => {
+                        names.extend(ContextAction::composite_names(actions).cloned());
                     }
-                    | ContextDeclaration::Merges { keeps: targets, .. } => names.extend(
-                        targets
+                    ContextDeclaration::Merges { keeps, actions } => names.extend(
+                        keeps
                             .iter()
                             .filter_map(ContextEntryTarget::composite_name)
+                            .chain(ContextAction::composite_names(actions))
                             .cloned(),
                     ),
                     ContextDeclaration::Produces { .. }
@@ -820,13 +846,17 @@ impl CompiledNodeState {
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
                     authorized_identity_capture = Some(policy);
                 }
-                ContextDeclaration::Edits { adds, deletes } => {
-                    edit = Some(EditBinding::compile(&adds, &deletes, materialization_plan)?);
-                    component_declarations.push(ContextDeclaration::Edits { adds, deletes });
+                ContextDeclaration::Edits { actions } => {
+                    edit = Some(EditBinding::compile(&actions, materialization_plan)?);
+                    component_declarations.push(ContextDeclaration::Edits { actions });
                 }
-                ContextDeclaration::Merges { adds, keeps } => {
-                    merge = Some(MergeBinding::compile(&adds, &keeps, materialization_plan)?);
-                    component_declarations.push(ContextDeclaration::Merges { adds, keeps });
+                ContextDeclaration::Merges { keeps, actions } => {
+                    merge = Some(MergeBinding::compile(
+                        &keeps,
+                        &actions,
+                        materialization_plan,
+                    )?);
+                    component_declarations.push(ContextDeclaration::Merges { keeps, actions });
                 }
             }
         }
@@ -1241,7 +1271,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         if kind == NodeKind::Processor && produces {
             return Err(config_error(format!(
                 "node factory `{urn}` declared produced entries; a processor lists the \
-                 entries it produces in its Edits or Merges `adds`"
+                 entries it produces as Edits or Merges `Add` actions"
             )));
         }
         if formations > 1 {
@@ -1347,13 +1377,14 @@ mod tests {
         /// Declares an edit adding the configured entry and an optional merge.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Edits {
-                adds: Box::new([self.entry.clone()]),
-                deletes: Box::new([]),
+                actions: Box::new([ContextAction::Add {
+                    entry: self.entry.clone(),
+                }]),
             }]
             .into_iter()
             .chain(self.merge.then(|| ContextDeclaration::Merges {
-                adds: Box::new([]),
                 keeps: Box::new([]),
+                actions: Box::new([]),
             }))
             .collect()
         }
@@ -1916,7 +1947,7 @@ groups:
         );
     }
 
-    /// Scenario: a processor factory declares Produces instead of Edits or Merges `adds`.
+    /// Scenario: a processor factory declares Produces instead of an Edits or Merges `Add` action.
     /// Guarantees: compilation fails naming the factory URN, so processors have one way to declare produced entries.
     #[test]
     fn processor_produces_is_rejected() {
@@ -1931,7 +1962,10 @@ groups:
         };
         let message = error.to_string();
         assert!(message.contains("urn:test:processor:produces"), "{message}");
-        assert!(message.contains("Edits or Merges `adds`"), "{message}");
+        assert!(
+            message.contains("Edits or Merges `Add` actions"),
+            "{message}"
+        );
     }
 
     /// Scenario: a receiver factory declares a produced entry in the authorized-identity domain.
@@ -1994,8 +2028,8 @@ groups:
         assert_eq!(
             nodes[&ConfigNodeId::from("merge")].component_declarations,
             [ContextDeclaration::Merges {
-                adds: Box::new([]),
                 keeps: Box::new([]),
+                actions: Box::new([]),
             }]
             .into_iter()
             .collect()

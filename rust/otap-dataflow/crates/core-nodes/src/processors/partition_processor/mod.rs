@@ -26,7 +26,7 @@ use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
+    ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
@@ -521,8 +521,9 @@ fn partition_value_to_transport_header(
 impl ConfigNodeContextDeclaration for Config {
     fn context_declarations(&self) -> NodeContextDeclarations {
         std::iter::once(ContextDeclaration::Edits {
-            adds: Box::new([self.partition_header_name.clone()]),
-            deletes: Box::new([]),
+            actions: Box::new([ContextAction::Add {
+                entry: self.partition_header_name.clone(),
+            }]),
         })
         .collect()
     }
@@ -2087,8 +2088,9 @@ mod test {
         assert_eq!(
             decls.iter().next().expect("one declaration"),
             &ContextDeclaration::Edits {
-                adds: Box::new([context_name("x-partition")]),
-                deletes: Box::new([]),
+                actions: Box::new([ContextAction::Add {
+                    entry: context_name("x-partition"),
+                }]),
             }
         );
     }

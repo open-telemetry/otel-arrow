@@ -4,10 +4,11 @@
 //! Bindings that form a processor's output metadata from its input metadata.
 //!
 //! An edit forms one output from one input. A merge forms one output from
-//! several inputs. Both may add declared entries.
+//! several inputs. Both apply declared actions in order: an edit to its
+//! input, a merge to the merged output.
 
 use super::{
-    ContextDomain, ContextEntryTarget, ContextError, ContextLayoutIdentity,
+    ContextAction, ContextDomain, ContextEntryTarget, ContextError, ContextLayoutIdentity,
     ContextMaterializationPlan, ContextNameMatching, MaterializedContextEntry, Metadata,
     PeerAddrMerger,
 };
@@ -64,14 +65,19 @@ struct ProducedEntries {
 }
 
 impl ProducedEntries {
-    fn new(names: &[ContextEntryName]) -> Self {
-        let mut names = names.to_vec();
+    /// Fails when an entry is added more than once.
+    fn new(names: Vec<ContextEntryName>) -> Result<Self, Error> {
+        let mut names = names;
         names.sort();
-        names.dedup();
-        Self {
+        if let Some(pair) = names.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(Error::InvalidUserConfig {
+                error: format!("context entry `{}` is added more than once", pair[0]),
+            });
+        }
+        Ok(Self {
             identity: ContextLayoutIdentity::default(),
             names: names.into_boxed_slice(),
-        }
+        })
     }
 
     fn handle(
@@ -93,23 +99,13 @@ impl ProducedEntries {
         })
     }
 
-    /// Appends each produced value as a transport header, in slice order.
-    fn append(
-        &self,
-        headers: &mut TransportHeaders,
-        produced: &[ProducedValue<'_>],
-    ) -> Result<(), ContextError> {
-        for value in produced {
-            let name = value
-                .entry
-                .binding
-                .matches(&self.identity)
-                .then(|| self.names.get(value.entry.index))
-                .flatten()
-                .ok_or(ContextError::ContextMismatch)?;
-            headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
+    /// Fails unless this binding issued `entry`.
+    fn check(&self, entry: &ProducedEntry) -> Result<(), ContextError> {
+        if entry.binding.matches(&self.identity) && entry.index < self.names.len() {
+            Ok(())
+        } else {
+            Err(ContextError::ContextMismatch)
         }
-        Ok(())
     }
 }
 
@@ -177,9 +173,111 @@ impl ContextTarget {
             Self::Composite(_) => false,
         }
     }
+}
 
-    fn is_composite(&self, entry: &ContextEntryName) -> bool {
-        matches!(self, Self::Composite(name) if name == entry)
+/// One compiled action, in declaration order.
+#[derive(Debug, Clone)]
+enum Step {
+    /// Appends the produced values whose handle has this index.
+    Add {
+        index: usize,
+        name: ContextEntryName,
+    },
+    Delete(ContextTarget),
+}
+
+/// Compiled `Edits` or `Merges` actions.
+#[derive(Debug, Clone)]
+struct ContextEdit {
+    produced: ProducedEntries,
+    steps: Box<[Step]>,
+}
+
+impl ContextEdit {
+    fn compile(
+        actions: &[ContextAction],
+        plan: &ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
+        let produced = ProducedEntries::new(
+            actions
+                .iter()
+                .filter_map(|action| match action {
+                    ContextAction::Add { entry } => Some(entry.clone()),
+                    ContextAction::Delete { .. } => None,
+                })
+                .collect(),
+        )?;
+        let steps = actions
+            .iter()
+            .map(|action| match action {
+                ContextAction::Add { entry } => Ok(Step::Add {
+                    index: produced
+                        .handle(ContextDomain::TransportHeader, entry)?
+                        .index,
+                    name: entry.clone(),
+                }),
+                ContextAction::Delete { target } => {
+                    ContextTarget::compile(target, plan).map(Step::Delete)
+                }
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(Self { produced, steps })
+    }
+
+    /// Applies each action to `output` in declaration order.
+    ///
+    /// Added values are appended after the existing headers. Neither
+    /// deletions nor added values re-evaluate composites. Fails with
+    /// [`ContextError::ContextMismatch`] when a value carries a handle issued
+    /// by another binding.
+    fn apply(
+        &self,
+        output: &mut Metadata,
+        produced: &[ProducedValue<'_>],
+    ) -> Result<(), ContextError> {
+        for value in produced {
+            self.produced.check(value.entry)?;
+        }
+        let mut headers: Option<TransportHeaders> = None;
+        for step in &self.steps {
+            match step {
+                Step::Add { index, name } => {
+                    let mut values = produced
+                        .iter()
+                        .filter(|value| value.entry.index == *index)
+                        .peekable();
+                    if values.peek().is_none() {
+                        continue;
+                    }
+                    let headers = headers
+                        .get_or_insert_with(|| output.take_transport_headers().unwrap_or_default());
+                    for value in values {
+                        headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
+                    }
+                }
+                Step::Delete(target @ ContextTarget::TransportHeader { .. }) => {
+                    let current = headers
+                        .take()
+                        .or_else(|| output.take_transport_headers())
+                        .unwrap_or_default();
+                    let mut retained = TransportHeaders::with_capacity(current.len());
+                    for header in current
+                        .iter()
+                        .filter(|header| !target.matches_header(header.name.as_str()))
+                    {
+                        retained.push(header.into());
+                    }
+                    headers = Some(retained);
+                }
+                Step::Delete(ContextTarget::Composite(name)) => {
+                    output.retain_materialized_entries(|entry| entry != name);
+                }
+            }
+        }
+        if let Some(headers) = headers {
+            output.set_transport_headers(headers);
+        }
+        Ok(())
     }
 }
 
@@ -193,29 +291,28 @@ impl ContextTarget {
 /// same declaration.
 #[derive(Debug, Clone)]
 pub struct EditBinding {
-    produced: ProducedEntries,
-    /// Targets removed from the input, in canonical order.
-    deletes: Box<[ContextTarget]>,
+    edit: ContextEdit,
 }
 
 impl PartialEq for EditBinding {
     fn eq(&self, other: &Self) -> bool {
-        self.produced.identity.matches(&other.produced.identity)
+        self.edit
+            .produced
+            .identity
+            .matches(&other.edit.produced.identity)
     }
 }
 
 impl Eq for EditBinding {}
 
 impl EditBinding {
-    /// Compiles an edit for declared additions and deletions.
+    /// Compiles an edit for declared actions.
     pub(super) fn compile(
-        adds: &[ContextEntryName],
-        deletes: &[ContextEntryTarget],
+        actions: &[ContextAction],
         plan: &ContextMaterializationPlan,
     ) -> Result<Self, Error> {
         Ok(Self {
-            produced: ProducedEntries::new(adds),
-            deletes: ContextTarget::compile_all(deletes, plan)?,
+            edit: ContextEdit::compile(actions, plan)?,
         })
     }
 
@@ -230,17 +327,15 @@ impl EditBinding {
         domain: ContextDomain,
         entry: &ContextEntryName,
     ) -> Result<ProducedEntry, Error> {
-        self.produced.handle(domain, entry)
+        self.edit.produced.handle(domain, entry)
     }
 
-    /// Clones the input, removes deleted entries, and appends each produced
-    /// value as a transport header.
+    /// Clones the input and applies the declared actions in order.
     ///
-    /// Produced values are appended in slice order after the remaining
-    /// headers. Remaining composites, authorized identity, and peer address
-    /// are retained unchanged; neither deletions nor produced values
-    /// re-evaluate composites. Without deletions or produced values the
-    /// output equals the input.
+    /// Each `Add` appends the supplied values for its entry, in slice order,
+    /// after the existing headers. Authorized identity and peer address are
+    /// retained. Without deletions or produced values the output equals the
+    /// input.
     ///
     /// Fails with [`ContextError::ContextMismatch`] when a value carries a
     /// handle issued by another binding.
@@ -250,36 +345,7 @@ impl EditBinding {
         produced: &[ProducedValue<'_>],
     ) -> Result<Metadata, ContextError> {
         let mut output = input.clone();
-        let deletes_headers = self
-            .deletes
-            .iter()
-            .any(|target| matches!(target, ContextTarget::TransportHeader { .. }));
-        if deletes_headers || !produced.is_empty() {
-            let mut headers = output.take_transport_headers().unwrap_or_default();
-            if deletes_headers {
-                let mut retained = TransportHeaders::with_capacity(headers.len());
-                for header in headers.iter().filter(|header| {
-                    !self
-                        .deletes
-                        .iter()
-                        .any(|target| target.matches_header(header.name.as_str()))
-                }) {
-                    retained.push(header.into());
-                }
-                headers = retained;
-            }
-            self.produced.append(&mut headers, produced)?;
-            output.set_transport_headers(headers);
-        }
-        if self
-            .deletes
-            .iter()
-            .any(|target| matches!(target, ContextTarget::Composite(_)))
-        {
-            output.retain_materialized_entries(|name| {
-                !self.deletes.iter().any(|target| target.is_composite(name))
-            });
-        }
+        self.edit.apply(&mut output, produced)?;
         Ok(output)
     }
 }
@@ -292,8 +358,8 @@ impl EditBinding {
 ///
 /// The output keeps a listed entry only when every input carries it with
 /// equal values, and the peer address only when every input observed the
-/// same peer. Everything else is dropped; produced values are then appended.
-/// Equality is identity, as for [`EditBinding`].
+/// same peer. Everything else is dropped; the declared actions are then
+/// applied to the merged output. Equality is identity, as for [`EditBinding`].
 #[derive(Debug, Clone)]
 pub struct MergeBinding {
     plan: Arc<MergePlan>,
@@ -301,33 +367,35 @@ pub struct MergeBinding {
 
 #[derive(Debug)]
 struct MergePlan {
-    produced: ProducedEntries,
     /// Targets kept when all inputs agree, in canonical order.
     keeps: Box<[ContextTarget]>,
+    /// Actions applied to the merged output.
+    edit: ContextEdit,
 }
 
 impl PartialEq for MergeBinding {
     fn eq(&self, other: &Self) -> bool {
         self.plan
+            .edit
             .produced
             .identity
-            .matches(&other.plan.produced.identity)
+            .matches(&other.plan.edit.produced.identity)
     }
 }
 
 impl Eq for MergeBinding {}
 
 impl MergeBinding {
-    /// Compiles a merge for declared additions and kept entries.
+    /// Compiles a merge for declared kept entries and actions.
     pub(super) fn compile(
-        adds: &[ContextEntryName],
         keeps: &[ContextEntryTarget],
+        actions: &[ContextAction],
         plan: &ContextMaterializationPlan,
     ) -> Result<Self, Error> {
         Ok(Self {
             plan: Arc::new(MergePlan {
-                produced: ProducedEntries::new(adds),
                 keeps: ContextTarget::compile_all(keeps, plan)?,
+                edit: ContextEdit::compile(actions, plan)?,
             }),
         })
     }
@@ -339,7 +407,7 @@ impl MergeBinding {
         domain: ContextDomain,
         entry: &ContextEntryName,
     ) -> Result<ProducedEntry, Error> {
-        self.plan.produced.handle(domain, entry)
+        self.plan.edit.produced.handle(domain, entry)
     }
 
     /// Returns an empty accumulator for inputs observed one at a time.
@@ -423,8 +491,8 @@ impl Kept {
 /// Owned accumulator for inputs merged into one output.
 ///
 /// Retains each kept entry and the peer address only when every pushed input
-/// agreed on it; see [`MergeBinding`]. Finishing without inputs yields only
-/// produced values.
+/// agreed on it; see [`MergeBinding`]. Finishing without inputs applies the
+/// actions to empty metadata.
 #[derive(Debug, Clone)]
 pub struct MetadataMerger {
     plan: Arc<MergePlan>,
@@ -442,7 +510,7 @@ impl MetadataMerger {
         }
     }
 
-    /// Returns the merged metadata with produced values appended.
+    /// Returns the merged metadata with the declared actions applied.
     ///
     /// Fails with [`ContextError::ContextMismatch`] when a value carries a
     /// handle issued by another binding. The merged metadata must also meet
@@ -458,13 +526,13 @@ impl MetadataMerger {
                 Kept::Pending | Kept::Erased => {}
             }
         }
-        self.plan.produced.append(&mut headers, produced)?;
         let mut output = Metadata::default();
         output.set_transport_headers(headers);
         output.set_materialized_entries(entries);
         if let Some(peer) = self.peer.finish() {
             output.set_peer_addr(peer);
         }
+        self.plan.edit.apply(&mut output, produced)?;
         Ok(output)
     }
 }
@@ -540,10 +608,32 @@ mod tests {
         metadata
     }
 
-    /// Compiles an edit that only adds `adds`.
+    /// Compiles an edit that only adds `adds`, in order.
     fn edit(adds: &[ContextEntryName]) -> EditBinding {
-        EditBinding::compile(adds, &[], &ContextMaterializationPlan::default())
+        let actions = adds.iter().cloned().map(add).collect::<Vec<_>>();
+        EditBinding::compile(&actions, &ContextMaterializationPlan::default())
             .expect("edit compiles")
+    }
+
+    fn add(entry: ContextEntryName) -> ContextAction {
+        ContextAction::Add { entry }
+    }
+
+    fn delete(target: ContextEntryTarget) -> ContextAction {
+        ContextAction::Delete { target }
+    }
+
+    /// Returns the header names in order.
+    fn header_names(metadata: &Metadata) -> Vec<String> {
+        metadata
+            .transport_headers()
+            .map(|headers| {
+                headers
+                    .iter()
+                    .map(|header| header.name.as_str().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Transport-header target matched exactly.
@@ -580,7 +670,7 @@ mod tests {
     fn edit_matches_partition_header_update() {
         let partition = name("partition");
         let shard = name("shard");
-        let binding = edit(&[shard.clone(), partition.clone()]);
+        let binding = edit(&[partition.clone(), shard.clone()]);
         let partition_entry = binding
             .produced(ContextDomain::TransportHeader, &partition)
             .expect("partition handle");
@@ -720,7 +810,10 @@ mod tests {
         ] {
             assert_ne!(other, binding);
             let mismatched = other
-                .produced(ContextDomain::TransportHeader, &other.produced.names[0])
+                .produced(
+                    ContextDomain::TransportHeader,
+                    &other.edit.produced.names[0],
+                )
                 .expect("other handle");
             assert_eq!(
                 binding.form(&Metadata::default(), &[value(&mismatched)]),
@@ -796,8 +889,11 @@ mod tests {
     fn edit_deletes_headers_and_composites() {
         let partition = name("partition");
         let binding = EditBinding::compile(
-            std::slice::from_ref(&partition),
-            &[header("tenant"), composite("request")],
+            &[
+                delete(header("tenant")),
+                delete(composite("request")),
+                add(partition.clone()),
+            ],
             &request_plan(),
         )
         .expect("edit compiles");
@@ -840,8 +936,8 @@ mod tests {
     fn merge_keeps_only_agreeing_entries() {
         let partition = name("partition");
         let binding = MergeBinding::compile(
-            std::slice::from_ref(&partition),
             &[header("tenant"), composite("request")],
+            &[add(partition.clone())],
             &request_plan(),
         )
         .expect("merge compiles");
@@ -860,15 +956,7 @@ mod tests {
             let merged = binding
                 .merge(inputs.iter().copied(), &added)
                 .expect("merge forms");
-            let headers = merged
-                .transport_headers()
-                .map(|headers| {
-                    headers
-                        .iter()
-                        .map(|header| header.name.as_str().to_owned())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let headers = header_names(&merged);
             let composites = merged
                 .materialized_context()
                 .map_or(0, |context| context.entries().len());
@@ -917,12 +1005,79 @@ mod tests {
             (composite("missing"), "missing"),
         ] {
             for error in [
-                EditBinding::compile(&[], std::slice::from_ref(&target), &plan).err(),
-                MergeBinding::compile(&[], std::slice::from_ref(&target), &plan).err(),
+                EditBinding::compile(&[delete(target.clone())], &plan).err(),
+                MergeBinding::compile(std::slice::from_ref(&target), &[], &plan).err(),
+                MergeBinding::compile(&[], &[delete(target.clone())], &plan).err(),
             ] {
                 let message = error.expect("target is rejected").to_string();
                 assert!(message.contains(expected), "{message}");
             }
+        }
+    }
+
+    /// Scenario: edits order Delete and Add of `tenant` both ways, and a merge deletes a kept entry.
+    /// Guarantees: actions apply in declaration order, and merge actions apply to the merged output.
+    #[test]
+    fn actions_apply_in_declaration_order() {
+        let tenant = name("tenant");
+        let value = |entry| ProducedValue {
+            entry,
+            kind: ValueKind::Text,
+            bytes: b"new",
+        };
+        let input = tenant_metadata(b"old", None);
+        let plan = request_plan();
+        let tenant_values = |metadata: &Metadata| {
+            metadata
+                .transport_headers()
+                .into_iter()
+                .flat_map(|headers| headers.find_by_name("tenant"))
+                .map(|header| header.value.bytes.to_vec())
+                .collect::<Vec<_>>()
+        };
+
+        let replace = EditBinding::compile(&[delete(header("tenant")), add(tenant.clone())], &plan)
+            .expect("edit compiles");
+        let entry = replace
+            .produced(ContextDomain::TransportHeader, &tenant)
+            .expect("tenant handle");
+        let output = replace.form(&input, &[value(&entry)]).expect("edit forms");
+        assert_eq!(tenant_values(&output), [b"new".to_vec()]);
+
+        let remove = EditBinding::compile(&[add(tenant.clone()), delete(header("tenant"))], &plan)
+            .expect("edit compiles");
+        let entry = remove
+            .produced(ContextDomain::TransportHeader, &tenant)
+            .expect("tenant handle");
+        let output = remove.form(&input, &[value(&entry)]).expect("edit forms");
+        assert!(tenant_values(&output).is_empty());
+
+        let merge = MergeBinding::compile(
+            &[header("tenant"), composite("request")],
+            &[delete(composite("request"))],
+            &plan,
+        )
+        .expect("merge compiles");
+        let merged = merge.merge([&input, &input], &[]).expect("merge forms");
+        assert_eq!(tenant_values(&merged), [b"old".to_vec()]);
+        assert!(merged.materialized_context().is_none());
+    }
+
+    /// Scenario: an edit or merge declares the same Add entry twice.
+    /// Guarantees: compilation fails naming the entry instead of silently collapsing the actions.
+    #[test]
+    fn duplicate_adds_are_rejected_at_compilation() {
+        let plan = ContextMaterializationPlan::default();
+        let actions = [add(name("partition")), add(name("partition"))];
+        for error in [
+            EditBinding::compile(&actions, &plan).err(),
+            MergeBinding::compile(&[], &actions, &plan).err(),
+        ] {
+            let message = error.expect("duplicate add is rejected").to_string();
+            assert!(
+                message.contains("`partition` is added more than once"),
+                "{message}"
+            );
         }
     }
 }
