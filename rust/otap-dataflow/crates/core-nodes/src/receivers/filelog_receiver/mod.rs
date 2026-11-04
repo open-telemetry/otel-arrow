@@ -18,3 +18,8 @@ pub mod source;
 /// Bounded Linux scanning and reconciliation without receiver wiring.
 #[cfg(target_os = "linux")]
 pub mod discovery;
+
+// No production admission constructor until Task 12 supplies ReaderSeed.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod scheduler;

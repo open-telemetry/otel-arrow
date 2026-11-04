@@ -200,16 +200,13 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
     cancelled: &mut F,
     mut open: impl FnMut(&File, &CStr, SymlinkPolicy, &mut F) -> Result<PinnedSource, FileAccessError>,
 ) {
-    let reservation = context.budget.try_reserve().or_else(|| {
-        // One scheduler yield, not a spin loop or an unbounded retry queue.
-        std::thread::yield_now();
-        if cancelled() {
-            out.reason = Some(ScanReason::Cancelled);
-            None
-        } else {
-            context.budget.try_reserve()
-        }
-    });
+    if cancelled() {
+        out.reason = Some(ScanReason::Cancelled);
+        return;
+    }
+    // A registered read-worker request owns the next release. Discovery must
+    // defer rather than repeatedly poll and reacquire ahead of that request.
+    let reservation = context.budget.try_reserve();
     let Some(_reservation) = reservation else {
         return;
     };
