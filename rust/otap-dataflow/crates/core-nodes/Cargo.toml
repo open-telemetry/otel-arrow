@@ -261,3 +261,10 @@ path = "benches/filelog_scan/main.rs"
 name = "filelog_identity"
 harness = false
 path = "benches/filelog_identity/main.rs"
+[[test]]
+name = "filelog_decoder_allocations"
+harness = false
+
+[[test]]
+name = "filelog_framer_allocations"
+harness = false
