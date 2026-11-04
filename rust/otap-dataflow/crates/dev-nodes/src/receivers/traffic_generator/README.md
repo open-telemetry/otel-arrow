@@ -97,7 +97,6 @@ config:
   codec:
     encoding: your-encoding
     profile: your-profile
-    seed: 42
     max_batch_bytes: 2097152
   traffic_config:
     signals_per_second: 1000
@@ -111,8 +110,8 @@ from ordinary encoding support. Unknown encodings, unavailable profiles,
 unsupported signals, and codecs without a generator fail configuration
 validation.
 
-The receiver passes `codec.seed` (default `0`) to the codec for reproducible
-contents. By default, each generated batch receives the current time. Fresh
+The receiver seeds each codec generator internally.
+By default, each generated batch receives the current time. Fresh
 mode generates new contents and timestamps; pre-generated mode caches a run of
 batches at startup and replays their bytes, including timestamps, unchanged.
 Set `codec.timestamp_unix_nano` to a nonnegative integer for fixed timestamps
