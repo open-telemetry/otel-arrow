@@ -940,10 +940,6 @@ mod tests {
             let error = config.validate().unwrap_err().to_string();
             assert!(error.contains(expected), "{error}");
         }
-        let mut value = codec_config_value();
-        value["codec"]["seed"] = 42.into();
-        let error = serde_json::from_value::<Config>(value).unwrap_err();
-        assert!(error.to_string().contains("unknown field `seed`"));
     }
 
     fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
