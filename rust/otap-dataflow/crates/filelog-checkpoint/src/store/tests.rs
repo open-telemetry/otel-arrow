@@ -409,6 +409,7 @@ fn failed_writes_resolve_without_duplicate_frames() {
                 .append(vec![registration()], Durability::Sync)
                 .is_err()
         );
+        assert!(store.has_unresolved_append());
         assert!(matches!(store.state(), Err(StoreError::RecoveryRequired)));
         assert!(matches!(
             store.append(vec![registration()], Durability::Sync),
@@ -425,6 +426,7 @@ fn failed_writes_resolve_without_duplicate_frames() {
                 synced: true
             }
         );
+        assert!(!store.has_unresolved_append());
         assert_eq!(store.state().unwrap().records().len(), 1);
         assert_eq!(store.state().unwrap().last_sequence(), 1);
         drop(store);
@@ -476,6 +478,7 @@ fn append_sync_failure_permanently_poisons_store() {
         store.append(vec![registration()], Durability::Sync),
         Err(StoreError::SyncFailed { .. })
     ));
+    assert!(store.has_unresolved_append());
     let path = namespace(dir.path()).join(DB);
     let bytes = fs::read(&path).unwrap();
     assert_sync_poisoned(&mut store, 0);
@@ -1321,6 +1324,7 @@ fn repeated_pending_write_failures_retain_attempt_and_lock() {
         assert_eq!(retained.boundary, prefix.len() as u64);
         assert_eq!(retained.sequence, 2);
         assert_eq!(store.synced_sequence(), 1);
+        assert!(store.has_unresolved_append());
         assert!(matches!(store.state(), Err(StoreError::RecoveryRequired)));
         assert!(matches!(
             store.append(vec![progress(0, 10)], Durability::Sync),
@@ -1590,4 +1594,39 @@ fn namespace_locator_is_narrow_and_revalidated() {
     );
     fs::rename(&path, path.with_extension("moved")).unwrap();
     assert!(store.namespace_locator().is_err());
+}
+
+/// Scenario: Encoding, record-capacity and WAL-capacity checks reject an append before its write attempt.
+/// Guarantees: Each error reports no unresolved append and preserves the previous applied sequence.
+#[test]
+fn prewrite_rejection_has_no_unresolved_append() {
+    let (_dir, root) = root();
+    let mut limits = config();
+    limits.replay.max_tracked_files = 1;
+    let mut store = CheckpointStore::open(&root, ID, limits).unwrap();
+    assert!(matches!(
+        store.append(Vec::new(), Durability::Sync),
+        Err(StoreError::Encode(_))
+    ));
+    assert!(!store.has_unresolved_append());
+    let _ = store
+        .append(vec![registration()], Durability::Sync)
+        .unwrap();
+    let Operation::RegisterFile(mut another) = registration() else {
+        panic!()
+    };
+    another.file_id = FileId::from_bytes([2; 16]);
+    another.locator = Locator::PosixDevIno { dev: 1, ino: 2 };
+    assert!(matches!(
+        store.append(vec![Operation::RegisterFile(another)], Durability::Sync),
+        Err(StoreError::Replay(ReplayError::RecordLimit { .. }))
+    ));
+    assert!(!store.has_unresolved_append());
+    store.config.max_wal_transactions = 1;
+    assert!(matches!(
+        store.append(vec![progress(0, 1)], Durability::Sync),
+        Err(StoreError::CompactionRequired)
+    ));
+    assert!(!store.has_unresolved_append());
+    assert_eq!(store.state().unwrap().last_sequence(), 1);
 }
