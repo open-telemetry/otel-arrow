@@ -31,7 +31,7 @@ pub use bindings::{
     Arrival, ArrivalBinding, ArrivalHeaders, ClaimRef, Claims, NodeBindings, PropagatedValue,
     SinkBinding,
 };
-pub use derived::{MergeBinding, MetadataMerger, ProducedEntry, ProducedValue, ProjectionBinding};
+pub use derived::{EditBinding, MergeBinding, MetadataMerger, ProducedEntry, ProducedValue};
 pub use error::ContextError;
 pub use layout::*;
 pub use materialization::*;
@@ -259,7 +259,9 @@ pub enum ContextConsumerSelector {
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
-    /// Declares a primitive produced by the node without granting write authority.
+    /// Declares a primitive a receiver produces at arrival, without granting
+    /// write authority. Processors list produced entries in `Edits` or
+    /// `Merges` instead.
     Produces {
         /// Source authority domain.
         domain: ContextDomain,
@@ -286,8 +288,27 @@ pub enum ContextDeclaration {
         /// Resolved authorized identity policy.
         policy: AuthorizedIdentityPolicy,
     },
+    /// Declares that a processor forms each output from one input.
+    ///
+    /// The output is the input without `deletes`, plus produced `adds`. A
+    /// processor emitting several outputs per input forms one and clones it.
+    Edits {
+        /// Transport-header entries the processor produces.
+        adds: Box<[ContextEntryName]>,
+        /// Transport headers and whole composites removed from the input.
+        deletes: Box<[ContextEntryTarget]>,
+    },
     /// Declares that a processor merges several inputs into one output.
-    Merges,
+    ///
+    /// The output keeps each `keeps` entry only when every input carries it
+    /// with equal values, and the peer address only when every input agrees,
+    /// plus produced `adds`. Everything else is dropped.
+    Merges {
+        /// Transport-header entries the processor produces.
+        adds: Box<[ContextEntryName]>,
+        /// Transport headers and whole composites kept when all inputs agree.
+        keeps: Box<[ContextEntryTarget]>,
+    },
 }
 
 impl ContextDeclaration {
@@ -295,7 +316,10 @@ impl ContextDeclaration {
     fn is_component_declaration(&self) -> bool {
         matches!(
             self,
-            Self::Produces { .. } | Self::Consumes { .. } | Self::Merges
+            Self::Produces { .. }
+                | Self::Consumes { .. }
+                | Self::Edits { .. }
+                | Self::Merges { .. }
         )
     }
 
@@ -347,7 +371,8 @@ impl ContextDeclaration {
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
             | Self::AuthorizedIdentityCapture { .. }
-            | Self::Merges => {}
+            | Self::Edits { .. }
+            | Self::Merges { .. } => {}
             Self::HeaderPropagation { policy } => {
                 requirements
                     .original_name_retention
@@ -468,9 +493,9 @@ impl ContextDeclarationProvider {
 
     /// Creates a provider for a processor that merges several inputs into one output.
     ///
-    /// The node declares only [`ContextDeclaration::Merges`] and receives a
-    /// merge binding. A merging processor that also reads or produces context
-    /// returns `Merges` alongside its other declarations instead.
+    /// The node declares only an empty [`ContextDeclaration::Merges`] and
+    /// receives a merge binding. A merging processor that also reads, keeps,
+    /// or produces context returns its own declarations instead.
     #[must_use]
     pub const fn merging() -> Self {
         Self {
@@ -481,7 +506,12 @@ impl ContextDeclarationProvider {
 
 /// Declares only a merge, independent of configuration.
 fn merge_context_declarations(_: &serde_json::Value) -> Result<NodeContextDeclarations, Error> {
-    Ok([ContextDeclaration::Merges].into_iter().collect())
+    Ok([ContextDeclaration::Merges {
+        adds: Box::new([]),
+        keeps: Box::new([]),
+    }]
+    .into_iter()
+    .collect())
 }
 
 /// Deserializes typed node configuration and derives its context declarations.
@@ -558,13 +588,21 @@ impl PreparedNodeContextDeclarations {
                     ContextDeclaration::HeaderPropagation { policy } => {
                         policy.visit_composite_names(|name| names.push(name.clone()));
                     }
+                    ContextDeclaration::Edits {
+                        deletes: targets, ..
+                    }
+                    | ContextDeclaration::Merges { keeps: targets, .. } => names.extend(
+                        targets
+                            .iter()
+                            .filter_map(ContextEntryTarget::composite_name)
+                            .cloned(),
+                    ),
                     ContextDeclaration::Produces { .. }
                     | ContextDeclaration::Consumes {
                         selector: ContextConsumerSelector::AllCaptured { .. },
                     }
                     | ContextDeclaration::HeaderCapture { .. }
-                    | ContextDeclaration::AuthorizedIdentityCapture { .. }
-                    | ContextDeclaration::Merges => {}
+                    | ContextDeclaration::AuthorizedIdentityCapture { .. } => {}
                 }
                 names
             })
@@ -737,7 +775,7 @@ impl CompiledNodeState {
         let mut authorized_identity_capture = None;
         let mut values = Vec::new();
         let mut headers = None;
-        let mut produced = Vec::new();
+        let mut edit = None;
         let mut merge = None;
         for declaration in prepared.declarations {
             match declaration {
@@ -761,7 +799,7 @@ impl CompiledNodeState {
                 }
                 ContextDeclaration::Produces { domain, entry } => {
                     match domain {
-                        ContextDomain::TransportHeader => produced.push(entry.clone()),
+                        ContextDomain::TransportHeader => {}
                         ContextDomain::AuthorizedIdentity => {
                             return Err(invalid_context(format!(
                                 "produced context entry `{entry}` is in the authorized-identity \
@@ -782,9 +820,13 @@ impl CompiledNodeState {
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
                     authorized_identity_capture = Some(policy);
                 }
-                ContextDeclaration::Merges => {
-                    merge = Some(MergeBinding::new());
-                    component_declarations.push(ContextDeclaration::Merges);
+                ContextDeclaration::Edits { adds, deletes } => {
+                    edit = Some(EditBinding::compile(&adds, &deletes, materialization_plan)?);
+                    component_declarations.push(ContextDeclaration::Edits { adds, deletes });
+                }
+                ContextDeclaration::Merges { adds, keeps } => {
+                    merge = Some(MergeBinding::compile(&adds, &keeps, materialization_plan)?);
+                    component_declarations.push(ContextDeclaration::Merges { adds, keeps });
                 }
             }
         }
@@ -808,9 +850,7 @@ impl CompiledNodeState {
                     values.into_boxed_slice()
                 },
                 headers,
-                // Only processors derive an output context from an input context.
-                projection: (prepared.kind == NodeKind::Processor && !produced.is_empty())
-                    .then(|| ProjectionBinding::new(produced)),
+                edit,
                 merge,
             }),
         })
@@ -1179,17 +1219,35 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 },
             )));
         }
-        if kind != NodeKind::Processor
-            && declarations
-                .iter()
-                .any(|declaration| *declaration == ContextDeclaration::Merges)
-        {
-            return Err(EngineError::ConfigError(Box::new(
-                Error::InvalidUserConfig {
-                    error: format!(
-                        "node factory `{urn}` declared a context merge, which only processors support"
-                    ),
-                },
+        let config_error =
+            |error: String| EngineError::ConfigError(Box::new(Error::InvalidUserConfig { error }));
+        let formations = declarations
+            .iter()
+            .filter(|declaration| {
+                matches!(
+                    declaration,
+                    ContextDeclaration::Edits { .. } | ContextDeclaration::Merges { .. }
+                )
+            })
+            .count();
+        let produces = declarations
+            .iter()
+            .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }));
+        if kind != NodeKind::Processor && formations > 0 {
+            return Err(config_error(format!(
+                "node factory `{urn}` declared a context edit or merge, which only processors support"
+            )));
+        }
+        if kind == NodeKind::Processor && produces {
+            return Err(config_error(format!(
+                "node factory `{urn}` declared produced entries; a processor lists the \
+                 entries it produces in its Edits or Merges `adds`"
+            )));
+        }
+        if formations > 1 {
+            return Err(config_error(format!(
+                "node factory `{urn}` declared more than one context edit or merge; a \
+                 processor forms its output context by exactly one"
             )));
         }
         Ok(declarations)
@@ -1257,13 +1315,10 @@ mod tests {
         /// Whether the entry is declared in the authorized-identity domain.
         #[serde(default)]
         identity: bool,
-        /// Whether the node also declares a merge.
-        #[serde(default)]
-        merge: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
-        /// Declares the configured produced entry and an optional merge.
+        /// Declares the configured produced entry.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Produces {
                 domain: if self.identity {
@@ -1274,7 +1329,32 @@ mod tests {
                 entry: self.entry.clone(),
             }]
             .into_iter()
-            .chain(self.merge.then_some(ContextDeclaration::Merges))
+            .collect()
+        }
+    }
+
+    /// Typed processor configuration that edits in one produced entry.
+    #[derive(serde::Deserialize)]
+    struct TestEditConfig {
+        /// Added entry name.
+        entry: ContextEntryName,
+        /// Whether the node also declares a merge.
+        #[serde(default)]
+        merge: bool,
+    }
+
+    impl ConfigNodeContextDeclaration for TestEditConfig {
+        /// Declares an edit adding the configured entry and an optional merge.
+        fn context_declarations(&self) -> NodeContextDeclarations {
+            [ContextDeclaration::Edits {
+                adds: Box::new([self.entry.clone()]),
+                deletes: Box::new([]),
+            }]
+            .into_iter()
+            .chain(self.merge.then(|| ContextDeclaration::Merges {
+                adds: Box::new([]),
+                keeps: Box::new([]),
+            }))
             .collect()
         }
     }
@@ -1415,7 +1495,7 @@ mod tests {
     ];
 
     /// Registers the type router and processors that produce or merge context.
-    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 5] = [
+    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 6] = [
         crate::ProcessorFactory {
             name: "urn:otel:processor:type_router",
             create: unused_test_processor,
@@ -1434,6 +1514,17 @@ mod tests {
             name: "urn:test:processor:produce",
             create: unused_test_processor,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                TestEditConfig,
+            >()),
+            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                TestEditConfig,
+            >,
+        },
+        crate::ProcessorFactory {
+            name: "urn:test:processor:produces",
+            create: unused_test_processor,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestProducerConfig,
             >()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
@@ -1449,14 +1540,14 @@ mod tests {
             validate_config: otel_arrow_dfe_config::validation::no_config,
         },
         crate::ProcessorFactory {
-            name: "urn:test:processor:merge-produce",
+            name: "urn:test:processor:edit-merge",
             create: unused_test_processor,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
-                TestProducerConfig,
+                TestEditConfig,
             >()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
-                TestProducerConfig,
+                TestEditConfig,
             >,
         },
     ];
@@ -1733,12 +1824,12 @@ groups:
         .resolve()
     }
 
-    /// Scenario: a pipeline contains producing, merging, and plain nodes.
-    /// Guarantees: the receiver gets an arrival binding, the producing processor
-    /// gets a projection for only its declared entries, and the merging processor
-    /// gets a merge binding. Plain nodes get neither projection nor merge bindings.
+    /// Scenario: a pipeline contains producing, editing, merging, and plain nodes.
+    /// Guarantees: the receiver gets an arrival binding, the editing processor
+    /// gets an edit for only its declared entries, and the merging processor
+    /// gets a merge binding. Plain nodes get neither edit nor merge bindings.
     #[test]
-    fn projection_and_merge_bindings_follow_declarations() {
+    fn edit_and_merge_bindings_follow_declarations() {
         let compiled = test_pipeline_factory()
             .compile_initial_context(&resolve_role_pipeline(
                 "urn:test:processor:merge",
@@ -1759,31 +1850,29 @@ groups:
         let receiver = bindings("receiver");
         assert!(receiver.arrival().is_some());
         assert!(receiver.merge().is_none());
-        assert!(receiver.projection().is_none());
+        assert!(receiver.edit().is_none());
 
         let produce = bindings("produce");
         assert!(produce.arrival().is_none());
         assert!(produce.merge().is_none());
-        let projection = produce.projection().expect("processor projection");
+        let edit = produce.edit().expect("processor edit");
         assert!(
-            projection
-                .produced(ContextDomain::TransportHeader, &context_name("partition"))
+            edit.produced(ContextDomain::TransportHeader, &context_name("partition"))
                 .is_ok()
         );
         assert!(
-            projection
-                .produced(ContextDomain::TransportHeader, &context_name("generated"))
+            edit.produced(ContextDomain::TransportHeader, &context_name("generated"))
                 .is_err()
         );
 
         let merge = bindings("merge");
         assert!(merge.merge().is_some());
-        assert!(merge.projection().is_none());
+        assert!(merge.edit().is_none());
         assert!(merge.arrival().is_none());
 
         for node in ["plain", "exporter"] {
             let bindings = bindings(node);
-            assert!(bindings.projection().is_none(), "{node} projection");
+            assert!(bindings.edit().is_none(), "{node} edit");
             assert!(bindings.merge().is_none(), "{node} merge");
         }
     }
@@ -1799,67 +1888,80 @@ groups:
         };
         let message = error.to_string();
         assert!(message.contains("urn:test:exporter:merge"), "{message}");
-        assert!(message.contains("context merge"), "{message}");
+        assert!(message.contains("context edit or merge"), "{message}");
     }
 
-    /// Scenario: a processor declares Merges alongside a produced entry.
-    /// Guarantees: the node receives both the merge binding and a projection for its declared entry, and producing processors in one pipeline reject each other's handles.
+    /// Scenario: a processor factory declares both Edits and Merges.
+    /// Guarantees: compilation fails naming the factory URN, because a processor
+    /// forms its output context by exactly one edit or merge.
     #[test]
-    fn merge_declaration_combines_with_produces() {
-        let compiled = test_pipeline_factory()
-            .compile_initial_context(&resolve_role_pipeline(
-                "urn:test:processor:merge-produce",
+    fn edit_and_merge_are_exclusive() {
+        let Err(EngineError::ConfigError(error)) =
+            test_pipeline_factory().compile_initial_context(&resolve_role_pipeline(
+                "urn:test:processor:edit-merge",
                 "{entry: merged, merge: true}",
                 "urn:test:exporter:example",
             ))
-            .expect("context compiles");
-        let key = pipeline("default", "main");
-        let merge = compiled
-            .bindings
-            .node_bindings(&key, &ConfigNodeId::from("merge"))
-            .expect("merge bindings");
-        assert!(merge.merge().is_some());
-        let merge_projection = merge.projection().expect("merge projection");
+        else {
+            panic!("a processor declaring Edits and Merges must be rejected");
+        };
+        let message = error.to_string();
         assert!(
-            merge_projection
-                .produced(ContextDomain::TransportHeader, &context_name("merged"))
-                .is_ok()
+            message.contains("urn:test:processor:edit-merge"),
+            "{message}"
         );
-
-        let produce_projection = compiled
-            .bindings
-            .node_bindings(&key, &ConfigNodeId::from("produce"))
-            .expect("produce bindings")
-            .projection()
-            .expect("produce projection")
-            .clone();
-        let partition = produce_projection
-            .produced(ContextDomain::TransportHeader, &context_name("partition"))
-            .expect("partition handle");
-        assert_ne!(&produce_projection, merge_projection);
-        assert_eq!(
-            merge_projection.form(
-                &Metadata::default(),
-                &[ProducedValue {
-                    entry: &partition,
-                    kind: otel_arrow_dfe_config::context::transport_headers::ValueKind::Text,
-                    bytes: b"0",
-                }],
-            ),
-            Err(ContextError::ContextMismatch)
+        assert!(
+            message.contains("more than one context edit or merge"),
+            "{message}"
         );
     }
 
-    /// Scenario: a processor factory declares a produced entry in the authorized-identity domain.
+    /// Scenario: a processor factory declares Produces instead of Edits or Merges `adds`.
+    /// Guarantees: compilation fails naming the factory URN, so processors have one way to declare produced entries.
+    #[test]
+    fn processor_produces_is_rejected() {
+        let Err(EngineError::ConfigError(error)) =
+            test_pipeline_factory().compile_initial_context(&resolve_role_pipeline(
+                "urn:test:processor:produces",
+                "{entry: merged}",
+                "urn:test:exporter:example",
+            ))
+        else {
+            panic!("a processor declaring Produces must be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("urn:test:processor:produces"), "{message}");
+        assert!(message.contains("Edits or Merges `adds`"), "{message}");
+    }
+
+    /// Scenario: a receiver factory declares a produced entry in the authorized-identity domain.
     /// Guarantees: compilation fails naming the entry and domain instead of deferring the failure to node construction.
     #[test]
     fn produced_identity_entries_are_rejected_at_compilation() {
+        let config = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:produce"
+            config: {entry: subject, identity: true}
+          exporter:
+            type: "urn:test:exporter:example"
+            config: {}
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+        )
+        .expect("identity pipeline YAML is valid")
+        .resolve();
         let Err(EngineError::ConfigError(error)) =
-            test_pipeline_factory().compile_initial_context(&resolve_role_pipeline(
-                "urn:test:processor:produce",
-                "{entry: subject, identity: true}",
-                "urn:test:exporter:example",
-            ))
+            test_pipeline_factory().compile_initial_context(&config)
         else {
             panic!("produced identity entries must be rejected");
         };
@@ -1872,10 +1974,10 @@ groups:
         );
     }
 
-    /// Scenario: projection and merge adapters are removed from a compiled snapshot.
+    /// Scenario: edit and merge adapters are removed from a compiled snapshot.
     /// Guarantees: live-update comparison ignores the adapters and compares a merging node by its Merges declaration.
     #[test]
-    fn projection_and_merge_adapters_preserve_live_update_inputs() {
+    fn edit_and_merge_adapters_preserve_live_update_inputs() {
         let compiled = test_pipeline_factory()
             .compile_initial_context(&resolve_role_pipeline(
                 "urn:test:processor:merge",
@@ -1891,11 +1993,16 @@ groups:
             .expect("pipeline");
         assert_eq!(
             nodes[&ConfigNodeId::from("merge")].component_declarations,
-            [ContextDeclaration::Merges].into_iter().collect()
+            [ContextDeclaration::Merges {
+                adds: Box::new([]),
+                keeps: Box::new([]),
+            }]
+            .into_iter()
+            .collect()
         );
         for node in nodes.values_mut() {
             let bindings = Arc::make_mut(&mut node.bindings);
-            bindings.projection = None;
+            bindings.edit = None;
             bindings.merge = None;
         }
         assert!(

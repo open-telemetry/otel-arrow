@@ -3,7 +3,7 @@
 
 use super::{
     CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextError,
-    ContextMaterializationPlan, HeadersRead, MergeBinding, Metadata, ProjectionBinding, ValueRead,
+    ContextMaterializationPlan, EditBinding, HeadersRead, MergeBinding, Metadata, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -176,9 +176,9 @@ pub struct NodeBindings {
     /// Sorted by selector and unique, as produced by sorted declarations.
     pub(super) values: Box<[ValueRead]>,
     pub(super) headers: Option<HeadersRead>,
-    /// For 1:1 Context projection when the node declares produced entries.
-    pub(super) projection: Option<ProjectionBinding>,
-    /// For many:1 Present only when a processor declares `Merges`.
+    /// 1:1 edit; present only when a processor declares `Edits`.
+    pub(super) edit: Option<EditBinding>,
+    /// N:1 merge; present only when a processor declares `Merges`.
     pub(super) merge: Option<MergeBinding>,
 }
 
@@ -218,10 +218,10 @@ impl NodeBindings {
         self.headers.as_ref()
     }
 
-    /// Returns the projection for a node that declared produced entries.
+    /// Returns the edit for a processor that declared `Edits`.
     #[must_use]
-    pub fn projection(&self) -> Option<&ProjectionBinding> {
-        self.projection.as_ref()
+    pub fn edit(&self) -> Option<&EditBinding> {
+        self.edit.as_ref()
     }
 
     /// Returns the merge for a processor that declared `Merges`.

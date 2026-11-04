@@ -43,7 +43,7 @@ enum ValueReadBackend {
 }
 
 impl ContextNameMatching {
-    fn matches(self, stored: &str, configured: &str) -> bool {
+    pub(super) fn matches(self, stored: &str, configured: &str) -> bool {
         match self {
             Self::Exact => stored == configured,
             Self::AsciiCaseInsensitive => stored.eq_ignore_ascii_case(configured),

@@ -403,6 +403,38 @@ impl MaterializedContext {
         headers
     }
 
+    /// Removes composites for which `keep` returns false, retaining transport headers.
+    pub(super) fn retain_entries(&mut self, mut keep: impl FnMut(&ContextEntryName) -> bool) {
+        let entries = self
+            .entries()
+            .iter()
+            .filter(|entry| keep(&entry.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        if entries.len() != self.entries().len() {
+            self.set_entries(entries);
+        }
+    }
+
+    /// Replaces composites, retaining transport headers. Names must be unique.
+    pub(super) fn set_entries(&mut self, mut entries: Vec<MaterializedContextEntry>) {
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let Some(storage) = self.storage.as_mut() else {
+            if !entries.is_empty() {
+                self.storage = Some(Arc::new(MaterializedContextStorage {
+                    transport_headers: None,
+                    entries: entries.into(),
+                }));
+            }
+            return;
+        };
+        let storage = Arc::make_mut(storage);
+        storage.entries = entries.into();
+        if storage.transport_headers.is_none() && storage.entries.is_empty() {
+            self.storage = None;
+        }
+    }
+
     fn is_materialized(
         &self,
         entry: &ContextEntryLayout,
