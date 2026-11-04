@@ -197,6 +197,8 @@ Required-field lookup prefers a literal dotted key over nested traversal.
 segment. Listing `foo.bar` accepts that literal key but does not permit a
 separate nested `foo` object; listing `foo` permits both forms. The same check
 applies when a parent is represented only by flattened source keys.
+Only the first matching parent's allow-list applies; later wildcard or exact
+rules do not add constraints to that same parent.
 Wildcard parents preserve whole literal-key boundaries when applying these
 checks; for example, `groups.*` treats `foo.bar` as one child of `groups`.
 
@@ -316,7 +318,7 @@ Available transforms:
 
 | Transform | Description |
 | ----------- | ------------- |
-| `split_take` | Split by `delimiter` and take the part at `index` (negative = from end). |
+| `split_take` | Split forward by `delimiter` and take the part at `index` (negative = from end of those parts). |
 | `format` | Apply a template string with `{value}` placeholder. |
 | `dash_semver_name` | Extract the name portion from a dash-separated semver string. |
 | `dash_semver_version` | Extract the version portion from a dash-separated semver string. |

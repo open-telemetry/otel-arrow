@@ -42,10 +42,10 @@ The model is strict (`serde(deny_unknown_fields)` on key types) and validated on
 load.
 
 The [`data_limits`](src/data_limits.rs) module provides reusable traversal-work
-budgets, JSON inspection (`inspect_json`) and byte counting (`json_size`), and
-limited UTF-8 configuration-text reads. It does not parse component-specific
-configuration or introduce a new runtime policy. Callers translate its errors
-into their component error types.
+budgets, JSON inspection (`inspect_json`) and byte counting (`json_size`).
+Component-specific configuration file reads remain with their components.
+This module does not introduce a new runtime policy. Callers translate its
+errors into their component error types.
 
 ## Runtime Config Format
 

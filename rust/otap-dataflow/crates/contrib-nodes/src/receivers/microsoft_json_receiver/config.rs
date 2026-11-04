@@ -1112,17 +1112,16 @@ impl ValueTransform {
         match self {
             Self::SplitTake { delimiter, index } => {
                 let s = val.as_str()?;
-                let parts: Vec<&str> = s.split(delimiter.as_str()).collect();
+                let mut parts = s.split(delimiter.as_str());
                 let idx = if *index < 0 {
-                    let pos = parts.len() as i32 + *index;
-                    if pos < 0 {
-                        return None;
-                    }
-                    pos as usize
+                    parts
+                        .clone()
+                        .count()
+                        .checked_sub(index.unsigned_abs() as usize)?
                 } else {
                     *index as usize
                 };
-                parts.get(idx).map(|p| Value::String((*p).to_owned()))
+                parts.nth(idx).map(|p| Value::String(p.to_owned()))
             }
             Self::Format { template } => {
                 let s = match val {
