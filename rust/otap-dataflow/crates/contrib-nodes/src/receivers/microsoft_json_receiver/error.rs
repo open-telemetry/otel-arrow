@@ -36,7 +36,6 @@ impl From<DataLimitError> for MappingError {
     fn from(error: DataLimitError) -> Self {
         match error {
             DataLimitError::Config(message) => Self::Config(message),
-            DataLimitError::File(message) => Self::File(message),
             DataLimitError::Limit(limit) => Self::Limit(limit),
         }
     }

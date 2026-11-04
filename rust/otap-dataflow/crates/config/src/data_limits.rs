@@ -1,12 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared data traversal, serialization and configuration-text limits.
+//! Shared data traversal and serialization limits.
 
 use serde::Serialize;
 use serde_json::Value;
-use std::io::{self, Read, Write};
-use std::path::Path;
+use std::io::{self, Write};
 
 /// A configuration or data-processing limit failure.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -14,9 +13,6 @@ pub enum DataLimitError {
     /// Invalid safeguard settings.
     #[error("invalid data limits: {0}")]
     Config(String),
-    /// Failed to read UTF-8 configuration text.
-    #[error("configuration file error: {0}")]
-    File(String),
     /// Processing exceeded an explicit resource limit.
     #[error("data limit exceeded: {0}")]
     Limit(&'static str),
@@ -164,24 +160,6 @@ pub fn json_size(value: &impl Serialize, limit: usize) -> Result<usize, DataLimi
     Ok(writer.size)
 }
 
-/// Maximum configuration-text file size.
-pub const CONFIG_FILE_BYTES: usize = 1024 * 1024;
-
-/// Read limited UTF-8 text without parsing node-specific configuration.
-pub fn read_config(path: &Path) -> Result<String, DataLimitError> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| DataLimitError::File(format!("{}: {e}", path.display())))?;
-    let mut bytes = Vec::new();
-    _ = file
-        .take((CONFIG_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| DataLimitError::File(format!("{}: {e}", path.display())))?;
-    if bytes.len() > CONFIG_FILE_BYTES {
-        return Err(DataLimitError::Limit("configuration file bytes"));
-    }
-    String::from_utf8(bytes).map_err(|e| DataLimitError::File(format!("{}: {e}", path.display())))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,30 +210,6 @@ mod tests {
             }
             .validate(),
             Err(DataLimitError::Config(_))
-        ));
-    }
-
-    /// Scenario: generic configuration-text reads encounter valid UTF-8, oversize text, invalid UTF-8 and a missing path.
-    /// Guarantees: reads enforce their byte cap and report file/encoding failures without parsing component configuration.
-    #[test]
-    fn configuration_text_reads_are_limited() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("config.yaml");
-        std::fs::write(&path, "x".repeat(CONFIG_FILE_BYTES)).expect("write");
-        assert_eq!(
-            read_config(&path).expect("exact limit").len(),
-            CONFIG_FILE_BYTES
-        );
-        std::fs::write(&path, "x".repeat(CONFIG_FILE_BYTES + 1)).expect("write");
-        assert_eq!(
-            read_config(&path),
-            Err(DataLimitError::Limit("configuration file bytes"))
-        );
-        std::fs::write(&path, [0xff]).expect("write");
-        assert!(matches!(read_config(&path), Err(DataLimitError::File(_))));
-        assert!(matches!(
-            read_config(&dir.path().join("missing")),
-            Err(DataLimitError::File(_))
         ));
     }
 }
