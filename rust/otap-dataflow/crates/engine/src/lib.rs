@@ -561,7 +561,7 @@ pub trait ConsumerEffectHandlerExtension<PData> {
 }
 
 /// Implementation-detail module re-exporting the internal
-/// [`AckNackRouting`] trait.
+/// `AckNackRouting` trait.
 ///
 /// **Do not use directly.** Prefer
 /// [`ConsumerEffectHandlerExtension::notify_ack`] /
@@ -820,7 +820,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// 3) Apply wiring: attach senders to source ports and receivers to destination nodes,
     ///    then publish collected channel metrics on the pipeline.
     ///
-    /// [config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]
+    /// `[config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]`
     ///
     /// The `internal_telemetry` settings are injected into any receiver with the
     /// `INTERNAL_TELEMETRY_RECEIVER_URN` plugin URN, enabling it to consume logs

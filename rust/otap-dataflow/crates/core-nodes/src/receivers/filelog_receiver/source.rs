@@ -372,7 +372,7 @@ pub(crate) fn proc_fd_path(mut fd: u32, buffer: &mut [u8; 32]) -> &CStr {
         .expect("static prefix and descriptor digits contain no NUL")
 }
 
-fn check_cancelled(cancelled: &mut impl FnMut() -> bool) -> Result<(), FileAccessError> {
+pub(super) fn check_cancelled(cancelled: &mut impl FnMut() -> bool) -> Result<(), FileAccessError> {
     if cancelled() {
         Err(FileAccessError::Cancelled)
     } else {
