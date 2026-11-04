@@ -7,6 +7,17 @@ use crate::codecs::syslog::parser::{
 };
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
 
+/// Detected format and generation profile for RFC 3164 syslog.
+pub(crate) const FORMAT_RFC3164: &str = "rfc3164";
+/// Detected format and generation profile for RFC 5424 syslog.
+pub(crate) const FORMAT_RFC5424: &str = "rfc5424";
+/// Detected format and generation profile for raw CEF.
+pub(crate) const FORMAT_CEF: &str = "cef";
+/// Detected format and generation profile for RFC 3164-wrapped CEF.
+pub(crate) const FORMAT_CEF_RFC3164: &str = "cef_rfc3164";
+/// Detected format and generation profile for RFC 5424-wrapped CEF.
+pub(crate) const FORMAT_CEF_RFC5424: &str = "cef_rfc5424";
+
 /// Decodes a fixed-width ASCII field without allocating or accepting signs.
 #[inline]
 fn parse_two_digits(input: &[u8]) -> Option<u32> {
@@ -138,11 +149,11 @@ impl ParsedSyslogMessage<'_> {
     /// processors can filter or route records by format.
     pub(crate) const fn format(&self) -> &'static str {
         match self {
-            ParsedSyslogMessage::Rfc5424(_) => "rfc5424",
-            ParsedSyslogMessage::Rfc3164(_) => "rfc3164",
-            ParsedSyslogMessage::Cef(_) => "cef",
-            ParsedSyslogMessage::CefWithRfc3164(_, _) => "cef_rfc3164",
-            ParsedSyslogMessage::CefWithRfc5424(_, _) => "cef_rfc5424",
+            ParsedSyslogMessage::Rfc5424(_) => FORMAT_RFC5424,
+            ParsedSyslogMessage::Rfc3164(_) => FORMAT_RFC3164,
+            ParsedSyslogMessage::Cef(_) => FORMAT_CEF,
+            ParsedSyslogMessage::CefWithRfc3164(_, _) => FORMAT_CEF_RFC3164,
+            ParsedSyslogMessage::CefWithRfc5424(_, _) => FORMAT_CEF_RFC5424,
         }
     }
 

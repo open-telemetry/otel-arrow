@@ -6,6 +6,7 @@
 /// Arrow records encoder for parsed syslog and CEF messages.
 pub mod arrow_records_encoder;
 mod codec;
+mod generation;
 /// Parsers for RFC 3164, RFC 5424, and raw or syslog-wrapped CEF.
 pub mod parser;
 

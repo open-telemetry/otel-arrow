@@ -46,9 +46,9 @@ use super::{MAX_MESSAGE_SIZE, parser};
 const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
 
 const MAGIC: &[u8; 4] = b"SLG1";
-const BATCH_HEADER_LEN: usize = 8;
-const RUN_HEADER_LEN: usize = 16;
-const FRAME_HEADER_LEN: usize = 4;
+pub(super) const BATCH_HEADER_LEN: usize = 8;
+pub(super) const RUN_HEADER_LEN: usize = 16;
+pub(super) const FRAME_HEADER_LEN: usize = 4;
 // Hard admission limits bound each complete input independently of configurable
 // batch targets and the per-step cooperative decode budget.
 /// Maximum number of messages in one encoded batch.
@@ -881,8 +881,9 @@ static SYSLOG_BATCHING_SUPPORT: BatchingSupport = BatchingSupport {
     default_settings: SYSLOG_BATCH_SETTINGS,
 };
 
-register_pdata_codec!(
-    SYSLOG_CEF_CODEC,
+register_pdata_codec!(SYSLOG_CEF_CODEC, codec_registration(),);
+
+const fn codec_registration() -> CodecRegistration {
     CodecRegistration::new(&SYSLOG_CEF_METADATA)
         .with_implementation("otel.syslog_cef")
         .with_default_for_encoding()
@@ -891,8 +892,9 @@ register_pdata_codec!(
             &SYSLOG_BATCHING_SUPPORT,
             || Box::<SyslogBatcher>::default(),
         ))
-        .with_item_counter(count_items),
-);
+        .with_item_counter(count_items)
+        .with_generator(super::generation::REGISTRATION)
+}
 
 /// Resolves the linked syslog codec from the validated production registry.
 pub fn resolve_syslog() -> Result<ResolvedCodec, RegistryError> {
