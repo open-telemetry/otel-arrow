@@ -45,8 +45,7 @@ service that lazily creates and reuses decoder, encoder, and batcher instances.
 Nodes access that service through effect handlers; stateless item counters do
 not require an instance.
 
-The overview image marks syslog as upcoming; the syslog codec is now available
-when the syslog/CEF receiver is linked.
+The `syslog-batch` codec is available when the syslog/CEF receiver is linked.
 Native OTAP is the common processing representation, not a registered byte codec.
 
 ## Design model
