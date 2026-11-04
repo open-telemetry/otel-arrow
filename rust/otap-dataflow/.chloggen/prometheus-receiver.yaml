@@ -1,0 +1,8 @@
+change_type: new_component
+component: pipeline
+note: "Add experimental `urn:otel:receiver:prometheus` receiver powered by `prometheus/scrape.rs` for zero-copy OTAP Arrow metric decoding."
+issues: [3277]
+subtext: |
+  Scrapes Prometheus text (`0.0.4` / `1.0.0`) and OpenMetrics (`1.0.0`) endpoints
+  and decodes counters, gauges, classic histograms, summaries, and exemplars
+  directly into OTAP Arrow record batches with per-core decoder reuse.
