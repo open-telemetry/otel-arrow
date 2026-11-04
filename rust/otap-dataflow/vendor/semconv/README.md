@@ -7,29 +7,13 @@ in [LICENSE](LICENSE).
 
 The copy is unmodified except for `traffic-generator` annotations added to
 attributes, metrics, spans, and events. The `traffic_generator` receiver reads
-these annotations to choose value ranges and distributions
-Tests and benchmarks that generate semantic-convention traffic with the
-`traffic_generator` receiver (`data_source: semantic_conventions`) load this
-copy, so they don't need network access or a TLS crypto provider to clone
-the upstream registry. The receiver's built-in default `registry_path` still
-points at the upstream git repository. A unit test in the `dev-nodes` crate
-checks that its pinned tag matches [VERSION](VERSION).
+these annotations to choose value ranges and distributions (see the
+[receiver README](../../crates/dev-nodes/src/receivers/traffic_generator/README.md#annotations)).
+
+This copy is the receiver's default registry when `registry_path` is not set
+(`data_source: semantic_conventions`). Tests and benchmarks that generate
+semantic-convention traffic load it from disk, so they don't need network
+access or a TLS crypto provider.
 
 Don't edit these files by hand, other than the `traffic-generator`
-annotations. To refresh or bump the vendored copy, run this from
-`rust/otap-dataflow` (it needs `git` and network access):
-
-```sh
-# Re-sync the tag recorded in VERSION
-cargo xtask update-semconv
-
-# Vendor a different upstream tag
-cargo xtask update-semconv --version v1.45.0
-```
-
-`update-semconv` refuses to run while the model carries `traffic-generator`
-annotations, because replacing `model/` deletes them. Pass
-`--drop-annotations` to update anyway.
-
-When you bump the version, also update `SEMCONV_REGISTRY_REFSPEC` in
-`crates/dev-nodes/src/receivers/traffic_generator/config.rs`.
+annotations.

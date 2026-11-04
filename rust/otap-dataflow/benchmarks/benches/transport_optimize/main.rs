@@ -45,19 +45,16 @@ fn gen_fake_logs_batch(batch_size: usize) {
         return;
     }
 
-    // weaver fetches remote registries over rustls without choosing a crypto
-    // provider, so one must be installed before loading the registry.
-    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path =
         otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path();
 
     let traffic_config = TrafficConfig::new(None, None, 10000, 1, 1, 1);
     let config = Config::new(traffic_config, registry_path);
-    let registry = config
-        .get_registry()
+    let model = config
+        .get_semconv_model()
         .expect("registry init OK")
         .expect("registry exist");
-    let logs = semconv_otlp_logs(batch_size, &registry);
+    let logs = semconv_otlp_logs(batch_size, &model);
     let mut bytes = Vec::new();
     logs.encode(&mut bytes).expect("can encode logs");
     let mut file = std::fs::File::create(&file_path).expect("can create tmp file");

@@ -56,6 +56,7 @@
 
 #![cfg(test)]
 
+use super::semconv_model::SemconvModel;
 use super::semconv_signal::semconv_otlp_logs;
 use super::synthetic_signal::static_otlp_logs_with_config;
 use prost::Message;
@@ -91,7 +92,7 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 ///
 /// The registry source can be overridden via the `OTAP_SEMCONV_REGISTRY`
 /// env var (any `VirtualDirectoryPath`-parseable value, e.g. a local path).
-/// When unset, the vendored registry ([`config::vendored_registry_path`]) is used.
+/// When unset, the vendored registry ([`config::default_registry_path`]) is used.
 fn load_semconv_registry() -> ResolvedRegistry {
     // weaver fetches remote registries over rustls without choosing a crypto
     // provider. Production installs one at startup; tests must do it here.
@@ -101,7 +102,7 @@ fn load_semconv_registry() -> ResolvedRegistry {
             path.parse::<VirtualDirectoryPath>()
                 .expect("valid OTAP_SEMCONV_REGISTRY")
         })
-        .unwrap_or_else(|_| super::config::vendored_registry_path());
+        .unwrap_or_else(|_| super::config::default_registry_path());
 
     let mut semconv_errors = Vec::new();
     let registry_repo = RegistryRepo::try_new(None, &registry_path, &mut semconv_errors)
@@ -149,7 +150,7 @@ fn static_with_trace_ctx_batch_bytes() -> Vec<u8> {
 }
 
 /// Generate a `semconv` log batch.
-fn semconv_batch_bytes(registry: &ResolvedRegistry) -> Vec<u8> {
+fn semconv_batch_bytes(registry: &SemconvModel) -> Vec<u8> {
     semconv_otlp_logs(BATCH_SIZE, registry).encode_to_vec()
 }
 
@@ -186,7 +187,7 @@ fn static_with_trace_ctx_fresh_stream() -> Vec<u8> {
 }
 
 /// Concatenate `NUM_BATCHES` independently-generated `semconv` batches.
-fn semconv_fresh_stream(registry: &ResolvedRegistry) -> Vec<u8> {
+fn semconv_fresh_stream(registry: &SemconvModel) -> Vec<u8> {
     let first = semconv_batch_bytes(registry);
     let mut concatenated = Vec::with_capacity(first.len() * NUM_BATCHES);
     concatenated.extend_from_slice(&first);
@@ -219,7 +220,7 @@ fn static_with_trace_ctx_pregenerated_stream() -> Vec<u8> {
 }
 
 /// Concatenate the **same** `semconv` batch `NUM_BATCHES` times.
-fn semconv_pregenerated_stream(registry: &ResolvedRegistry) -> Vec<u8> {
+fn semconv_pregenerated_stream(registry: &SemconvModel) -> Vec<u8> {
     let batch = semconv_batch_bytes(registry);
     let mut concatenated = Vec::with_capacity(batch.len() * NUM_BATCHES);
     for _ in 0..NUM_BATCHES {
@@ -239,7 +240,8 @@ fn print_ratio(label: &str, raw: usize, compressed: usize, ratio: f64) {
 /// Print compression ratios for all six (source x strategy) combinations.
 #[test]
 fn test_compression_ratios_across_source_and_strategy() {
-    let registry = load_semconv_registry();
+    let registry = SemconvModel::compile(&load_semconv_registry())
+        .unwrap_or_else(|errors| panic!("{}", super::annotation::format_errors(&errors)));
 
     let (sf_raw, sf_comp, sf_ratio) = measure(&static_fresh_stream());
     print_ratio(

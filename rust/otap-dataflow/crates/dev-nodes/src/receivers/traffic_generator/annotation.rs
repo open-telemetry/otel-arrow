@@ -5,8 +5,8 @@
 //!
 //! Registry authors attach a `traffic-generator` annotation to attributes and
 //! signal groups (metrics, spans, events) to describe the values the traffic
-//! generator should produce. See `traffic_generator_annotation.md` for the
-//! full specification.
+//! generator should produce. The format is documented in the "Annotations"
+//! section of the receiver's `README.md`.
 //!
 //! The annotation has no version or type tag. The parser interprets each map
 //! from its context (the attribute type or signal type, already known from the
@@ -22,12 +22,14 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde_yaml::{Mapping, Value};
-use weaver_forge::v1::registry::{ResolvedGroup, ResolvedRegistry};
+use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_semconv::YamlValue;
 use weaver_semconv::v1::attribute::{
     AttributeType, PrimitiveOrArrayTypeSpec, TemplateTypeSpec, ValueSpec as SemconvValueSpec,
 };
-use weaver_semconv::v1::group::{GroupType, InstrumentSpec};
+use weaver_semconv::v1::group::InstrumentSpec;
+
+use super::semconv_model::SemconvModel;
 
 /// The annotation namespace read by the traffic generator.
 pub const NAMESPACE: &str = "traffic-generator";
@@ -45,7 +47,7 @@ pub struct AnnotationError {
 }
 
 impl AnnotationError {
-    fn new(path: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(path: &str, message: impl Into<String>) -> Self {
         Self {
             path: path.to_owned(),
             message: message.into(),
@@ -320,50 +322,11 @@ pub fn format_errors(errors: &[RegistryAnnotationError]) -> String {
 /// Signal groups (metric, span, event) are checked against their signal
 /// type, and every attribute annotation against its attribute type. Returns
 /// every error found so they can be reported together at startup.
+///
+/// This compiles the registry ([`SemconvModel::compile`]) and discards the
+/// result; use `compile` directly when the compiled model is needed.
 pub fn validate_registry(registry: &ResolvedRegistry) -> Result<(), Vec<RegistryAnnotationError>> {
-    let mut errors = Vec::new();
-    for group in &registry.groups {
-        if let Err(error) = validate_group(group) {
-            errors.push(RegistryAnnotationError {
-                group: group.id.clone(),
-                attribute: None,
-                error,
-            });
-        }
-        for attribute in &group.attributes {
-            let result = lookup(attribute.annotations.as_ref()).and_then(|map| match map {
-                Some(map) => parse_attribute_spec(map, &attribute.r#type).map(|_| ()),
-                None => Ok(()),
-            });
-            if let Err(error) = result {
-                errors.push(RegistryAnnotationError {
-                    group: group.id.clone(),
-                    attribute: Some(attribute.name.clone()),
-                    error,
-                });
-            }
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
-fn validate_group(group: &ResolvedGroup) -> AnnotationResult<()> {
-    let Some(map) = lookup(group.annotations.as_ref())? else {
-        return Ok(());
-    };
-    match (&group.r#type, &group.instrument) {
-        (GroupType::Metric, Some(instrument)) => parse_metric_spec(map, instrument).map(|_| ()),
-        (GroupType::Span, _) => parse_span_spec(map).map(|_| ()),
-        (GroupType::Event, _) => parse_event_spec(map).map(|_| ()),
-        _ => Err(AnnotationError::new(
-            NAMESPACE,
-            "annotations are only supported on metric, span, and event groups",
-        )),
-    }
+    SemconvModel::compile(registry).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------

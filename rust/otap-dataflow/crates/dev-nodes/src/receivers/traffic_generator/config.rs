@@ -17,6 +17,7 @@ use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig
 use weaver_semconv::registry_repo::RegistryRepo;
 
 use super::annotation::{format_errors, validate_registry};
+use super::semconv_model::SemconvModel;
 
 /// Source of telemetry data schema and attributes
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -24,7 +25,9 @@ use super::annotation::{format_errors, validate_registry};
 pub enum DataSource {
     /// Use OpenTelemetry semantic conventions registry via weaver
     /// - Fetches and parses semantic conventions from registry_path
-    /// - Full attribute coverage based on spec
+    ///   (default: the vendored, annotated registry)
+    /// - Values driven by `traffic-generator` annotations; invalid
+    ///   annotations fail startup
     /// - Requires network/file access at startup
     #[default]
     SemanticConventions,
@@ -101,7 +104,8 @@ pub struct Config {
     #[serde(default)]
     data_source: DataSource,
 
-    /// Path to the semantic conventions registry (only used when data_source = semantic_conventions)
+    /// Path to the semantic conventions registry (only used when data_source = semantic_conventions).
+    /// Defaults to the vendored, annotated registry ([`default_registry_path`]).
     #[serde(default = "default_registry_path")]
     registry_path: VirtualDirectoryPath,
 
@@ -292,47 +296,67 @@ impl Config {
         self.enable_ack_nack
     }
 
-    /// Provide a reference to the ResolvedRegistry.
+    /// Resolve and return the ResolvedRegistry.
     /// Returns None if data_source is Synthetic.
     ///
     /// Every `traffic-generator` annotation in the registry is validated; an
     /// error lists each invalid annotation (group, attribute, key path).
     pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
-        let mut semconv_errors = Vec::new();
         match self.data_source {
             DataSource::Synthetic => Ok(None),
             DataSource::SemanticConventions => {
-                let registry_repo =
-                    RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
-                        .map_err(|err| err.to_string())?;
-
-                let resolver_config = WeaverResolverConfig {
-                    include_unreferenced: true,
-                    ..WeaverResolverConfig::default()
-                };
-                let mut resolver = WeaverResolver::new(resolver_config);
-                let resolved_schema =
-                    match resolver.load_and_resolve_schema(registry_repo, DefaultSchemaVisitor) {
-                        WResult::Ok(resolved_schema) => resolved_schema,
-                        WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-                        WResult::FatalErr(err) => return Err(err.to_string()),
-                    }
-                    .into_v1()
-                    .map_err(|err| err.to_string())?;
-
-                let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
-                    &resolved_schema.registry,
-                    resolved_schema.catalog(),
-                )
-                .map_err(|err| err.to_string())?;
-
-                // Reject invalid `traffic-generator` annotations up front so
-                // they fail startup instead of silently falling back.
+                let resolved_registry = self.resolve_registry()?;
+                // Reject invalid `traffic-generator` annotations so callers
+                // never receive a registry the generator cannot compile.
                 validate_registry(&resolved_registry).map_err(|errors| format_errors(&errors))?;
-
                 Ok(Some(resolved_registry))
             }
         }
+    }
+
+    /// Resolve the registry and compile it for signal generation.
+    /// Returns None if data_source is Synthetic.
+    ///
+    /// Every `traffic-generator` annotation is parsed, validated, and
+    /// compiled into samplers once; the resolved registry is dropped
+    /// afterwards. An error lists each invalid annotation.
+    pub fn get_semconv_model(&self) -> Result<Option<SemconvModel>, String> {
+        match self.data_source {
+            DataSource::Synthetic => Ok(None),
+            DataSource::SemanticConventions => {
+                let resolved_registry = self.resolve_registry()?;
+                SemconvModel::compile(&resolved_registry)
+                    .map(Some)
+                    .map_err(|errors| format_errors(&errors))
+            }
+        }
+    }
+
+    /// Resolve the semantic conventions registry at `registry_path`.
+    fn resolve_registry(&self) -> Result<ResolvedRegistry, String> {
+        let mut semconv_errors = Vec::new();
+        let registry_repo = RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
+            .map_err(|err| err.to_string())?;
+
+        let resolver_config = WeaverResolverConfig {
+            include_unreferenced: true,
+            ..WeaverResolverConfig::default()
+        };
+        let mut resolver = WeaverResolver::new(resolver_config);
+        let resolved_schema =
+            match resolver.load_and_resolve_schema(registry_repo, DefaultSchemaVisitor) {
+                WResult::Ok(resolved_schema) => resolved_schema,
+                WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                WResult::FatalErr(err) => return Err(err.to_string()),
+            }
+            .into_v1()
+            .map_err(|err| err.to_string())?;
+
+        ResolvedRegistry::try_from_resolved_registry(
+            &resolved_schema.registry,
+            resolved_schema.catalog(),
+        )
+        .map_err(|err| err.to_string())
     }
 
     /// Get the typed resource attribute sets.
@@ -462,39 +486,31 @@ const fn default_weight() -> u32 {
     0
 }
 
-/// Semantic conventions registry git tag used when `registry_path` is not set.
+/// Upstream semantic conventions git tag; matches the vendored copy's `VERSION`.
 pub const SEMCONV_REGISTRY_REFSPEC: &str = "v1.44.0";
 
-/// Default semantic conventions registry path.
+/// Default semantic conventions registry path, used when `registry_path` is
+/// not set: the vendored, annotated registry (`vendor/semconv/model`).
 #[must_use]
 pub fn default_registry_path() -> VirtualDirectoryPath {
-    VirtualDirectoryPath::GitRepo {
-        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-        sub_folder: Some("model".to_owned()),
-        refspec: Some(SEMCONV_REGISTRY_REFSPEC.to_owned()),
-    }
-}
-
-/// Path of the vendored semantic conventions registry in this workspace.
-///
-/// The vendored copy (`vendor/semconv/model`) carries the
-/// `traffic-generator` annotations and lets tests run without network access.
-/// It is resolved relative to this crate at compile time, so it is only
-/// meaningful for tests and tools run from within the repository.
-#[must_use]
-pub fn vendored_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::LocalFolder {
-        path: vendored_semconv_dir()
-            .join("model")
+        path: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/semconv/model")
             .to_string_lossy()
             .into_owned(),
     }
 }
 
-/// Directory of the vendored semantic conventions copy (`vendor/semconv`).
+/// Upstream semantic conventions registry: the git repository at
+/// [`SEMCONV_REGISTRY_REFSPEC`]. It carries no `traffic-generator`
+/// annotations and requires network access to clone.
 #[must_use]
-pub fn vendored_semconv_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/semconv")
+pub fn upstream_registry_path() -> VirtualDirectoryPath {
+    VirtualDirectoryPath::GitRepo {
+        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+        sub_folder: Some("model".to_owned()),
+        refspec: Some(SEMCONV_REGISTRY_REFSPEC.to_owned()),
+    }
 }
 
 const fn default_enable_ack_nack() -> bool {
@@ -591,9 +607,32 @@ mod tests {
     use super::{Config, DataSource, GenerationStrategy, build_rotation_table};
     use otel_arrow_dfe_config::ContextEntryName;
     use serde_json::json;
+    use weaver_common::vdir::VirtualDirectoryPath;
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    /// Scenario: A config omits `registry_path`.
+    /// Guarantees: The default registry is the vendored, annotated copy in
+    /// `vendor/semconv/model`, and that directory exists in the repository.
+    #[test]
+    fn default_registry_path_uses_vendored_copy() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": { "log_weight": 1 }
+        }))
+        .expect("config should parse");
+        assert_eq!(cfg.registry_path, super::default_registry_path());
+        let VirtualDirectoryPath::LocalFolder { path } = super::default_registry_path() else {
+            panic!("default registry must be a local folder");
+        };
+        let path = std::path::Path::new(&path);
+        assert!(path.ends_with("vendor/semconv/model"));
+        assert!(
+            path.is_dir(),
+            "vendored registry missing at {}",
+            path.display()
+        );
     }
 
     #[test]

@@ -32,12 +32,13 @@ use super::annotation::{
     self, AnnotationError, AttributeSpec, DEFAULT_HISTOGRAM_BOUNDS, Distribution, Range, Scalar,
     ScalarKind, ValueSpec,
 };
-use super::attributes::get_attribute_name_value;
-use super::config::{Config, TrafficConfig, vendored_registry_path, vendored_semconv_dir};
+use super::attributes::{AttributeGen, get_attribute_name_value};
+use super::config::{Config, TrafficConfig, default_registry_path};
 use super::sampler::{
-    IndexSampler, NumberSampler, lognormal_params, normal_cdf, normal_inverse_sf, normal_quantile,
-    normal_sf, sample_count, sample_value,
+    IndexSampler, NumberSampler, ValueSampler, lognormal_params, normal_cdf, normal_inverse_sf,
+    normal_quantile, normal_sf, sample_count, sample_value,
 };
+use super::semconv_model::SemconvModel;
 use super::semconv_signal::{
     bucketize, semconv_otlp_logs_with_rng, semconv_otlp_metrics_with_rng,
     semconv_otlp_traces_with_rng, severity_number, status_code,
@@ -176,12 +177,20 @@ fn kv_scalar(kv: &KeyValue) -> Scalar {
 }
 
 static REGISTRY: OnceLock<ResolvedRegistry> = OnceLock::new();
+static MODEL: OnceLock<SemconvModel> = OnceLock::new();
+
+fn model() -> &'static SemconvModel {
+    MODEL.get_or_init(|| {
+        SemconvModel::compile(registry())
+            .unwrap_or_else(|errors| panic!("{}", annotation::format_errors(&errors)))
+    })
+}
 
 fn registry() -> &'static ResolvedRegistry {
     REGISTRY.get_or_init(|| {
         let config = Config::new(
             TrafficConfig::new(None, None, 10, 1, 1, 1),
-            vendored_registry_path(),
+            default_registry_path(),
         );
         config
             .get_registry()
@@ -455,8 +464,9 @@ fn parse_degenerate_range_is_valid() {
 // Parsing: rejected value specs
 // ===========================================================================
 
-/// Scenario: Each invalid value-spec shape from the design doc is parsed.
-/// Guarantees: Every one is rejected with the documented key path and reason,
+/// Scenario: Each invalid value-spec shape (mutual exclusion, pairing,
+/// weights, ranges, distribution parameters, zero-mass ranges) is parsed.
+/// Guarantees: Every one is rejected with the expected key path and reason,
 /// so annotation mistakes surface at load time rather than silently.
 #[test]
 fn parse_rejects_invalid_value_specs() {
@@ -1967,7 +1977,7 @@ fn bucketize_uses_upper_inclusive_bounds() {
 fn generated_metrics_respect_annotations() {
     let groups = groups_of(GroupType::Metric);
     let mut r = rng();
-    let data = semconv_otlp_metrics_with_rng(groups.len() * 3, registry(), &mut r);
+    let data = semconv_otlp_metrics_with_rng(groups.len() * 3, model(), &mut r);
     let by_name: HashMap<&str, _> = groups
         .iter()
         .map(|g| (g.metric_name.as_deref().unwrap_or_default(), *g))
@@ -2047,7 +2057,7 @@ fn number_value(v: Option<&number_data_point::Value>, int: bool, name: &str) -> 
 fn generated_spans_and_logs_respect_annotations() {
     let mut r = rng();
     let traces =
-        semconv_otlp_traces_with_rng(groups_of(GroupType::Span).len() * 5, registry(), &mut r);
+        semconv_otlp_traces_with_rng(groups_of(GroupType::Span).len() * 5, model(), &mut r);
     let spans = &traces.resource_spans[0].scope_spans[0].spans;
     let durations: HashSet<u64> = spans
         .iter()
@@ -2061,8 +2071,7 @@ fn generated_spans_and_logs_respect_annotations() {
     assert!(codes.is_subset(&HashSet::from([0, 1, 2])));
     assert!(codes.contains(&2), "error status should appear");
 
-    let logs =
-        semconv_otlp_logs_with_rng(groups_of(GroupType::Event).len() * 10, registry(), &mut r);
+    let logs = semconv_otlp_logs_with_rng(groups_of(GroupType::Event).len() * 10, model(), &mut r);
     let mut severities = HashSet::new();
     for rec in &logs.resource_logs[0].scope_logs[0].log_records {
         assert_eq!(
@@ -2143,19 +2152,209 @@ fn vendored_registry_annotation_coverage() {
 fn config_registry_paths() {
     let config = Config::new(
         TrafficConfig::new(None, None, 10, 1, 1, 1),
-        vendored_registry_path(),
+        default_registry_path(),
     );
     assert!(config.get_registry().expect("valid").is_some());
     let synthetic = config.with_data_source(super::config::DataSource::Synthetic);
     assert!(synthetic.get_registry().expect("valid").is_none());
 }
 
-/// Scenario: The pinned upstream tag is compared with the vendored VERSION.
-/// Guarantees: `SEMCONV_REGISTRY_REFSPEC` and `vendor/semconv/VERSION` stay
-/// in sync.
+// ===========================================================================
+// Compiled model and samplers
+// ===========================================================================
+
+/// Scenario: A precompiled `ValueSampler` and the per-call `sample_value`
+/// helper are driven by identically seeded RNGs for discrete, weighted, and
+/// every continuous distribution (int and double output).
+/// Guarantees: Compiling a sampler once and reusing it draws exactly the same
+/// value sequence as rebuilding it for every draw, so the optimization does
+/// not change generated values.
 #[test]
-fn semconv_refspec_matches_vendored_version() {
-    let version = std::fs::read_to_string(vendored_semconv_dir().join("VERSION"))
-        .expect("vendored VERSION file");
-    assert_eq!(version.trim(), super::config::SEMCONV_REGISTRY_REFSPEC);
+fn compiled_value_sampler_matches_per_call_sampling() {
+    let mut specs = vec![
+        (
+            ValueSpec::Discrete {
+                values: vec![Scalar::Int(1), Scalar::Int(2), Scalar::Int(3)],
+                weights: None,
+            },
+            true,
+        ),
+        (
+            ValueSpec::Discrete {
+                values: vec![Scalar::String("a".into()), Scalar::String("b".into())],
+                weights: Some(vec![9.0, 1.0]),
+            },
+            false,
+        ),
+    ];
+    for (_, distribution, (min, max)) in non_uniform_cases() {
+        for integer in [false, true] {
+            if matches!(distribution, Distribution::Zipf { .. }) && !integer {
+                continue;
+            }
+            specs.push((
+                ValueSpec::Continuous {
+                    range: Range { min, max },
+                    distribution,
+                },
+                integer,
+            ));
+        }
+    }
+    specs.push((
+        ValueSpec::Continuous {
+            range: Range {
+                min: -5.0,
+                max: 5.0,
+            },
+            distribution: Distribution::Uniform,
+        },
+        false,
+    ));
+    for (spec, integer) in specs {
+        let compiled = ValueSampler::new(&spec, integer);
+        let (mut a, mut b) = (rng(), rng());
+        for _ in 0..500 {
+            assert_eq!(
+                compiled.sample_value(&mut a),
+                sample_value(&spec, integer, &mut b),
+                "{spec:?} integer={integer}"
+            );
+        }
+    }
+}
+
+/// Scenario: The vendored registry is compiled into a `SemconvModel`.
+/// Guarantees: The model has one template per span, metric, and event group
+/// (in registry order) and one attribute generator per group attribute, so
+/// generation cycles over exactly the same groups as the registry.
+#[test]
+fn compiled_model_mirrors_registry_groups() {
+    let m = model();
+    let spans = groups_of(GroupType::Span);
+    let metrics = groups_of(GroupType::Metric);
+    let events = groups_of(GroupType::Event);
+    assert_eq!(m.spans.len(), spans.len());
+    assert_eq!(m.metrics.len(), metrics.len());
+    assert_eq!(m.events.len(), events.len());
+    for (t, g) in m.spans.iter().zip(&spans) {
+        assert_eq!(t.name, g.id);
+        assert_eq!(t.attributes.len(), g.attributes.len());
+    }
+    for (t, g) in m.metrics.iter().zip(&metrics) {
+        match t {
+            Some(t) => {
+                assert_eq!(Some(&t.name), g.metric_name.as_ref());
+                assert_eq!(t.attributes.len(), g.attributes.len());
+                assert_eq!(
+                    t.int_value,
+                    annotation::metric_value_is_int(g.annotations.as_ref())
+                );
+            }
+            None => assert!(g.instrument.is_none()),
+        }
+    }
+    for (t, g) in m.events.iter().zip(&events) {
+        assert_eq!(Some(&t.name), g.name.as_ref());
+        assert_eq!(t.attributes.len(), g.attributes.len());
+    }
+}
+
+/// Scenario: A corrupted registry is compiled directly.
+/// Guarantees: `SemconvModel::compile` reports the same errors as
+/// `validate_registry` (group error first, then attribute errors), so
+/// compiling once at startup preserves the full error report.
+#[test]
+fn compile_reports_same_errors_as_validation() {
+    let mut bad = registry().clone();
+    let event = bad
+        .groups
+        .iter_mut()
+        .find(|g| g.r#type == GroupType::Event)
+        .expect("an event group");
+    let mut ann = event.annotations.clone().unwrap_or_default();
+    let _ = ann.insert(
+        annotation::NAMESPACE.to_owned(),
+        YamlValue(serde_yaml::from_str("{ severity: { values: [LOUD] } }").expect("yaml")),
+    );
+    event.annotations = Some(ann);
+    event.attributes.push(attribute(
+        "bad.attr",
+        primitive(PrimitiveOrArrayTypeSpec::Int),
+        Some("{ weights: [1] }"),
+    ));
+    let event_id = event.id.clone();
+
+    let compiled = SemconvModel::compile(&bad).expect_err("invalid annotations");
+    let validated = annotation::validate_registry(&bad).expect_err("invalid annotations");
+    assert_eq!(compiled, validated);
+    assert_eq!(compiled.len(), 2);
+    assert_eq!(compiled[0].group, event_id);
+    assert!(compiled[0].attribute.is_none());
+    assert_eq!(compiled[1].attribute.as_deref(), Some("bad.attr"));
+}
+
+/// Scenario: Non-annotated attributes are compiled into fallback generators
+/// for enums, example lists, single examples, and type defaults.
+/// Guarantees: Compiled fallbacks produce exactly the values the
+/// non-annotated rules allow: every enum member, every example, or the type
+/// default.
+#[test]
+fn compiled_fallbacks_cover_expected_values() {
+    let mut r = rng();
+    let collect = |attr: &Attribute, r: &mut StdRng| -> HashSet<String> {
+        let g = AttributeGen::new_or_fallback(attr);
+        (0..500)
+            .map(|_| format!("{:?}", kv_scalar(&g.sample(r))))
+            .collect()
+    };
+    let e = attribute("e", enum_type(&["a", "b", "c"]), None);
+    assert_eq!(collect(&e, &mut r).len(), 3);
+
+    let mut ex = attribute("x", primitive(PrimitiveOrArrayTypeSpec::String), None);
+    ex.examples = Some(Examples::Strings(vec!["p".into(), "q".into()]));
+    assert_eq!(
+        collect(&ex, &mut r),
+        HashSet::from([
+            format!("{:?}", Scalar::String("p".into())),
+            format!("{:?}", Scalar::String("q".into()))
+        ])
+    );
+
+    let d = attribute("d", primitive(PrimitiveOrArrayTypeSpec::Double), None);
+    assert_eq!(
+        collect(&d, &mut r),
+        HashSet::from([format!("{:?}", Scalar::Double(3.13))])
+    );
+    let b = attribute("b", primitive(PrimitiveOrArrayTypeSpec::Boolean), None);
+    assert_eq!(
+        collect(&b, &mut r),
+        HashSet::from([format!("{:?}", Scalar::Bool(true))])
+    );
+}
+
+/// Scenario: Signals are generated from the same compiled model twice with
+/// identically seeded RNGs.
+/// Guarantees: The compiled model is reused without mutation, so generation
+/// is reproducible for a seed and repeated batches do not depend on prior
+/// generation.
+#[test]
+fn compiled_model_generation_is_reproducible() {
+    let (mut a, mut b) = (rng(), rng());
+    let strip = |mut d: otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData| {
+        for rl in &mut d.resource_logs {
+            for sl in &mut rl.scope_logs {
+                for rec in &mut sl.log_records {
+                    rec.time_unix_nano = 0;
+                    rec.observed_time_unix_nano = 0;
+                }
+            }
+        }
+        d
+    };
+    let n = groups_of(GroupType::Event).len() * 2;
+    assert_eq!(
+        strip(semconv_otlp_logs_with_rng(n, model(), &mut a)),
+        strip(semconv_otlp_logs_with_rng(n, model(), &mut b))
+    );
 }

@@ -15,6 +15,11 @@
 //! `libm::erfc`, with Acklam's rational approximation for the quantile refined
 //! by one Halley step. Lognormal sampling is derived from them; exponential
 //! sampling uses closed forms.
+//!
+//! [`normal_cdf`]: crate::receivers::traffic_generator::sampler::normal_cdf
+//! [`normal_sf`]: crate::receivers::traffic_generator::sampler::normal_sf
+//! [`normal_quantile`]: crate::receivers::traffic_generator::sampler::normal_quantile
+//! [`normal_inverse_sf`]: crate::receivers::traffic_generator::sampler::normal_inverse_sf
 
 use rand::{Rng, RngExt};
 use rand_distr::Distribution as _;
@@ -383,11 +388,6 @@ impl NumberSampler {
             x.clamp(self.range.min, self.range.max)
         }
     }
-
-    /// Draw a value and round it to `i64`.
-    pub fn sample_i64<R: Rng + ?Sized>(&self, rng: &mut R) -> i64 {
-        self.sample_f64(rng).round() as i64
-    }
 }
 
 fn zipf_table(n: u64, exponent: f64) -> Vec<f64> {
@@ -458,53 +458,148 @@ impl IndexSampler {
 // Value sampling
 // ---------------------------------------------------------------------------
 
-/// Draw one value from a value spec.
+/// A value spec compiled once into a reusable sampler.
 ///
-/// Discrete specs pick one of `values` (weighted when `weights` is present,
-/// uniform otherwise). Continuous specs sample the range with inverse
-/// transform sampling; `integer` selects integer output.
-pub fn sample_value<R: Rng + ?Sized>(spec: &ValueSpec, integer: bool, rng: &mut R) -> Scalar {
-    match spec {
-        ValueSpec::Discrete { values, weights } => {
-            let index = IndexSampler::new(values.len(), weights.as_deref()).sample(rng);
-            values[index].clone()
+/// Building a sampler can be expensive (truncated normal / lognormal bounds
+/// evaluate `erfc`, zipf builds a cumulative table over the whole range), so
+/// the generator compiles every spec once when the registry is loaded and
+/// draws from the compiled form for each value.
+#[derive(Debug, Clone)]
+pub enum ValueSampler {
+    /// Pick one of `values` (weighted when the spec has `weights`).
+    Discrete {
+        /// Candidate values.
+        values: Vec<Scalar>,
+        /// Index sampler over `values`.
+        index: IndexSampler,
+    },
+    /// Sample a number from a compiled continuous distribution.
+    Continuous {
+        /// Compiled distribution over the range.
+        sampler: NumberSampler,
+        /// Whether output is an integer.
+        integer: bool,
+    },
+}
+
+impl ValueSampler {
+    /// Compile `spec`; `integer` selects integer output for continuous specs.
+    #[must_use]
+    pub fn new(spec: &ValueSpec, integer: bool) -> Self {
+        match spec {
+            ValueSpec::Discrete { values, weights } => ValueSampler::Discrete {
+                values: values.clone(),
+                index: IndexSampler::new(values.len(), weights.as_deref()),
+            },
+            ValueSpec::Continuous {
+                range,
+                distribution,
+            } => ValueSampler::Continuous {
+                sampler: NumberSampler::new(*range, *distribution, integer),
+                integer,
+            },
         }
-        ValueSpec::Continuous {
-            range,
-            distribution,
-        } => {
-            let x = NumberSampler::new(*range, *distribution, integer).sample_f64(rng);
-            if integer {
-                Scalar::Int(x as i64)
-            } else {
-                Scalar::Double(x)
+    }
+
+    /// Draw one value.
+    ///
+    /// Discrete samplers pick one of `values` (weighted when `weights` is
+    /// present, uniform otherwise). Continuous samplers sample the range with
+    /// inverse transform sampling.
+    pub fn sample_value<R: Rng + ?Sized>(&self, rng: &mut R) -> Scalar {
+        match self {
+            ValueSampler::Discrete { values, index } => values[index.sample(rng)].clone(),
+            ValueSampler::Continuous { sampler, integer } => {
+                let x = sampler.sample_f64(rng);
+                if *integer {
+                    Scalar::Int(x as i64)
+                } else {
+                    Scalar::Double(x)
+                }
             }
         }
     }
+
+    /// Draw a number (strings map to 0, booleans to 0 / 1).
+    pub fn sample_f64<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
+        match self {
+            ValueSampler::Discrete { values, index } => scalar_f64(&values[index.sample(rng)]),
+            ValueSampler::Continuous { sampler, integer } => {
+                let x = sampler.sample_f64(rng);
+                if *integer { (x as i64) as f64 } else { x }
+            }
+        }
+    }
+
+    /// Draw a non-negative count.
+    pub fn sample_count<R: Rng + ?Sized>(&self, rng: &mut R) -> usize {
+        let v = self.sample_f64(rng).round();
+        if v <= 0.0 { 0 } else { v as usize }
+    }
 }
 
-/// Draw a number from a value spec (strings map to 0, booleans to 0 / 1).
-pub fn sample_f64<R: Rng + ?Sized>(spec: &ValueSpec, integer: bool, rng: &mut R) -> f64 {
-    match sample_value(spec, integer, rng) {
-        Scalar::Int(i) => i as f64,
-        Scalar::Double(d) => d,
-        Scalar::Bool(b) => f64::from(u8::from(b)),
+fn scalar_f64(value: &Scalar) -> f64 {
+    match value {
+        Scalar::Int(i) => *i as f64,
+        Scalar::Double(d) => *d,
+        Scalar::Bool(b) => f64::from(u8::from(*b)),
         Scalar::String(_) => 0.0,
     }
 }
 
-/// Draw a non-negative count from a value spec.
-pub fn sample_count<R: Rng + ?Sized>(spec: &ValueSpec, rng: &mut R) -> usize {
-    let v = sample_f64(spec, true, rng).round();
-    if v <= 0.0 { 0 } else { v as usize }
-}
-
-/// Draw a string from a value spec (non-string values are formatted).
-pub fn sample_string<R: Rng + ?Sized>(spec: &ValueSpec, rng: &mut R) -> String {
-    match sample_value(spec, false, rng) {
-        Scalar::String(s) => s,
+/// Format a scalar as a string (template keys, status and severity names).
+#[must_use]
+pub fn scalar_to_string(value: &Scalar) -> String {
+    match value {
+        Scalar::String(s) => s.clone(),
         Scalar::Int(i) => i.to_string(),
         Scalar::Double(d) => d.to_string(),
         Scalar::Bool(b) => b.to_string(),
     }
+}
+
+/// Sampler that maps each discrete value of a spec to a precomputed output.
+///
+/// Used where the generator converts a sampled value into something else
+/// (status codes, severity numbers, attribute `AnyValue`s, template key
+/// names), so the conversion happens once at compile time instead of on
+/// every draw.
+#[derive(Debug, Clone)]
+pub struct MappedSampler<T> {
+    outputs: Vec<T>,
+    index: IndexSampler,
+}
+
+impl<T> MappedSampler<T> {
+    /// Compile `spec`, mapping each discrete value with `map`.
+    ///
+    /// Returns `None` for continuous specs or when `map` rejects a value.
+    pub fn new(spec: &ValueSpec, map: impl FnMut(&Scalar) -> Option<T>) -> Option<Self> {
+        let ValueSpec::Discrete { values, weights } = spec else {
+            return None;
+        };
+        let outputs = values.iter().map(map).collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            index: IndexSampler::new(outputs.len(), weights.as_deref()),
+            outputs,
+        })
+    }
+
+    /// Draw one precomputed output.
+    pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> &T {
+        &self.outputs[self.index.sample(rng)]
+    }
+}
+
+/// Draw one value from a value spec.
+///
+/// Compiles a [`ValueSampler`] for a single draw; generation code compiles
+/// samplers once and reuses them instead.
+pub fn sample_value<R: Rng + ?Sized>(spec: &ValueSpec, integer: bool, rng: &mut R) -> Scalar {
+    ValueSampler::new(spec, integer).sample_value(rng)
+}
+
+/// Draw a non-negative count from a value spec.
+pub fn sample_count<R: Rng + ?Sized>(spec: &ValueSpec, rng: &mut R) -> usize {
+    ValueSampler::new(spec, true).sample_count(rng)
 }

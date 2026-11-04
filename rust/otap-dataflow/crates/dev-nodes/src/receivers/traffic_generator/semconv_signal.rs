@@ -6,20 +6,22 @@
 //! the OpenTelemetry Semantic Conventions registry.
 //!
 //! Values are driven by `traffic-generator` annotations on the registry groups
-//! and attributes. Annotations are read and sampled each time a value is
-//! generated; groups or attributes without annotations fall back to enum
-//! members, examples, and type defaults.
+//! and attributes. The registry is compiled once into a [`SemconvModel`]
+//! (annotations parsed, samplers built); generation only draws from the
+//! compiled templates. Groups or attributes without annotations fall back to
+//! enum members, examples, and type defaults.
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
+//!
+//! [`SemconvModel`]: crate::receivers::traffic_generator::semconv_model::SemconvModel
 
-use crate::receivers::traffic_generator::annotation::{
-    self, DEFAULT_HISTOGRAM_BOUNDS, EventSpec, MetricSpec, SEVERITY_NAMES, STATUS_NAMES, SpanSpec,
-};
-use crate::receivers::traffic_generator::attributes::get_attribute_name_value;
+use crate::receivers::traffic_generator::attributes::AttributeGen;
 use crate::receivers::traffic_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
-use crate::receivers::traffic_generator::sampler::{sample_count, sample_f64, sample_string};
+use crate::receivers::traffic_generator::semconv_model::{
+    EventTemplate, MetricTemplate, SemconvModel, SpanTemplate,
+};
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -31,8 +33,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData, span::Event, span::SpanKind},
 };
 use rand::Rng;
-use weaver_forge::v1::registry::{ResolvedGroup, ResolvedRegistry};
-use weaver_semconv::v1::group::{GroupType, InstrumentSpec, SpanKindSpec};
+use weaver_semconv::v1::group::{InstrumentSpec, SpanKindSpec};
 
 /// Value emitted for metrics without a `value` annotation.
 const DEFAULT_METRIC_VALUE: f64 = 1.0;
@@ -55,187 +56,144 @@ fn scope() -> InstrumentationScope {
 
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
-pub fn semconv_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
-    semconv_otlp_traces_with_rng(signal_count, registry, &mut rand::rng())
+pub fn semconv_otlp_traces(signal_count: usize, model: &SemconvModel) -> TracesData {
+    semconv_otlp_traces_with_rng(signal_count, model, &mut rand::rng())
 }
 
 /// Generates LogsData with the specified resource/scope count and defined events (structured logs) in the registry
 #[must_use]
-pub fn semconv_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsData {
-    semconv_otlp_logs_with_rng(signal_count, registry, &mut rand::rng())
+pub fn semconv_otlp_logs(signal_count: usize, model: &SemconvModel) -> LogsData {
+    semconv_otlp_logs_with_rng(signal_count, model, &mut rand::rng())
 }
 
 /// Generates MetricsData with the specified resource/scope count and defined metrics in the registry
 #[must_use]
-pub fn semconv_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> MetricsData {
-    semconv_otlp_metrics_with_rng(signal_count, registry, &mut rand::rng())
+pub fn semconv_otlp_metrics(signal_count: usize, model: &SemconvModel) -> MetricsData {
+    semconv_otlp_metrics_with_rng(signal_count, model, &mut rand::rng())
 }
 
 /// Like [`semconv_otlp_traces`], drawing random values from `rng`.
 pub fn semconv_otlp_traces_with_rng<R: Rng + ?Sized>(
     signal_count: usize,
-    registry: &ResolvedRegistry,
+    model: &SemconvModel,
     rng: &mut R,
 ) -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
         resource(),
-        vec![ScopeSpans::new(scope(), spans(signal_count, registry, rng))],
+        vec![ScopeSpans::new(scope(), spans(signal_count, model, rng))],
     )])
 }
 
 /// Like [`semconv_otlp_logs`], drawing random values from `rng`.
 pub fn semconv_otlp_logs_with_rng<R: Rng + ?Sized>(
     signal_count: usize,
-    registry: &ResolvedRegistry,
+    model: &SemconvModel,
     rng: &mut R,
 ) -> LogsData {
     LogsData::new(vec![ResourceLogs::new(
         resource(),
-        vec![ScopeLogs::new(scope(), logs(signal_count, registry, rng))],
+        vec![ScopeLogs::new(scope(), logs(signal_count, model, rng))],
     )])
 }
 
 /// Like [`semconv_otlp_metrics`], drawing random values from `rng`.
 pub fn semconv_otlp_metrics_with_rng<R: Rng + ?Sized>(
     signal_count: usize,
-    registry: &ResolvedRegistry,
+    model: &SemconvModel,
     rng: &mut R,
 ) -> MetricsData {
     MetricsData::new(vec![ResourceMetrics::new(
         resource(),
         vec![ScopeMetrics::new(
             scope(),
-            metrics(signal_count, registry, rng),
+            metrics(signal_count, model, rng),
         )],
     )])
 }
 
-fn attributes<R: Rng + ?Sized>(group: &ResolvedGroup, rng: &mut R) -> Vec<KeyValue> {
-    group
-        .attributes
-        .iter()
-        .map(|a| get_attribute_name_value(a, rng))
-        .collect()
+fn attributes<R: Rng + ?Sized>(attributes: &[AttributeGen], rng: &mut R) -> Vec<KeyValue> {
+    attributes.iter().map(|a| a.sample(rng)).collect()
 }
 
 // ---------------------------------------------------------------------------
-// Signal-level annotation readers
+// Signal-level sampling
 // ---------------------------------------------------------------------------
-
-fn span_spec(group: &ResolvedGroup) -> SpanSpec {
-    annotation::lookup(group.annotations.as_ref())
-        .ok()
-        .flatten()
-        .and_then(|m| annotation::parse_span_spec(m).ok())
-        .unwrap_or_default()
-}
-
-fn event_spec(group: &ResolvedGroup) -> EventSpec {
-    annotation::lookup(group.annotations.as_ref())
-        .ok()
-        .flatten()
-        .and_then(|m| annotation::parse_event_spec(m).ok())
-        .unwrap_or_default()
-}
-
-fn metric_spec(group: &ResolvedGroup, instrument: &InstrumentSpec) -> MetricSpec {
-    annotation::lookup(group.annotations.as_ref())
-        .ok()
-        .flatten()
-        .and_then(|m| annotation::parse_metric_spec(m, instrument).ok())
-        .unwrap_or_default()
-}
 
 /// Span duration in nanoseconds (annotation `duration` is in milliseconds).
-fn span_duration_ns<R: Rng + ?Sized>(spec: &SpanSpec, rng: &mut R) -> u64 {
-    match &spec.duration {
-        Some(d) => (sample_f64(d, false, rng) * 1_000_000.0).round().max(0.0) as u64,
+fn span_duration_ns<R: Rng + ?Sized>(span: &SpanTemplate, rng: &mut R) -> u64 {
+    match &span.duration_ms {
+        Some(d) => (d.sample_f64(rng) * 1_000_000.0).round().max(0.0) as u64,
         None => delay(),
     }
 }
 
 /// Span status from the `status` annotation, or `None` when absent.
-fn span_status<R: Rng + ?Sized>(spec: &SpanSpec, rng: &mut R) -> Option<Status> {
-    spec.status.as_ref().map(|s| {
-        let code = status_code(&sample_string(s, rng)).unwrap_or(0);
-        Status::new(code, "")
-    })
+fn span_status<R: Rng + ?Sized>(span: &SpanTemplate, rng: &mut R) -> Option<Status> {
+    span.status
+        .as_ref()
+        .map(|s| Status::new(*s.sample(rng), ""))
 }
 
-/// Log severity number and text from the `severity` annotation (INFO when absent).
-fn log_severity<R: Rng + ?Sized>(spec: &EventSpec, rng: &mut R) -> (i32, String) {
-    match &spec.severity {
-        Some(s) => {
-            let name = sample_string(s, rng);
-            let number = severity_number(&name).unwrap_or(SeverityNumber::Info as i32);
-            (number, name)
-        }
-        None => (SeverityNumber::Info as i32, String::new()),
+/// Log severity number and text from the `severity` annotation (INFO with no
+/// text when absent).
+fn log_severity<R: Rng + ?Sized>(event: &EventTemplate, rng: &mut R) -> (i32, &'static str) {
+    match &event.severity {
+        Some(s) => *s.sample(rng),
+        None => (SeverityNumber::Info as i32, ""),
     }
 }
 
 /// Metric data point value from the `value` annotation (1.0 when absent).
-fn metric_value<R: Rng + ?Sized>(spec: &MetricSpec, integer: bool, rng: &mut R) -> f64 {
-    spec.value
+fn metric_value<R: Rng + ?Sized>(metric: &MetricTemplate, rng: &mut R) -> f64 {
+    metric
+        .value
         .as_ref()
-        .map_or(DEFAULT_METRIC_VALUE, |v| sample_f64(v, integer, rng))
+        .map_or(DEFAULT_METRIC_VALUE, |v| v.sample_f64(rng))
 }
 
 /// Number of data points per metric from the `data_points` annotation (1 when absent).
-fn data_point_count<R: Rng + ?Sized>(spec: &MetricSpec, rng: &mut R) -> usize {
-    spec.data_points
+fn data_point_count<R: Rng + ?Sized>(metric: &MetricTemplate, rng: &mut R) -> usize {
+    metric
+        .data_points
         .as_ref()
-        .map_or(1, |d| sample_count(d, rng).max(1))
+        .map_or(1, |d| d.sample_count(rng).max(1))
 }
 
 /// Map a severity short name to its SeverityNumber value (1..=24).
 #[must_use]
 pub fn severity_number(name: &str) -> Option<i32> {
-    SEVERITY_NAMES
-        .iter()
-        .position(|n| *n == name)
-        .map(|i| i as i32 + 1)
+    crate::receivers::traffic_generator::semconv_model::severity_entry(name).map(|(n, _)| n)
 }
 
 /// Map a status name to its StatusCode value.
 #[must_use]
 pub fn status_code(name: &str) -> Option<i32> {
-    STATUS_NAMES
-        .iter()
-        .position(|n| *n == name)
-        .map(|i| i as i32)
+    crate::receivers::traffic_generator::semconv_model::status_entry(name)
 }
 
 // ---------------------------------------------------------------------------
 // Signals
 // ---------------------------------------------------------------------------
 
+/// Output capacity: `signal_count`, or 0 when there are no groups to cycle.
+const fn capacity(signal_count: usize, groups: usize) -> usize {
+    if groups == 0 { 0 } else { signal_count }
+}
+
 /// generate each span defined in the resolved registry
-fn spans<R: Rng + ?Sized>(
-    signal_count: usize,
-    registry: &ResolvedRegistry,
-    rng: &mut R,
-) -> Vec<Span> {
-    let mut spans = vec![];
-    for group in registry
-        .groups
-        .iter()
-        .filter(|g| g.r#type == GroupType::Span)
-        .cycle()
-        .take(signal_count)
-    {
-        let spec = span_spec(group);
+fn spans<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R) -> Vec<Span> {
+    let mut spans = Vec::with_capacity(capacity(signal_count, model.spans.len()));
+    for span in model.spans.iter().cycle().take(signal_count) {
         let start_time = current_time();
-        let end_time = start_time + span_duration_ns(&spec, rng);
+        let end_time = start_time + span_duration_ns(span, rng);
         let builder = Span::build()
             .trace_id(gen_trace_id())
             .span_id(gen_span_id())
-            .name(group.id.clone())
+            .name(span.name.clone())
             .start_time_unix_nano(start_time)
-            .attributes(attributes(group, rng))
+            .attributes(attributes(&span.attributes, rng))
             .events(
-                group
-                    .events
+                span.events
                     .iter()
                     .map(|event_name| {
                         Event::build()
@@ -245,9 +203,9 @@ fn spans<R: Rng + ?Sized>(
                     })
                     .collect::<Vec<_>>(),
             )
-            .kind(otel_span_kind(group.span_kind.as_ref()))
+            .kind(otel_span_kind(span.kind.as_ref()))
             .end_time_unix_nano(end_time);
-        spans.push(match span_status(&spec, rng) {
+        spans.push(match span_status(span, rng) {
             Some(status) => builder.status(status).finish(),
             None => builder.finish(),
         });
@@ -256,48 +214,27 @@ fn spans<R: Rng + ?Sized>(
 }
 
 /// generate each metric defined in the resolved registry
-fn metrics<R: Rng + ?Sized>(
-    signal_count: usize,
-    registry: &ResolvedRegistry,
-    rng: &mut R,
-) -> Vec<Metric> {
-    let mut metrics = vec![];
-    for group in registry
-        .groups
-        .iter()
-        .filter(|g| g.r#type == GroupType::Metric)
-        .cycle()
-        .take(signal_count)
-    {
-        let Some(instrument) = &group.instrument else {
-            continue;
-        };
-        let spec = metric_spec(group, instrument);
-        let int_value = annotation::metric_value_is_int(group.annotations.as_ref());
-        let point_count = data_point_count(&spec, rng);
+fn metrics<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R) -> Vec<Metric> {
+    let mut metrics = Vec::with_capacity(capacity(signal_count, model.metrics.len()));
+    // Metric groups without an instrument occupy a slot and are skipped.
+    for metric in model.metrics.iter().cycle().take(signal_count).flatten() {
+        let point_count = data_point_count(metric, rng);
         let now = current_time();
         let builder = Metric::build()
-            .name(group.metric_name.clone().unwrap_or_default())
-            .description(group.brief.clone())
-            .unit(group.unit.clone().unwrap_or_default());
-        let metric = match instrument {
+            .name(metric.name.clone())
+            .description(metric.description.clone())
+            .unit(metric.unit.clone());
+        let built = match metric.instrument {
             InstrumentSpec::Histogram => {
                 let points = (0..point_count)
-                    .map(|_| histogram_point(group, &spec, now, rng))
+                    .map(|_| histogram_point(metric, now, rng))
                     .collect::<Vec<_>>();
                 builder
                     .data_histogram(Histogram::new(AggregationTemporality::Delta, points))
                     .finish()
             }
             InstrumentSpec::Gauge => builder
-                .data_gauge(Gauge::new(number_points(
-                    group,
-                    &spec,
-                    int_value,
-                    point_count,
-                    now,
-                    rng,
-                )))
+                .data_gauge(Gauge::new(number_points(metric, point_count, now, rng)))
                 .finish(),
             // Counters are per-interval increments with delta temporality, so
             // each sample is independent and replayed batches stay valid.
@@ -305,44 +242,52 @@ fn metrics<R: Rng + ?Sized>(
                 .data_sum(Sum::new(
                     AggregationTemporality::Delta,
                     true,
-                    number_points(group, &spec, int_value, point_count, now, rng),
+                    number_points(metric, point_count, now, rng),
                 ))
                 .finish(),
             InstrumentSpec::UpDownCounter => builder
                 .data_sum(Sum::new(
                     AggregationTemporality::Delta,
                     false,
-                    number_points(group, &spec, int_value, point_count, now, rng),
+                    number_points(metric, point_count, now, rng),
                 ))
                 .finish(),
         };
-        metrics.push(metric);
+        metrics.push(built);
     }
     metrics
 }
 
 fn number_points<R: Rng + ?Sized>(
-    group: &ResolvedGroup,
-    spec: &MetricSpec,
-    int_value: bool,
+    metric: &MetricTemplate,
     count: usize,
     now: u64,
     rng: &mut R,
 ) -> Vec<NumberDataPoint> {
     (0..count)
         .map(|_| {
-            let attrs = attributes(group, rng);
-            let value = metric_value(spec, int_value, rng);
+            let attrs = attributes(&metric.attributes, rng);
+            let value = metric_value(metric, rng);
             let b = NumberDataPoint::build()
                 .time_unix_nano(now)
                 .attributes(attrs);
-            if int_value {
+            if metric.int_value {
                 b.value_int(value.round() as i64).finish()
             } else {
                 b.value_double(value).finish()
             }
         })
         .collect()
+}
+
+/// Index of the explicit bucket an observation falls into.
+///
+/// Bucket `i` counts observations `x` with `bounds[i-1] < x <= bounds[i]`;
+/// the last bucket (`bounds.len()`) counts `x > bounds[last]` (OTLP explicit
+/// bucket semantics).
+#[must_use]
+pub fn bucket_index(bounds: &[f64], x: f64) -> usize {
+    bounds.partition_point(|b| *b < x)
 }
 
 /// Aggregate sampled observations into explicit bucket counts.
@@ -353,76 +298,56 @@ fn number_points<R: Rng + ?Sized>(
 pub fn bucketize(observations: &[f64], bounds: &[f64]) -> Vec<u64> {
     let mut counts = vec![0u64; bounds.len() + 1];
     for x in observations {
-        let idx = bounds.partition_point(|b| b < x);
-        counts[idx] += 1;
+        counts[bucket_index(bounds, *x)] += 1;
     }
     counts
 }
 
 fn histogram_point<R: Rng + ?Sized>(
-    group: &ResolvedGroup,
-    spec: &MetricSpec,
+    metric: &MetricTemplate,
     now: u64,
     rng: &mut R,
 ) -> HistogramDataPoint {
-    let attrs = attributes(group, rng);
-    let n = spec
+    let attrs = attributes(&metric.attributes, rng);
+    let n = metric
         .observations
         .as_ref()
-        .map_or(1, |o| sample_count(o, rng).max(1));
-    // Histogram observations are aggregated as doubles.
-    let observations = (0..n)
-        .map(|_| metric_value(spec, false, rng))
-        .collect::<Vec<_>>();
-    let bounds = spec
-        .bounds
-        .clone()
-        .unwrap_or_else(|| DEFAULT_HISTOGRAM_BOUNDS.to_vec());
-    let sum = observations.iter().sum::<f64>();
-    let min = observations.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = observations
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+        .map_or(1, |o| o.sample_count(rng).max(1));
+    // Aggregate on the fly instead of materializing the observations.
+    let mut bucket_counts = vec![0u64; metric.bounds.len() + 1];
+    let (mut sum, mut min, mut max) = (0.0, f64::INFINITY, f64::NEG_INFINITY);
+    for _ in 0..n {
+        let x = metric_value(metric, rng);
+        bucket_counts[bucket_index(&metric.bounds, x)] += 1;
+        sum += x;
+        min = min.min(x);
+        max = max.max(x);
+    }
     HistogramDataPoint::build()
         .time_unix_nano(now)
-        .count(observations.len() as u64)
+        .count(n as u64)
         .sum(sum)
         .min(min)
         .max(max)
-        .bucket_counts(bucketize(&observations, &bounds))
-        .explicit_bounds(bounds)
+        .bucket_counts(bucket_counts)
+        .explicit_bounds(metric.bounds.clone())
         .attributes(attrs)
         .finish()
 }
 
 /// generate each event (structured log) defined in the resolved registry
-fn logs<R: Rng + ?Sized>(
-    signal_count: usize,
-    registry: &ResolvedRegistry,
-    rng: &mut R,
-) -> Vec<LogRecord> {
-    let mut log_records = vec![];
-    for group in registry
-        .groups
-        .iter()
-        .filter(|g| g.r#type == GroupType::Event)
-        .cycle()
-        .take(signal_count)
-    {
+fn logs<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R) -> Vec<LogRecord> {
+    let mut log_records = Vec::with_capacity(capacity(signal_count, model.events.len()));
+    for event in model.events.iter().cycle().take(signal_count) {
         // events are structured logs
         let timestamp = current_time();
-        let body_text = match &group.body {
-            Some(body) => body.to_string(),
-            None => String::new(),
-        };
-        let (number, text) = log_severity(&event_spec(group), rng);
+        let (number, text) = log_severity(event, rng);
         let builder = LogRecord::build()
             .time_unix_nano(timestamp)
             .severity_number(number)
-            .event_name(group.name.clone().unwrap_or_default())
-            .attributes(attributes(group, rng))
-            .body(AnyValue::new_string(body_text))
+            .event_name(event.name.clone())
+            .attributes(attributes(&event.attributes, rng))
+            .body(AnyValue::new_string(event.body.clone()))
             .observed_time_unix_nano(timestamp);
         log_records.push(if text.is_empty() {
             builder.finish()
