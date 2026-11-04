@@ -9,7 +9,7 @@ use crate::receivers::filelog_receiver::{
 };
 
 #[derive(Clone, Debug)]
-pub(super) enum FramingConfig {
+pub(crate) enum FramingConfig {
     Line(LineConfig),
     Multiline(MultilineConfig, BoundaryPattern),
 }
@@ -27,7 +27,7 @@ impl FramingConfig {
             .ok_or(Fault::Configuration)
     }
 
-    pub(super) fn slot_bytes(&self, read_bytes: usize) -> Result<usize, Fault> {
+    pub(crate) fn slot_bytes(&self, read_bytes: usize) -> Result<usize, Fault> {
         let payload = match self {
             Self::Line(c) => c.payload_peak_bytes().map_err(|_| Fault::Configuration)?,
             Self::Multiline(c, _) => c.payload_peak_bytes().map_err(|_| Fault::Configuration)?,
@@ -35,26 +35,37 @@ impl FramingConfig {
         payload
             .checked_add(read_bytes)
             .and_then(|n| n.checked_add(self.history_bytes().ok()?))
-            .and_then(|n| n.checked_add(size_of::<Partial>()))
+            .and_then(|n| n.checked_add(64 + size_of::<Partial>()))
             .filter(|n| *n <= isize::MAX as usize)
             .ok_or(Fault::Configuration)
     }
 
-    pub(super) fn create(
+    pub(crate) fn create(
         &self,
         offset: u64,
         initial: bool,
         window: &Window,
-        read_bytes: usize,
+        resume: cp::FramingResume,
     ) -> Result<Partial, Fault> {
         let framer = match self {
             Self::Line(c) => Framing::Line(
                 LineFramer::new(
                     *c,
-                    if initial {
-                        LineStart::NewStream
-                    } else {
-                        LineStart::ResumeAt(offset)
+                    match resume {
+                        cp::FramingResume::Clean if initial => LineStart::NewStream,
+                        cp::FramingResume::Clean => LineStart::ResumeAt(offset),
+                        cp::FramingResume::Continuation {
+                            record_start_offset,
+                            record_end_offset: 0,
+                            next_fragment_index,
+                        } => LineStart::Continuation {
+                            offset,
+                            continuation: super::super::framer::LineContinuation {
+                                record_start_offset,
+                                next_fragment_index,
+                            },
+                        },
+                        _ => return Err(Fault::Configuration),
                     },
                 )
                 .map_err(|_| Fault::Configuration)?,
@@ -63,29 +74,41 @@ impl FramingConfig {
                 MultilineFramer::new(
                     *c,
                     pattern.clone(),
-                    if initial {
-                        RecordStart::NewStream
-                    } else {
-                        RecordStart::ResumeAt(offset)
+                    match resume {
+                        cp::FramingResume::Clean if initial => RecordStart::NewStream,
+                        cp::FramingResume::Clean => RecordStart::ResumeAt(offset),
+                        cp::FramingResume::Continuation {
+                            record_start_offset,
+                            record_end_offset,
+                            next_fragment_index,
+                        } => RecordStart::Continuation {
+                            offset,
+                            continuation: super::super::multiline::RecordContinuation {
+                                record_start_offset,
+                                record_end_offset,
+                                next_fragment_index,
+                            },
+                        },
                     },
                 )
                 .map_err(|_| Fault::Configuration)?,
             ),
         };
         let history_limit = self.history_bytes()?;
-        let mut history = VecDeque::with_capacity(history_limit);
+        let mut history = VecDeque::new();
         history.extend(window.bytes());
         Ok(Partial {
             framer,
-            input: Vec::with_capacity(read_bytes),
+            input: Vec::new(),
             cursor: 0,
             history,
             history_end: offset,
             history_limit,
+            continuing: resume != cp::FramingResume::Clean,
         })
     }
 
-    pub(super) fn matcher(&self) -> Option<BoundaryMatcher> {
+    pub(crate) fn matcher(&self) -> Option<BoundaryMatcher> {
         match self {
             Self::Line(_) => None,
             Self::Multiline(_, p) => Some(p.matcher()),
@@ -96,19 +119,19 @@ impl FramingConfig {
 // Inline storage is included in every conservative slot, avoiding a separate
 // allocation and pointer chase for the framer on each capacity admission.
 #[allow(clippy::large_enum_variant)]
-pub(super) enum Framing {
+pub(crate) enum Framing {
     Line(LineFramer),
     Multiline(MultilineFramer),
 }
 
 #[derive(Debug)]
-pub(super) enum Frame {
+pub(crate) enum Frame {
     Line(LineFrame),
     Multiline(RecordFrame),
 }
 
 impl Frame {
-    pub(super) fn retained_capacity(&self) -> usize {
+    pub(crate) fn retained_capacity(&self) -> usize {
         let (body, source) = match self {
             Self::Line(f) => (&f.body, f.source_body.as_ref().map_or(0, Vec::capacity)),
             Self::Multiline(f) => (&f.body, 0),
@@ -120,13 +143,13 @@ impl Frame {
             }
     }
 
-    pub(super) fn range(&self) -> super::super::decoder::SourceRange {
+    pub(crate) fn range(&self) -> super::super::decoder::SourceRange {
         match self {
             Self::Line(f) => f.frame_range,
             Self::Multiline(f) => f.frame_range,
         }
     }
-    pub(super) fn complete_record(&self) -> bool {
+    pub(crate) fn complete_record(&self) -> bool {
         match self {
             Self::Line(f) => f.fragment.is_none_or(|f| f.is_last),
             Self::Multiline(f) => f.fragment.is_none_or(|f| f.is_last),
@@ -135,29 +158,30 @@ impl Frame {
 }
 
 #[derive(Debug)]
-pub(super) enum FramingFailure {
+pub(crate) enum FramingFailure {
     Line(LineError),
     Multiline(MultilineError),
 }
 
-pub(super) struct Step {
+pub(crate) struct Step {
     pub consumed: usize,
     pub advanced: bool,
     pub frame: Option<Frame>,
     pub error: Option<FramingFailure>,
 }
 
-pub(super) struct Partial {
+pub(crate) struct Partial {
     framer: Framing,
     pub input: Vec<u8>,
     pub cursor: usize,
     history: VecDeque<u8>,
     history_end: u64,
     history_limit: usize,
+    continuing: bool,
 }
 
 impl Partial {
-    pub(super) fn next(&mut self, input: &[u8], matcher: &mut Option<BoundaryMatcher>) -> Step {
+    pub(crate) fn next(&mut self, input: &[u8], matcher: &mut Option<BoundaryMatcher>) -> Step {
         let step = match &mut self.framer {
             Framing::Line(f) => match f.next(f.next_expected_input_offset(), input) {
                 Ok(s) => Step {
@@ -192,17 +216,25 @@ impl Partial {
                 },
             },
         };
-        for byte in &input[..step.consumed] {
-            if self.history.len() == self.history_limit {
-                let _ = self.history.pop_front();
+        if let Some(frame) = &step.frame {
+            self.continuing = !frame.complete_record();
+        }
+        if step.consumed != 0 {
+            // At most four fresh decoder bytes per call. Reserve the declared
+            // history ceiling once, only when fresh bytes actually arrive.
+            if self.history.capacity() < self.history_limit {
+                self.history
+                    .reserve_exact(self.history_limit - self.history.len());
             }
-            self.history.push_back(*byte);
+            let excess = (self.history.len() + step.consumed).saturating_sub(self.history_limit);
+            drop(self.history.drain(..excess));
+            self.history.extend(&input[..step.consumed]);
         }
         self.history_end += step.consumed as u64; // Decoder already checks this addition.
         step
     }
 
-    pub(super) fn boundary(&self, offset: u64) -> Result<Window, Fault> {
+    pub(crate) fn boundary(&self, offset: u64) -> Result<Window, Fault> {
         let behind = usize::try_from(
             self.history_end
                 .checked_sub(offset)
@@ -229,15 +261,16 @@ impl Partial {
         Ok(result)
     }
 
-    pub(super) fn unfinished(&self) -> bool {
-        self.cursor < self.input.len()
+    pub(crate) fn unfinished(&self) -> bool {
+        self.continuing
+            || self.cursor < self.input.len()
             || match &self.framer {
                 Framing::Line(f) => f.pending_source_start().is_some(),
                 Framing::Multiline(f) => f.pending_source_start().is_some(),
             }
     }
 
-    pub(super) fn used(&self) -> usize {
+    pub(crate) fn used(&self) -> usize {
         size_of::<Self>()
             + self.input.capacity()
             + self.history.capacity()

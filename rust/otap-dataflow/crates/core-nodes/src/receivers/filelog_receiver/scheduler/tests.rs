@@ -107,11 +107,11 @@ struct Sink {
     stop_at: Option<usize>,
     reject: bool,
     hold: bool,
-    unresolved: BTreeSet<(u64, u64)>,
+    unresolved: BTreeSet<(u64, u32)>,
     preflights: usize,
 }
 impl BatchSink for Sink {
-    fn preflight(&mut self, _: ReaderKey, _: u64) -> Flow {
+    fn preflight(&mut self, _: ReaderKey, _: u32) -> Flow {
         self.preflights += 1;
         if self.blocked {
             Flow::Stop
@@ -135,7 +135,7 @@ impl BatchSink for Sink {
             Ok(Flow::Continue)
         }
     }
-    fn unresolved(&self, key: ReaderKey, epoch: u64) -> bool {
+    fn unresolved(&self, key: ReaderKey, epoch: u32) -> bool {
         self.unresolved.contains(&(key.0, epoch))
     }
 }
@@ -199,32 +199,24 @@ fn scheduler(
         Instant::now(),
     )
     .unwrap_or_else(|e| panic!("{e:?}"));
+    let registry = Arc::new(super::super::identity::lease::LeaseRegistry::default());
+    let owner = registry.owner("scheduler-test", files.len()).unwrap();
     for (id, _) in files.iter().enumerate() {
-        s.readers.push(Some(Reader {
-            key: ReaderKey(id as u64),
-            epoch: 7,
-            evidence: Evidence {
-                locator: s.io.files[id].locator,
-                fingerprint: Vec::new(),
-                applied_offset: 0,
-                applied_guard: CommittedFrontierGuard::empty(),
+        let seed = ReaderSeed {
+            decision: super::super::identity::decision::Decision::Register {
+                anchor: super::super::identity::decision::Anchor::Beginning,
+                superseded: None,
+                reset: false,
             },
-            handle: None,
-            validation: None,
-            partial: None,
-            window: Window::empty(),
-            initial: true,
-            needs_input: false,
-            check_size: false,
-            service: 0,
-            record_start: 0,
-            failures: 0,
-            last_service: 0,
-            pinned: false,
-            halted: false,
-            lease: None,
-        }));
-        s.ready.push_back(id);
+            file_id: cp::FileId::from_bytes((id as u128 + 1).to_le_bytes()),
+            epoch: 7,
+            offset: 0,
+            resume: cp::FramingResume::Clean,
+            frontier: cp::CommittedFrontierWindow::empty(),
+            fingerprint: Vec::new(),
+            lease: owner.acquire(s.io.files[id].locator).unwrap(),
+        };
+        assert_eq!(s.admit(seed).unwrap(), ReaderKey(id as u64));
     }
     s
 }
@@ -289,19 +281,19 @@ fn hot_reader_cannot_starve_ready_readers() {
 }
 
 /// Scenario: UTF-16 decoding, long lines and BOM replay share tiny turn limits.
-/// Guarantees: Both source reads and zero-consumption processing yield at their independent bounds.
+/// Guarantees: Small byte and processing turns preserve decoded bodies and original source ranges.
 #[test]
-fn source_and_processing_budgets_include_empty_replay() {
+fn utf16_source_and_step_budgets_preserve_ranges() {
     let mut c = line();
     c.encoding = Encoding::Utf16Le;
     let input = [0xff, 0xfe, b'a', 0, b'\n', 0, b'b', 0, b'\n', 0];
     let mut s = scheduler(&[&input], 3, 3, 1, 1, FramingConfig::Line(c));
     let mut sink = Sink::default();
     let now = Instant::now();
-    let mut zero_byte_work = false;
+
     for _ in 0..100 {
-        let t = tick(&mut s, &mut sink, now);
-        zero_byte_work |= t.bytes == 0 && t.steps == 3;
+        let _ = tick(&mut s, &mut sink, now);
+
         if sink.frames.len() == 2 {
             break;
         }
@@ -310,7 +302,7 @@ fn source_and_processing_budgets_include_empty_replay() {
         sink.frames.iter().map(body).collect::<Vec<_>>(),
         [b"a", b"b"]
     );
-    assert!(zero_byte_work);
+
     assert_eq!(sink.frames[0].frame.range().start, 0);
     assert_eq!(sink.frames[0].frame.range().end, 6);
 }
@@ -433,7 +425,7 @@ fn descriptor_exhaustion_uses_bounded_global_backoff() {
     ));
     assert_eq!(s.io.opens.get(), 0);
     assert_eq!(s.deadlines.len(), 2);
-    assert_eq!(s.slots, 2);
+    assert_eq!(s.slots, 0);
     frames(&mut s, &mut sink, 2, now + Duration::from_millis(250));
     assert!(s.readers.iter().flatten().all(|r| !r.halted));
 }
@@ -715,13 +707,9 @@ fn unresolved_delta_vetoes_eviction() {
 /// Guarantees: None of these scheduling operations releases ownership or changes supplied identity state.
 #[test]
 fn lease_and_identity_survive_eviction_and_ack_waits() {
-    struct Lease(Rc<Cell<usize>>);
-    impl Drop for Lease {
-        fn drop(&mut self) {
-            self.0.set(self.0.get() + 1);
-        }
-    }
-    let dropped = Rc::new(Cell::new(0));
+    let registry = Arc::new(super::super::identity::lease::LeaseRegistry::default());
+    let owner = registry.owner("lease-test", 1).unwrap();
+    let competing = registry.owner("competitor", 1).unwrap();
     let mut s = scheduler(
         &[b"long partial", b"b\n"],
         4,
@@ -730,19 +718,20 @@ fn lease_and_identity_survive_eviction_and_ack_waits() {
         1,
         FramingConfig::Line(line()),
     );
-    s.readers[0].as_mut().unwrap().lease = Some(Box::new(Lease(Rc::clone(&dropped))));
+    let locator = s.readers[0].as_ref().unwrap().lease.locator();
+    s.readers[0].as_mut().unwrap().lease = owner.acquire(locator).unwrap();
     let mut sink = Sink {
         stop_at: Some(1),
         ..Sink::default()
     };
     frames(&mut s, &mut sink, 1, Instant::now());
-    assert_eq!(dropped.get(), 0);
+    assert!(competing.acquire(locator).is_err());
     let r = s.readers[0].as_ref().unwrap();
     assert_eq!(r.key, ReaderKey(0));
     assert_eq!(r.epoch, 7);
     assert_eq!(r.evidence.applied_offset, 0);
     drop(s);
-    assert_eq!(dropped.get(), 1);
+    assert!(competing.acquire(locator).is_ok());
 }
 
 /// Scenario: Cancellation becomes visible immediately after a completed source read.
@@ -953,7 +942,9 @@ fn linux_adapter_checks_real_source_evidence() {
     let evidence = Evidence {
         locator: source.locator(),
         fingerprint: b"prefix".to_vec(),
+        fingerprint_offset: 0,
         applied_offset: 7,
+        resume_end: 0,
         applied_guard: CommittedFrontierGuard::compute(7, b"prefix\n").unwrap(),
     };
     drop(source);
@@ -1181,4 +1172,528 @@ fn nonzero_start_and_short_reads_preserve_both_frontiers() {
     assert_eq!(s.readers[0].as_ref().unwrap().evidence.applied_offset, 100);
     assert_eq!(s.readers[0].as_ref().unwrap().epoch, 7);
     assert_eq!(s.io.peak, 1);
+}
+
+/// Scenario: Two backlogged readers share one descriptor with the minimum two-step budget.
+/// Guarantees: A reader that spends its last step evicting retains the next open opportunity; both emit before EOF.
+#[test]
+fn minimum_budget_eviction_cannot_starve_competing_reader() {
+    let hot = b"a\n".repeat(1000);
+    let mut s = scheduler(&[&hot, &hot], 8, 2, 2, 1, FramingConfig::Line(line()));
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    frames(&mut s, &mut sink, 12, now);
+    for key in [ReaderKey(0), ReaderKey(1)] {
+        assert!(sink.frames.iter().take(12).any(|f| f.key == key));
+        assert!(s.readers[key.0 as usize].as_ref().unwrap().window.end < hot.len() as u64);
+    }
+}
+
+/// Scenario: A split frame leaves an owned overflow unit and no fresh input to consume.
+/// Guarantees: One remaining processing step advances that replay only; uncharged replay would read or emit later work in the same turn.
+#[test]
+fn pending_empty_input_replay_spends_the_processing_budget() {
+    let mut config = line();
+    config.max_line_bytes = 4;
+    config.max_record_bytes = 4;
+    let mut s = scheduler(&[b"abcdX\n"], 5, 64, 1, 1, FramingConfig::Line(config));
+    let mut sink = Sink {
+        stop_at: Some(1),
+        ..Sink::default()
+    };
+    let now = Instant::now();
+    frames(&mut s, &mut sink, 1, now);
+    let partial = s.readers[0].as_ref().unwrap().partial.as_ref().unwrap();
+    assert!(partial.input.is_empty());
+    assert!(!sink.frames[0].frame.complete_record());
+    let reads = s.io.reads;
+    sink.blocked = false;
+    s.resume_sink();
+    s.limits.steps = 2;
+    let turn = tick(&mut s, &mut sink, now);
+    assert_eq!(turn.bytes, 0);
+    assert_eq!(turn.steps, 2);
+    assert_eq!(s.io.reads, reads);
+    assert_eq!(sink.frames.len(), 1);
+    frames(&mut s, &mut sink, 2, now);
+    assert_eq!(body(&sink.frames[1]), b"X");
+}
+
+/// Scenario: A probe waiter is notified with several other ready readers and a vacant resident slot.
+/// Guarantees: Only that waiter consumes the handoff, and probe notification does not reactivate descriptor waiters.
+#[test]
+fn notified_probe_belongs_to_its_waiting_reader() {
+    let mut s = scheduler(
+        &[b"a\n", b"b\n", b"c\n"],
+        8,
+        32,
+        3,
+        1,
+        FramingConfig::Line(line()),
+    );
+    let budget = Arc::clone(&s.probe_budget);
+    let held = budget.try_reserve().unwrap();
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
+    assert_eq!(s.slots, 0);
+    assert!(matches!(
+        tick(&mut s, &mut sink, now).reason,
+        Reason::Descriptors
+    ));
+    assert_eq!(s.slots, 0);
+    assert_eq!(s.blocked.len(), 1);
+    drop(held);
+    s.probe_available();
+    let t = tick(&mut s, &mut sink, now);
+    assert_eq!(t.key, Some(ReaderKey(0)));
+    assert_eq!(sink.frames[0].key, ReaderKey(0));
+    assert_eq!(s.blocked.len(), 1);
+    assert!(budget.try_reserve().is_some());
+}
+
+/// Scenario: One reader waits for a probe while a resident reader stops or rejects output.
+/// Guarantees: The stopping turn releases the pending request immediately while preserving retained frame ownership and leases.
+#[test]
+fn sink_stop_and_terminal_fault_release_other_readers_probe_request() {
+    for reject in [false, true] {
+        let mut s = scheduler(
+            &[b"a\nb\n", b"c\n"],
+            2,
+            32,
+            2,
+            2,
+            FramingConfig::Line(line()),
+        );
+        let mut sink = Sink::default();
+        let now = Instant::now();
+        frames(&mut s, &mut sink, 1, now);
+        let budget = Arc::clone(&s.probe_budget);
+        let held = budget.try_reserve().unwrap();
+        assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
+        drop(held);
+        assert!(budget.try_reserve().is_none());
+        // Do not deliver the wake yet: resident work reaches its sink first.
+        sink.reject = reject;
+        sink.stop_at = Some(2);
+        for _ in 0..16 {
+            let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+            if matches!(
+                t.reason,
+                Reason::Paused | Reason::Terminal(Fault::SinkRejected)
+            ) {
+                break;
+            }
+        }
+        assert!(s.sink_stopped);
+        assert!(s.probe_waiter.is_none());
+        assert!(budget.try_reserve().is_some());
+        if reject {
+            assert_eq!(body(s.rejected.as_ref().unwrap()), b"b");
+        }
+    }
+}
+
+/// Scenario: Cancellation is first observed while draining a resource notification.
+/// Guarantees: It releases a separately pending probe request on that return, without needing another turn.
+#[test]
+fn cancellation_during_reactivation_releases_probe_request() {
+    let mut s = scheduler(&[b"a\n", b"b\n"], 8, 32, 2, 1, FramingConfig::Line(line()));
+    let budget = Arc::clone(&s.probe_budget);
+    let held = budget.try_reserve().unwrap();
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
+    assert!(matches!(
+        tick(&mut s, &mut sink, now).reason,
+        Reason::Descriptors
+    ));
+    drop(held);
+    s.reactivate = s.blocked.len();
+    let mut checks = 0;
+    let t = s.turn(now, permission(), &mut sink, Waker::noop(), || {
+        checks += 1;
+        checks == 2
+    });
+    assert!(matches!(t.reason, Reason::Cancelled));
+    assert!(budget.try_reserve().is_some());
+}
+
+/// Scenario: A nonresident file cannot evict a pinned resident that has released its empty EOF slot.
+/// Guarantees: Descriptor waiting holds no empty reservation, allowing the pinned reader to read appended data.
+#[test]
+fn descriptor_wait_does_not_pin_empty_partial_capacity() {
+    let mut s = scheduler(&[b"", b"b\n"], 8, 32, 1, 1, FramingConfig::Line(line()));
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
+    s.readers[0].as_mut().unwrap().pinned = true;
+    assert!(matches!(
+        tick(&mut s, &mut sink, now).reason,
+        Reason::Descriptors
+    ));
+    assert_eq!(s.slots, 0);
+    s.io.files[0].bytes.extend_from_slice(b"new\n");
+    frames(&mut s, &mut sink, 1, now + Duration::from_millis(250));
+    assert_eq!(body(&sink.frames[0]), b"new");
+}
+
+/// Scenario: A partial slot is reserved without any source remainder or fresh decoded bytes.
+/// Guarantees: Payload capacity is lazy; admission itself does not allocate the maximum read buffer or history ceiling.
+#[test]
+fn partial_payload_is_lazy_until_used() {
+    let config = FramingConfig::Line(line());
+    let partial = config
+        .create(0, true, &Window::empty(), cp::FramingResume::Clean)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(partial.input.capacity(), 0);
+    assert_eq!(partial.used(), size_of::<Partial>());
+}
+
+/// Scenario: Task 12 commits admission, the scheduler emits data, and authorized progress is applied by the identity owner.
+/// Guarantees: ReaderSeed supplies the real ID/epoch/lease and ignored-header evidence; the scheduler neither writes progress nor releases ownership during Stop.
+#[test]
+fn committed_reader_seed_and_applied_evidence_integrate_with_scheduler() {
+    use super::super::{
+        config::{Config, StartAt},
+        identity::{
+            Admission, Candidate, CommittedAdmission, IdentityOwner, decision::Context,
+            lease::LeaseRegistry,
+        },
+        source::{SourceFile, SymlinkPolicy},
+    };
+    use super::io::LinuxIo;
+    use std::{
+        fs::File,
+        os::{fd::AsFd, unix::fs::PermissionsExt},
+        time::SystemTime,
+    };
+    let source = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = source.path().join("log");
+    let bytes = b"header\nbody\nnext\n";
+    std::fs::write(&path, bytes).unwrap();
+    let parent = File::open(source.path()).unwrap();
+    let open = || SourceFile::open_at(&parent, c"log", SymlinkPolicy::Reject, None, || false);
+    let locator = open().unwrap().locator();
+    let mut config = Config {
+        include: vec![path.to_str().unwrap().into()],
+        start_at: StartAt::Beginning,
+        ..Config::default()
+    };
+    config.identity.ignored_header_bytes = 7;
+    config.identity.fingerprint_bytes = 16;
+    config.limits.max_tracked_files = 4;
+    config.limits.max_open_files = 1;
+    let (inputs, _) = config
+        .compile("g", "p", "filelog", source.path())
+        .unwrap()
+        .into_parts();
+    let root =
+        cp::store::StateRoot::from_borrowed_fd(File::open(state.path()).unwrap().as_fd()).unwrap();
+    let registry = Arc::new(LeaseRegistry::default());
+    let other = registry.owner("other", 1).unwrap();
+    let store = cp::store::CheckpointStore::open(
+        &root,
+        inputs.checkpoint_id(),
+        inputs.store_config().unwrap(),
+    )
+    .unwrap();
+    let mut owner = IdentityOwner::new(
+        store,
+        registry
+            .owner(
+                "owner",
+                IdentityOwner::required_lease_capacity(&inputs).unwrap(),
+            )
+            .unwrap(),
+        &inputs,
+    )
+    .unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    // An outstanding scheduler request deliberately takes precedence over a
+    // new opportunistic identity preparation on the same read worker.
+    let request = budget.request_reader(Waker::noop().clone()).unwrap();
+    let candidate = || Candidate {
+        path: &path,
+        locator,
+        size: bytes.len() as u64,
+        fingerprint: &bytes[7..],
+        context: Context::Unrelated,
+    };
+    assert!(matches!(
+        owner
+            .prepare(candidate(), &budget, SystemTime::now(), open, || false)
+            .unwrap(),
+        Admission::Deferred
+    ));
+    drop(request);
+    let mut admission = owner
+        .prepare(candidate(), &budget, SystemTime::now(), open, || false)
+        .unwrap();
+    for _ in 0..32 {
+        let Admission::Scanning(mut scan) = admission else {
+            break;
+        };
+        if owner
+            .advance_association(&mut scan, || false)
+            .unwrap()
+            .complete
+        {
+            admission = owner
+                .finish_prepare(scan, &budget, SystemTime::now(), open, || false)
+                .unwrap();
+        } else {
+            admission = Admission::Scanning(scan);
+        }
+    }
+    let plan = match admission {
+        Admission::Ready(plan) => plan,
+        other => panic!("{other:?}"),
+    };
+    let seed = match owner.commit(plan).unwrap() {
+        CommittedAdmission::Reader(seed) => seed,
+        other => panic!("{other:?}"),
+    };
+    let file_id = seed.file_id;
+    let epoch = seed.epoch;
+    let io = LinuxIo(|_: ReaderKey, cancel: &mut dyn FnMut() -> bool| {
+        SourceFile::open_at(
+            &parent,
+            c"log",
+            SymlinkPolicy::Reject,
+            Some(locator),
+            cancel,
+        )
+        .map_err(AccessFailure::from)
+    });
+    let mut scheduler = Scheduler::from_inputs(io, &inputs, 64, budget, Instant::now())
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let key = scheduler.admit(seed).unwrap();
+    let mut sink = Sink {
+        stop_at: Some(1),
+        ..Sink::default()
+    };
+    for _ in 0..20 {
+        let _ = scheduler.turn(
+            Instant::now(),
+            permission(),
+            &mut sink,
+            Waker::noop(),
+            || false,
+        );
+        if !sink.frames.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(body(&sink.frames[0]), b"header");
+    assert_eq!(sink.frames[0].file_id, file_id);
+    assert_eq!(sink.frames[0].epoch, epoch);
+    assert!(other.acquire(locator).is_err());
+    assert_eq!(
+        owner
+            .state()
+            .unwrap()
+            .get(&file_id)
+            .unwrap()
+            .committed_offset,
+        0
+    );
+    let _ = owner
+        .append_checkpoint(
+            vec![cp::Operation::UpdateProgress(cp::UpdateProgress {
+                file_id,
+                expected_committed_offset: 0,
+                expected_file_epoch: epoch,
+                new_committed_offset: 7,
+                new_committed_frontier_guard: sink.frames[0].guard,
+                new_framing_resume: cp::FramingResume::Clean,
+                new_last_seen_time_unix_nano: 1,
+                finalize: false,
+            })],
+            cp::store::Durability::Sync,
+        )
+        .unwrap();
+    let record = owner.state().unwrap().get(&file_id).unwrap();
+    scheduler.observe_applied(key, record).unwrap();
+    assert_eq!(
+        scheduler.readers[0]
+            .as_ref()
+            .unwrap()
+            .evidence
+            .applied_offset,
+        7
+    );
+    let mut stale = record.clone();
+    stale.file_epoch += 1;
+    assert_eq!(
+        scheduler.observe_applied(key, &stale),
+        Err(Fault::SourceContract)
+    );
+    drop(scheduler);
+    assert!(other.acquire(locator).is_ok());
+}
+
+/// Scenario: An admitted ReaderSeed carries a recovered split continuation.
+/// Guarantees: The scheduler preserves its original fragment index, file ID, epoch and starting frontier instead of beginning a new record.
+#[test]
+fn reader_seed_preserves_recovered_split_continuation() {
+    use super::super::identity::{decision::Decision, lease::LeaseRegistry};
+    let mut config = line();
+    config.max_line_bytes = 4;
+    config.max_record_bytes = 4;
+    let mut s = scheduler(&[b"abcdef\n"], 8, 32, 1, 1, FramingConfig::Line(config));
+    s.readers.clear();
+    s.ready.clear();
+    let registry = Arc::new(LeaseRegistry::default());
+    let owner = registry.owner("recovery", 1).unwrap();
+    let file_id = cp::FileId::from_bytes([42; 16]);
+    let seed = ReaderSeed {
+        decision: Decision::Resume(file_id),
+        file_id,
+        epoch: 9,
+        offset: 4,
+        resume: cp::FramingResume::Continuation {
+            record_start_offset: 0,
+            record_end_offset: 0,
+            next_fragment_index: 1,
+        },
+        frontier: cp::CommittedFrontierWindow::new(4, b"abcd").unwrap(),
+        fingerprint: b"abcd".to_vec(),
+        lease: owner.acquire(s.io.files[0].locator).unwrap(),
+    };
+    let _ = s.admit(seed).unwrap();
+    let mut sink = Sink::default();
+    frames(&mut s, &mut sink, 1, Instant::now());
+    let output = &sink.frames[0];
+    assert_eq!(body(output), b"ef");
+    assert_eq!(output.file_id, file_id);
+    assert_eq!(output.epoch, 9);
+    assert_eq!(output.frame.range().start, 4);
+    let Frame::Line(frame) = &output.frame else {
+        panic!("expected line");
+    };
+    let fragment = frame.fragment.unwrap();
+    assert_eq!(fragment.index, 1);
+    assert_eq!(fragment.record_start_offset, 0);
+    assert!(fragment.is_last);
+    assert_eq!(s.readers[0].as_ref().unwrap().evidence.applied_offset, 4);
+}
+
+/// Scenario: A recovered multiline continuation has a known end beyond the file's current size.
+/// Guarantees: Reopen reports shrink before reading or emitting any part of that continuation.
+#[test]
+fn reader_seed_known_end_is_revalidated_before_continuation() {
+    use super::super::identity::{decision::Decision, lease::LeaseRegistry};
+    let config = FramingConfig::Multiline(
+        MultilineConfig {
+            line: line(),
+            max_lines: 10,
+            mode: GroupingMode::Start,
+        },
+        BoundaryPattern::compile("^H", PatternMode::Text).unwrap(),
+    );
+    let mut s = scheduler(&[b"abcdef"], 8, 32, 1, 1, config);
+    s.readers.clear();
+    s.ready.clear();
+    let registry = Arc::new(LeaseRegistry::default());
+    let owner = registry.owner("known-end", 1).unwrap();
+    let file_id = cp::FileId::from_bytes([44; 16]);
+    let seed = ReaderSeed {
+        decision: Decision::Resume(file_id),
+        file_id,
+        epoch: 2,
+        offset: 4,
+        resume: cp::FramingResume::Continuation {
+            record_start_offset: 0,
+            record_end_offset: 10,
+            next_fragment_index: 1,
+        },
+        frontier: cp::CommittedFrontierWindow::new(4, b"abcd").unwrap(),
+        fingerprint: b"abcd".to_vec(),
+        lease: owner.acquire(s.io.files[0].locator).unwrap(),
+    };
+    let _ = s.admit(seed).unwrap();
+    let mut sink = Sink::default();
+    let t = tick(&mut s, &mut sink, Instant::now());
+    assert!(matches!(t.reason, Reason::Transition(Transition::Shrunk)));
+    assert!(sink.frames.is_empty());
+    assert_eq!(s.io.reads, 0);
+}
+
+/// Scenario: A committed seed cannot fit the scheduler's logical-reader capacity.
+/// Guarantees: Refusal returns the actual seed and its lease, without source I/O or a terminal scheduler fault.
+#[test]
+fn admission_refusal_returns_seed_ownership() {
+    use super::super::identity::{decision::Decision, lease::LeaseRegistry};
+    let mut s = scheduler(&[b"a\n"], 8, 32, 1, 1, FramingConfig::Line(line()));
+    let registry = Arc::new(LeaseRegistry::default());
+    let owner = registry.owner("refused", 1).unwrap();
+    let other = registry.owner("other", 1).unwrap();
+    let locator = FileLocator {
+        device: 2,
+        inode: 2,
+    };
+    let file_id = cp::FileId::from_bytes([45; 16]);
+    let seed = ReaderSeed {
+        decision: Decision::Resume(file_id),
+        file_id,
+        epoch: 3,
+        offset: 0,
+        resume: cp::FramingResume::Clean,
+        frontier: cp::CommittedFrontierWindow::empty(),
+        fingerprint: Vec::new(),
+        lease: owner.acquire(locator).unwrap(),
+    };
+    let rejected = s.admit(seed).unwrap_err();
+    assert_eq!(rejected.reason, SeedRefusal::Capacity);
+    assert_eq!(rejected.seed.file_id, file_id);
+    assert!(other.acquire(locator).is_err());
+    assert_eq!(s.io.reads, 0);
+    assert!(s.terminal.is_none());
+    drop(rejected);
+    assert!(other.acquire(locator).is_ok());
+}
+
+/// Scenario: The read worker acquires and releases its own probe conversion.
+/// Guarantees: Release does not generate a spurious wake for that same worker.
+#[test]
+fn reader_conversion_does_not_wake_itself() {
+    let budget = Arc::new(ProbeBudget::default());
+    let count = Arc::new(WakeCount::default());
+    let request = budget
+        .request_reader(Waker::from(Arc::clone(&count)))
+        .unwrap();
+    let held = request.try_reserve().unwrap();
+    drop(held);
+    drop(request);
+    assert_eq!(count.0.load(Ordering::Relaxed), 0);
+    assert!(budget.try_reserve().is_some());
+}
+
+/// Scenario: Both hot readers encounter probe contention on every reopen with one descriptor and two processing steps.
+/// Guarantees: Dropping empty reservations does not repeatedly restart setup without reaching source reads; both readers emit.
+#[test]
+fn contended_minimum_budget_opens_reach_source_reads() {
+    let hot = b"hot\n".repeat(1000);
+    let mut s = scheduler(&[&hot, &hot], 8, 2, 2, 1, FramingConfig::Line(line()));
+    let budget = Arc::clone(&s.probe_budget);
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    for _ in 0..1000 {
+        // Discovery holds the allowance until the scheduler has returned at a
+        // controlled operation boundary. A pending reader owns the next turn.
+        let held = budget.try_reserve();
+        let _ = tick(&mut s, &mut sink, now);
+        drop(held);
+        s.probe_available();
+        if [ReaderKey(0), ReaderKey(1)]
+            .iter()
+            .all(|key| sink.frames.iter().any(|f| &f.key == key))
+        {
+            return;
+        }
+    }
+    panic!("both readers must emit under sustained contention");
 }

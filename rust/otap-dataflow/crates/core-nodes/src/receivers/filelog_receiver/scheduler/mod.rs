@@ -3,36 +3,39 @@
 
 //! Task 15 synchronous scheduling core. See `../docs/scheduling.md`.
 //!
-//! Admission is deliberately unavailable in production until ReaderSeed lands.
+//! Readers are supplied by Task 12 after committed admission or validated recovery.
 //! No method writes checkpoints or authorizes lifecycle transitions.
 
 use super::discovery::{ProbeBudget, ReaderProbeRequest};
-use otel_arrow_dfe_filelog_checkpoint::CommittedFrontierGuard;
+use super::identity::{ReaderSeed, lease::LeaseGuard};
+use otel_arrow_dfe_filelog_checkpoint::{self as cp, CommittedFrontierGuard};
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 use std::task::Waker;
 use std::time::{Duration, Instant};
 
-mod batch;
+pub(crate) mod batch;
 #[cfg(test)]
 use batch::Rejected;
-use batch::{BatchSink, Flow, Output};
+pub(crate) use batch::{BatchSink, Flow, Output};
 mod framing;
-mod io;
-use framing::{Frame, FramingConfig, FramingFailure, Partial};
-use io::{AccessFailure, Evidence, ReaderIo, Validation};
+pub(crate) mod io;
+use framing::Partial;
+pub(crate) use framing::{Frame, FramingConfig, FramingFailure};
+pub(crate) use io::{AccessFailure, ReaderIo};
+use io::{Evidence, Validation};
 
 /// Opaque runtime key supplied by identity/composition, not a durable ID generator.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ReaderKey(u64);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
+pub(crate) struct ReaderKey(u64);
 
 /// Independent authority from composition. Clearing one cause cannot clear others.
 #[derive(Clone, Copy, Default)]
-struct Permission {
-    read: bool,
-    process: bool,
-    memory: bool,
+pub(crate) struct Permission {
+    pub read: bool,
+    pub process: bool,
+    pub memory: bool,
 }
 impl Permission {
     fn allowed(self) -> bool {
@@ -41,14 +44,14 @@ impl Permission {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Transition {
+pub(crate) enum Transition {
     Replaced,
     Shrunk,
     Changed,
     Ineligible,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Fault {
+pub(crate) enum Fault {
     Configuration,
     DeadlineOverflow,
     Accounting,
@@ -56,7 +59,7 @@ enum Fault {
     SourceContract,
 }
 #[derive(Debug)]
-enum Reason {
+pub(crate) enum Reason {
     Progress,
     Idle,
     Paused,
@@ -73,24 +76,24 @@ enum Reason {
     Terminal(Fault),
 }
 #[derive(Debug)]
-struct Turn {
-    key: Option<ReaderKey>,
-    bytes: usize,
-    steps: usize,
-    reason: Reason,
+pub(crate) struct Turn {
+    pub key: Option<ReaderKey>,
+    pub bytes: usize,
+    pub steps: usize,
+    pub reason: Reason,
 }
 
 struct Limits {
     readers: usize,
     descriptors: usize,
     read_bytes: usize,
-    steps: usize,
+    pub steps: usize,
     partial_bytes: usize,
     eof_interval: Duration,
 }
 
 #[derive(Clone, Debug)]
-struct Window {
+pub(crate) struct Window {
     end: u64,
     data: [u8; 64],
 }
@@ -126,8 +129,10 @@ impl Window {
 }
 
 struct Reader<H> {
+    file_id: cp::FileId,
+    resume: cp::FramingResume,
     key: ReaderKey,
-    epoch: u64,
+    epoch: u32,
     evidence: Evidence,
     handle: Option<H>,
     validation: Option<Validation>,
@@ -142,13 +147,10 @@ struct Reader<H> {
     last_service: u64,
     pinned: bool,
     halted: bool,
-    // Task 12 integration will add ReaderSeed's actual non-cloneable lease here.
-    // Test construction cannot be used by production composition.
-    #[cfg(test)]
-    lease: Option<Box<dyn std::any::Any>>,
+    lease: LeaseGuard,
 }
 
-struct Scheduler<I: ReaderIo> {
+pub(crate) struct Scheduler<I: ReaderIo> {
     io: I,
     limits: Limits,
     framing: FramingConfig,
@@ -166,7 +168,9 @@ struct Scheduler<I: ReaderIo> {
     slot_bytes: usize,
     buffer: Vec<u8>,
     probe_budget: Arc<ProbeBudget>,
-    probe_request: Option<ReaderProbeRequest>,
+    probe_waiter: Option<(usize, ReaderProbeRequest)>,
+    probe_ready: bool,
+    fingerprint_offset: u64,
     // An eviction walk can yield to worker control without rescanning protected
     // prefixes. No reader is serviced until this bounded walk completes.
     selecting: Option<(usize, Option<(u64, usize)>)>,
@@ -176,7 +180,157 @@ struct Scheduler<I: ReaderIo> {
     terminal: Option<Fault>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum SeedRefusal {
+    Capacity,
+    InvalidSeed,
+    Stopped,
+}
+
+#[derive(Debug)]
+pub(crate) struct RejectedSeed {
+    pub reason: SeedRefusal,
+    pub seed: ReaderSeed,
+}
+
 impl<I: ReaderIo> Scheduler<I> {
+    /// Build on the blocking worker from the same validated inputs as Task 12.
+    pub(crate) fn from_inputs(
+        io: I,
+        inputs: &super::config::ValidatedInputs,
+        steps: usize,
+        probe_budget: Arc<ProbeBudget>,
+        now: Instant,
+    ) -> Result<Self, Fault> {
+        let config = inputs.settings();
+        let framing = match inputs.grouping() {
+            Some(mode) => FramingConfig::Multiline(
+                super::multiline::MultilineConfig {
+                    line: inputs.line(),
+                    max_lines: config.framing.max_multiline_lines,
+                    mode,
+                },
+                inputs.boundary().ok_or(Fault::Configuration)?.clone(),
+            ),
+            None => FramingConfig::Line(inputs.line()),
+        };
+        let limits = Limits {
+            readers: usize::try_from(config.limits.max_tracked_files)
+                .map_err(|_| Fault::Configuration)?,
+            descriptors: usize::try_from(config.limits.max_open_files)
+                .map_err(|_| Fault::Configuration)?,
+            read_bytes: usize::try_from(config.limits.max_read_bytes_per_turn)
+                .map_err(|_| Fault::Configuration)?,
+            steps,
+            partial_bytes: usize::try_from(config.limits.max_partial_state_bytes)
+                .map_err(|_| Fault::Configuration)?,
+            eof_interval: config.reader.eof_reprobe_interval,
+        };
+        let mut scheduler = Self::new(io, limits, framing, probe_budget, now)?;
+        scheduler.fingerprint_offset = config.identity.ignored_header_bytes;
+        Ok(scheduler)
+    }
+
+    /// Consume the actual committed admission capability, retaining its lease.
+    /// Refusal returns the intact seed; it does not release ownership or admit
+    /// a replacement identity. No source open or checkpoint write occurs here.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn admit(&mut self, seed: ReaderSeed) -> Result<ReaderKey, RejectedSeed> {
+        use super::identity::decision::{Anchor, Decision};
+        let decision_ok = match seed.decision {
+            Decision::Resume(id) => id == seed.file_id,
+            Decision::Register {
+                anchor: Anchor::Beginning | Anchor::End,
+                ..
+            } => true,
+            _ => false,
+        };
+        let refusal = if self.terminal.is_some() {
+            Some(SeedRefusal::Stopped)
+        } else if self.readers.len() == self.limits.readers {
+            Some(SeedRefusal::Capacity)
+        } else if !decision_ok || seed.frontier.end_offset() != seed.offset {
+            Some(SeedRefusal::InvalidSeed)
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            return Err(RejectedSeed { reason, seed });
+        }
+        let id = self.readers.len();
+        let key = ReaderKey(id as u64);
+        let mut window = Window::empty();
+        window.end = seed.offset;
+        window.data[..seed.frontier.bytes().len()].copy_from_slice(seed.frontier.bytes());
+        let evidence = Evidence {
+            locator: seed.lease.locator(),
+            fingerprint: seed.fingerprint,
+            fingerprint_offset: self.fingerprint_offset,
+            applied_offset: seed.offset,
+            resume_end: match seed.resume {
+                cp::FramingResume::Continuation {
+                    record_end_offset, ..
+                } => record_end_offset,
+                _ => 0,
+            },
+            applied_guard: window.guard(),
+        };
+        self.readers.push(Some(Reader {
+            key,
+            file_id: seed.file_id,
+            epoch: seed.epoch,
+            resume: seed.resume,
+            evidence,
+            handle: None,
+            validation: None,
+            partial: None,
+            window,
+            initial: seed.offset == 0,
+            needs_input: false,
+            check_size: false,
+            service: 0,
+            record_start: seed.offset,
+            failures: 0,
+            last_service: 0,
+            pinned: false,
+            halted: false,
+            lease: seed.lease,
+        }));
+        self.ready.push_back(id);
+        Ok(key)
+    }
+
+    /// Refresh cached evidence from authoritative applied state after the owner
+    /// authorizes progress. This does not apply or persist a checkpoint.
+    pub(crate) fn observe_applied(
+        &mut self,
+        key: ReaderKey,
+        record: &cp::SnapshotRecord,
+    ) -> Result<(), Fault> {
+        let r = self
+            .readers
+            .get_mut(key.0 as usize)
+            .and_then(Option::as_mut)
+            .ok_or(Fault::SourceContract)?;
+        let locator = r.lease.locator();
+        if record.file_id != r.file_id
+            || record.file_epoch != r.epoch
+            || record.locator
+                != (cp::Locator::PosixDevIno {
+                    dev: locator.device,
+                    ino: locator.inode,
+                })
+            || record.committed_offset < r.evidence.applied_offset
+            || record.committed_offset > r.window.end
+            || record.lifecycle_state != cp::LifecycleState::Active
+        {
+            return Err(Fault::SourceContract);
+        }
+        r.evidence.applied_offset = record.committed_offset;
+        r.evidence.applied_guard = record.committed_frontier_guard;
+        Ok(())
+    }
+
     fn new(
         io: I,
         limits: Limits,
@@ -214,7 +368,9 @@ impl<I: ReaderIo> Scheduler<I> {
             grants: BTreeSet::new(),
             slot_bytes,
             probe_budget,
-            probe_request: None,
+            probe_waiter: None,
+            probe_ready: false,
+            fingerprint_offset: 0,
             selecting: None,
             open_retry: None,
             sink_stopped: false,
@@ -225,17 +381,32 @@ impl<I: ReaderIo> Scheduler<I> {
 
     /// Explicit composition notification after batch resolution. Independent
     /// pressure/lifecycle permission is still required on the next turn.
-    fn resume_sink(&mut self) {
+    pub(crate) fn resume_sink(&mut self) {
         if self.rejected.is_none() {
             self.sink_stopped = false;
         }
         self.resources_changed();
     }
     /// Called for probe-release notification, delta resolution or pin changes.
-    fn resources_changed(&mut self) {
+    pub(crate) fn resources_changed(&mut self) {
         self.reactivate = self.blocked.len();
+        self.probe_available();
     }
-    fn next_deadline(&self, permission: Permission) -> Option<Instant> {
+    /// Probe release wakes only its owner, without rescanning descriptor waiters.
+    pub(crate) fn probe_available(&mut self) {
+        self.probe_ready = self.probe_waiter.is_some();
+    }
+
+    fn clear_probe(&mut self, active: Option<usize>) {
+        if let Some((id, request)) = self.probe_waiter.take() {
+            drop(request);
+            if Some(id) != active && self.selecting.map(|s| s.0) != Some(id) {
+                self.ready.push_front(id);
+            }
+        }
+        self.probe_ready = false;
+    }
+    pub(crate) fn next_deadline(&self, permission: Permission) -> Option<Instant> {
         if !permission.allowed() || self.sink_stopped || self.terminal.is_some() {
             None
         } else {
@@ -249,8 +420,13 @@ impl<I: ReaderIo> Scheduler<I> {
         let _ = self.deadlines.insert((at, id));
         Ok(())
     }
-    fn release_slot(&mut self, reader: &mut Reader<I::Handle>) {
-        drop(reader.partial.take());
+    fn release_slot(&mut self, id: usize, reader: &mut Reader<I::Handle>) {
+        let partial = reader.partial.take();
+        let granted = self.grants.remove(&id);
+        if partial.is_none() && !granted {
+            return;
+        }
+        drop(partial);
         reader.initial &= reader.window.end == 0;
         if let Some(waiter) = self.waiting.pop_front() {
             let _ = self.grants.insert(waiter);
@@ -267,7 +443,7 @@ impl<I: ReaderIo> Scheduler<I> {
         Ok(())
     }
 
-    fn turn(
+    pub(crate) fn turn(
         &mut self,
         now: Instant,
         permission: Permission,
@@ -282,21 +458,22 @@ impl<I: ReaderIo> Scheduler<I> {
             reason: Reason::Idle,
         };
         if let Some(fault) = self.terminal {
+            self.clear_probe(None);
             turn.reason = Reason::Terminal(fault);
             return turn;
         }
         if cancel() {
-            self.probe_request = None;
+            self.clear_probe(None);
             turn.reason = Reason::Cancelled;
             return turn;
         }
         if !permission.allowed() || self.sink_stopped {
-            self.probe_request = None;
+            self.clear_probe(None);
             self.resources_changed();
             turn.reason = Reason::Paused;
             return turn;
         }
-        while turn.steps < self.limits.steps && self.selecting.is_none() {
+        while turn.steps < self.limits.steps && self.selecting.is_none() && !self.probe_ready {
             if self.reactivate != 0 {
                 self.reactivate -= 1;
                 if let Some(id) = self.blocked.pop_front() {
@@ -311,6 +488,7 @@ impl<I: ReaderIo> Scheduler<I> {
                 break;
             }
             if cancel() {
+                self.clear_probe(None);
                 turn.reason = Reason::Cancelled;
                 return turn;
             }
@@ -319,7 +497,18 @@ impl<I: ReaderIo> Scheduler<I> {
             turn.reason = Reason::Progress;
             return turn;
         }
-        let (id, mut after) = match self.selecting.take() {
+        let pending = if self.probe_ready {
+            self.probe_ready = false;
+            if let Some(previous) = self.selecting.take()
+                && self.probe_waiter.as_ref().map(|p| p.0) != Some(previous.0)
+            {
+                self.ready.push_front(previous.0);
+            }
+            self.probe_waiter.as_ref().map(|p| (p.0, None))
+        } else {
+            self.selecting.take()
+        };
+        let (id, mut after) = match pending {
             Some(v) => v,
             None => match self.ready.pop_front() {
                 Some(id) => (id, None),
@@ -346,6 +535,21 @@ impl<I: ReaderIo> Scheduler<I> {
                 Reason::Terminal(f)
             }
         };
+        if matches!(
+            reason,
+            Reason::Paused | Reason::Cancelled | Reason::Terminal(_) | Reason::Capacity
+        ) {
+            self.clear_probe(Some(id));
+        }
+        // Resource parking must not hold an empty payload slot. A split
+        // continuation or any buffered input keeps its reservation.
+        if matches!(
+            reason,
+            Reason::Descriptors | Reason::Probe | Reason::OpenBackoff | Reason::Retry(_)
+        ) && reader.partial.as_ref().is_none_or(|p| !p.unfinished())
+        {
+            self.release_slot(id, &mut reader);
+        }
         match &reason {
             Reason::Progress | Reason::Cancelled => {
                 if self.selecting.is_none() {
@@ -357,7 +561,8 @@ impl<I: ReaderIo> Scheduler<I> {
                 self.sink_stopped = true;
             }
             Reason::Capacity => self.waiting.push_back(id),
-            Reason::Descriptors | Reason::Probe => self.blocked.push_back(id),
+            Reason::Descriptors => self.blocked.push_back(id),
+            Reason::Probe => {}
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {
                 reader.halted = true;
             }
@@ -383,27 +588,6 @@ impl<I: ReaderIo> Scheduler<I> {
         if sink.preflight(reader.key, reader.epoch) == Flow::Stop {
             return Ok(Reason::Paused);
         }
-        if reader.partial.is_none() {
-            // Existing waiters must never be bypassed by a returning holder.
-            let granted = self.grants.remove(&id);
-            if !granted
-                && (self.slots == self.limits.partial_bytes / self.slot_bytes
-                    || !self.waiting.is_empty())
-            {
-                return Ok(Reason::Capacity);
-            }
-            reader.partial = Some(self.framing.create(
-                reader.window.end,
-                reader.initial,
-                &reader.window,
-                self.limits.read_bytes,
-            )?);
-            reader.service = 0;
-            reader.needs_input = false;
-            if !granted {
-                self.slots += 1;
-            }
-        }
         if reader.handle.is_none() {
             if let Some((deadline, _)) = self.open_retry
                 && now < deadline
@@ -411,6 +595,21 @@ impl<I: ReaderIo> Scheduler<I> {
                 self.park_until(id, now, deadline.duration_since(now))?;
                 return Ok(Reason::OpenBackoff);
             }
+            // Only the registered waiter may consume its vacant resident slot
+            // and permit. Resident readers can still do useful work meanwhile.
+            if self.probe_waiter.as_ref().is_some_and(|p| p.0 != id) {
+                return Ok(Reason::Descriptors);
+            }
+        }
+        if reader.partial.is_none() && !self.grants.contains(&id) {
+            if self.slots == self.limits.partial_bytes / self.slot_bytes || !self.waiting.is_empty()
+            {
+                return Ok(Reason::Capacity);
+            }
+            let _ = self.grants.insert(id);
+            self.slots += 1;
+        }
+        if reader.handle.is_none() {
             while self.resident.len() == self.limits.descriptors {
                 if turn.steps == self.limits.steps {
                     self.selecting = Some((id, *after));
@@ -441,27 +640,30 @@ impl<I: ReaderIo> Scheduler<I> {
                 let _ = self.resident.remove(&(stamp, victim));
             }
             if turn.steps == self.limits.steps {
+                self.selecting = Some((id, None));
                 return Ok(Reason::Progress);
             }
             if cancel() {
-                self.probe_request = None;
+                self.selecting = Some((id, None));
                 return Ok(Reason::Cancelled);
             }
-            if self.probe_request.is_none() {
-                self.probe_request = self.probe_budget.request_reader(wake.clone());
-            }
-            let Some(request) = self.probe_request.take() else {
-                return Err(Fault::SourceContract);
+            let request = if let Some((owner, request)) = self.probe_waiter.take() {
+                if owner != id {
+                    return Err(Fault::SourceContract);
+                }
+                request
+            } else {
+                self.probe_budget
+                    .request_reader(wake.clone())
+                    .ok_or(Fault::SourceContract)?
             };
             let result = {
                 let Some(_reservation) = request.try_reserve() else {
-                    self.probe_request = Some(request);
+                    self.probe_waiter = Some((id, request));
                     return Ok(Reason::Probe);
                 };
                 turn.steps += 1;
                 self.io.open(reader.key, cancel)
-                // On success, the handle is already charged to the vacant
-                // resident slot before the transient reservation is released.
             };
             drop(request);
             match result {
@@ -530,12 +732,25 @@ impl<I: ReaderIo> Scheduler<I> {
                     if locator != reader.evidence.locator {
                         return Ok(Reason::Transition(Transition::Replaced));
                     }
-                    if size < reader.window.end {
+                    if size < reader.window.end.max(reader.evidence.resume_end) {
                         return Ok(Reason::Transition(Transition::Shrunk));
                     }
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
             }
+        }
+        if reader.partial.is_none() {
+            reader.partial = Some(self.framing.create(
+                reader.window.end,
+                reader.initial,
+                &reader.window,
+                reader.resume,
+            )?);
+            let _ = self.grants.remove(&id);
+            reader.service = 0;
+            // A newly constructed framer has no replay to drain. Reading first
+            // also ensures a two-step turn can progress after resource parking.
+            reader.needs_input = true;
         }
         self.touch(id, reader)?;
         // Process owned remainder first. Moving the Vec avoids copying it or
@@ -584,8 +799,10 @@ impl<I: ReaderIo> Scheduler<I> {
                             )
                             .min(self.limits.read_bytes as u64);
                         reader.record_start = end;
+                        reader.resume = cp::FramingResume::Clean;
                     }
                     let output = Output {
+                        file_id: reader.file_id,
                         key: reader.key,
                         epoch: reader.epoch,
                         frame,
@@ -612,7 +829,7 @@ impl<I: ReaderIo> Scheduler<I> {
                         reader.window = boundary;
                         reader.initial = false;
                         reader.validation = Some(Validation::default());
-                        self.release_slot(reader);
+                        self.release_slot(id, reader);
                         break Ok(if flow == Flow::Stop {
                             Reason::Paused
                         } else {
@@ -655,7 +872,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     cursor = 0;
                     reader.partial.as_mut().expect("slot").cursor = 0;
                     if !reader.partial.as_ref().expect("slot").unfinished() {
-                        self.release_slot(reader);
+                        self.release_slot(id, reader);
                     }
                     reader.check_size = true;
                     self.park_until(id, now, self.limits.eof_interval)?;

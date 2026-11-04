@@ -39,11 +39,12 @@ invalidate absence conclusions from an otherwise complete pass.
   capacity. Returning `false` stops the scan. A blocked kernel call cannot be
   interrupted by the cancellation callback.
 - Share one `ProbeBudget` with reader reopens. It reserves both temporary source
-  descriptor slots together. A busy probe yields and retries once; if still busy,
-  the scan is incomplete. Worker scheduling owns backoff and fair access. Under
-  sustained reader load, bounded permit holds must still let readers progress
-  and stable scans within the work budget complete, with responsive cancellation.
-  The single retry does not establish that fairness.
+  descriptor slots together. Registered reader and discovery demand alternate at
+  release. Discovery waits for notification when a reader owns the handoff;
+  it samples cancellation on notifications and a 10 ms park timeout. This checks
+  cancellation, not permit fairness. Unregistered external pressure still returns
+  `ProbeBusy` and makes the pass incomplete. Identity preparation uses the
+  opportunistic nonblocking acquisition and cannot steal a registered handoff.
 - Consume every batch before acting on the completion result. Overlapping roots
   or aliases can produce duplicates; reconciliation deduplicates its bounded
   tracked and pending populations.

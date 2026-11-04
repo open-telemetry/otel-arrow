@@ -204,10 +204,17 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
         out.reason = Some(ScanReason::Cancelled);
         return;
     }
-    // A registered read-worker request owns the next release. Discovery must
-    // defer rather than repeatedly poll and reacquire ahead of that request.
-    let reservation = context.budget.try_reserve();
+    // Registered workers alternate; cancellation remains observable while
+    // waiting for a reader to finish its bounded conversion.
+    let mut stopped = false;
+    let reservation = context.budget.reserve_discovery(&mut || {
+        stopped |= cancelled();
+        stopped
+    });
     let Some(_reservation) = reservation else {
+        if stopped {
+            out.reason = Some(ScanReason::Cancelled);
+        }
         return;
     };
     let mut prior = None;

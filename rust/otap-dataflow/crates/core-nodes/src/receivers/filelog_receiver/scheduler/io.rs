@@ -8,7 +8,7 @@ use super::*;
 /// Each method performs one bounded operation and checks cancellation. `open`
 /// must apply the existing pin-bound path/target/namespace policy before read-open.
 /// The caller holds a shared probe reservation and a reserved resident slot.
-pub(super) trait ReaderIo {
+pub(crate) trait ReaderIo {
     type Handle;
     fn open(
         &mut self,
@@ -31,7 +31,7 @@ pub(super) trait ReaderIo {
 
 /// Production I/O adapter. The opener is supplied by composition after it can
 /// consume ReaderSeed; this module supplies no weaker default pathname opener.
-pub(super) struct LinuxIo<O>(pub O);
+pub(crate) struct LinuxIo<O>(pub O);
 
 impl<O> ReaderIo for LinuxIo<O>
 where
@@ -67,7 +67,7 @@ where
 }
 
 #[derive(Debug)]
-pub(super) enum AccessFailure {
+pub(crate) enum AccessFailure {
     Cancelled,
     Environmental(std::io::Error),
     Transition(Transition),
@@ -93,14 +93,16 @@ impl From<FileAccessError> for AccessFailure {
 }
 
 /// Existing identity evidence supplied by admission; never generated here.
-pub(super) struct Evidence {
+pub(crate) struct Evidence {
     pub locator: FileLocator,
     pub fingerprint: Vec<u8>,
+    pub fingerprint_offset: u64,
     pub applied_offset: u64,
+    pub resume_end: u64,
     pub applied_guard: CommittedFrontierGuard,
 }
 
-pub(super) struct Validation {
+pub(crate) struct Validation {
     phase: u8,
     cursor: usize,
     guard: [u8; 64],
@@ -118,7 +120,7 @@ impl Default for Validation {
 
 impl Validation {
     /// One metadata/read operation, charged to the same turn budgets as content.
-    pub(super) fn step<I: ReaderIo>(
+    pub(crate) fn step<I: ReaderIo>(
         &mut self,
         io: &mut I,
         handle: &I::Handle,
@@ -136,7 +138,12 @@ impl Validation {
                 < provisional
                     .end
                     .max(evidence.applied_offset)
-                    .max(evidence.fingerprint.len() as u64)
+                    .max(evidence.resume_end)
+                    .max(if evidence.fingerprint.is_empty() {
+                        0
+                    } else {
+                        evidence.fingerprint_offset + evidence.fingerprint.len() as u64
+                    })
             {
                 return Err(AccessFailure::Transition(Transition::Shrunk));
             }
@@ -144,7 +151,7 @@ impl Validation {
             return Ok((false, 0));
         }
         let (start, len) = match self.phase {
-            1 => (0, evidence.fingerprint.len()),
+            1 => (evidence.fingerprint_offset, evidence.fingerprint.len()),
             2 => (
                 evidence.applied_offset.saturating_sub(64),
                 evidence.applied_offset.min(64) as usize,
