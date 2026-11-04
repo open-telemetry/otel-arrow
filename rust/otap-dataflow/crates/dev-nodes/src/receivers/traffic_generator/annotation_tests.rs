@@ -18,7 +18,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use serde_yaml::{Mapping, Value};
+use serde_json::{Map, Value};
 use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolved_schema::v1::attribute::Attribute;
 use weaver_semconv::YamlValue;
@@ -54,9 +54,20 @@ fn rng() -> StdRng {
     StdRng::seed_from_u64(SEED)
 }
 
+type Mapping = Map<String, Value>;
+
+/// Parse a YAML fixture into a `serde_json` object.
+///
+/// `YamlValue` wraps a [`serde_json::Value`], so fixtures authored in YAML are
+/// transcoded into JSON before use.
+fn yaml_from_str(src: &str) -> Value {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(src).expect("valid yaml");
+    serde_json::to_value(yaml).expect("yaml convertible to json")
+}
+
 fn yaml_map(src: &str) -> Mapping {
-    match serde_yaml::from_str::<Value>(src).expect("valid yaml") {
-        Value::Mapping(m) => m,
+    match yaml_from_str(src) {
+        Value::Object(m) => m,
         other => panic!("expected mapping, got {other:?}"),
     }
 }
@@ -127,7 +138,7 @@ fn attribute(name: &str, ty: AttributeType, annotation: Option<&str>) -> Attribu
             let mut m = BTreeMap::new();
             let _ = m.insert(
                 annotation::NAMESPACE.to_owned(),
-                YamlValue(serde_yaml::from_str(src).expect("valid yaml")),
+                YamlValue(yaml_from_str(src)),
             );
             m
         }),
@@ -569,10 +580,13 @@ fn parse_rejects_invalid_value_specs() {
             "integer bounds",
         ),
         (
+            // JSON has no representation for infinity, so a YAML `.inf` bound
+            // transcodes to null and is rejected as a non-number rather than a
+            // non-finite number. Either way the bound is refused.
             "range: { min: 0, max: .inf }",
             ScalarKind::Double,
             format!("{ns}.range.max"),
-            "finite",
+            "must be a number",
         ),
         (
             "range: { min: 0, max: 5 }\ndistribution: { type: normal, mean: 2 }",
@@ -1932,7 +1946,7 @@ fn validate_registry_reports_every_error() {
     let mut ann = span.annotations.clone().unwrap_or_default();
     let _ = ann.insert(
         annotation::NAMESPACE.to_owned(),
-        YamlValue(serde_yaml::from_str("{ severity: { values: [INFO] } }").expect("yaml")),
+        YamlValue(yaml_from_str("{ severity: { values: [INFO] } }")),
     );
     span.annotations = Some(ann);
     let span_id = span.id.clone();
@@ -2285,7 +2299,7 @@ fn compile_reports_same_errors_as_validation() {
     let mut ann = event.annotations.clone().unwrap_or_default();
     let _ = ann.insert(
         annotation::NAMESPACE.to_owned(),
-        YamlValue(serde_yaml::from_str("{ severity: { values: [LOUD] } }").expect("yaml")),
+        YamlValue(yaml_from_str("{ severity: { values: [LOUD] } }")),
     );
     event.annotations = Some(ann);
     event.attributes.push(attribute(

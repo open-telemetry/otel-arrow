@@ -21,8 +21,15 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde_yaml::{Mapping, Value};
+use serde_json::{Map, Value};
 use weaver_semconv::YamlValue;
+
+/// A JSON object, used as the annotation mapping type.
+///
+/// `weaver_semconv::YamlValue` wraps a [`serde_json::Value`], so annotation
+/// mappings are `serde_json` objects even though registry authors write them
+/// as YAML.
+type Mapping = Map<String, Value>;
 use weaver_semconv::v1::attribute::{
     AttributeType, PrimitiveOrArrayTypeSpec, TemplateTypeSpec, ValueSpec as SemconvValueSpec,
 };
@@ -261,7 +268,7 @@ pub fn lookup(
         return Ok(None);
     };
     match &value.0 {
-        Value::Mapping(m) => Ok(Some(m)),
+        Value::Object(m) => Ok(Some(m)),
         Value::Null => Ok(None),
         _ => Err(AnnotationError::new(NAMESPACE, "must be a mapping")),
     }
@@ -479,12 +486,13 @@ pub fn parse_metric_spec(
         &["value", "data_points"]
     };
     for key in map.keys() {
-        let k = key_str(key, path)?;
-        if !allowed.contains(&k) {
-            let reason = if matches!(k, "observations" | "bounds") {
-                format!("unknown key \"{k}\" for non-histogram metric (only valid on histograms)")
+        if !allowed.contains(&key.as_str()) {
+            let reason = if matches!(key.as_str(), "observations" | "bounds") {
+                format!(
+                    "unknown key \"{key}\" for non-histogram metric (only valid on histograms)"
+                )
             } else {
-                format!("unknown key \"{k}\" for metric group")
+                format!("unknown key \"{key}\" for metric group")
             };
             return Err(AnnotationError::new(path, reason));
         }
@@ -520,11 +528,10 @@ pub fn parse_metric_spec(
 pub fn parse_span_spec(map: &Mapping) -> AnnotationResult<SpanSpec> {
     let path = NAMESPACE;
     for key in map.keys() {
-        let k = key_str(key, path)?;
-        if !["duration", "status"].contains(&k) {
+        if !["duration", "status"].contains(&key.as_str()) {
             return Err(AnnotationError::new(
                 path,
-                format!("unknown key \"{k}\" for span group"),
+                format!("unknown key \"{key}\" for span group"),
             ));
         }
     }
@@ -548,11 +555,10 @@ pub fn parse_span_spec(map: &Mapping) -> AnnotationResult<SpanSpec> {
 pub fn parse_event_spec(map: &Mapping) -> AnnotationResult<EventSpec> {
     let path = NAMESPACE;
     for key in map.keys() {
-        let k = key_str(key, path)?;
-        if k != "severity" {
+        if key != "severity" {
             return Err(AnnotationError::new(
                 path,
-                format!("unknown key \"{k}\" for event group"),
+                format!("unknown key \"{key}\" for event group"),
             ));
         }
     }
@@ -567,7 +573,7 @@ pub fn parse_event_spec(map: &Mapping) -> AnnotationResult<EventSpec> {
 }
 
 fn parse_bounds(value: &Value, path: &str) -> AnnotationResult<Vec<f64>> {
-    let Value::Sequence(seq) = value else {
+    let Value::Array(seq) = value else {
         return Err(AnnotationError::new(path, "must be a list of numbers"));
     };
     if seq.is_empty() {
@@ -633,7 +639,7 @@ pub fn parse_value_spec(
 
     if has_values {
         let values_path = format!("{path}.values");
-        let Some(Value::Sequence(seq)) = map.get("values") else {
+        let Some(Value::Array(seq)) = map.get("values") else {
             return Err(AnnotationError::new(&values_path, "must be a list"));
         };
         if seq.is_empty() {
@@ -676,7 +682,7 @@ pub fn parse_value_spec(
 }
 
 fn parse_weights(value: &Value, path: &str, len: usize) -> AnnotationResult<Vec<f64>> {
-    let Value::Sequence(seq) = value else {
+    let Value::Array(seq) = value else {
         return Err(AnnotationError::new(path, "must be a list of numbers"));
     };
     if seq.len() != len {
@@ -701,7 +707,7 @@ fn parse_weights(value: &Value, path: &str, len: usize) -> AnnotationResult<Vec<
 }
 
 fn parse_range(value: Option<&Value>, path: &str) -> AnnotationResult<Range> {
-    let Some(Value::Mapping(m)) = value else {
+    let Some(Value::Object(m)) = value else {
         return Err(AnnotationError::new(
             path,
             "must be a mapping with `min` and `max`",
@@ -732,7 +738,7 @@ fn parse_distribution(
     path: &str,
     kind: ScalarKind,
 ) -> AnnotationResult<Distribution> {
-    let Value::Mapping(m) = value else {
+    let Value::Object(m) = value else {
         return Err(AnnotationError::new(path, "must be a mapping with `type`"));
     };
     let ty = m
@@ -756,11 +762,10 @@ fn parse_distribution(
         }
     };
     for key in m.keys() {
-        let k = key_str(key, path)?;
-        if k != "type" && !params.contains(&k) {
+        if key != "type" && !params.contains(&key.as_str()) {
             return Err(AnnotationError::new(
                 path,
-                format!("unknown key \"{k}\" for type {ty}"),
+                format!("unknown key \"{key}\" for type {ty}"),
             ));
         }
     }
@@ -853,22 +858,16 @@ fn validate_distribution(
 
 fn check_keys(map: &Mapping, path: &str, allowed: &[&str]) -> AnnotationResult<()> {
     for key in map.keys() {
-        let k = key_str(key, path)?;
-        if !allowed.contains(&k) {
-            return Err(AnnotationError::new(path, format!("unknown key \"{k}\"")));
+        if !allowed.contains(&key.as_str()) {
+            return Err(AnnotationError::new(path, format!("unknown key \"{key}\"")));
         }
     }
     Ok(())
 }
 
-fn key_str<'a>(key: &'a Value, path: &str) -> AnnotationResult<&'a str> {
-    key.as_str()
-        .ok_or_else(|| AnnotationError::new(path, "keys must be strings"))
-}
-
 fn required_map<'a>(map: &'a Mapping, path: &str, key: &str) -> AnnotationResult<&'a Mapping> {
     match map.get(key) {
-        Some(Value::Mapping(m)) => Ok(m),
+        Some(Value::Object(m)) => Ok(m),
         Some(_) => Err(AnnotationError::new(
             &format!("{path}.{key}"),
             "must be a mapping",
@@ -886,7 +885,7 @@ fn optional_map<'a>(
     key: &str,
 ) -> AnnotationResult<Option<&'a Mapping>> {
     match map.get(key) {
-        Some(Value::Mapping(m)) => Ok(Some(m)),
+        Some(Value::Object(m)) => Ok(Some(m)),
         Some(_) => Err(AnnotationError::new(
             &format!("{path}.{key}"),
             "must be a mapping",
