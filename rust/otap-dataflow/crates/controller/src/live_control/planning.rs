@@ -636,6 +636,10 @@ impl<
         let mut desired_engine = desired_config.engine.clone();
         desired_engine.telemetry.logs.level = current_config.engine.telemetry.logs.level.clone();
         desired_engine.custom = current_config.engine.custom.clone();
+        // Compare codec declarations separately after inheritance and registered
+        // defaults are resolved, allowing equivalent inline/named declarations.
+        desired_engine.observability.pipeline.codecs =
+            current_config.engine.observability.pipeline.codecs.clone();
         if desired_engine != current_config.engine {
             return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing this engine configuration; restart required"
@@ -702,6 +706,36 @@ impl<
         Self::validate_topic_profiles_unchanged(current_config, target_config)?;
         Self::validate_live_memory_limiter_unchanged(current_config, target_config)?;
         Self::validate_live_shared_policies_unchanged(current_config, target_config)
+    }
+
+    fn validate_live_observability_codecs_unchanged(
+        current_config: &OtelDataflowSpec,
+        target_resolved: &ResolvedOtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        let (_, _, current) = current_config.resolve().into_parts();
+        let current = current.ok_or_else(|| ControlPlaneError::Internal {
+            message: "current configuration is missing the observability pipeline".to_owned(),
+        })?;
+        let current_codecs =
+            startup::canonical_codec_configuration(&current.codecs).map_err(|error| {
+                ControlPlaneError::InvalidRequest {
+                    message: error.to_string(),
+                }
+            })?;
+        let target = target_resolved
+            .pipelines
+            .iter()
+            .find(|pipeline| pipeline.role == ResolvedPipelineRole::ObservabilityInternal)
+            .ok_or_else(|| ControlPlaneError::Internal {
+                message: "target configuration is missing the observability pipeline".to_owned(),
+            })?;
+        if current_codecs != target.codecs {
+            return Err(ControlPlaneError::UnsupportedMutation {
+                message: "changing effective observability codec settings requires an engine restart; use group or pipeline bindings, or preserve an explicit observability override"
+                    .to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Reserves, plans, and starts one explicit per-pipeline rollout.
@@ -859,7 +893,7 @@ impl<
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
 
-        let (live_config, base_config_revision, current_deployment) = {
+        let (live_config, base_config_revision, mut current_deployment) = {
             let state = self
                 .state
                 .lock()
@@ -912,16 +946,17 @@ impl<
             .map_err(|err| ControlPlaneError::InvalidRequest {
                 message: err.to_string(),
             })?;
-        startup::validate_engine_components(&candidate_config, self.pipeline_factory).map_err(
-            |error| ControlPlaneError::InvalidRequest {
-                message: error.to_string(),
-            },
-        )?;
+        let resolved_candidate_config = startup::resolve_and_validate_engine_components(
+            &candidate_config,
+            self.pipeline_factory,
+        )
+        .map_err(|error| ControlPlaneError::InvalidRequest {
+            message: error.to_string(),
+        })?;
 
         Self::validate_topic_profiles_unchanged(&live_config, &candidate_config)?;
         Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
-        let resolved_candidate_config = candidate_config.resolve();
         let context_bindings = match prepared_context_bindings {
             Some(policy) => policy,
             None => {
@@ -941,6 +976,16 @@ impl<
             .ok_or_else(|| ControlPlaneError::Internal {
                 message: "candidate pipeline disappeared during resolution".to_owned(),
             })?;
+        // Initial deployments and older snapshots may still contain declarations.
+        // Compare the same canonical representation used by the validated target.
+        if let Some(record) = current_deployment.as_mut() {
+            record.resolved.codecs = startup::canonical_codec_configuration(
+                &record.resolved.codecs,
+            )
+            .map_err(|error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+        }
         let current_pipeline_placement = current_deployment
             .as_ref()
             .map(|record| record.placement.clone());
@@ -1777,6 +1822,61 @@ impl<
         target
     }
 
+    /// Includes retained pipelines whose inherited codec settings actually changed.
+    /// Unchanged omitted pipelines remain absent, preserving partial-update behavior.
+    pub(super) fn reconcile_pipeline_requests(
+        live_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+        target_resolved: &ResolvedOtelDataflowSpec,
+    ) -> Result<Vec<(PipelineKey, PipelineConfig)>, ControlPlaneError> {
+        let mut requests: HashMap<_, _> = desired_config
+            .groups
+            .iter()
+            .flat_map(|(group_id, group)| {
+                group.pipelines.iter().map(|(pipeline_id, pipeline)| {
+                    (
+                        PipelineKey::new(group_id.clone(), pipeline_id.clone()),
+                        pipeline.clone(),
+                    )
+                })
+            })
+            .collect();
+        let previous: HashMap<_, _> = live_config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+            .map(|pipeline| {
+                (
+                    PipelineKey::new(pipeline.pipeline_group_id, pipeline.pipeline_id),
+                    pipeline.codecs,
+                )
+            })
+            .collect();
+        for target in &target_resolved.pipelines {
+            if target.role != ResolvedPipelineRole::Regular {
+                continue;
+            }
+            let key =
+                PipelineKey::new(target.pipeline_group_id.clone(), target.pipeline_id.clone());
+            if requests.contains_key(&key) {
+                continue;
+            }
+            if let Some(previous) = previous.get(&key) {
+                let current =
+                    startup::canonical_codec_configuration(previous).map_err(|error| {
+                        ControlPlaneError::InvalidRequest {
+                            message: error.to_string(),
+                        }
+                    })?;
+                if current != target.codecs {
+                    _ = requests.insert(key, target.pipeline.clone());
+                }
+            }
+        }
+        Ok(requests.into_iter().collect())
+    }
+
     fn live_pipeline_keys(&self) -> Vec<PipelineKey> {
         let state = self
             .state
@@ -2255,27 +2355,20 @@ impl<
             .map_err(|err| ControlPlaneError::InvalidRequest {
                 message: err.to_string(),
             })?;
-        startup::validate_engine_components(&target_config, self.pipeline_factory).map_err(
-            |error| ControlPlaneError::InvalidRequest {
-                message: error.to_string(),
-            },
-        )?;
+        let target_resolved_config =
+            startup::resolve_and_validate_engine_components(&target_config, self.pipeline_factory)
+                .map_err(|error| ControlPlaneError::InvalidRequest {
+                    message: error.to_string(),
+                })?;
 
         Self::validate_reconcile_capabilities(&live_config, &target_config)?;
+        Self::validate_live_observability_codecs_unchanged(&live_config, &target_resolved_config)?;
 
-        let mut desired_keys: Vec<_> = desired_config
-            .groups
-            .iter()
-            .flat_map(|(pipeline_group_id, group)| {
-                group.pipelines.iter().map(|(pipeline_id, pipeline)| {
-                    (
-                        PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone()),
-                        pipeline.clone(),
-                    )
-                })
-            })
-            .collect();
-        let target_resolved_config = target_config.resolve();
+        let mut desired_keys = Self::reconcile_pipeline_requests(
+            &live_config,
+            &desired_config,
+            &target_resolved_config,
+        )?;
         let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
         let retained_pipeline_keys: HashSet<_> = target_resolved_config
             .pipelines

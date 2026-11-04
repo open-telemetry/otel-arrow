@@ -443,6 +443,50 @@ mod tests {
         }
     }
 
+    /// Scenario: Equivalent default and strict settings use omitted, inline, or named declarations.
+    /// Guarantees: Canonical comparisons resolve implementation and decode defaults while preserving actual option or implementation changes.
+    #[test]
+    fn canonical_configuration_compares_selected_defaults() {
+        fn canonical(yaml: &str) -> otel_arrow_dfe_config::codecs::ResolvedCodecsConfig {
+            let declaration: CodecsConfig = serde_yaml::from_str(yaml).unwrap();
+            CodecServiceBuilder::from_registry(Arc::new(
+                CodecRegistry::validate(&REGISTRATIONS).unwrap(),
+            ))
+            .with_configuration(CodecsConfig::resolve([&declaration]))
+            .canonical_configuration()
+            .unwrap()
+        }
+
+        let defaults = canonical("{}");
+        for yaml in [
+            "bindings: {otlp-bytes: {}}",
+            "bindings: {otlp-bytes: {implementation: test.default, decode: {validation: best_effort}}}",
+            "configurations: {ordinary: {implementation: test.default}}\nbindings: {otlp-bytes: {configuration: ordinary}}",
+        ] {
+            assert_eq!(defaults, canonical(yaml));
+        }
+        let strict = canonical("bindings: {otlp-bytes: {decode: {validation: strict}}}");
+        assert_eq!(
+            strict,
+            canonical(
+                "configurations: {checked: {implementation: test.default, decode: {validation: strict}}}\nbindings: {otlp-bytes: {configuration: checked}}"
+            ),
+        );
+        assert_ne!(defaults, strict);
+        assert_ne!(
+            defaults,
+            canonical("bindings: {otlp-bytes: {implementation: test.configured}}"),
+        );
+        assert_ne!(
+            canonical(
+                "bindings: {otlp-bytes: {implementation: test.configured, options: {forward: true}}}"
+            ),
+            canonical(
+                "bindings: {otlp-bytes: {implementation: test.configured, options: {forward: false}}}"
+            ),
+        );
+    }
+
     /// Scenario: An encode-only registration receives an explicit decoding setting.
     /// Guarantees: Startup rejects the unsupported operation instead of ignoring its configuration.
     #[test]

@@ -133,6 +133,16 @@ Changes to selected settings redeploy the pipeline. Moving equivalent settings
 between scopes or between inline and named forms does not; changing an unused
 named definition does not change the runtime selection.
 
+Codec settings are validated before live updates are accepted, including no-op
+updates and unused named definitions. Comparisons resolve the selected
+implementation and common decode defaults, so equivalent inline and named
+settings do not restart a pipeline.
+
+Changing the observability pipeline's effective codec settings requires an
+engine restart. This also applies to inherited root bindings. Use group or
+pipeline bindings, or an explicit observability override, to keep its effective
+settings unchanged during live reconciliation.
+
 ### Decode validation
 
 | Value | Behavior when decoding |

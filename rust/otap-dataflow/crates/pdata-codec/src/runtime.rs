@@ -31,7 +31,8 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::codecs::{
-    CodecConfiguration, DecodeValidation as ConfigValidation, ResolvedCodecsConfig,
+    CodecBinding, CodecConfiguration, DecodeConfig, DecodeValidation as ConfigValidation,
+    ResolvedCodecsConfig,
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
@@ -63,6 +64,12 @@ struct CodecInstances {
 
 struct CodecRuntime {
     instances: Vec<CodecInstances>,
+}
+
+struct PreparedCodecs {
+    registry: CodecRegistry,
+    codecs: Vec<PreparedCodec>,
+    canonical_configuration: ResolvedCodecsConfig,
 }
 
 /// Builds a pipeline-local codec service from a validated registry.
@@ -108,6 +115,33 @@ impl CodecServiceBuilder {
 
     /// Validates all configuration and prepares factories without creating mutable instances.
     pub fn build(self) -> Result<CodecService, CodecError> {
+        let PreparedCodecs {
+            registry,
+            codecs: prepared,
+            ..
+        } = self.prepare_configuration()?;
+        let instances = (0..prepared.len())
+            .map(|_| CodecInstances::default())
+            .collect();
+        Ok(CodecService {
+            registry: Arc::new(registry),
+            prepared: prepared.into(),
+            runtime: Arc::new(Mutex::new(CodecRuntime { instances })),
+        })
+    }
+
+    /// Validates declarations and resolves defaults for control-plane comparisons.
+    ///
+    /// The result contains one inline binding per selected encoding, with an
+    /// explicit implementation and common decode policy. Unused named definitions
+    /// are validated before being discarded. Implementation-owned options remain
+    /// as declared: only their implementation can interpret their defaults.
+    /// Immutable preparation may allocate, but creates no mutable codec instances.
+    pub fn canonical_configuration(self) -> Result<ResolvedCodecsConfig, CodecError> {
+        Ok(self.prepare_configuration()?.canonical_configuration)
+    }
+
+    fn prepare_configuration(self) -> Result<PreparedCodecs, CodecError> {
         let mut registry = (*self.registry).clone();
         // Even unused definitions must not hide typos. Preparing immutable resources
         // does not activate a decoder; selected named factories are reused below.
@@ -144,6 +178,7 @@ impl CodecServiceBuilder {
             registry.select(codec);
         }
         let mut prepared = Vec::new();
+        let mut canonical_configuration = ResolvedCodecsConfig::default();
         for candidate in registry.codecs() {
             let codec = registry.resolve(candidate.encoding())?;
             if prepared
@@ -157,7 +192,7 @@ impl CodecServiceBuilder {
                 .cloned()
                 .unwrap_or_default();
             let mut entry = match self.configuration.bindings.get(codec.encoding().as_str()) {
-                Some(otel_arrow_dfe_config::codecs::CodecBinding::Named(reference)) => {
+                Some(CodecBinding::Named(reference)) => {
                     let source = named
                         .get(reference.configuration.as_str())
                         .ok_or_else(|| CodecError::configuration("missing named configuration"))?;
@@ -177,15 +212,26 @@ impl CodecServiceBuilder {
                 })?,
             };
             entry.slot = prepared.len();
+            let canonical = CodecConfiguration {
+                implementation: Some(codec.implementation().to_owned()),
+                decode: codec.can_decode().then_some(DecodeConfig {
+                    validation: match entry.policy.validation() {
+                        crate::DecodeValidation::BestEffort => ConfigValidation::BestEffort,
+                        crate::DecodeValidation::Strict => ConfigValidation::Strict,
+                    },
+                }),
+                options: config.options,
+            };
+            _ = canonical_configuration.bindings.insert(
+                codec.encoding().as_str().to_owned(),
+                CodecBinding::Inline(canonical),
+            );
             prepared.push(entry);
         }
-        let instances = (0..prepared.len())
-            .map(|_| CodecInstances::default())
-            .collect();
-        Ok(CodecService {
-            registry: Arc::new(registry),
-            prepared: prepared.into(),
-            runtime: Arc::new(Mutex::new(CodecRuntime { instances })),
+        Ok(PreparedCodecs {
+            registry,
+            codecs: prepared,
+            canonical_configuration,
         })
     }
 }

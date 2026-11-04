@@ -1461,7 +1461,11 @@ impl<
             .transpose()?;
 
         let num_pipeline_groups = engine_config.groups.len();
-        let resolved_config = engine_config.resolve();
+        let resolved_config =
+            startup::resolve_and_validate_engine_components(&engine_config, self.pipeline_factory)
+                .map_err(|source| Error::PipelineRuntimeError {
+                    source: Box::new(std::io::Error::other(source.to_string())),
+                })?;
         let context = self
             .pipeline_factory
             .compile_initial_context(&resolved_config)

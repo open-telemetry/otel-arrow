@@ -78,7 +78,8 @@ pub struct ResolvedPipelineConfig {
     pub topic_scope: TopicScope,
     /// Resolved policies after hierarchy resolution.
     pub policies: ResolvedPolicies,
-    /// Effective codec configuration after inheritance resolution.
+    /// Codec declarations after inheritance resolution. The controller validates
+    /// and canonicalizes registered defaults before runtime comparisons.
     pub codecs: ResolvedCodecsConfig,
     /// Pipeline role.
     pub role: ResolvedPipelineRole,

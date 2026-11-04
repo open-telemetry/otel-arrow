@@ -6281,6 +6281,178 @@ fn reconcile_engine_config_preserves_codec_scopes_and_missing_pipelines() {
     }
 }
 
+/// Scenario: A partial no-op update adds an invalid unused codec definition at root or group scope.
+/// Guarantees: Preflight rejects unknown implementations and invalid options without committing configuration or exposing option values.
+#[test]
+fn reconcile_rejects_invalid_unused_codecs_before_noop() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    for scope in ["root", "group"] {
+        for declaration in [
+            "configurations: {unused: {implementation: unknown.codec}}",
+            "configurations: {unused: {implementation: otel.otlp, options: {unknown: SECRET_VALUE}}}",
+            "bindings: {otlp-bytes: {implementation: unknown.codec}}",
+            "bindings: {otlp-bytes: {options: {unknown: SECRET_VALUE}}}",
+        ] {
+            let codecs = serde_yaml::from_str(declaration).unwrap();
+            let mut desired = config.clone();
+            let group = desired
+                .groups
+                .get_mut(&PipelineGroupId::from("g1"))
+                .unwrap();
+            group.pipelines.clear();
+            if scope == "root" {
+                desired.codecs = Some(codecs);
+            } else {
+                group.codecs = Some(codecs);
+            }
+            let error = runtime
+                .reconcile_engine_config(reconcile_request(desired, false))
+                .expect_err("invalid unused definitions must fail before a no-op commit");
+            assert!(
+                matches!(error, ControlPlaneError::InvalidRequest { ref message }
+                if !message.contains("SECRET_VALUE"))
+            );
+            assert_eq!(runtime.engine_config_snapshot(), config);
+        }
+    }
+}
+
+/// Scenario: A root binding changes only the observability pipeline during partial reconciliation.
+/// Guarantees: The unsupported effective change requires an engine restart and leaves live configuration unchanged.
+#[test]
+fn reconcile_rejects_inherited_observability_codec_changes() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let mut desired = config.clone();
+    desired.codecs = Some(
+        serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: strict}}}").unwrap(),
+    );
+    desired
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .unwrap()
+        .pipelines
+        .clear();
+    let error = runtime
+        .reconcile_engine_config(reconcile_request(desired, false))
+        .expect_err("observability decoder settings cannot change without restarting it");
+    assert!(
+        matches!(error, ControlPlaneError::UnsupportedMutation { ref message }
+        if message.contains("observability codec settings"))
+    );
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: A fixed observability binding shields it from a root change, then switches to an equivalent named declaration.
+/// Guarantees: Effective equality permits both updates without changing the observability runtime settings.
+#[test]
+fn reconcile_preserves_effective_observability_codec_settings() {
+    let mut config = empty_engine_config();
+    config.engine.observability.pipeline.codecs = Some(
+        serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: best_effort}}}")
+            .unwrap(),
+    );
+    let runtime = test_runtime(&config);
+    let mut desired = config.clone();
+    desired.codecs = Some(
+        serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: strict}}}").unwrap(),
+    );
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), false))
+        .expect("an explicit observability override permits root changes");
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    desired.engine.observability.pipeline.codecs = Some(serde_yaml::from_str(
+        "configurations: {ordinary: {implementation: otel.otlp}}\nbindings: {otlp-bytes: {configuration: ordinary}}",
+    ).unwrap());
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), false))
+        .expect("equivalent named observability settings need no restart");
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), desired);
+}
+
+/// Scenario: A partial update changes inherited codec defaults while retaining an omitted regular pipeline.
+/// Guarantees: Changed effective settings schedule that pipeline, while equivalent defaults leave it omitted.
+#[test]
+fn reconcile_includes_retained_pipelines_with_changed_codec_settings() {
+    let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+    config.engine.observability.pipeline.codecs = Some(
+        serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: best_effort}}}")
+            .unwrap(),
+    );
+    let runtime = test_runtime(&config);
+    for (validation, expected) in [("strict", 1), ("best_effort", 0)] {
+        let mut desired = config.clone();
+        desired.codecs = Some(
+            serde_yaml::from_str(&format!(
+                "bindings: {{otlp-bytes: {{decode: {{validation: {validation}}}}}}}",
+            ))
+            .unwrap(),
+        );
+        desired
+            .groups
+            .get_mut(&PipelineGroupId::from("g1"))
+            .unwrap()
+            .pipelines
+            .clear();
+        // Retain p1 as the reconciliation merge does, then resolve its inherited settings.
+        let mut target = config.clone();
+        target.codecs = desired.codecs.clone();
+        let target =
+            startup::resolve_and_validate_engine_components(&target, runtime.pipeline_factory)
+                .unwrap();
+        let requests =
+            ControllerRuntime::<()>::reconcile_pipeline_requests(&config, &desired, &target)
+                .unwrap();
+        assert_eq!(requests.len(), expected);
+        if expected == 1 {
+            assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
+        }
+    }
+}
+
+/// Scenario: An active pipeline switches from an inline strict binding to its equivalent named configuration.
+/// Guarantees: Reconciliation preserves its generation and reports a no-op instead of replacing the runtime.
+#[test]
+fn reconcile_keeps_generation_for_equivalent_codec_declarations() {
+    let resources = "        policies:\n          resources:\n            core_allocation: {type: core_count, count: 1}\n";
+    let pipeline = format!(
+        "{resources}        codecs:\n          bindings:\n            otlp-bytes:\n              decode: {{validation: strict}}\n{}",
+        simple_pipeline_yaml()
+    );
+    let config = engine_config_with_pipeline(&pipeline);
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let mut desired = config.clone();
+    let pipeline = format!(
+        "{resources}        codecs:\n          configurations:\n            checked:\n              implementation: otel.otlp\n              decode: {{validation: strict}}\n          bindings:\n            otlp-bytes: {{configuration: checked}}\n{}",
+        simple_pipeline_yaml()
+    );
+    let pipeline = PipelineConfig::from_yaml("g1".into(), "p1".into(), &pipeline).unwrap();
+    _ = desired
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .unwrap()
+        .pipelines
+        .insert("p1".into(), pipeline);
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, false))
+        .expect("equivalent codec settings must reconcile without replacement");
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(status.changes.len(), 1);
+    assert_eq!(status.changes[0].action, ConfigChangeAction::Noop);
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = PipelineKey::new("g1".into(), "p1".into());
+    assert_eq!(state.logical_pipelines[&key].baseline_generation, 0);
+    assert_eq!(state.generation_counters[&key], 1);
+}
+
 /// Scenario: a full-config reconciliation request omits a pipeline and its
 /// policy-bearing group with `delete_missing` disabled.
 /// Guarantees: reconciliation preserves the omitted pipeline, group, and
