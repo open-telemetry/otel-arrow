@@ -236,6 +236,18 @@ impl Drop for LocalTlsReloadTask {
     }
 }
 
+/// Maps a client TLS initialization failure to an exporter error. The engine
+/// renders `error` and `source_detail` back to back, so the cause goes in
+/// `error` and `source_detail` carries only the `; source: ...` chain.
+fn tls_init_error(exporter: NodeId, error: &(dyn std::error::Error + 'static)) -> Error {
+    Error::ExporterError {
+        exporter,
+        kind: ExporterErrorKind::Configuration,
+        error: format!("unable to initialize client TLS: {error}"),
+        source_detail: format_error_sources(error),
+    }
+}
+
 async fn build_grpc_client_pool(
     settings: &GrpcClientSettings,
     num_connections: usize,
@@ -382,12 +394,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             &self.config.grpc.grpc_endpoint,
         )
         .await
-        .map_err(|error| Error::ExporterError {
-            exporter: exporter_id.clone(),
-            kind: ExporterErrorKind::Configuration,
-            error: "unable to initialize client TLS reload provider".into(),
-            source_detail: error.to_string(),
-        })?
+        .map_err(|error| tls_init_error(exporter_id.clone(), &error))?
         .map(Rc::new);
         let initial_tls_generation = tls_provider.as_ref().map(|provider| provider.current());
         let mut grpc_clients = build_grpc_client_pool(
@@ -1405,6 +1412,22 @@ mod tests {
     use super::*;
 
     mod tls_reload;
+
+    /// Scenario: client TLS initialization fails with the `io::Error` that
+    /// `ClientTlsProvider::new` returns, and the engine renders the exporter error.
+    /// Guarantees: the cause is separated from the engine's `source_detail`
+    /// suffix and the message carries no reload-specific wording that would
+    /// mislead inline-PEM or reload-disabled configurations.
+    #[test]
+    fn tls_init_error_includes_the_cause_in_the_main_message() {
+        let cause = std::io::Error::new(std::io::ErrorKind::NotFound, "failed to read CA file");
+        let rendered = tls_init_error(test_node("tls-init"), &cause).to_string();
+        assert!(
+            rendered.ends_with(": unable to initialize client TLS: failed to read CA file"),
+            "unexpected rendering: {rendered}"
+        );
+        assert!(!rendered.contains("reload"));
+    }
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
