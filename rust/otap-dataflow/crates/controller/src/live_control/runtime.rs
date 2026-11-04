@@ -1388,6 +1388,16 @@ impl<
                 return Ok(());
             }
 
+            // Global shutdown already sent stop to this instance; waiting for it
+            // to drain would only delay the caller's cleanup.
+            if self.global_shutdown_requested() {
+                return Err(format!(
+                    "engine shutdown requested before pipeline reported ready on core {} \
+                     (generation {})",
+                    deployed_key.core_id, deployed_key.deployment_generation
+                ));
+            }
+
             let mut observed_terminal_phase = false;
             if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
                 && let Some(instance) =
@@ -1427,6 +1437,14 @@ impl<
             }
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Returns whether engine-wide shutdown has started.
+    pub(super) fn global_shutdown_requested(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_requested
     }
 
     /// Returns the terminal exit result for one deployed instance, if any.

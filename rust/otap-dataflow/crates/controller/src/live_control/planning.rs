@@ -1396,6 +1396,10 @@ impl<
                 .runtime_recoveries
                 .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
         }
+        self.observed_state_store.register_pipeline_health_policy(
+            plan.pipeline_key.clone(),
+            plan.target_deployment.resolved.policies.health.clone(),
+        );
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
             plan.target_deployment
@@ -2404,9 +2408,28 @@ impl<
             rollout_plans.push((pipeline_key, action, plan));
         }
 
+        // Every placement above was checked against current reservations and
+        // against earlier desired placements, so no rollout depends on another
+        // one finishing first. Start them all, then wait for all of them; each
+        // rollout commits or rolls back its own pipeline independently.
+        let mut spawned_rollouts = Vec::with_capacity(rollout_plans.len());
+        let mut spawn_error = None;
         for (pipeline_key, action, plan) in rollout_plans {
-            let initial_rollout =
-                self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
+            match self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id())) {
+                Ok(initial_rollout) => {
+                    spawned_rollouts.push((pipeline_key, action, initial_rollout))
+                }
+                Err(error) => {
+                    spawn_error = Some(error);
+                    break;
+                }
+            }
+        }
+
+        // Rollouts that already started must reach a terminal state before the
+        // engine operation guard is released, even when a later spawn failed.
+        let mut first_failure_reason = None;
+        for (pipeline_key, action, initial_rollout) in spawned_rollouts {
             let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
             let succeeded = Self::rollout_succeeded(&terminal_rollout);
             let failure_reason = terminal_rollout.failure_reason.clone();
@@ -2424,12 +2447,19 @@ impl<
                 detail: failure_reason.clone(),
             });
             status.updated_at = timestamp_now();
-            if !succeeded {
-                status.state = EngineConfigReconcileState::Failed;
-                status.failure_reason = failure_reason
-                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
-                return Ok(status);
+            if !succeeded && first_failure_reason.is_none() {
+                first_failure_reason = Some(failure_reason.unwrap_or_else(|| {
+                    "pipeline rollout did not complete successfully".to_owned()
+                }));
             }
+        }
+        if let Some(error) = spawn_error {
+            return Err(error);
+        }
+        if let Some(failure_reason) = first_failure_reason {
+            status.state = EngineConfigReconcileState::Failed;
+            status.failure_reason = Some(failure_reason);
+            return Ok(status);
         }
 
         if request.delete_missing {

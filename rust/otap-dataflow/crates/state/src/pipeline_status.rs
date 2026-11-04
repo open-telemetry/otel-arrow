@@ -103,6 +103,11 @@ impl PipelineStatus {
         }
     }
 
+    /// Replaces the health policy used to evaluate this pipeline's probes.
+    pub(crate) fn set_health_policy(&mut self, health_policy: HealthPolicy) {
+        self.health_policy = health_policy;
+    }
+
     /// Returns the current per-instance status map.
     #[must_use]
     pub const fn per_instance(&self) -> &HashMap<RuntimeInstanceKey, PipelineRuntimeStatus> {
