@@ -3,6 +3,10 @@
 
 //! Implementation of the traffic generator receiver configuration
 
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata_codec::{
+    CodecGenerator, CodecRegistry, GenerationConfig, GenerationError, PdataEncoding,
+};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +35,32 @@ pub enum DataSource {
     /// - No external dependencies or network access
     /// - Fixed set of attributes (e.g., service.name, http.method, etc.)
     Synthetic,
+
+    /// Ask the selected codec to construct synthetic encoded payloads.
+    Codec,
+}
+
+/// Codec-owned generation settings; pacing remains in `traffic_config`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodecConfig {
+    /// Registered encoded pdata identity.
+    pub encoding: String,
+    /// Named generation profile advertised by the codec.
+    pub profile: String,
+    /// Starting point for reproducible contents.
+    #[serde(default)]
+    pub seed: u64,
+    /// Fixed timestamp override; omitted values use current time per generated batch.
+    #[serde(default)]
+    pub timestamp_unix_nano: Option<i64>,
+    /// Hard encoded output limit per batch (default: 2 MiB).
+    #[serde(default = "default_generation_max_bytes")]
+    pub max_batch_bytes: usize,
+}
+
+const fn default_generation_max_bytes() -> usize {
+    2 * 1024 * 1024
 }
 
 /// Strategy for generating telemetry batches
@@ -39,7 +69,7 @@ pub enum DataSource {
 pub enum GenerationStrategy {
     /// Generate fresh signals for every batch
     /// - New objects allocated per signal
-    /// - Fresh timestamps and unique IDs per signal
+    /// - Fresh contents; codec profiles may retain fixed timestamps
     /// - Highest CPU/memory cost per batch
     #[default]
     Fresh,
@@ -98,6 +128,10 @@ pub struct Config {
     /// Source of telemetry schema and attributes
     #[serde(default)]
     data_source: DataSource,
+
+    /// Required only for `data_source: codec`.
+    #[serde(default)]
+    codec: Option<CodecConfig>,
 
     /// Path to the semantic conventions registry (only used when data_source = semantic_conventions)
     #[serde(default = "default_registry_path")]
@@ -225,6 +259,7 @@ impl Config {
             traffic_config,
             registry_path,
             data_source: DataSource::default(),
+            codec: None,
             generation_strategy: GenerationStrategy::default(),
             enable_ack_nack: default_enable_ack_nack(),
             resource_attributes: Vec::new(),
@@ -272,6 +307,80 @@ impl Config {
         &self.data_source
     }
 
+    /// Validates codec generation settings before a receiver starts.
+    pub fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
+        self.traffic_config.validate()?;
+        let _ = self.codec_generators().map_err(|error| {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Creates one independent codec generator for each enabled primary signal.
+    pub(super) fn codec_generators(
+        &self,
+    ) -> Result<Vec<(SignalType, CodecGenerator)>, GenerationError> {
+        if self.data_source != DataSource::Codec {
+            if self.codec.is_some() {
+                return Err(GenerationError::Configuration(
+                    "`codec` settings require data_source: codec".into(),
+                ));
+            }
+            return Ok(Vec::new());
+        }
+        let config = self.codec.as_ref().ok_or_else(|| {
+            GenerationError::Configuration("data_source: codec requires `codec` settings".into())
+        })?;
+        if config.timestamp_unix_nano.is_some_and(|value| value < 0) {
+            return Err(GenerationError::Configuration(
+                "timestamp_unix_nano must not be negative".into(),
+            ));
+        }
+        let traffic = &self.traffic_config;
+        if !self.resource_attributes.is_empty()
+            || traffic.log_body_size_bytes.is_some()
+            || traffic.num_log_attributes.is_some()
+            || traffic.use_trace_context
+            || traffic.num_metric_attributes.is_some()
+            || traffic.num_data_points_per_metric.is_some()
+        {
+            return Err(GenerationError::Configuration(
+                "codec generation does not support synthetic attribute, body-size, or trace-context settings"
+                    .into(),
+            ));
+        }
+        let registry = CodecRegistry::global()?;
+        let codec = registry.resolve(&PdataEncoding::from(config.encoding.clone()))?;
+        [
+            (SignalType::Logs, traffic.log_weight),
+            (SignalType::Metrics, traffic.metric_weight),
+            (SignalType::Traces, traffic.trace_weight),
+        ]
+        .into_iter()
+        .filter(|(_, weight)| *weight > 0)
+        .map(|(signal, _)| {
+            codec
+                .create_generator(&GenerationConfig {
+                    profile: config.profile.clone(),
+                    signal,
+                    seed: config.seed,
+                    max_batch_size: traffic.max_batch_size,
+                    max_batch_bytes: config.max_batch_bytes,
+                })
+                .map(|generator| (signal, generator))
+        })
+        .collect()
+    }
+
+    /// Returns the receiver's optional fixed timestamp for codec-generated batches.
+    pub(super) fn codec_timestamp_unix_nano(&self) -> Option<i64> {
+        self.codec
+            .as_ref()
+            .and_then(|config| config.timestamp_unix_nano)
+    }
+
     /// Get the generation strategy
     #[must_use]
     pub const fn generation_strategy(&self) -> &GenerationStrategy {
@@ -291,11 +400,11 @@ impl Config {
     }
 
     /// Provide a reference to the ResolvedRegistry.
-    /// Returns None if data_source is Synthetic.
+    /// Returns None for synthetic and codec-owned generation.
     pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
         let mut semconv_errors = Vec::new();
         match self.data_source {
-            DataSource::Synthetic => Ok(None),
+            DataSource::Synthetic | DataSource::Codec => Ok(None),
             DataSource::SemanticConventions => {
                 let registry_repo =
                     RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)

@@ -7,6 +7,7 @@ mod batching;
 mod decoder;
 mod encoder;
 mod error;
+mod generation;
 mod identity;
 mod payload;
 mod plan;
@@ -25,6 +26,10 @@ pub use decoder::{
 };
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};
+pub use generation::{
+    CodecGenerator, CodecGeneratorRegistration, GenerationConfig, GenerationError,
+    GenerationProfile, GeneratorFactory, PdataGenerator,
+};
 pub use identity::{EncodedPdata, EncodedPdataBatch, PdataEncoding};
 pub use payload::{OtapPayload, PdataFormat, PdataPayload, PdataPayloadDecodeError};
 pub use plan::{AcceptedEncodings, EncodePolicy, EncodingPlan};
