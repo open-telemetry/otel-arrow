@@ -1214,7 +1214,7 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
             &mut decoded,
             SignalType::Logs,
             &AttributesTransform::default(),
-            Interests::NODE_LOCAL_DURATION,
+            Interests::empty(),
         )
         .unwrap_err()
         .to_string();
@@ -1234,6 +1234,7 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
     );
     rt.set_processor(processor)
         .run_test(|mut ctx| async move {
+            ctx.set_node_interests(Interests::NODE_LOCAL_DURATION);
             let (sender, mut receiver) = pipeline_completion_msg_channel(1);
             ctx.set_pipeline_completion_sender(sender);
             ctx.process(Message::PData(input)).await.unwrap();
@@ -1453,11 +1454,12 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
 }
 
 /// Scenario: every source domain declares its reads and a live update requests a new primitive.
-/// Guarantees: declarations use value-only domain-scoped targets and an unbound update retains the installed plan.
+/// Guarantees: declarations preserve header/identity name matching, retain all values for fallback and cardinality checks, and reject unbound updates.
 #[test]
 fn selector_declarations_and_live_update_binding_validation() {
     use otel_arrow_dfe_engine::pdata_context::{
-        ContextDomain, ContextEntrySelectorForm, ContextEntryTarget,
+        ContextDomain, ContextEntrySelectorForm, ContextEntryTake, ContextEntryTarget,
+        ContextNameMatching,
     };
     for (kind, expected) in [
         (
@@ -1465,6 +1467,7 @@ fn selector_declarations_and_live_update_binding_validation() {
             ContextEntryTarget::Primitive {
                 domain: ContextDomain::TransportHeader,
                 name: ContextEntryName::try_from("x").unwrap(),
+                matching: ContextNameMatching::AsciiCaseInsensitive,
             },
         ),
         (
@@ -1472,6 +1475,7 @@ fn selector_declarations_and_live_update_binding_validation() {
             ContextEntryTarget::Primitive {
                 domain: ContextDomain::AuthorizedIdentity,
                 name: ContextEntryName::try_from("x").unwrap(),
+                matching: ContextNameMatching::Exact,
             },
         ),
         (
@@ -1487,6 +1491,7 @@ fn selector_declarations_and_live_update_binding_validation() {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].target, expected);
         assert_eq!(entries[0].form, ContextEntrySelectorForm::Value);
+        assert_eq!(entries[0].take, ContextEntryTake::All);
     }
     let config = |name| {
         json!({"actions":[{"action":"insert","key":"selected","value":{
