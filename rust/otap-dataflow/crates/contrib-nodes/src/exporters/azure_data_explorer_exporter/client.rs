@@ -510,7 +510,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
     use wiremock::matchers::{body_bytes, header, header_regex, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -731,6 +731,57 @@ mod tests {
                 .position(|candidate| candidate.name == metric)
                 .is_some_and(|index| !snapshot.get_metrics()[index].is_zero())
         })
+    }
+
+    /// Operation timeout for deadline tests. It is never reached in wall-clock
+    /// time: tests pause Tokio time at an observed server state and let
+    /// auto-advance expire the deadline.
+    const PAUSED_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Accepts one connection and reads one complete `Content-Length` request.
+    async fn accept_request(listener: &TcpListener) -> TcpStream {
+        let (mut stream, _) = listener.accept().await.expect("client connection");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).await.expect("request bytes");
+            assert_ne!(read, 0, "client closed before sending a complete request");
+            request.extend_from_slice(&buffer[..read]);
+            let Some(head_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = std::str::from_utf8(&request[..head_end]).expect("ASCII request head");
+            let body_length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .unwrap_or(0);
+            if request.len() >= head_end + 4 + body_length {
+                return stream;
+            }
+        }
+    }
+
+    /// Runs `operation` in real time until `server` reaches its synchronization
+    /// point, then pauses Tokio time so the operation deadline expires through
+    /// auto-advance rather than a wall-clock race with loopback I/O. Returns the
+    /// server state, which callers hold so the connection stays open.
+    async fn pause_time_after<T>(
+        operation: impl Future<Output = Result<Duration, Error>>,
+        server: impl Future<Output = T>,
+    ) -> (T, Result<Duration, Error>) {
+        tokio::pin!(operation);
+        let server_state = tokio::select! {
+            result = &mut operation => panic!(
+                "ADX operation finished before the server reached its synchronization point: {result:?}"
+            ),
+            state = server => state,
+        };
+        tokio::time::pause();
+        (server_state, operation.await)
     }
 
     fn http_response_metric(snapshots: &[MetricSetSnapshot], response: &str) -> u64 {
@@ -1004,45 +1055,66 @@ mod tests {
     }
 
     /// Scenario: ADX returns a Retry-After value too large for the local clock.
-    /// Guarantees: the operation deadline bounds the delay without an instant overflow.
+    /// Guarantees: the 429 response is recorded, and the operation deadline then bounds the retry backoff without an instant overflow.
     #[tokio::test]
     async fn retry_after_is_bounded_by_operation_deadline() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(429).insert_header("Retry-After", u64::MAX.to_string()),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let timeout = Duration::from_millis(50);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
         let metrics = test_metrics();
         let client = AzureDataExplorerClient::new(
-            &server.uri(),
+            &format!("http://{address}"),
             "database",
             reqwest::Client::new(),
             metrics.clone(),
             1,
-            timeout,
+            PAUSED_OPERATION_TIMEOUT,
             false,
         );
         let payload = Bytes::from_static(b"compressed");
         let (attempt, metadata) = export_attempt(&metrics, 1, payload.len());
+        let operation = client.send(
+            "table",
+            Some("mapping"),
+            HeaderValue::from_static("******"),
+            payload,
+            attempt,
+            metadata,
+        );
+        // The client closes a `Connection: close` exchange only after it has
+        // consumed the complete response, so EOF means it has no pending I/O and
+        // is entering retry backoff.
+        let server = async {
+            let mut stream = accept_request(&listener).await;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 429 Too Many Requests\r\n\
+                         Retry-After: {}\r\n\
+                         Content-Length: 0\r\n\
+                         Connection: close\r\n\r\n",
+                        u64::MAX
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("rate-limited response");
+            let mut buffer = [0_u8; 64];
+            while stream.read(&mut buffer).await.expect("client close") != 0 {}
+        };
 
-        let error = client
-            .send(
-                "table",
-                Some("mapping"),
-                HeaderValue::from_static("******"),
-                payload,
-                attempt,
-                metadata,
-            )
-            .await
-            .expect_err("the operation deadline should expire before Retry-After");
+        let ((), result) = pause_time_after(operation, server).await;
 
+        let error = result.expect_err("the operation deadline should expire before Retry-After");
         assert!(matches!(error, Error::OperationTimeout { .. }));
+        let snapshots = metrics.borrow_mut().terminal_snapshots();
+        assert_eq!(http_response_metric(&snapshots, "http_429"), 1);
+        assert!(!snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.azure_data_explorer.http"
+                && snapshot.measurement_attribute_value("response") == Some("network_error")
+        }));
     }
 
     /// Scenario: ADX returns a retryable response whose backoff would exceed the configured operation timeout.
@@ -1105,38 +1177,36 @@ mod tests {
     #[tokio::test]
     async fn request_deadline_records_http_response_outcome() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_secs(2)))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let timeout = Duration::from_millis(50);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
         let metrics = test_metrics();
         let client = AzureDataExplorerClient::new(
-            &server.uri(),
+            &format!("http://{address}"),
             "database",
             reqwest::Client::new(),
             metrics.clone(),
             0,
-            timeout,
+            PAUSED_OPERATION_TIMEOUT,
             false,
         );
         let payload = Bytes::from_static(b"compressed");
         let (attempt, metadata) = export_attempt(&metrics, 1, payload.len());
+        let operation = client.send(
+            "table",
+            Some("mapping"),
+            HeaderValue::from_static("******"),
+            payload,
+            attempt,
+            metadata,
+        );
 
-        let error = client
-            .send(
-                "table",
-                Some("mapping"),
-                HeaderValue::from_static("******"),
-                payload,
-                attempt,
-                metadata,
-            )
-            .await
-            .expect_err("request should reach the operation deadline");
+        // The server holds the connection open without responding, so only the
+        // operation deadline can complete the attempt.
+        let (_stream, result) = pause_time_after(operation, accept_request(&listener)).await;
 
+        let error = result.expect_err("request should reach the operation deadline");
         assert!(matches!(error, Error::OperationTimeout { .. }));
         let snapshots = metrics.borrow_mut().terminal_snapshots();
         assert_eq!(
@@ -1155,10 +1225,30 @@ mod tests {
             .await
             .expect("loopback listener");
         let address = listener.local_addr().expect("listener address");
+        let metrics = test_metrics();
+        let client = AzureDataExplorerClient::new(
+            &format!("http://{address}"),
+            "database",
+            reqwest::Client::new(),
+            metrics.clone(),
+            0,
+            PAUSED_OPERATION_TIMEOUT,
+            false,
+        );
+        let payload = Bytes::from_static(b"compressed");
+        let (attempt, metadata) = export_attempt(&metrics, 1, payload.len());
+        let operation = client.send(
+            "table",
+            Some("mapping"),
+            HeaderValue::from_static("******"),
+            payload,
+            attempt,
+            metadata,
+        );
+        // The server holds the connection open without sending the declared
+        // body, so only the operation deadline can complete the attempt.
         let server = async {
-            let (mut stream, _) = listener.accept().await.expect("client connection");
-            let mut request = vec![0_u8; 4096];
-            let _ = stream.read(&mut request).await.expect("request bytes");
+            let mut stream = accept_request(&listener).await;
             stream
                 .write_all(
                     b"HTTP/1.1 500 Internal Server Error\r\n\
@@ -1169,32 +1259,10 @@ mod tests {
                 .await
                 .expect("response headers");
             stream.flush().await.expect("flush response headers");
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            stream
         };
 
-        let timeout = Duration::from_millis(20);
-        let metrics = test_metrics();
-        let client = AzureDataExplorerClient::new(
-            &format!("http://{address}"),
-            "database",
-            reqwest::Client::new(),
-            metrics.clone(),
-            0,
-            timeout,
-            false,
-        );
-        let payload = Bytes::from_static(b"compressed");
-        let (attempt, metadata) = export_attempt(&metrics, 1, payload.len());
-        let request = client.send(
-            "table",
-            Some("mapping"),
-            HeaderValue::from_static("******"),
-            payload,
-            attempt,
-            metadata,
-        );
-
-        let (_, error) = tokio::join!(server, request);
+        let (_stream, error) = pause_time_after(operation, server).await;
         assert!(matches!(error, Err(Error::OperationTimeout { .. })));
 
         let snapshots = metrics.borrow_mut().terminal_snapshots();
