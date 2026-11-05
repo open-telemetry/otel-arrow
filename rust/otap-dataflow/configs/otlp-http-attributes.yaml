@@ -10,10 +10,6 @@ groups:
             header_capture:
               headers:
                 - match_names: [x-forwarded-host, x-azure-originalhost, host]
-                  transform:
-                    type: authority_host
-                    # First is the default; select last only for a trusted appending proxy.
-                    selection: first
             config:
               protocols:
                 http:

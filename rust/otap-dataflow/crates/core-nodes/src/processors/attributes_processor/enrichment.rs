@@ -1,11 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otel_arrow_dfe_config::transport_headers::ValueKind;
-use otel_arrow_dfe_config::transport_headers_policy::{
-    PropagationSelector, PropagationSelectorType,
-};
-use otel_arrow_dfe_engine::context_declaration::{
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
+use otel_arrow_dfe_engine::pdata_context::{
     ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTarget,
     ContextValueCardinality, ContextValueKind,
 };
@@ -22,9 +19,32 @@ pub enum ConfiguredValue {
     Typed(#[serde(with = "TypedLiteralSerde")] LiteralValue),
     /// Dynamic request metadata source, configured under the `value` key.
     Dynamic {
-        /// Shared selector for ordered primitive names or composite references.
-        source: PropagationSelector,
+        /// Ordered primitive names or composite references.
+        source: AttributeSource,
     },
+}
+
+/// Processor-local selection of captured primitives or materialized context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttributeSource {
+    /// Context domain to read without changing receiver capture policy.
+    #[serde(rename = "type")]
+    pub source_type: AttributeSourceType,
+    /// Ordered fallback candidates.
+    pub named: Vec<otel_arrow_dfe_config::ContextEntryRef>,
+}
+
+/// Context domains supported by attribute value projection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributeSourceType {
+    /// Captured transport-header values.
+    TransportHeader,
+    /// Captured verified identity claims.
+    AuthorizedIdentity,
+    /// Materialized composites or qualified members.
+    Named,
 }
 
 // Adapt the documented tagged syntax without introducing a second value representation.
@@ -58,33 +78,37 @@ pub(super) fn invalid_data(error: impl Into<String>) -> EngineError {
     }
 }
 
-pub(super) fn validate_source(source: &PropagationSelector) -> Result<(), ConfigError> {
-    source.validate().map_err(invalid_config)?;
-    if matches!(
-        source.selector_type,
-        PropagationSelectorType::AllCaptured | PropagationSelectorType::None
-    ) {
+pub(super) fn validate_source(source: &AttributeSource) -> Result<(), ConfigError> {
+    if source.named.is_empty() {
         return Err(invalid_config(
-            "attribute sources require type: transport_header, authorized_identity, or named",
+            "attribute source named list must not be empty",
+        ));
+    }
+    if source.source_type != AttributeSourceType::Named
+        && source.named.iter().any(|name| name.scope().is_some())
+    {
+        return Err(invalid_config(
+            "primitive attribute sources do not accept qualified names",
         ));
     }
     Ok(())
 }
 
 pub(super) fn context_entries(
-    source: &PropagationSelector,
+    source: &AttributeSource,
 ) -> impl Iterator<Item = ContextEntrySelector> + '_ {
-    source.named.iter().flatten().map(|reference| {
-        let target = match source.selector_type {
-            PropagationSelectorType::TransportHeader
-            | PropagationSelectorType::AuthorizedIdentity => ContextEntryTarget::Primitive {
-                domain: if source.selector_type == PropagationSelectorType::TransportHeader {
-                    ContextDomain::TransportHeader
-                } else {
-                    ContextDomain::AuthorizedIdentity
-                },
-                name: reference.name().clone(),
-            },
+    source.named.iter().map(|reference| {
+        let target = match source.source_type {
+            AttributeSourceType::TransportHeader | AttributeSourceType::AuthorizedIdentity => {
+                ContextEntryTarget::Primitive {
+                    domain: if source.source_type == AttributeSourceType::TransportHeader {
+                        ContextDomain::TransportHeader
+                    } else {
+                        ContextDomain::AuthorizedIdentity
+                    },
+                    name: reference.name().clone(),
+                }
+            }
             _ => match reference.scope() {
                 Some(composite) => ContextEntryTarget::CompositeMember {
                     composite: composite.clone(),
@@ -103,13 +127,11 @@ pub(super) fn context_entries(
 }
 
 pub(super) fn resolve_source(
-    source: &PropagationSelector,
+    source: &AttributeSource,
     context: &Context,
 ) -> Result<Option<LiteralValue>, EngineError> {
-    let Some(names) = &source.named else {
-        return Err(invalid_data("attribute source has no named entries"));
-    };
-    if source.selector_type == PropagationSelectorType::TransportHeader {
+    let names = &source.named;
+    if source.source_type == AttributeSourceType::TransportHeader {
         return Ok(context.transport_headers().and_then(|headers| {
             names.iter().find_map(|name| {
                 headers
@@ -128,7 +150,7 @@ pub(super) fn resolve_source(
         }));
     }
     for reference in names {
-        let value = if source.selector_type == PropagationSelectorType::AuthorizedIdentity {
+        let value = if source.source_type == AttributeSourceType::AuthorizedIdentity {
             let Some(entry) = context
                 .authorized_identity_entries()
                 .and_then(|entries| entries.get(reference.name().as_str()))
