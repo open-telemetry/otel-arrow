@@ -27,7 +27,7 @@ use crate::readiness::{ReadinessProbe, ReadinessSignaller};
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
@@ -452,6 +452,26 @@ impl<PData> ReceiverWrapper<PData> {
         node_interests: Interests,
         runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
+        self.start_with_terminal_metrics_deadline(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            TerminalMetricsDeadline::default(),
+            runtime_services,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_terminal_metrics_deadline(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
                 ReceiverWrapper::Local {
@@ -490,6 +510,7 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                     runtime_services.clone(),
                 );
+                effect_handler.terminal_metrics_deadline = terminal_metrics_deadline;
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
                 effect_handler.set_authorized_identity_policy(authorized_identity_policy);
@@ -909,11 +930,13 @@ mod tests {
                 &self.bindings
             ));
             let arrival = self.bindings.arrival().expect("receiver arrival binding");
-            let (formed, stats) = arrival.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: None,
-                peer: None,
-            });
+            let (formed, stats) = arrival
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(stats.is_none());
             assert_ne!(
                 formed,
@@ -931,11 +954,13 @@ mod tests {
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
-            let (metadata, stats) = effect_handler.form_context(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: None,
-                peer: None,
-            });
+            let (metadata, stats) = effect_handler
+                .form_context(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(stats.is_none());
             self.check_bindings(effect_handler.node_bindings(), metadata);
             effect_handler
@@ -953,11 +978,13 @@ mod tests {
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
-            let (metadata, stats) = effect_handler.form_context(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: None,
-                peer: None,
-            });
+            let (metadata, stats) = effect_handler
+                .form_context(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
             assert!(stats.is_none());
             self.check_bindings(effect_handler.node_bindings(), metadata);
             effect_handler

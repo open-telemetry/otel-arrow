@@ -29,8 +29,8 @@ use otel_arrow_dfe_engine::control::{
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
 use otel_arrow_dfe_engine::pdata_context::{
-    AuthorizedIdentityEntries, ContextMaterializationPlan, ContextProjection, MaterializedContext,
-    MaterializedContextProjection, Metadata, PeerAddrMerger,
+    AuthorizedIdentityEntries, ContextError, ContextMaterializationPlan, ContextProjection,
+    MaterializedContext, MaterializedContextProjection, Metadata, PeerAddrMerger,
 };
 use otel_arrow_dfe_engine::processor::{
     FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
@@ -467,12 +467,15 @@ impl Context {
     }
 
     /// Resolves an existing materialized composite projection.
-    #[must_use]
+    ///
+    /// Returns `Ok(None)` when the entry is not materialized and fails when
+    /// the projection does not belong to `plan`; see
+    /// `MaterializedContext::resolve`.
     pub fn resolve_materialized_context<'a>(
         &'a self,
         plan: &'a ContextMaterializationPlan,
         projection: &'a ContextProjection,
-    ) -> Option<MaterializedContextProjection<'a>> {
+    ) -> Result<Option<MaterializedContextProjection<'a>>, ContextError> {
         self.metadata.resolve_materialized_context(plan, projection)
     }
 
@@ -982,12 +985,15 @@ impl OtapPdata {
     }
 
     /// Resolves an existing materialized composite projection.
-    #[must_use]
+    ///
+    /// Returns `Ok(None)` when the entry is not materialized and fails when
+    /// the projection does not belong to `plan`; see
+    /// `MaterializedContext::resolve`.
     pub fn resolve_materialized_context<'a>(
         &'a self,
         plan: &'a ContextMaterializationPlan,
         projection: &'a ContextProjection,
-    ) -> Option<MaterializedContextProjection<'a>> {
+    ) -> Result<Option<MaterializedContextProjection<'a>>, ContextError> {
         self.context.resolve_materialized_context(plan, projection)
     }
 
@@ -2682,6 +2688,7 @@ mod test {
         assert_eq!(sent.get_source_node(), expected_source);
         let resolved = sent
             .resolve_materialized_context(plan, projection)
+            .expect("context matches")
             .expect("context was materialized");
         resolved.visit_members(|member| {
             let value = member.values().values()[0].as_str().expect("UUID is text");
@@ -2868,6 +2875,7 @@ mod test {
 
         let resolved = pdata
             .resolve_materialized_context(&plan, &projection)
+            .expect("context matches")
             .expect("composite is present");
         let mut values = Vec::new();
         resolved.visit_members(|member| {
@@ -2918,6 +2926,7 @@ mod test {
 
         let resolved = pdata
             .resolve_materialized_context(&plan, &projection)
+            .expect("context matches")
             .expect("composite is present");
         let mut found_empty_groups = false;
         resolved.visit_members(|member| {
@@ -2970,6 +2979,7 @@ mod test {
 
         let resolved = pdata
             .resolve_materialized_context(&plan, &projection)
+            .expect("context matches")
             .expect("composite is present");
         let mut found_header = false;
         resolved.visit_members(|member| {

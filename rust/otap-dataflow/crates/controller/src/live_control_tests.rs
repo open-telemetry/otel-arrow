@@ -103,36 +103,48 @@ fn wait_for_context_bindings_test_capture() -> std::sync::Weak<CompiledContextBi
 struct ContextBindingsTestConfig {
     produces: ContextEntryName,
     #[serde(default)]
-    /// When set, also reads the produced entry: `false` takes `Exists`, `true` takes `All`.
-    consumes_all: Option<bool>,
-    #[serde(default)]
     probe_controller_lock: bool,
 }
 
 impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        let produces = ContextDeclaration::Produces {
+        std::iter::once(ContextDeclaration::Produces {
             domain: ContextDomain::TransportHeader,
             entry: self.produces.clone(),
-        };
-        let consumes = self.consumes_all.map(|all| ContextDeclaration::Consumes {
+        })
+        .collect()
+    }
+}
+
+/// Test exporter configuration that reads one transport-header entry.
+#[derive(Deserialize)]
+struct ContextReadTestConfig {
+    /// Entry to read.
+    consumes: ContextEntryName,
+    /// `false` takes `Exists`, `true` takes `All`.
+    all: bool,
+}
+
+impl ConfigNodeContextDeclaration for ContextReadTestConfig {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        std::iter::once(ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
                 entries: Box::new([ContextEntrySelector {
                     target: ContextEntryTarget::Primitive {
                         domain: ContextDomain::TransportHeader,
-                        name: self.produces.clone(),
+                        name: self.consumes.clone(),
                         matching: ContextNameMatching::Exact,
                     },
                     form: ContextEntrySelectorForm::Value,
-                    take: if all {
+                    take: if self.all {
                         ContextEntryTake::All
                     } else {
                         ContextEntryTake::Exists
                     },
                 }]),
             },
-        });
-        std::iter::once(produces).chain(consumes).collect()
+        })
+        .collect()
     }
 }
 
@@ -511,6 +523,17 @@ static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:test:exporter:context-reads",
+        create: recovery_test_exporter_create,
+        context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+            ContextReadTestConfig,
+        >()),
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+            ContextReadTestConfig,
+        >,
     },
     ExporterFactory {
         name: "urn:otel:exporter:console",
@@ -5415,10 +5438,11 @@ nodes:
     type: "urn:test:receiver:context-bindings"
     config:
       produces: X-Tenant
-      consumes_all: {all}
   exporter:
-    type: "urn:test:exporter:example"
-    config: null
+    type: "urn:test:exporter:context-reads"
+    config:
+      consumes: X-Tenant
+      all: {all}
 connections:
   - from: receiver
     to: exporter

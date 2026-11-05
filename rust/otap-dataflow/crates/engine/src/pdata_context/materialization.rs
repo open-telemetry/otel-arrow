@@ -21,8 +21,8 @@ use otel_arrow_dfe_config::error::Error;
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::{
-    ContextDomain, ContextEntryId, ContextEntryLayout, ContextFieldLayout, ContextLayout,
-    ContextMemberSource, ContextProjection,
+    ContextDomain, ContextEntryId, ContextEntryLayout, ContextError, ContextFieldLayout,
+    ContextLayout, ContextMemberSource, ContextProjection,
 };
 
 /// Immutable plan for materializing selected composites.
@@ -579,35 +579,42 @@ impl MaterializedContext {
 
     /// Resolves a materialized composite projection.
     ///
-    /// Primitive projections are outside this resolver's intentionally narrow
-    /// scope and return `None`.
-    #[must_use]
+    /// Returns `Ok(None)` when the entry is not materialized. Fails when
+    /// the context does not meet the node requirements.
     pub fn resolve<'a>(
         &'a self,
         plan: &'a ContextMaterializationPlan,
         projection: &'a ContextProjection,
-    ) -> Option<MaterializedContextProjection<'a>> {
+    ) -> Result<Option<MaterializedContextProjection<'a>>, ContextError> {
         let ContextProjection::Composite {
             layout,
             entry,
             members,
         } = projection
         else {
-            return None;
+            return Err(ContextError::ContextMismatch);
         };
-        let layout = plan.layout.projected_entry(layout, *entry, members)?;
-        let declaration = plan.declaration(*entry)?;
-        let materialized = self.entry(&layout.name)?;
-        if !materialized.matches_declaration(declaration) {
-            return None;
+        let layout = plan
+            .layout
+            .projected_entry(layout, *entry, members)
+            .ok_or(ContextError::ContextMismatch)?;
+        let declaration = plan
+            .declaration(*entry)
+            .ok_or(ContextError::ContextMismatch)?;
+        let Some(materialized) = self.entry(&layout.name) else {
+            return Ok(None);
+        };
+        if !materialized.matches_declaration(declaration)
+            || !members
+                .iter()
+                .all(|member| materialized.member(&member.name).is_some())
+        {
+            return Err(ContextError::ContextMismatch);
         }
-        members
-            .iter()
-            .all(|member| materialized.member(&member.name).is_some())
-            .then_some(MaterializedContextProjection {
-                entry: materialized,
-                members,
-            })
+        Ok(Some(MaterializedContextProjection {
+            entry: materialized,
+            members,
+        }))
     }
 }
 
@@ -852,11 +859,13 @@ mod tests {
             .expect("materialization plan"),
         };
         let identity = AuthorizedIdentity::new().with_subject("verified");
-        let (metadata, _) = binding.form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: Some(&identity),
-            peer: None,
-        });
+        let (metadata, _) = binding
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: Some(&identity),
+                peer: None,
+            })
+            .expect("arrival forms");
         let mut context = metadata
             .materialized_context()
             .expect("formed context")
@@ -948,7 +957,8 @@ mod tests {
     }
 
     /// Scenario: a detached context reaches a same-named destination declaration with a new gate.
-    /// Guarantees: mismatched provenance removes the old value and re-evaluates the destination.
+    /// Guarantees: reading stale provenance is a mismatch error; materializing removes the old
+    /// value and re-evaluates the destination.
     #[test]
     fn re_evaluates_same_name_entry_with_different_provenance() {
         let upstream_plan =
@@ -976,11 +986,17 @@ mod tests {
         context.materialize(&upstream_plan, &TestSource::default());
         let mut detached = context.clone();
 
-        assert!(detached.resolve(&destination_plan, &projection).is_none());
+        assert!(matches!(
+            detached.resolve(&destination_plan, &projection),
+            Err(ContextError::ContextMismatch)
+        ));
         detached.materialize(&destination_plan, &TestSource::default());
 
         assert!(detached.entry(&name("request")).is_none());
-        assert!(detached.resolve(&destination_plan, &projection).is_none());
+        assert!(matches!(
+            detached.resolve(&destination_plan, &projection),
+            Ok(None)
+        ));
 
         let mut source = TestSource::default();
         _ = source.values.insert(
@@ -1090,6 +1106,7 @@ mod tests {
         context.materialize(&plan, &TestSource::default());
         let resolved = context
             .resolve(&plan, &projection)
+            .expect("projection matches")
             .expect("projection is materialized");
         let mut selected = Vec::new();
 
@@ -1099,7 +1116,8 @@ mod tests {
     }
 
     /// Scenario: a projection from an independently compiled layout is resolved against this plan.
-    /// Guarantees: layout-local entry identifiers cannot select an unrelated materialized entry.
+    /// Guarantees: layout-local entry identifiers cannot select an unrelated materialized entry;
+    /// resolution fails with a mismatch error instead of reporting absence.
     #[test]
     fn rejects_projection_from_another_layout() {
         let declaration = declaration(vec![ContextEntryPart::Constant {
@@ -1117,11 +1135,15 @@ mod tests {
         let mut context = MaterializedContext::default();
         context.materialize(&plan, &TestSource::default());
 
-        assert!(context.resolve(&plan, &projection).is_none());
+        assert!(matches!(
+            context.resolve(&plan, &projection),
+            Err(ContextError::ContextMismatch)
+        ));
     }
 
     /// Scenario: a caller alters the descriptors in a projection from the correct layout.
-    /// Guarantees: resolution accepts only canonical members selected from that layout.
+    /// Guarantees: resolution accepts only canonical members selected from that layout and
+    /// fails with a mismatch error otherwise.
     #[test]
     fn rejects_projection_with_tampered_members() {
         let plan =
@@ -1148,6 +1170,9 @@ mod tests {
         let mut context = MaterializedContext::default();
         context.materialize(&plan, &TestSource::default());
 
-        assert!(context.resolve(&plan, &projection).is_none());
+        assert!(matches!(
+            context.resolve(&plan, &projection),
+            Err(ContextError::ContextMismatch)
+        ));
     }
 }
