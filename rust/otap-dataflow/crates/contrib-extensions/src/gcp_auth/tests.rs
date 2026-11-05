@@ -203,6 +203,137 @@ async fn acquires_token_with_metadata_flavor_header_and_default_scope() {
     assert_eq!(streamed.expose_token(), "gcp-test-token");
 }
 
+/// Scenario: Repeated `get_token()` calls are made across cloned extension handles.
+/// Guarantees: The slow path fetches once from the metadata server and subsequent calls on all
+/// clones hit the shared in-memory cache without re-fetching.
+#[tokio::test]
+async fn get_token_slow_path_then_fast_path_caches_and_shares_across_clones() {
+    let server =
+        start_metadata_server("default", Some(DEFAULT_SCOPE), "gcp-cached-token", 3599).await;
+    let consumer_a = make_extension(&server.uri());
+    let consumer_b = consumer_a.clone();
+
+    let first = consumer_a.get_token().await.expect("first acquisition");
+    assert_eq!(first.expose_token(), "gcp-cached-token");
+
+    let second = consumer_b.get_token().await.expect("cached acquisition");
+    assert_eq!(second.expose_token(), "gcp-cached-token");
+
+    let requests = server.received_requests().await.expect("requests recorded");
+    assert_eq!(
+        requests.len(),
+        1,
+        "clones must share one cache and not re-fetch on the fast path"
+    );
+}
+
+/// Scenario: The metadata server returns a token whose lifetime is within `TOKEN_USABLE_MARGIN`.
+/// Guarantees: Subsequent `get_token()` calls treat the near-expiry token as stale and re-fetch.
+#[tokio::test]
+async fn near_expiry_token_is_refreshed() {
+    let server = start_metadata_server("default", Some(DEFAULT_SCOPE), "gcp-short-lived", 5).await;
+    let ext = make_extension(&server.uri());
+
+    let _ = ext.get_token().await.expect("first acquisition");
+    let _ = ext.get_token().await.expect("second acquisition");
+
+    let requests = server.received_requests().await.expect("requests recorded");
+    assert_eq!(
+        requests.len(),
+        2,
+        "token inside TOKEN_USABLE_MARGIN must be refreshed on each call"
+    );
+}
+
+/// Scenario: `get_token()` is called twice against a metadata server that returns HTTP 500.
+/// Guarantees: The error maps to a `CapabilityError` for `bearer_token_provider` with this
+/// extension's name, and the negative cache throttles the immediate retry so the server is hit
+/// only once.
+#[tokio::test]
+async fn get_token_error_maps_to_capability_error_and_throttles_retries() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let ext = make_extension(&server.uri());
+
+    let err = ext.get_token().await.expect_err("first attempt fails");
+    assert_eq!(err.capability, "bearer_token_provider");
+    assert_eq!(err.extension, "test-gcp-auth");
+
+    let _ = ext
+        .get_token()
+        .await
+        .expect_err("second attempt is throttled by the negative cache");
+
+    let requests = server.received_requests().await.expect("requests recorded");
+    assert_eq!(
+        requests.len(),
+        1,
+        "recent failure must throttle the next slow-path fetch"
+    );
+}
+
+/// Scenario: `scopes` is configured as an empty list (`[]`).
+/// Guarantees: `build_token_url` omits the `scopes` query parameter from the metadata request URL.
+#[tokio::test]
+async fn empty_scopes_omits_query_param() {
+    let server = start_metadata_server("default", None, "gcp-no-scope-token", 1800).await;
+    let cfg = config_from_json(serde_json::json!({
+        "endpoint": server.uri(),
+        "scopes": [],
+    }))
+    .expect("valid config");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let token = auth.fetch().await.expect("acquisition succeeds");
+    assert_eq!(token.expose_token(), "gcp-no-scope-token");
+
+    let requests = server.received_requests().await.expect("requests recorded");
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].url.query().is_none(),
+        "empty scopes must not append a query string, got {:?}",
+        requests[0].url.query()
+    );
+}
+
+/// Scenario: Acquisition successes, failures, and token publishes are recorded on `GcpAuthMetrics`.
+/// Guarantees: Every metric counter and latency instrument updates and flushes through
+/// `MetricsReporter`.
+#[test]
+fn metrics_tracker_records_snapshots_and_reports() {
+    let mut tracker = make_tracker();
+
+    let before = tracker.snapshot();
+    assert!(
+        before.get_metrics().iter().all(|m| m.is_zero()),
+        "a new tracker starts at zero"
+    );
+
+    tracker.record_success(8.5);
+    tracker.record_failure();
+    tracker.record_publish();
+
+    let after = tracker.snapshot();
+    assert!(
+        after.get_metrics().iter().all(|m| !m.is_zero()),
+        "every metric is non-zero after recording"
+    );
+
+    let (rx, mut reporter) =
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+    tracker.report(&mut reporter).expect("report succeeds");
+    assert!(
+        rx.try_recv().is_ok(),
+        "reporter received the metric snapshot"
+    );
+}
+
 /// Scenario: A custom service account email and multiple OAuth 2.0 scopes are configured.
 /// Guarantees: `Auth::fetch` targets `/computeMetadata/v1/instance/service-accounts/{sa}/token`
 /// and passes comma-joined scopes in the `scopes` query parameter.
