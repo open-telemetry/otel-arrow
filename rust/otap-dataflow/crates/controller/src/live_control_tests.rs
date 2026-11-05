@@ -5646,7 +5646,7 @@ groups:
             .pipelines
             .contains_key(&PipelineId::from("propagate"))
     );
-    assert!(initial_bindings.pipeline_declarations_match(
+    assert!(initial_bindings.pipeline_context_compatible(
         &state.latest_context_bindings,
         &PipelineKey::new("g1".into(), "capture".into())
     ));
@@ -5654,7 +5654,7 @@ groups:
         .compile_initial_context(&state.live_config.resolve())
         .expect("remaining config should compile without installed requirements")
         .bindings;
-    assert!(state.latest_context_bindings.pipeline_declarations_match(
+    assert!(state.latest_context_bindings.pipeline_context_compatible(
         &unpinned_bindings,
         &PipelineKey::new("g1".into(), "capture".into())
     ));

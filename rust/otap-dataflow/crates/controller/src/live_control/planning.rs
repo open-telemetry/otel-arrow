@@ -819,7 +819,7 @@ impl<
                     && excluded_pipeline != Some(*pipeline_key)
                     && !record
                         .context_bindings
-                        .pipeline_declarations_match(candidate_context_bindings, pipeline_key)
+                        .pipeline_context_compatible(candidate_context_bindings, pipeline_key)
             })
             .map(|(pipeline_key, _)| {
                 format!(
