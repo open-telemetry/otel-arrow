@@ -264,12 +264,6 @@ impl NodeBindings {
     ) {
         self.sink = policy.map(|policy| SinkBinding { policy });
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.header_capture_policy().is_none()
-            && self.authorized_identity_policy().is_none()
-            && self.header_propagation_policy().is_none()
-    }
 }
 
 #[cfg(test)]

@@ -649,9 +649,8 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded from this comparison: they are
-        // validated separately via compiled context bindings, which already
-        // reject incompatible changes to pipelines that keep running. An
+        // Context declarations are excluded from this comparison: a separate
+        // check freezes effective declarations for deployed pipelines. An
         // absent group-level policy block is treated the same as one that
         // only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
@@ -781,7 +780,7 @@ impl<
         Ok(context.bindings)
     }
 
-    fn validate_deployed_pipeline_context_bindings_unchanged(
+    fn validate_deployed_pipeline_context_declarations_unchanged(
         &self,
         candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
@@ -789,7 +788,7 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+        Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
             &state,
             None,
             None,
@@ -797,16 +796,16 @@ impl<
         )
     }
 
-    fn validate_deployed_pipeline_context_bindings_unchanged_in_state(
+    fn validate_deployed_pipeline_context_declarations_unchanged_in_state(
         state: &ControllerRuntimeState,
         excluded_pipeline: Option<&PipelineKey>,
         included_pipelines: Option<&HashSet<PipelineKey>>,
         candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
-        // The policy is compiled engine-wide, but each running pipeline uses the
-        // bindings from the snapshot installed with its generation. A replacement
-        // rollout may keep the old generation alive while starting the new one,
-        // so even the rollout target cannot safely change bindings in place.
+        // Conservatively freeze declarations, including on the rollout target,
+        // until the compiler can check compatibility across topic boundaries (#4611).
+        // Runtime bindings are not compared. Original-name retention is checked
+        // separately by compile_context_bindings.
         //
         // Compare against each pipeline's installed snapshot rather than the
         // controller's latest global snapshot, since prior rollouts may have
@@ -820,7 +819,7 @@ impl<
                     && excluded_pipeline != Some(*pipeline_key)
                     && !record
                         .context_bindings
-                        .pipeline_bindings_match(candidate_context_bindings, pipeline_key)
+                        .pipeline_declarations_match(candidate_context_bindings, pipeline_key)
             })
             .map(|(pipeline_key, _)| {
                 format!(
@@ -837,7 +836,7 @@ impl<
         } else {
             Err(ControlPlaneError::InvalidRequest {
                 message: format!(
-                    "live update changes compiled context bindings for deployed pipelines \
+                    "live update changes context declarations for deployed pipelines \
                      ({}); restart the engine to apply this configuration",
                     affected_pipelines.join(", ")
                 ),
@@ -926,7 +925,7 @@ impl<
             Some(policy) => policy,
             None => {
                 let policy = self.compile_context_bindings(&resolved_candidate_config)?;
-                self.validate_deployed_pipeline_context_bindings_unchanged(&policy)?;
+                self.validate_deployed_pipeline_context_declarations_unchanged(&policy)?;
                 policy
             }
         };
@@ -2025,7 +2024,7 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
                 &state,
                 Some(&pipeline_key),
                 None,
@@ -2289,7 +2288,7 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
                 &state,
                 None,
                 Some(&retained_pipeline_keys),
