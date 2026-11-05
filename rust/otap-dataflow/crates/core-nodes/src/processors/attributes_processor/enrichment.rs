@@ -3,8 +3,8 @@
 
 use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_engine::pdata_context::{
-    ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTarget,
-    ContextValueCardinality, ContextValueKind,
+    ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
+    ContextEntryTarget, ContextNameMatching, ContextValueCardinality, ContextValueKind,
 };
 
 use super::*;
@@ -107,6 +107,11 @@ pub(super) fn context_entries(
                         ContextDomain::AuthorizedIdentity
                     },
                     name: reference.name().clone(),
+                    matching: if source.source_type == AttributeSourceType::TransportHeader {
+                        ContextNameMatching::AsciiCaseInsensitive
+                    } else {
+                        ContextNameMatching::Exact
+                    },
                 }
             }
             _ => match reference.scope() {
@@ -122,6 +127,7 @@ pub(super) fn context_entries(
         ContextEntrySelector {
             target,
             form: ContextEntrySelectorForm::Value,
+            take: ContextEntryTake::All,
         }
     })
 }

@@ -48,6 +48,18 @@ impl<PData> TestContext<PData> {
         }
     }
 
+    /// Sets processor-local interests for subsequent test operations.
+    pub fn set_node_interests(&mut self, interests: Interests) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler.core.set_node_interests(interests);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler.core.set_node_interests(interests);
+            }
+        }
+    }
+
     /// Processes a new message.
     pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error> {
         match &mut self.runtime {
