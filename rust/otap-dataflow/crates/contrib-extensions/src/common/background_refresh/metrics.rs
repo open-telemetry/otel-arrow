@@ -22,14 +22,6 @@ pub struct AuthExtensionAcquisitionMetrics {
     pub acquisitions: Counter<u64>,
 }
 
-impl AuthExtensionAcquisitionMetrics {
-    /// Records one credential or token acquisition.
-    #[inline]
-    pub fn record(&mut self) {
-        self.acquisitions.inc();
-    }
-}
-
 /// The metrics operations a background provider metric set must expose.
 pub trait BackgroundProviderMetrics: Send + 'static {
     /// Records an acquisition outcome (Success or Failure).

@@ -65,9 +65,10 @@ impl OAuth2ClientAuthMetrics {
                 .register_metric_set_with_measurement_attributes::<AuthExtensionAcquisitionMetrics>(
                     otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
                 ),
-            operational_metrics: registry.register_metric_set::<OAuth2ClientAuthOperationalMetrics>(
-                otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
-            ),
+            operational_metrics: registry
+                .register_metric_set::<OAuth2ClientAuthOperationalMetrics>(
+                    otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
+                ),
         }
     }
 }
