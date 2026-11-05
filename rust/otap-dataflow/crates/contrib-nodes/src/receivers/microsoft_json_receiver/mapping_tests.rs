@@ -13,6 +13,234 @@ fn no_environment(_: &str) -> Result<String, std::env::VarError> {
     Err(std::env::VarError::NotPresent)
 }
 
+/// Scenario: a long source key fans out to thousands of explicit attribute and resource destinations.
+/// Guarantees: fixed destination keys do not require payload-sized source-path construction on each invocation.
+#[test]
+fn fixed_key_fanout_does_not_need_source_paths() {
+    for kind in ["attribute", "resource"] {
+        let config = serde_json::from_value(json!({
+            "rules": [{
+                "path": "*",
+                "also": (0..4096).map(|_| json!({
+                    "target": {"kind": kind, "key": "fixed", "prefix": "p."}
+                })).collect::<Vec<_>>()
+            }]
+        }))
+        .expect("config");
+        let ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+        let log = accepted(&ep, json!({"k".repeat(64 * 1024): 1}));
+        let attributes = if kind == "resource" {
+            &log.resource
+        } else {
+            &log.attributes
+        };
+        assert_eq!(attributes.len(), 1);
+        assert_eq!(attributes["p.fixed"], 1);
+    }
+}
+
+/// Scenario: trace-flags and severity targets repeatedly consume long strings while emitting small results.
+/// Guarantees: each parse/conversion/lookup consumes source-sized work and fanout cannot bypass the work limit.
+#[test]
+fn scalar_target_fanout_charges_source_work() {
+    for (target, source) in [
+        (json!({"kind": "trace_flags"}), "0".repeat(64 * 1024)),
+        (
+            json!({"kind": "severity", "map": {}}),
+            "x".repeat(256 * 1024),
+        ),
+    ] {
+        let config = serde_json::from_value(json!({
+            "rules": [{
+                "path": "value",
+                "also": (0..4096).map(|_| json!({"target": target})).collect::<Vec<_>>()
+            }]
+        }))
+        .expect("config");
+        let mut ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+        assert_eq!(
+            ep.map_event(&json!({"value": source}), &MappingContext::default()),
+            Err(MappingError::Limit("traversal work"))
+        );
+        ep.rules[0].rule.also.truncate(1);
+        let log = accepted(&ep, json!({"value": source}));
+        if target["kind"] == "trace_flags" {
+            assert_eq!(log.flags, Some(0));
+        } else {
+            assert_eq!(log.severity_number, Some(0));
+            assert_eq!(log.severity_text.as_deref(), Some("UNSPECIFIED"));
+        }
+    }
+}
+
+/// Scenario: targetless validation converts scalar fields and validates a parent with mapped children.
+/// Guarantees: body values use conversions/truncation, children still map, and filtered size measures original retained input.
+#[test]
+fn validation_only_rules_preserve_converted_body_values() {
+    let ep = endpoint(
+        r#"
+filtered_item_size: true
+rules:
+  - path: text
+    validate: { expected_type: string, max_length: 3 }
+  - path: integer
+    validate: { expected_type: integer }
+  - path: float
+    validate: { expected_type: float }
+  - path: coerce
+    validate: { expected_type: string_coerce }
+  - path: array
+    validate: { expected_type: string_coerce }
+  - path: object
+    validate: {}
+    children:
+      - path: mapped
+        target: { kind: attribute, key: mapped }
+      - path: text
+        validate: { expected_type: string, max_length: 3 }
+"#,
+    );
+    let source = json!({
+        "text": "abcdef", "integer": "42", "float": "2.5", "coerce": true, "array": [1, 2],
+        "object": {"mapped": 1, "text": "abcdef", "unknown": true}
+    });
+    let log = accepted(&ep, source.clone());
+    assert_eq!(
+        log.body,
+        Some(json!({
+            "text": "abc", "integer": 42, "float": 2.5, "coerce": "true", "array": "[1,2]",
+            "object": {"text": "abc", "unknown": true}
+        }))
+    );
+    assert_eq!(log.attributes["mapped"], 1);
+    assert_eq!(
+        log.attributes["filtered_item_size"],
+        json_size(&source, usize::MAX).expect("size")
+    );
+}
+
+/// Scenario: retained originals exceed the output allowance while six mapped strings are truncated to one byte.
+/// Guarantees: retained-source measurement uses work rather than output capacity, and small work budgets still fail explicitly.
+#[test]
+fn retained_size_is_independent_of_output_allowance() {
+    let config = serde_json::from_value(json!({
+        "filtered_item_size": true,
+        "rules": [{
+            "path": "*", "target": {"kind": "attribute"},
+            "validate": {"expected_type": "string", "max_length": 1}
+        }]
+    }))
+    .expect("config");
+    let mut ep = CompiledEndpoint::with_limits(
+        &config,
+        None,
+        &no_environment,
+        Limits {
+            output_bytes: 512,
+            ..Limits::default()
+        },
+    )
+    .expect("compile");
+    for length in [100, 1024] {
+        let source = Value::Object(
+            (0..6)
+                .map(|i| (format!("k{i}"), json!("a".repeat(length))))
+                .collect(),
+        );
+        let log = accepted(&ep, source.clone());
+        for i in 0..6 {
+            assert_eq!(log.attributes[&format!("k{i}")], "a");
+        }
+        assert_eq!(
+            log.attributes["filtered_item_size"],
+            json_size(&source, usize::MAX).expect("size")
+        );
+        assert!(json_size(&log, usize::MAX).expect("log size") <= 512);
+    }
+    let source = Value::Object(
+        (0..6)
+            .map(|i| (format!("k{i}"), json!("a".repeat(100))))
+            .collect(),
+    );
+    ep.config.filtered_item_size = false;
+    let (mut low, mut high) = (0, ep.limits.work);
+    while low + 1 < high {
+        let work = low + (high - low) / 2;
+        ep.limits.work = work;
+        match ep.map_event(&source, &MappingContext::default()) {
+            Ok(_) => high = work,
+            Err(MappingError::Limit("traversal work" | "serialized bytes")) => low = work,
+            other => panic!("unexpected budget-search result: {other:?}"),
+        }
+    }
+    ep.limits.work = high;
+    assert!(ep.map_event(&source, &MappingContext::default()).is_ok());
+    ep.config.filtered_item_size = true;
+    assert!(matches!(
+        ep.map_event(&source, &MappingContext::default()),
+        Err(MappingError::Limit("traversal work" | "serialized bytes"))
+    ));
+}
+
+/// Scenario: semver and constant-format transforms shrink multi-kilobyte strings into small mapped attributes.
+/// Guarantees: input inspection uses traversal work, not the remaining output allowance; emitted values remain size-limited.
+#[test]
+fn shrinking_transforms_use_work_for_input_inspection() {
+    for (transform, source, expected) in [
+        (
+            json!({"kind": "dash_semver_version"}),
+            format!("{}-4.4.1", "x".repeat(4096)),
+            "4.4.1",
+        ),
+        (
+            json!({"kind": "dash_semver_name"}),
+            format!("sdk-4.{}", "1".repeat(4096)),
+            "sdk",
+        ),
+        (
+            json!({"kind": "format", "template": "fixed"}),
+            "x".repeat(4096),
+            "fixed",
+        ),
+    ] {
+        let config = serde_json::from_value(json!({
+            "rules": [{"path": "value", "also": [{
+                "target": {"kind": "attribute", "key": "result"},
+                "transform": transform
+            }]}]
+        }))
+        .expect("config");
+        let mut ep = CompiledEndpoint::with_limits(
+            &config,
+            None,
+            &no_environment,
+            Limits {
+                output_bytes: 512,
+                ..Limits::default()
+            },
+        )
+        .expect("compile");
+        let log = accepted(&ep, json!({"value": source}));
+        assert_eq!(log.attributes["result"], expected);
+        assert!(json_size(&log, usize::MAX).expect("log size") <= 512);
+        ep.limits.work = 1024;
+        assert_eq!(
+            ep.map_event(&json!({"value": source}), &MappingContext::default()),
+            Err(MappingError::Limit("traversal work"))
+        );
+    }
+    let ep = endpoint(
+        "rules: [{ path: value, also: [{ target: { kind: attribute }, transform: { kind: format, template: '{value}' } }] }]",
+    );
+    assert!(matches!(
+        ep.map_event(
+            &json!({"value": "a".repeat(3 * 1024 * 1024)}),
+            &MappingContext::default()
+        ),
+        Err(MappingError::Limit(_))
+    ));
+}
+
 /// Scenario: many ordinary rules follow an early wildcard match, then become ancestor constraints.
 /// Guarantees: compiled scans exclude ordinary rules, while large constraint scans exhaust finite mapping work.
 #[test]
