@@ -78,6 +78,10 @@ async fn start_metadata_server(
     server
 }
 
+/// Scenario: An empty JSON object or `null` configuration is deserialized.
+/// Guarantees: Documented defaults (default service account, cloud-platform scope, 5m expiry
+/// buffer, 1h fallback token lifetime, finite request/connect/startup timeouts, and default
+/// metadata endpoint) are applied.
 #[test]
 fn config_defaults_apply_on_empty_or_null_config() {
     for val in [serde_json::json!({}), serde_json::Value::Null] {
@@ -97,6 +101,11 @@ fn config_defaults_apply_on_empty_or_null_config() {
     }
 }
 
+/// Scenario: Metadata server endpoint resolution is evaluated with and without an explicit
+/// `endpoint` config and `GCE_METADATA_HOST` environment value.
+/// Guarantees: Explicit `endpoint` takes precedence over `GCE_METADATA_HOST`, bare hosts in
+/// `GCE_METADATA_HOST` receive an `http://` prefix, trailing slashes are stripped, and empty or
+/// whitespace-only overrides fall back to `DEFAULT_METADATA_ENDPOINT`.
 #[test]
 fn resolved_endpoint_honors_config_and_env_override_precedence() {
     let default_cfg = Config::default();
@@ -131,6 +140,10 @@ fn resolved_endpoint_honors_config_and_env_override_precedence() {
     );
 }
 
+/// Scenario: Configurations with unknown fields, invalid endpoint URLs, path-traversal or
+/// malformed service accounts, empty scopes, out-of-range expiry/lifetime bounds, or zero
+/// timeouts are validated.
+/// Guarantees: `validate_config` rejects each invalid input with `ConfigError::InvalidUserConfig`.
 #[test]
 fn config_rejects_invalid_values() {
     let cases = [
@@ -170,6 +183,9 @@ fn config_rejects_invalid_values() {
     }
 }
 
+/// Scenario: A default-configured extension acquires a token from a mock GCE/GKE metadata server.
+/// Guarantees: The request carries `Metadata-Flavor: Google` and the default `cloud-platform`
+/// scope, and the acquired token is exposed both via `get_token()` and `token_stream()`.
 #[tokio::test]
 async fn acquires_token_with_metadata_flavor_header_and_default_scope() {
     let server =
@@ -187,6 +203,9 @@ async fn acquires_token_with_metadata_flavor_header_and_default_scope() {
     assert_eq!(streamed.expose_token(), "gcp-test-token");
 }
 
+/// Scenario: A custom service account email and multiple OAuth 2.0 scopes are configured.
+/// Guarantees: `Auth::fetch` targets `/computeMetadata/v1/instance/service-accounts/{sa}/token`
+/// and passes comma-joined scopes in the `scopes` query parameter.
 #[tokio::test]
 async fn custom_service_account_and_multiple_scopes_are_forwarded() {
     let server = start_metadata_server(
@@ -211,6 +230,9 @@ async fn custom_service_account_and_multiple_scopes_are_forwarded() {
     assert_eq!(token.expose_token(), "gcp-custom-sa-token");
 }
 
+/// Scenario: The metadata server returns `expires_in` as a JSON string and omits `token_type`.
+/// Guarantees: Deserialization accepts the string expiry, defaults `token_type` to `Bearer`, and
+/// sets `expires_on()` to the acquisition time plus the reported duration.
 #[tokio::test]
 async fn string_expires_in_and_missing_token_type_are_accepted() {
     let server = MockServer::start().await;
@@ -243,6 +265,10 @@ async fn string_expires_in_and_missing_token_type_are_accepted() {
     );
 }
 
+/// Scenario: The metadata server returns `expires_in: 0` in one response and omits `expires_in`
+/// in another.
+/// Guarantees: An explicit `expires_in: 0` is rejected as an already-expired token, whereas an
+/// omitted `expires_in` falls back to `config.default_token_lifetime`.
 #[tokio::test]
 async fn zero_expires_in_is_rejected_while_omitted_expires_in_uses_default_lifetime() {
     let zero_server = MockServer::start().await;
@@ -302,6 +328,11 @@ async fn zero_expires_in_is_rejected_while_omitted_expires_in_uses_default_lifet
     );
 }
 
+/// Scenario: The metadata server returns a non-Bearer `token_type`, an empty or whitespace-laden
+/// `access_token`, an HTTP 403 with a large error body, an oversized 200 payload, or an HTTP 302
+/// redirect.
+/// Guarantees: `Auth::fetch` rejects each response with a bounded `Error::TokenAcquisition` and
+/// does not follow HTTP redirects.
 #[tokio::test]
 async fn non_bearer_token_type_and_http_errors_are_rejected() {
     let server = MockServer::start().await;
@@ -423,6 +454,9 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
     );
 }
 
+/// Scenario: The static extension factory registration is inspected.
+/// Guarantees: `GCP_AUTH_EXTENSION` is registered under `urn:otel:extension:gcp_auth` and
+/// advertises `bearer_token_provider` as a shared capability.
 #[test]
 fn factory_is_registered_with_bearer_token_provider_capability() {
     assert_eq!(GCP_AUTH_EXTENSION.name, GCP_AUTH_URN);
@@ -436,6 +470,8 @@ fn factory_is_registered_with_bearer_token_provider_capability() {
     );
 }
 
+/// Scenario: The factory `create` hook is invoked with a default configuration.
+/// Guarantees: Wiring produces an active shared extension bundle with no local variant.
 #[test]
 fn create_builds_a_shared_active_bundle() {
     let (ext_ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
