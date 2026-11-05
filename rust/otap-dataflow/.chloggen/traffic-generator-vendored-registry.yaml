@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Traffic generator semantic_conventions mode now generates values from traffic-generator registry annotations and defaults to the vendored, annotated registry."
+note: "Traffic generator semantic_conventions mode now generates values from traffic-generator registry annotations; set registry_path to vendor/semconv/model to use the annotated registry."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4639]
@@ -19,6 +19,6 @@ issues: [4639]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Invalid annotations fail receiver startup. Metric sums and histograms use
-  delta temporality, int metrics emit int points, and histograms carry buckets.
+  The default registry_path remains the upstream registry, cloned at startup, so
+  it works in deployed binaries. Invalid annotations fail receiver startup.
   Configs that set registry_path are unaffected.

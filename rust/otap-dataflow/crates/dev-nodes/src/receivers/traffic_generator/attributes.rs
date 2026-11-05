@@ -50,12 +50,18 @@ fn semconv_to_any(value: &SemconvValueSpec) -> AnyValue {
 
 /// Whether continuous samples for this attribute type should be integers.
 const fn is_int_type(ty: &AttributeType) -> bool {
-    matches!(
-        ty,
-        AttributeType::PrimitiveOrArray(
-            PrimitiveOrArrayTypeSpec::Int | PrimitiveOrArrayTypeSpec::Ints
-        ) | AttributeType::Template(TemplateTypeSpec::Int | TemplateTypeSpec::Ints)
-    )
+    match ty {
+        AttributeType::PrimitiveOrArray(spec) => {
+            matches!(
+                spec,
+                PrimitiveOrArrayTypeSpec::Int | PrimitiveOrArrayTypeSpec::Ints
+            )
+        }
+        AttributeType::Template(spec) => {
+            matches!(spec, TemplateTypeSpec::Int | TemplateTypeSpec::Ints)
+        }
+        AttributeType::Enum { .. } => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

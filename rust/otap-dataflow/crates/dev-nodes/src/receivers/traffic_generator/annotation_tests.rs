@@ -33,7 +33,7 @@ use super::annotation::{
     ScalarKind, ValueSpec,
 };
 use super::attributes::AttributeGen;
-use super::config::{Config, TrafficConfig, default_registry_path};
+use super::config::{Config, TrafficConfig, vendored_registry_path};
 use super::sampler::{
     IndexSampler, NumberSampler, ValueSampler, lognormal_params, normal_cdf, normal_inverse_sf,
     normal_quantile, normal_sf,
@@ -208,7 +208,7 @@ fn registry() -> &'static ResolvedRegistry {
     REGISTRY.get_or_init(|| {
         let config = Config::new(
             TrafficConfig::new(None, None, 10, 1, 1, 1),
-            default_registry_path(),
+            vendored_registry_path(),
         );
         config
             .resolve_registry()
@@ -2171,7 +2171,7 @@ fn vendored_registry_annotation_coverage() {
 fn config_registry_paths() {
     let config = Config::new(
         TrafficConfig::new(None, None, 10, 1, 1, 1),
-        default_registry_path(),
+        vendored_registry_path(),
     );
     let compiled = config
         .get_semconv_model()

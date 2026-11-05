@@ -92,7 +92,7 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 ///
 /// The registry source can be overridden via the `OTAP_SEMCONV_REGISTRY`
 /// env var (any `VirtualDirectoryPath`-parseable value, e.g. a local path).
-/// When unset, the vendored registry ([`config::default_registry_path`]) is used.
+/// When unset, the vendored registry ([`config::vendored_registry_path`]) is used.
 fn load_semconv_registry() -> ResolvedRegistry {
     // weaver fetches remote registries over rustls without choosing a crypto
     // provider. Production installs one at startup; tests must do it here.
@@ -102,7 +102,7 @@ fn load_semconv_registry() -> ResolvedRegistry {
             path.parse::<VirtualDirectoryPath>()
                 .expect("valid OTAP_SEMCONV_REGISTRY")
         })
-        .unwrap_or_else(|_| super::config::default_registry_path());
+        .unwrap_or_else(|_| super::config::vendored_registry_path());
 
     let mut semconv_errors = Vec::new();
     let registry_repo = RegistryRepo::try_new(None, &registry_path, &mut semconv_errors)

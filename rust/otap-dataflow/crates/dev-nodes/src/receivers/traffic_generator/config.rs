@@ -25,7 +25,7 @@ use super::semconv_model::SemconvModel;
 pub enum DataSource {
     /// Use OpenTelemetry semantic conventions registry via weaver
     /// - Fetches and parses semantic conventions from registry_path
-    ///   (default: the vendored, annotated registry)
+    ///   (default: the upstream registry, cloned at startup)
     /// - Values driven by `traffic-generator` annotations; invalid
     ///   annotations fail startup
     /// - Requires network/file access at startup
@@ -105,7 +105,10 @@ pub struct Config {
     data_source: DataSource,
 
     /// Path to the semantic conventions registry (only used when data_source = semantic_conventions).
-    /// Defaults to the vendored, annotated registry ([`default_registry_path`]).
+    /// Defaults to the upstream registry ([`default_registry_path`]), cloned at
+    /// startup. Set this to the vendored, annotated copy
+    /// ([`vendored_registry_path`], i.e. `vendor/semconv/model`) or to any other
+    /// local folder, archive, or git repository to use it instead.
     #[serde(default = "default_registry_path")]
     registry_path: VirtualDirectoryPath,
 
@@ -475,26 +478,30 @@ const fn default_weight() -> u32 {
 pub const SEMCONV_REGISTRY_REFSPEC: &str = "v1.44.0";
 
 /// Default semantic conventions registry path, used when `registry_path` is
-/// not set: the vendored, annotated registry (`vendor/semconv/model`).
+/// not set: the upstream registry at [`SEMCONV_REGISTRY_REFSPEC`]. It is cloned
+/// at startup, so it requires network access and a TLS crypto provider. It
+/// carries no `traffic-generator` annotations; set `registry_path` to
+/// [`vendored_registry_path`] to use the annotated copy instead.
 #[must_use]
 pub fn default_registry_path() -> VirtualDirectoryPath {
+    VirtualDirectoryPath::GitRepo {
+        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+        sub_folder: Some("model".to_owned()),
+        refspec: Some(SEMCONV_REGISTRY_REFSPEC.to_owned()),
+    }
+}
+
+/// The vendored, `traffic-generator`-annotated semantic conventions registry
+/// (`vendor/semconv/model`). The path is resolved from the source tree at build
+/// time, so this is intended for tests, benchmarks, and local use -- not for
+/// deployed binaries, where the directory is not shipped.
+#[must_use]
+pub fn vendored_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::LocalFolder {
         path: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../vendor/semconv/model")
             .to_string_lossy()
             .into_owned(),
-    }
-}
-
-/// Upstream semantic conventions registry: the git repository at
-/// [`SEMCONV_REGISTRY_REFSPEC`]. It carries no `traffic-generator`
-/// annotations and requires network access to clone.
-#[must_use]
-pub fn upstream_registry_path() -> VirtualDirectoryPath {
-    VirtualDirectoryPath::GitRepo {
-        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-        sub_folder: Some("model".to_owned()),
-        refspec: Some(SEMCONV_REGISTRY_REFSPEC.to_owned()),
     }
 }
 
@@ -599,17 +606,40 @@ mod tests {
     }
 
     /// Scenario: A config omits `registry_path`.
-    /// Guarantees: The default registry is the vendored, annotated copy in
-    /// `vendor/semconv/model`, and that directory exists in the repository.
+    /// Guarantees: The default registry is the upstream semantic-conventions git
+    /// repository at `SEMCONV_REGISTRY_REFSPEC`, so deployed binaries resolve a
+    /// registry without depending on the build machine's source tree.
     #[test]
-    fn default_registry_path_uses_vendored_copy() {
+    fn default_registry_path_is_upstream_git() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": { "log_weight": 1 }
         }))
         .expect("config should parse");
         assert_eq!(cfg.registry_path, super::default_registry_path());
-        let VirtualDirectoryPath::LocalFolder { path } = super::default_registry_path() else {
-            panic!("default registry must be a local folder");
+        let VirtualDirectoryPath::GitRepo {
+            url,
+            sub_folder,
+            refspec,
+        } = super::default_registry_path()
+        else {
+            panic!("default registry must be an upstream git repository");
+        };
+        assert_eq!(
+            url,
+            "https://github.com/open-telemetry/semantic-conventions.git"
+        );
+        assert_eq!(sub_folder.as_deref(), Some("model"));
+        assert_eq!(refspec.as_deref(), Some(super::SEMCONV_REGISTRY_REFSPEC));
+    }
+
+    /// Scenario: A user opts into the vendored, annotated registry via
+    /// `vendored_registry_path`.
+    /// Guarantees: The helper returns a local folder pointing at
+    /// `vendor/semconv/model`, and that directory exists in the repository.
+    #[test]
+    fn vendored_registry_path_points_at_vendor_dir() {
+        let VirtualDirectoryPath::LocalFolder { path } = super::vendored_registry_path() else {
+            panic!("vendored registry must be a local folder");
         };
         let path = std::path::Path::new(&path);
         assert!(path.ends_with("vendor/semconv/model"));

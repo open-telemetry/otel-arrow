@@ -46,7 +46,7 @@ fn gen_fake_logs_batch(batch_size: usize) {
     }
 
     let registry_path =
-        otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path();
+        otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::vendored_registry_path();
 
     let traffic_config = TrafficConfig::new(None, None, 10000, 1, 1, 1);
     let config = Config::new(traffic_config, registry_path);

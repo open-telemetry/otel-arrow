@@ -292,7 +292,7 @@ fn build_mixed_receiver_pipeline_config(
 fn fake_receiver_config_value() -> serde_json::Value {
     let traffic_config = TrafficConfig::new(Some(1), Some(1), 1, 1, 1, 1);
     let registry_path =
-        otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path();
+        otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::vendored_registry_path();
     let receiver_config = TrafficGeneratorConfig::new(traffic_config, registry_path)
         .with_data_source(DataSource::Synthetic);
     to_value(receiver_config).expect("failed to serialize receiver config")

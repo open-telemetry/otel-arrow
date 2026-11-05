@@ -488,9 +488,7 @@ pub fn parse_metric_spec(
     for key in map.keys() {
         if !allowed.contains(&key.as_str()) {
             let reason = if matches!(key.as_str(), "observations" | "bounds") {
-                format!(
-                    "unknown key \"{key}\" for non-histogram metric (only valid on histograms)"
-                )
+                format!("unknown key \"{key}\" for non-histogram metric (only valid on histograms)")
             } else {
                 format!("unknown key \"{key}\" for metric group")
             };

@@ -86,14 +86,22 @@ fall back to enum members, `examples`, and type defaults.
 
 ### Registry
 
-When `registry_path` is not set, the receiver loads the vendored registry in
-[`vendor/semconv/model`](../../../../../vendor/semconv/README.md), which is
-annotated for every metric, span, and event and every int, double, boolean,
-and int[] attribute. The default path is resolved from the source tree at
-build time, so set `registry_path` when running the binary elsewhere. Any
-registry set through `registry_path` (a local folder, an archive, or a git
-repository) is used as is; registries without annotations fall back to enum
-members, examples, and type defaults.
+When `registry_path` is not set, the receiver loads the upstream OpenTelemetry
+semantic conventions registry, cloning
+`https://github.com/open-telemetry/semantic-conventions.git` at the pinned tag
+(`SEMCONV_REGISTRY_REFSPEC`) at startup. This requires network access and a TLS
+crypto provider, and the upstream registry carries no `traffic-generator`
+annotations, so values fall back to enum members, examples, and type defaults.
+
+To use the annotated value ranges, set `registry_path` to the vendored registry
+in [`vendor/semconv/model`](../../../../../vendor/semconv/README.md), which is
+annotated for every metric, span, and event and every int, double, boolean, and
+int[] attribute. The vendored path is resolved from the source tree, so point
+`registry_path` at its location (a local folder) when running the binary; the
+directory is not shipped inside deployed binaries. Any registry set through
+`registry_path` (a local folder, an archive, or a git repository) is used as is;
+registries without annotations fall back to enum members, examples, and type
+defaults.
 
 ### Placement
 
