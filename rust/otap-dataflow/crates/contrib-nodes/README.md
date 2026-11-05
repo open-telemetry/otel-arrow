@@ -100,7 +100,7 @@ Enable `oracle` or `postgresql` explicitly to include those integrations.
 Oracle requires separately provisioned Oracle Client libraries.
 
 The `mysql` feature is explicitly opt-in and excluded from all aggregates and
-default features. It currently enables only a preparatory module placeholder
+default features. It currently enables only a module placeholder
 and published dependencies, not an operational receiver or runtime factory.
 The root feature also enables `flat-file-user-pass-auth`.
 

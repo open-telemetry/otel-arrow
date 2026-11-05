@@ -13,7 +13,7 @@ pub mod kafka_receiver;
 #[cfg(feature = "microsoft-json")]
 pub mod microsoft_json_receiver;
 
-/// Preparatory MySQL module without a runtime factory.
+/// MySQL database receiver.
 #[cfg(feature = "mysql")]
 pub mod mysql_receiver;
 
