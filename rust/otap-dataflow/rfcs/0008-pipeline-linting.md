@@ -1,8 +1,8 @@
 ---
 Proposal Name: pipeline-linting
 Start Date: 2026-10-20
-RFC PR: open-telemetry/otel-arrow#0000
-Tracking Issue: open-telemetry/otel-arrow#0000
+RFC PR: open-telemetry/otel-arrow#4657
+Tracking Issue: open-telemetry/otel-arrow#4574
 ---
 
 # RFC 0008: Pipeline Linting
@@ -100,15 +100,18 @@ Each category resolves to a level that determines the engine's behavior when
 a lint in that category is detected. The default level of all categories is
 `warn`.
 
-| Level   | Effect                |
-|---------|-----------------------|
-| `allow` | Not reported          |
-| `warn`  | Reported as a warning |
-| `deny`  | Reported as an error  |
+| Level   | Effect                                                                |
+|---------|-----------------------------------------------------------------------|
+| `allow` | Not reported                                                          |
+| `warn`  | Reported via telemetry                                                |
+| `deny`  | Reported via telemetry and offending pipelines rejected by the engine |
 
-Errors generally stop whatever process is happening when detected. For example
-if an engine detects a linting error in a pipeline at startup, the engine will
-stop and exit 1, but warnings are simply logged.
+Configuring policy to `allow` a lint suppresses it and the engine will either not run
+the lint at all or ignore the result. Configuring policy to `warn` will cause the engine
+to emit telemetry when the lint is detected. Configuring policy to `deny` escalates the
+severity when the lint is detected. When a lint is detected in this case, the engine
+treats it similar to a config validation error which will stop offending pipelines from
+being accepted.
 
 ### Configuring lints
 
@@ -498,6 +501,7 @@ significant added complexity.
 
 ## Future possibilities
 
+- Configuring lint enforcement levels via CLI arguments
 - Configuring individual lints or packs, e.g. by lint name or pack URN, as
   a more specific key alongside categories.
 - Loading lints via a declarative policy language such as rego
