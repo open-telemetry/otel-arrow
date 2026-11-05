@@ -53,6 +53,11 @@ Enable the extension's feature gate together with the nodes that consume it:
 cargo build --release --features gcp-auth,otlp
 ```
 
+The default build includes `crypto-ring`. If you build with
+`--no-default-features`, enable one of the workspace `crypto-*` features
+(`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`) so the
+metadata HTTP client has a TLS crypto provider installed.
+
 ## Configuration
 
 All fields are optional; an empty `config: {}` queries the default service
@@ -70,3 +75,17 @@ the `GCE_METADATA_HOST` environment variable is set) with the
 | `timeout` | duration | `10s` | Per-request timeout on the metadata HTTP client. Must be non-zero. |
 | `connect_timeout` | duration | `5s` | Connection timeout on the metadata HTTP client. Must be non-zero. |
 | `startup_timeout` | duration | `30s` | Maximum time pipeline startup waits for the first token publish. Must be non-zero. |
+
+## Telemetry
+
+Each extension instance registers the `extension.gcp_auth` metric set:
+
+| Metric | Instrument | Unit | Description |
+| --- | --- | --- | --- |
+| `auth_successes` | `Counter<u64>` | `{acquisition}` | Number of successful token acquisitions. |
+| `auth_failures` | `Counter<u64>` | `{acquisition}` | Number of failed token acquisitions. |
+| `auth_token_publish` | `Counter<u64>` | `{token}` | Number of tokens published to consumers via the watch channel. |
+| `auth_success_latency` | `Mmsc` | `ms` | Latency of successful token acquisitions (min/max/sum/count). |
+
+Failed background token refresh attempts also emit the
+`gcp_auth.token_refresh_failed` warning event with the acquisition error.
