@@ -102,6 +102,8 @@ metadata. There are currently five such domains:
   The header "name" is the identifier we've chosen to use to store the header
   in the batch metadata whereas the "original name" is the name of the actual
   header when the data was received by the receiver.
+  Note that pdata metadata preserves duplicate headers, so logically a header
+  with a given name can have more than one value.
 - Network Info Peer address - contains the IPV4/V6 socket address from which
   the batch was received by a network facing receiver.
 - Constant/Random - static or computed values, populated by the engine based
@@ -296,8 +298,8 @@ which contains a member of the given name, and the member's value either equals
 or contains the passed value. Returns `False` otherwise.
 
 If the passed `value` is a `Binary`, it can only be matched for equality
-against the value of Transport Headers (all other domains contain only
-`String` values).
+against the value any Transport Headers having the same name as the passed
+`member_name` parameter.
 
 If the passed `value` parameter is a `String`:
 
@@ -327,7 +329,8 @@ which contains a member with the given name and the value of this member is a
 scalar `String`, returns `False` otherwise.
 
 If the member is of the Authorized Identity, this returns `False` if there are
-zero claim values, or if there are multiple claim values.
+zero claim values, or if there are multiple claim values. This is because this
+function is used to determine if the value is logically a scalar string.
 
 If the member is of the Transport Header domain, this returns `False` if the
 value is `Binary`.
@@ -349,6 +352,10 @@ scalar `Binary`, returns `False` otherwise.
 
 Since only the Transport Header domain can contain binary values, this will
 return `False` if the context entry member belongs to any other domain.
+
+If there are multiple transport headers containing a given header, this returns
+`False`. This is because this function is used to determine if the value is
+logically a scalar `Binary`.
 
 ---
 
@@ -375,7 +382,7 @@ can contain zero/multiple values.
 context_entry_value(
     entry_name: String,
     member_name: String
-) -> (String | Binary []String)?
+) -> (String | Binary | []String | []Binary)?
 ```
 
 Returns the value of the context entry member.
@@ -390,7 +397,10 @@ If the member is of the Authorized Identity domain:
 - Otherwise (there is a single claim value) it will return type `String`
 
 For the Transport Header domain, this will return either `String` or `Binary`
-type depending on the value of the header.
+type depending on the value of the header if there is only a single header.
+If there are multiple headers with the same name, and all of them are `String
+then this will return type `[]String`, else if one or more of the multiple
+headers then this will return type `[]Binary`.
 
 For all other domains, this returns type `String`.
 
@@ -408,8 +418,8 @@ Returns the same values as `context_entry_value` when this function would
 return a `String`, and `Null` otherwise.
 
 This means that for Authorized Identity members with zero or multiple values,
-as well as for Transport Header members with binary values, this returns
-`Null`.
+as well as for Transport Header members with binary values or if there are
+multiple headers with the same name this returns `Null`.
 
 ```rs
 context_binary_value(entry_name: String, member_name: String) -> Binary?
@@ -419,7 +429,8 @@ Returns the same values as `context_entry_value` when this function would
 return a `Binary`, and `Null` otherwise.
 
 Effectively, this means this will _only_ return a non-`Null` value for members
-of the Transport Header domain that contain a `Binary` value.
+of the Transport Header domain that contain a `Binary` value. However if there
+are multiple headers with the same name, then this will return `Null`.
 
 #### Transport Header Functions
 
@@ -462,6 +473,9 @@ parameter is a `String` type.
 This returns `False` if the header is not a string type (e.g. it has a `Binary`
 value), or if the header is not present in the OTAP Batch's context.
 
+If there are multiple transport header with the same name, this will return
+`False` because logically the value is not a scalar `String`.
+
 ---
 
 ```rs
@@ -477,17 +491,24 @@ parameter is a `Binary` type.
 This returns `False` if the header is not a binary type (e.g. it has a `String`
 value), or if the header is not present in the OTAP Batch's context.
 
+If there are multiple transport header with the same name, this will return
+`False` because logically the value is not a scalar `Binary`.
+
 ---
 
 ```rs
 transport_header_value(
     header_name: String,
     original_name: Boolean?
-) -> (String | Binary)?
+) -> (String | Binary | []String | []Binary)?
 ```
 
 Returns the value of the transport header. This may return either `String` or
 `Binary` type depending on the type of the value of the header.
+
+If there are multiple headers of the same matched name, if all the values are
+of type `String` then this will return type `[]String` otherwise it will return
+type of `[]Binary`.
 
 If the header is not present, this returns `Null`.
 
@@ -505,6 +526,9 @@ Returns the value of the transport header.
 This returns `Null` if the transport header is not present, or if it is present
 but value type is not `String` (i.e. it a `Binary` value).
 
+This will also return `Null` if there are multiple duplicate headers with the
+passed header name.
+
 ---
 
 ```rs
@@ -518,6 +542,19 @@ Returns the value of the transport header.
 
 This returns `Null` if the transport header is not present, or if it is present
 but value type is not `Binary` (i.e. it a `String` value).
+
+This will also return `Null` if there are multiple duplicate headers with the
+passed header name.
+
+---
+
+```rs
+is_header_value_scalar(header_name: String, original_name: Boolean?) -> Boolean
+```
+
+This will return `True` if the header with the given name is present and if
+there are no duplicate headers with this name.
+
 
 #### Authorized Identity Functions
 
