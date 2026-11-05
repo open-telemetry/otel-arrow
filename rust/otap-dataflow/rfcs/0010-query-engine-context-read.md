@@ -398,9 +398,8 @@ If the member is of the Authorized Identity domain:
 
 For the Transport Header domain, this will return either `String` or `Binary`
 type depending on the value of the header if there is only a single header.
-If there are multiple headers with the same name, and all of them are `String
-then this will return type `[]String`, else if one or more of the multiple
-headers then this will return type `[]Binary`.
+If there are multiple headers with the same name, and all of them are `String`
+then this will return type `[]String`, else  this will return type `[]Binary`.
 
 For all other domains, this returns type `String`.
 
@@ -554,7 +553,6 @@ is_header_value_scalar(header_name: String, original_name: Boolean?) -> Boolean
 
 This will return `True` if the header with the given name is present and if
 there are no duplicate headers with this name.
-
 
 #### Authorized Identity Functions
 
