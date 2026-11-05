@@ -115,13 +115,25 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 /// service account, and scopes.
 fn build_token_url(config: &Config) -> Result<reqwest::Url, Error> {
     let base = config.resolved_endpoint();
-    let service_account = config.service_account.trim();
-    let raw_url =
-        format!("{base}/computeMetadata/v1/instance/service-accounts/{service_account}/token");
+    let mut url = super::config::validate_base_endpoint(&base, "endpoint")
+        .map_err(|reason| Error::BuildHttpClient { reason })?;
 
-    let mut url = reqwest::Url::parse(&raw_url).map_err(|e| Error::BuildHttpClient {
-        reason: format!("invalid metadata endpoint URL `{raw_url}`: {e}"),
-    })?;
+    let service_account = config.service_account.trim();
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|()| Error::BuildHttpClient {
+                reason: format!("metadata endpoint URL `{base}` cannot be a base URL"),
+            })?;
+        let _ = segments.pop_if_empty().extend([
+            "computeMetadata",
+            "v1",
+            "instance",
+            "service-accounts",
+            service_account,
+            "token",
+        ]);
+    }
 
     if !config.scopes.is_empty() {
         let scopes = config

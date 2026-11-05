@@ -156,13 +156,7 @@ impl Config {
     /// Validates the configuration beyond what deserialization checks.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(endpoint) = &self.endpoint {
-            let trimmed = endpoint.trim();
-            if trimmed.is_empty() {
-                return Err("`endpoint` must not be empty when set".to_string());
-            }
-            if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-                return Err("`endpoint` must start with `http://` or `https://`".to_string());
-            }
+            let _ = validate_base_endpoint(endpoint, "endpoint")?;
         }
 
         let sa = self.service_account.trim();
@@ -173,11 +167,13 @@ impl Config {
             || sa.contains('\\')
             || sa.contains('?')
             || sa.contains('#')
+            || sa.contains('%')
             || sa == "."
             || sa == ".."
+            || sa.chars().any(|c| c.is_whitespace() || c.is_control())
         {
             return Err(
-                "`service_account` must be a single path segment without `/`, `\\`, `?`, `#`, or `..`"
+                "`service_account` must be a single path segment without `/`, `\\`, `?`, `#`, `%`, `..`, whitespace, or control characters"
                     .to_string(),
             );
         }
@@ -215,4 +211,40 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Parses and validates a metadata server base URL, ensuring it uses `http://`
+/// or `https://`, has a non-empty host, and carries no credentials, query
+/// parameters, or fragment.
+pub(crate) fn validate_base_endpoint(raw: &str, field_name: &str) -> Result<reqwest::Url, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("`{field_name}` must not be empty when set"));
+    }
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err(format!(
+            "`{field_name}` must start with `http://` or `https://`"
+        ));
+    }
+    let url = reqwest::Url::parse(trimmed)
+        .map_err(|e| format!("invalid `{field_name}` URL `{trimmed}`: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
+        return Err(format!(
+            "`{field_name}` must be a hierarchical `http://` or `https://` URL"
+        ));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(format!("`{field_name}` must include a non-empty host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!(
+            "`{field_name}` must not include userinfo credentials"
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "`{field_name}` must not include query parameters or a URL fragment"
+        ));
+    }
+    Ok(url)
 }
