@@ -210,7 +210,7 @@ impl CompiledEndpoint {
         }
         let mut budget = Budget::new(limits.work);
         let rules = flatten(&config.rules, limits, &mut budget)?;
-        validate_event_name_rules(&rules)?;
+        validate_event_name_rules(&rules, &mut budget)?;
         let mut overrides = Vec::new();
         let mut count = rules.len();
         let mut entries: Vec<_> = config.event_overrides.iter().collect();
@@ -286,7 +286,7 @@ impl CompiledEndpoint {
             if count > limits.rules {
                 return Err(MappingError::Limit("compiled rules"));
             }
-            validate_event_name_rules(&merged)?;
+            validate_event_name_rules(&merged, &mut budget)?;
             let ancestor_constraints = compile_ancestor_constraints(&merged, &mut budget)?;
             overrides.push(CompiledOverride {
                 pattern: pattern.clone(),
@@ -426,9 +426,12 @@ fn compile_ancestor_constraints(
         .collect())
 }
 
-fn validate_event_name_rules(rules: &[CompiledRule]) -> Result<(), MappingError> {
+fn validate_event_name_rules(
+    rules: &[CompiledRule],
+    budget: &mut Budget,
+) -> Result<(), MappingError> {
     let mut names = 0;
-    for rule in rules {
+    for (index, rule) in rules.iter().enumerate() {
         if rule
             .rule
             .also
@@ -446,9 +449,47 @@ fn validate_event_name_rules(rules: &[CompiledRule]) -> Result<(), MappingError>
                     "each mapping requires at most one exact event_name target".into(),
                 ));
             }
+            for earlier in &rules[..index] {
+                if selector_overlap(&earlier.path, &rule.path, budget)? {
+                    return Err(MappingError::Config(
+                        "event_name target must precede overlapping field rules".into(),
+                    ));
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn selector_overlap(
+    pattern: &[String],
+    path: &[String],
+    budget: &mut Budget,
+) -> Result<bool, MappingError> {
+    let bytes = pattern.iter().chain(path).map(String::len).sum::<usize>();
+    budget.charge(
+        bytes
+            .saturating_add(4)
+            .saturating_mul(pattern.len() + 1)
+            .saturating_mul(path.len() + 1),
+    )?;
+    let mut current = vec![false; path.len() + 1];
+    let mut next = current.clone();
+    current[0] = true;
+    for expected in pattern {
+        next.fill(false);
+        for (index, part) in path.iter().enumerate() {
+            // A wildcard can consume several segments when they form one
+            // literal dotted key in the source.
+            next[index + 1] = if expected == "*" {
+                current[index] || next[index]
+            } else {
+                current[index] && expected == part
+            };
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+    Ok(current[path.len()])
 }
 
 fn is_header_token(byte: u8) -> bool {
