@@ -1,8 +1,8 @@
 ---
 Proposal Name: query-engine batch metadata manipulation
 Start Date: 2026-11-03
-RFC PR: open-telemetry/otel-arrow#0000
-Tracking Issue: open-telemetry/otel-arrow#0000
+RFC PR: open-telemetry/otel-arrow#4632
+Tracking Issue: open-telemetry/otel-arrow#3310
 ---
 
 # RFC 0010: OPL/OTAP Query Engine Batch transformation
@@ -34,38 +34,42 @@ inspection of the metadata, may also involve transformations of the metadata
 values and may involve logical combination of predicates involving other
 (non-metadata related) fields/expressions.
 
-For example (the metadata access functions below are _pseudocode_ and are _not_
-representations of the desired API described in this RFC):
+For example:
 
-```kql
+```js
 signals |
 if ( 
-    has_metadata_for_category_a() 
+    has_transport_header("x-my-header")
     // predicate involves other non-metadata fields
     and resource.attributes["x"] == Y /* and|or|not ... */
 ) {
-    route_to "category_a_destination"
+    route_to "destination_a"
 }
 
 if (
     // predicate involving complex logic applied to value
-    "9" == coalesce(
-        regexp_capture(metadata_value(), "^([0-9]{0, 3}).*", 1),
+    coalesce(
+        regexp_capture(
+          authorized_identity_claim_value("sub"),
+          "^sub:([0-9]+).*", 
+          1
+        ),
         ""
-    )
+    ) == "123456789"
 ) {
-    route_to "nine_network_destination"
+    route_to "route_for_sub_123456789"
 }
 ```
 
 We may wish to control the _content_ of telemetry as well, again using complex logic
 
-```kql
+```js
 signals |
 if (resource.attributes["network.peer.address"] == null and metadata_has_peer_addr()) {
     // ensure peer port always corresponds to address by setting both at same time
     set resource.attributes["network.peer.address"] = peer_addr_from_metadata() |
-    set resource.attributes["network.peer.port] = coalesce(regexp_capture(
+    // extract port
+    set resource.attributes["network.peer.port"] = coalesce(regexp_capture(
         peer_addr_from_metadata, 
         ".*:([0-9]+).*",
         1
@@ -73,20 +77,12 @@ if (resource.attributes["network.peer.address"] == null and metadata_has_peer_ad
 }
 ```
 
-This complex behavioural logical is clearly best expressed programmatically.
-Trying to express such
+Trying to express such operations as through YAML pipeline configuration may
+become untenable. This complex behavioural logical is clearly best expressed
+programmatically.
+
 
 ## Guide-level explanation
-
-Explain the proposal as if it were already implemented and you were teaching it
-to another contributor. That generally means:
-
-- Introducing new named concepts.
-- Explaining the feature mainly through examples.
-- Explaining how contributors should *think* about the feature and how it
-  changes the way they work in the repo.
-- If applicable, sample error messages, deprecation warnings, or migration
-  guidance.
 
 ### Background: Context (Logical) Data Model
 
@@ -95,8 +91,9 @@ metadata may be physically organized in a very different manner than
 what is described below.
 
 An OTAP batch's metadata is composed of named fields which are grouped into
-different "_domains_", which can be understood as different "types" of metadata.
-There are currently five such domains:
+different "_domains_", which can be understood as different "types" of
+metadata. There are currently five such domains:
+
 - Authorized Identity - contains claims resolved from an authorization method
   (e.g. claims from a JWT Token). Each claim contains a name (of type `String`)
   and zero, one or multiple values which are also of type `String`.
@@ -109,7 +106,8 @@ There are currently five such domains:
 - Network Info Peer address - contains the IPV4/V6 socket address from which
   the batch was received by a network facing receiver.
 - Constant/Random - static or computed values, populated by the engine based
-  on context entry policy configuration. These have a name and a `String` value.
+  on context entry policy configuration. These have a name and a `String`
+  value.
 
 The various fields belonging these "domains" can be grouped into "_context
 entries_" via policies. Context entries are named, and composed of metadata
@@ -187,8 +185,9 @@ What's more, the logic for determining _which_ type any given field _could_ be
 depends on its domain. This is challenging because because the domain model
 may evolve over time. For example, imagine some code written as:
 
-(Again - this is pseudocode)
-```
+(This is pseudocode - not the actual proposed API)
+
+```js
 if (context["field"].domain == "authorized_identity") {
     // handle String and []String
 } else if (context["field"].domain == "transport_header") {
@@ -205,7 +204,6 @@ evolves, and to reduce program complexity, we should _avoid forcing_ the
 users to deal with complexity and attempt to encapsulate the data model
 behind a simpler facade.
 
-
 ## Reference-level explanation
 
 ### Query-Language API
@@ -213,19 +211,61 @@ behind a simpler facade.
 The utilities for reading context values will be available as a collection of
 functions whose signatures will be presented in the following section.
 
+Here are some examples of using some of these functions:
+
+```js
+// filter out all logs that don't have some context entry
+logs | where has_context_entry("my_context_entry")
+
+// set the value of a context entry member as a resource attribute
+// (but only if it is a string type)
+signals |
+    if is_context_entry_member_string("my_context_entry", "some_member") {
+        set resource.attributes["my.attr"] = context_entry_value(
+          "my_context_entry",
+          "some_member"
+        )
+    }
+
+
+// route telemetry received from some specific identity to a given destination
+signals |
+    if authorized_identity_claim_has_value("sub", "sub:123456789") {
+        route_to "special_route"
+    }
+
+// filter out non-sampled spans
+signals |
+    if (is Span) {
+        where (
+          has_transport_header("b3") and regex_capture(
+              transport_header_value("b3"),
+              "[a-z0-9]+-[a-z0-9]+-(.)-.*",
+              1
+          ) == "1"
+        ) or transport_header_value("X-B3-Sampled") == "1"
+    }
+```
+
 Note that the convention I'm using here is that:
 
 - `?` in parameters means the argument is optional (the function implementation
   will assume a default value for these parameters)
 - `?` on return types means the type may be null
 - `(T1 | T2 | T3 | ... TN)` types means the type may be either `T1` or
-  `T2` or `T3` ... or `TN` (i.e. the parentheses do not indicate a tuple like in
-  Rust).
+  `T2` or `T3` ... or `TN` (i.e. the parentheses do not indicate a tuple).
 - `[]T` means the type is an array of `T`
+
+<!--
+I've also used "rs" as the language for all the function signatures below
+simply because I wanted the syntax highlighting. These are not necessarily Rust
+functions we'll actually write - they're signatures of functions that will be
+available in KQL/OPL/OTTL functions executed by the OTAP query engine.
+-->
 
 #### Context Functions
 
-```
+```rs
 has_context_entry(entry_name: String) -> Boolean
 ```
 Returns `True` if the OTAP batch contains a context entry of the given name,
@@ -233,8 +273,7 @@ otherwise returns `False`.
 
 ---
 
-
-```
+```rs
 has_context_entry_member(entry_name: String, member_name: String) -> Boolean
 ```
 Returns `True` if the OTAP batch contains a context entry with the given name
@@ -242,7 +281,7 @@ and if the this contains member with the given name, otherwise returns `False`.
 
 ---
 
-```
+```rs
 has_context_entry_member_value(
    entry_name: String,
    member_name: String,
@@ -276,8 +315,8 @@ before comparing the string value.
 
 ---
 
-```
-is_context_entry_string(entry_name: String, member_name: String) -> Boolean
+```rs
+is_context_entry_member_string(entry_name: String, member_name: String) -> Boolean
 ```
 
 Returns `True` if the OTAP batch contains a context entry with the given name
@@ -294,8 +333,8 @@ This will return `True` if the member is the network peer address.
 
 ---
 
-```
-is_context_entry_binary(
+```rs
+is_context_entry_member_binary(
     entry_name: String,
     member_name: String
 ) -> Boolean
@@ -310,8 +349,8 @@ return `False` if the context entry member member belongs to any other domain.
 
 ---
 
-```
-is_context_entry_scalar(
+```rs
+is_context_entry_member_scalar(
     entry_name: String,
     member_name: String
 ) -> Boolean
@@ -329,8 +368,8 @@ can contain zero/multiple values.
 
 ---
 
-```
-context_value(
+```rs
+context_entry_value(
     entry_name: String,
     member_name: String
 ) -> (String | Binary []String)?
@@ -357,7 +396,7 @@ to a string by calling
 
 ---
 
-```
+```rs
 context_string_value(entry_name: String, member_name: String) -> String?
 ```
 
@@ -369,7 +408,7 @@ as well as for Transport Header members with binary values, this returns
 `Null`.
 
 
-```
+```rs
 context_binary_value(entry_name: String, member_name: String) -> Binary?
 ```
 
@@ -395,7 +434,7 @@ parameter may be omitted, and when it is omitted it will default to `False`.
 
 ---
 
-```
+```rs
 has_transport_header(
     header_name: String,
     original_name: Boolean?
@@ -407,7 +446,7 @@ the `header_name` parameter, otherwise returns `False`.
 
 ---
 
-```
+```rs
 is_transport_header_string(
     header_name: String,
     original_name: Boolean?
@@ -422,7 +461,7 @@ value), or if the header is not present in the OTAP Batch's context.
 
 ---
 
-```
+```rs
 is_transport_header_binary(
     header_name: String,
     original_name: Boolean?
@@ -437,7 +476,7 @@ value), or if the header is not present in the OTAP Batch's context.
 
 ---
 
-```
+```rs
 transport_header_value(
     header_name: String,
     original_name: Boolean?
@@ -451,7 +490,7 @@ If the header is not present, this returns `Null`.
 
 ---
 
-```
+```rs
 transport_header_string_value(
     header_name: String,
     original_name: Boolean?
@@ -465,7 +504,7 @@ but type value type is not `String` (i.e. it a `Binary` value).
 
 ---
 
-```
+```rs
 transport_header_binary_value(
     header_name: String,
     original_name: Boolean?
@@ -480,7 +519,7 @@ but type value type is not `Binary` (i.e. it a `String` value).
 
 #### Authorized Identity Functions
 
-```
+```rs
 has_authorized_identity_claim(claim_name: String) -> Boolean
 ```
 Returns `True` if the OTAP Batch's context contains an authorized identity
@@ -502,8 +541,8 @@ either zero or multiple values.
 
 ---
 
-```
-authorized_identity_has_value(
+```rs
+authorized_identity_claim_has_value(
     claim_name: String,
     value: String
 ) -> Boolean
@@ -519,7 +558,7 @@ If the claim contains only a single value, this returns `True`
 
 ---
 
-```
+```rs
 authorized_identity_claim_value(claim_name: String) -> (String | []String)?
 ```
 
@@ -535,7 +574,7 @@ Otherwise the claim contains multiple values and this returns type `[]String`.
 
 ---
 
-```
+```rs
 authorized_identity_claim_string_value(claim_name: String) -> String
 ```
 
@@ -550,7 +589,7 @@ If the claim contains a single value, this returns a type `String`
 
 #### Network Info Functions
 
-```
+```rs
 has_network_info_peer_address() -> Boolean
 ```
 
@@ -559,7 +598,7 @@ batch context, and `False` otherwise.
 
 ---
 
-```
+```rs
 network_info_peer_address_string_value() -> String?
 ```
 
@@ -578,7 +617,7 @@ In OPL, these will be available on pipelines of any data type, including
 nested pipelines of attributes and metric data points. E.g., the following
 OPL program would be legal:
 
-```kql
+```rs
 signals | apply attributes {
     if (key == "some_key" and is_context_entry_string("my_entry", "foo")) {
         // append the context value to the attribute
