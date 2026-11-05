@@ -524,6 +524,7 @@ but value type is not `Binary` (i.e. it a `String` value).
 ```rs
 has_authorized_identity_claim(claim_name: String) -> Boolean
 ```
+
 Returns `True` if the OTAP Batch's context contains an authorized identity
 claim with the given name, and returns `False` otherwise.
 
@@ -588,7 +589,6 @@ If the claim contains zero values or multiple values, this returns `Null`.
 
 If the claim contains a single value, this returns a type `String`
 
-
 #### Network Info Functions
 
 ```rs
@@ -628,13 +628,9 @@ signals | apply attributes {
 }
 ```
 
-## Drawbacks
-
-
-
 ## Rationale and alternatives
 
-*Alternative 1: Do it with Processors*
+_Alternative 1: Do it with Processors_
 
 We could imagine bespoke processors, or configuration of existing processors,
 that perform the same behaviour we're able to implement with transform programs
@@ -653,7 +649,7 @@ this approach the bespoke configuration may become unwieldy and the combination
 of processors needed for complex behaviour adds both overhead and pipeline
 complexity.
 
-*Alternative 2: A `context` field*
+_Alternative 2: A `context` field_
 
 Rather than having a collection of functions for accessing context, we could
 have one or more fields available on all types in the query engine for
@@ -714,7 +710,7 @@ adding such a syntax in the future.
 
 ## Prior art
 
-*OTel Collector's Attribute Processor Data Model*
+_OTel Collector's Attribute Processor Data Model_
 
 OTel Collector's Attribute Processor uses the fields `metadata` and `auth` to
 reference batch metadata.
