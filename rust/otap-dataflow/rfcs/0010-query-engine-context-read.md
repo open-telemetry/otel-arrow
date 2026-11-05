@@ -16,7 +16,7 @@ A collection of functions will be added to inspect the contents of batch
 metadata and retrieve values.
 
 This RFC does _not_ define any capability for updating OTAP batch metadata
-values. Such design work is left for future some RFC.
+values. Such design work is left for some future RFC.
 
 ## Motivation
 
@@ -24,12 +24,12 @@ RFCs 0006 and 0004 define the logical structure and policies around batch
 metadata propagation. After batch metadata has been populated, the next
 question is "what can I do with this batch metadata?"
 
-One reasonable answers may be that we wish to control the flow and/or content
+One reasonable answer may be that we wish to control the flow and/or content
 of telemetry in response to certain metadata values.
 
 For example, I may wish that some distinct category of telemetry
 batches be routed to a specific destination. The category membership
-predicate may be complex -- it be expressible wholly or only partially by
+predicate may be complex -- it be may expressible wholly or only partially by
 inspection of the metadata, may also involve transformations of the metadata
 values and may involve logical combination of predicates involving other
 (non-metadata related) fields/expressions.
@@ -77,7 +77,7 @@ if (resource.attributes["network.peer.address"] == null and metadata_has_peer_ad
 }
 ```
 
-Trying to express such operations as through YAML pipeline configuration may
+Trying to express such operations through YAML pipeline configuration may
 become untenable. This complex behavioural logical is clearly best expressed
 programmatically.
 
@@ -122,7 +122,7 @@ policies:
       # The "entry" contains a list of members. Each member has a type
       # which identifies the "domain", a "name" which represents both
       # the member's name within this context entry _and_ the metadata
-      # field within it's domain containing the value.
+      # field within its domain containing the value.
       #
       # Some members also have a "value" field which is interpreted
       # in a context dependant way depending on the "type".
@@ -176,14 +176,14 @@ policies:
 
 ### Challenges
 
-There are challenge of working with this such a model. There are a variety
+There are challenges of working with this such a model. There are a variety of
 disparate types which any particular metadata value may take on. It may be a
 `String`, or `Binary` or a list of `String`s (this ignores peer address, which
 internally is a `SocketAddr`, which we need to decide how to handle).
 
 What's more, the logic for determining _which_ type any given field _could_ be
-depends on its domain. This is challenging because because the domain model
-may evolve over time. For example, imagine some code written as:
+depends on its domain. This is challenging because the domain model may evolve
+over time. For example, imagine some code written as:
 
 (This is pseudocode - not the actual proposed API)
 
@@ -277,7 +277,7 @@ otherwise returns `False`.
 has_context_entry_member(entry_name: String, member_name: String) -> Boolean
 ```
 Returns `True` if the OTAP batch contains a context entry with the given name
-and if the this contains member with the given name, otherwise returns `False`.
+and if this contains a member with the given name, otherwise returns `False`.
 
 ---
 
@@ -298,14 +298,14 @@ against the value of Transport Headers (all other domains contain only
 `String` values).
 
 If the passed `value` parameter is a `String`:
-- If the member belongs to the is an Authorized Identity domain and...
-  - If the claim value is a contains multiple values, this function will
+- If the member belongs to the an Authorized Identity domain and...
+  - If the claim value contains multiple values, this function will
     return `True` if any claim value is equal to the string, otherwise it
     returns `False`.
   - Else if the claim contains zero values, this function returns `False`
 - If the member belongs to the Transport Header domain and ...
   - If the value of the Transport Header is `Binary`, this returns `False`
-- Else the claim contains a a single `String` value and so it will be matched
+- Else the claim contains a single `String` value and so it will be matched
   for equality against the passed `value` parameter.
 
 Note that if the member is network peer address, the peer address will be
@@ -344,8 +344,8 @@ Returns `True` if the OTAP batch contains a context entry with the given name
 which contains a member with the given name and the value of this member is a
 scalar `Binary`, returns `False` otherwise.
 
-Since only the Transport Header domain can can contain binary values, this will
-return `False` if the context entry member member belongs to any other domain.
+Since only the Transport Header domain can contain binary values, this will
+return `False` if the context entry member belongs to any other domain.
 
 ---
 
@@ -400,8 +400,8 @@ to a string by calling
 context_string_value(entry_name: String, member_name: String) -> String?
 ```
 
-Returns the same values as `context_value` when this function would return a
-`String`, and `Null` otherwise.
+Returns the same values as `context_entry_value` when this function would
+return a `String`, and `Null` otherwise.
 
 This means that for Authorized Identity members with zero or multiple values,
 as well as for Transport Header members with binary values, this returns
@@ -412,11 +412,11 @@ as well as for Transport Header members with binary values, this returns
 context_binary_value(entry_name: String, member_name: String) -> Binary?
 ```
 
-Returns the same values as `context_value` when this function would return a
-`Binary`, and `Null` otherwise.
+Returns the same values as `context_entry_value` when this function would
+return a `Binary`, and `Null` otherwise.
 
 Effectively, this means this will _only_ return a non-`Null` value for members
-of the Transport Header domain that have a contain a `Binary` value.
+of the Transport Header domain that contain a `Binary` value.
 
 #### Transport Header Functions
 
@@ -500,7 +500,7 @@ transport_header_string_value(
 Returns the value of the transport header.
 
 This returns `Null` if the transport header is not present, or if it is present
-but type value type is not `String` (i.e. it a `Binary` value).
+but value type is not `String` (i.e. it a `Binary` value).
 
 ---
 
@@ -514,7 +514,7 @@ transport_header_binary_value(
 Returns the value of the transport header.
 
 This returns `Null` if the transport header is not present, or if it is present
-but type value type is not `Binary` (i.e. it a `String` value).
+but value type is not `Binary` (i.e. it a `String` value).
 
 
 #### Authorized Identity Functions
@@ -525,7 +525,7 @@ has_authorized_identity_claim(claim_name: String) -> Boolean
 Returns `True` if the OTAP Batch's context contains an authorized identity
 claim with the given name, and returns `False` otherwise.
 
-Note - this returns `True` any time the claim is present, even when has
+Note - this returns `True` any time the claim is present, even when it has
 zero values.
 
 ---
@@ -554,7 +554,7 @@ passed `value`.
 If the claim contains multiple values, this returns `True` if any of the values
 is equal to the passed `value` parameter, and `False` otherwise.
 
-If the claim contains only a single value, this returns `True`
+If the claim contains only a single value then this returns `True`.
 
 ---
 
@@ -602,7 +602,7 @@ batch context, and `False` otherwise.
 network_info_peer_address_string_value() -> String?
 ```
 
-Returns the value of a the network info peer address as a `String` if this value
+Returns the value of the network info peer address as a `String` if this value
 is present in the request context. The value will be converted into a string by
 calling
 [`SocketAddr::to_string`](https://docs.rs/lib/latest/lib/net/enum.SocketAddr.html#impl-ToString-for-T).
@@ -681,8 +681,8 @@ policies:
       # ...
 ```
 Of course we could have business logic to prevent this in our policy definition,
-but it's also the case that we may in the future add new metadata domains that,
-and so we can't predict necessarily all the reserved context entry names.
+but it's also the case that we may in the future add new metadata domains
+so we can't predict necessarily all the reserved context entry names.
 
 The second drawback is that if OTel/OTAP ever did need to add a field called
 `context`, we'd have a name conflict that would be difficult to sort out.
@@ -740,8 +740,8 @@ similarly `auth` to access authorized identity metadata.
 
 This runs into the same problem discussed in the previous section with
 respect to field name conflicts in the OTel Data model, although in this case
-it's not simply hypothetical - `metadata` is the name ofa field on metrics,
-which in OTAP we call `attributes`, but this could still sew confusion.
+it's not simply hypothetical - `metadata` is the name of a field on metrics,
+which in OTAP we call `attributes`, but this could still incite confusion.
 
 
 ## Unresolved questions
@@ -766,7 +766,7 @@ always return `False` and similarly that calls such as
 I think for now it's fine if we let these resolve at runtime, but a performance
 optimization may be to try to resolve them statically.
 
-However, we can could of alternatives -- perhaps we want to say that such a
+However, we can consider alternatives -- perhaps we want to say that such a
 program would actually be _invalid_ in a context where no such policies are
 defined. I can't think of a reason _why_ we might want to do this, but maybe
 it's worth considering.
@@ -783,7 +783,7 @@ return `False` and that `transport_header_value("foo")` will return `Null`.
 However, we may want to think more critically about the user's intention -
 clearly they thought there was a possibility this header "foo" would be present
 when they wrote the program, so it might be good to help them along either a)
-warn then that they're accessing headers not defined in the capture policy or
+warn them that they're accessing headers not defined in the capture policy or
 b) automatically create a header capture policy based on the program they've
 written.
 
