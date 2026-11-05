@@ -74,7 +74,7 @@ const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
 /// A malformed syslog batch frame.
 #[derive(Debug, thiserror::Error)]
 #[error("{reason}")]
-pub(super) struct SyslogFramingError {
+pub(crate) struct SyslogFramingError {
     reason: String,
 }
 
@@ -445,6 +445,16 @@ fn validated_item_count(bytes: &[u8]) -> Result<usize, SyslogFramingError> {
     let (count, mut frames) = validated_frames(bytes)?;
     frames.try_for_each(|frame| frame.map(|_| ()))?;
     Ok(count)
+}
+
+/// Validates the complete encoded batch and borrows its original wire messages.
+/// The bounded list prevents a malformed later frame from causing a partial send.
+pub(crate) fn validated_messages(bytes: &[u8]) -> Result<Vec<&[u8]>, SyslogFramingError> {
+    let (count, frames) = validated_frames(bytes)?;
+    validate_decode_limits(count, bytes.len())?;
+    frames
+        .map(|frame| frame.map(|frame| frame.message))
+        .collect()
 }
 
 const fn read_u32(bytes: &[u8]) -> u32 {
@@ -1005,6 +1015,30 @@ mod tests {
             .finish(observed_time)
             .expect("seal test batch")
             .bytes
+    }
+
+    /// Scenario: A complete batch contains original messages in multiple receipt-year runs.
+    /// Guarantees: Validation returns the exact borrowed message bytes in order.
+    #[test]
+    fn validated_messages_preserve_wire_bytes() {
+        let mut builder = SyslogBatchBuilder::new();
+        builder.append_with_year(b"<13>first", 2025).unwrap();
+        builder.append_with_year(b"CEF:0|second", 2026).unwrap();
+        let bytes = builder.finish(42).unwrap().bytes;
+        let messages = validated_messages(&bytes).unwrap();
+        assert_eq!(
+            messages,
+            [b"<13>first".as_slice(), b"CEF:0|second".as_slice()]
+        );
+        assert_eq!(messages[0].as_ptr(), bytes[28..].as_ptr());
+    }
+
+    /// Scenario: A later frame is truncated after an otherwise valid first frame.
+    /// Guarantees: Validation rejects the entire batch before exposing any messages.
+    #[test]
+    fn validated_messages_reject_late_corruption() {
+        let bytes = batch(&[b"<13>first", b"<13>second"], 42);
+        assert!(validated_messages(&bytes[..bytes.len() - 1]).is_err());
     }
 
     // Deliberately bypass admission limits to test hostile framing and splitting
