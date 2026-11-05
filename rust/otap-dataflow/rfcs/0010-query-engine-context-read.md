@@ -557,7 +557,10 @@ passed `value`.
 If the claim contains multiple values, this returns `True` if any of the values
 is equal to the passed `value` parameter, and `False` otherwise.
 
-If the claim contains only a single value then this returns `True`.
+If the claim contains only a single value then this returns `True` if the
+passed `value` is equal to the single claim value.
+
+ If the claim is absent or contains zero values, this returns `False`.
 
 ---
 
