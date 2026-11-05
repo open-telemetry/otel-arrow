@@ -71,10 +71,10 @@ mod tests {
         metadata
     }
 
-    /// Scenario: batch-style merges see no inputs, one input, unanimous peers, distinct peers, or a peerless input.
-    /// Guarantees: output equals empty metadata plus the PeerAddrMerger result, and the incremental merger agrees.
+    /// Scenario: a Merges binding sees various configurations.
+    /// Guarantees: output correctly sets peer addr and clears other fields.
     #[test]
-    fn merge_matches_peer_addr_merger() {
+    fn merges_peer_addr() {
         let a = Some(peer("10.0.0.1:1"));
         let b = Some(peer("10.0.0.2:2"));
         let binding = MergeBinding;
@@ -95,7 +95,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let mut merger = binding.merger();
             for input in &inputs {
-                assert(input.transport_headers().is_some());
+                assert!(input.transport_headers().is_some());
                 merger.combine(input);
             }
             let merged = merger.finish();

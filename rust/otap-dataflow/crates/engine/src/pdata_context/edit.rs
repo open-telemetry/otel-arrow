@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Edits and Merges bindings for processors that form output context from input context.
+//! Edit bindings for processors that form output context from input context.
 
 use super::{ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, Metadata};
 use otel_arrow_dfe_config::context::ContextEntryName;
