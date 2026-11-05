@@ -81,7 +81,6 @@ Trying to express such operations through YAML pipeline configuration may
 become untenable. This complex behavioural logical is clearly best expressed
 programmatically.
 
-
 ## Guide-level explanation
 
 ### Background: Context (Logical) Data Model
@@ -196,6 +195,7 @@ if (context["field"].domain == "authorized_identity") {
     // Now we _know_ it's a String
 }
 ```
+
 This code could break if we adapt the data model of context to add new types
 and domains.
 
@@ -268,6 +268,7 @@ available in KQL/OPL/OTTL functions executed by the OTAP query engine.
 ```rs
 has_context_entry(entry_name: String) -> Boolean
 ```
+
 Returns `True` if the OTAP batch contains a context entry of the given name,
 otherwise returns `False`.
 
@@ -276,6 +277,7 @@ otherwise returns `False`.
 ```rs
 has_context_entry_member(entry_name: String, member_name: String) -> Boolean
 ```
+
 Returns `True` if the OTAP batch contains a context entry with the given name
 and if this contains a member with the given name, otherwise returns `False`.
 
@@ -290,14 +292,15 @@ has_context_entry_member_value(
 ```
 
 Returns `True` if the OTAP batch contains a context entry with the given name
-which contains a member of the given name, and the member's value either equals or
-contains the passed value. Returns `False` otherwise.
+which contains a member of the given name, and the member's value either equals
+or contains the passed value. Returns `False` otherwise.
 
 If the passed `value` is a `Binary`, it can only be matched for equality
 against the value of Transport Headers (all other domains contain only
 `String` values).
 
 If the passed `value` parameter is a `String`:
+
 - If the member belongs to the an Authorized Identity domain and...
   - If the claim value contains multiple values, this function will
     return `True` if any claim value is equal to the string, otherwise it
@@ -380,7 +383,8 @@ Returns the value of the context entry member.
 If the OTAP batch does not have a context entry with this name, or the context
 entry does not have such a member, this will return `Null`.
 
-If the member is of the Authorized Identity domain
+If the member is of the Authorized Identity domain:
+
 - If there are zero claim values this will return `Null`
 - If there are multiple claim values, it will return type `[]String`
 - Otherwise (there is a single claim value) it will return type `String`
@@ -407,7 +411,6 @@ This means that for Authorized Identity members with zero or multiple values,
 as well as for Transport Header members with binary values, this returns
 `Null`.
 
-
 ```rs
 context_binary_value(entry_name: String, member_name: String) -> Binary?
 ```
@@ -420,7 +423,7 @@ of the Transport Header domain that contain a `Binary` value.
 
 #### Transport Header Functions
 
-_Note on the parameters_: 
+_Note on the parameters_:
 
 All of the functions below take the `header_name` parameter which is used to
 identify the header that is the target of the function. This will be matched
@@ -515,7 +518,6 @@ Returns the value of the transport header.
 
 This returns `Null` if the transport header is not present, or if it is present
 but value type is not `Binary` (i.e. it a `String` value).
-
 
 #### Authorized Identity Functions
 
