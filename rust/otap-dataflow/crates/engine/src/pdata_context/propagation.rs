@@ -58,7 +58,6 @@ impl PreparedHeaderPropagationPolicy {
         policy: HeaderPropagationPolicy,
         declarations: &[ContextEntryDeclaration],
     ) -> Result<Self, String> {
-        policy.validate()?;
         let mut policy = Self {
             default: policy.default,
             overrides: policy.overrides,
@@ -1128,7 +1127,6 @@ default:
                 store_as: Some(context_name("workspace")),
                 sensitive: false,
                 value_kind: None,
-                transform: Default::default(),
             }],
         )
         .compile(|name| prepared.propagates_original_name(name));
@@ -1206,7 +1204,6 @@ default:
                     store_as: Some(context_name(captured_name)),
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 }],
             )
             .compile(|name| prepared.propagates_original_name(name));
@@ -1810,39 +1807,29 @@ entries:
         assert_eq!(propagated[0].header_name, "tenant_id");
     }
 
-    /// Scenario: named and explicit transport-header selectors list one captured entry.
-    /// Guarantees: both forms propagate only that entry; the identity domain is rejected before binding.
+    /// Scenario: a named selector lists one captured entry.
+    /// Guarantees: only that entry is propagated.
     #[test]
     fn propagate_named_selector() {
-        for selector_type in [
-            PropagationSelectorType::Named,
-            PropagationSelectorType::TransportHeader,
-            PropagationSelectorType::AuthorizedIdentity,
-        ] {
-            let policy = HeaderPropagationPolicy::new(
-                PropagationDefault {
-                    selector: PropagationSelector {
-                        selector_type: selector_type.clone(),
-                        named: Some(vec![context_name("tenant_id").into()]),
-                    },
-                    ..PropagationDefault::default()
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::Named,
+                    named: Some(vec![context_name("tenant_id").into()]),
                 },
-                vec![],
-            );
-            let compiled = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[]);
-            if selector_type == PropagationSelectorType::AuthorizedIdentity {
-                assert!(compiled.is_err());
-                continue;
-            }
-            let policy = compiled.expect("propagation policy compiles");
+                ..PropagationDefault::default()
+            },
+            vec![],
+        );
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles");
 
-            let mut headers = TransportHeaders::new();
-            headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
-            headers.push(header("request_id", "X-Request-Id", b"r-1"));
+        let mut headers = TransportHeaders::new();
+        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
+        headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
-            let propagated: Vec<_> = policy.propagate(&headers).collect();
-            assert_eq!(propagated.len(), 1);
-            assert_eq!(propagated[0].header_name, "X-Tenant-Id");
-        }
+        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        assert_eq!(propagated.len(), 1);
+        assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 }

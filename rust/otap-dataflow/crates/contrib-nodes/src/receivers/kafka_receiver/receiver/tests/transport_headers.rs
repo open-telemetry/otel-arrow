@@ -337,7 +337,6 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                         ),
                         sensitive: false,
                         value_kind: None,
-                        transform: Default::default(),
                     },
                     CaptureRule {
                         match_names: vec![
@@ -348,7 +347,6 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                         store_as: None, // defaults to lowercased wire name
                         sensitive: false,
                         value_kind: None,
-                        transform: Default::default(),
                     },
                 ],
             );
@@ -513,7 +511,6 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
                     ),
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 }],
             );
 
@@ -611,7 +608,6 @@ async fn test_kafka_receiver_capture_policy_otap_format() {
                     ),
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 }],
             );
 
