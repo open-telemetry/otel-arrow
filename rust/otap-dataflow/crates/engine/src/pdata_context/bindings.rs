@@ -122,6 +122,7 @@ pub struct SinkBinding {
 }
 
 impl SinkBinding {
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn new(policy: CompiledHeaderPropagationPolicy) -> Self {
         Self { policy }
     }
@@ -234,6 +235,7 @@ impl NodeBindings {
         Some(&self.sink.as_ref()?.policy)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn set_header_capture_policy(
         &mut self,
         policy: Option<CompiledHeaderCapturePolicy>,
@@ -243,6 +245,7 @@ impl NodeBindings {
             .header_capture = policy;
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn set_authorized_identity_policy(
         &mut self,
         policy: Option<AuthorizedIdentityPolicy>,
@@ -258,6 +261,7 @@ impl NodeBindings {
             .materialization = plan;
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn set_header_propagation_policy(
         &mut self,
         policy: Option<CompiledHeaderPropagationPolicy>,

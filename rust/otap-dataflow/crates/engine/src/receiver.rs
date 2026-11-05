@@ -31,7 +31,9 @@ use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -70,6 +72,7 @@ impl<PData> ReceiverContextMaterialization<PData> {
 /// bindings that retain any installed materialization plan.
 ///
 /// TODO(4541): This will be removed in migration step 5.
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn legacy_bindings_mut<'a, PData>(
     bindings: &'a mut Option<Arc<NodeBindings>>,
     materialization: Option<&ReceiverContextMaterialization<PData>>,
@@ -652,6 +655,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 impl<PData> ReceiverWrapper<PData> {
     /// Returns the wrapper with the given pre-resolved capture engine for
     /// transport header extraction.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_capture_policy(
         mut self,
         policy: Option<CompiledHeaderCapturePolicy>,
@@ -661,6 +665,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns the wrapper with the authorized identity claim projection policy.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_authorized_identity_policy(
         mut self,
         policy: Option<AuthorizedIdentityPolicy>,
@@ -671,6 +676,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns bindings for the legacy policy builders.
+    #[cfg(any(test, feature = "test-utils"))]
     fn legacy_bindings_mut(&mut self) -> &mut NodeBindings {
         match self {
             Self::Local {

@@ -41,11 +41,13 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
-use crate::pdata_context::{
-    Arrival, ArrivalBinding, ContextError, ContextMaterializationPlan, Metadata, NodeBindings,
-};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::pdata_context::ContextMaterializationPlan;
+use crate::pdata_context::{Arrival, ArrivalBinding, ContextError, Metadata, NodeBindings};
 use crate::readiness::ReadinessSignaller;
-use crate::receiver::{ReceiverContextMaterialization, legacy_bindings_mut};
+use crate::receiver::ReceiverContextMaterialization;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::receiver::legacy_bindings_mut;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use async_trait::async_trait;
@@ -219,6 +221,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Sets the capture policy for transport header extraction.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
         self.legacy_bindings_mut().set_header_capture_policy(policy);
     }
@@ -230,12 +233,14 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Sets the authorized identity claim projection policy.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_authorized_identity_policy(&mut self, policy: Option<AuthorizedIdentityPolicy>) {
         self.legacy_bindings_mut()
             .set_authorized_identity_policy(policy);
     }
 
     /// Returns bindings for the legacy policy setters.
+    #[cfg(any(test, feature = "test-utils"))]
     fn legacy_bindings_mut(&mut self) -> &mut NodeBindings {
         legacy_bindings_mut(
             &mut self.node_bindings,
@@ -300,6 +305,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Installs a data-type-specific context materializer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_context_materializer(
         &mut self,
         plan: ContextMaterializationPlan,

@@ -142,6 +142,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Sets the propagation policy for transport header filtering.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
         Arc::make_mut(self.node_bindings.get_or_insert_with(Default::default))
             .set_header_propagation_policy(policy);
