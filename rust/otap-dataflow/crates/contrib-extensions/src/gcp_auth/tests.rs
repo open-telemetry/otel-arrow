@@ -218,15 +218,15 @@ async fn string_expires_in_and_missing_token_type_are_accepted() {
     }))
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
+    let before = Instant::now();
     let token = auth.fetch().await.expect("acquisition succeeds");
+    let after = Instant::now();
     assert_eq!(token.expose_token(), "gcp-string-expiry-token");
-    let remaining = token
-        .expires_on()
-        .expect("expiry present")
-        .duration_since(Instant::now());
+    let expires_on = token.expires_on().expect("expiry present");
+    let expected = Duration::from_secs(120);
     assert!(
-        remaining > Duration::from_secs(110) && remaining <= Duration::from_secs(120),
-        "expected ~120s expiry, got {remaining:?}"
+        expires_on >= before + expected && expires_on <= after + expected,
+        "expected 120s expiry bounded by [before + 120s, after + 120s], got {expires_on:?}"
     );
 }
 
