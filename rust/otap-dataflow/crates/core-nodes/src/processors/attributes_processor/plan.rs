@@ -97,7 +97,7 @@ pub(super) fn effective_value_actions(
 struct DynamicAction {
     operation: Operation,
     key: String,
-    source: otel_arrow_dfe_config::transport_headers_policy::PropagationSelector,
+    source: enrichment::AttributeSource,
 }
 
 pub(super) struct CompiledTransform {

@@ -2812,14 +2812,12 @@ groups:
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 },
                 CaptureRule {
                     match_names: vec![context_name("x-alias-a"), context_name("x-alias-b")],
                     store_as: Some(context_name("canonical")),
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 },
             ],
         );
@@ -3111,7 +3109,6 @@ groups:
                 store_as: None,
                 sensitive: false,
                 value_kind: None,
-                transform: Default::default(),
             }],
         );
         let pipeline_policy = TransportHeadersPolicy {
@@ -3122,7 +3119,6 @@ groups:
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 }],
             ),
             ..Default::default()

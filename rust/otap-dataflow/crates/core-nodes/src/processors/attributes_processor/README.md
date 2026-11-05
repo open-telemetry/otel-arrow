@@ -93,7 +93,7 @@ Unsupported action variants are accepted for forward compatibility and ignored.
 - `value`: a literal (string, boolean, signed integer, or double). Scalar syntax
   remains supported; explicit typed objects use `string`, `bool`, `int`, or
   `double`, for example `value: { string: prod }`.
-- a dynamic object nested under `value`, containing a shared `source` selector
+- a dynamic object nested under `value`, containing a processor-local `source` selector
   with a `type` and a nonempty ordered `named` list:
   - `transport_header`: captured/stored header names.
   - `named`: materialized composite names or qualified `entry:member`
@@ -214,8 +214,8 @@ config:
       signals: [logs]
 ```
 
-Configure host normalization on the receiver before this processor; otherwise
-hosts are projected verbatim, including ports and comma-separated lists.
+Headers are projected verbatim, including ports and comma-separated lists.
+This processor does not parse hosts or select elements within a header value.
 Define `request_sequence` in `policies.context.entries` and configure capture
 for any primitive inputs it uses. The engine includes this selected composite
 in the receiver's materialization plan. The action has no effect when that

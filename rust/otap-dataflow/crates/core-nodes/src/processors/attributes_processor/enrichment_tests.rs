@@ -1,20 +1,22 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::enrichment::AttributeSource;
 use super::enrichment::{context_entries, resolve_source, validate_source};
 use super::*;
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context_policy::{
+use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
 };
-use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
-use otel_arrow_dfe_config::transport_headers_policy::PropagationSelector;
+use otel_arrow_dfe_config::context::transport_headers::{
+    TransportHeader, TransportHeaders, ValueKind,
+};
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::ControllerContext;
-use otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan;
 use otel_arrow_dfe_engine::control::{
     CallData, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
 };
+use otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan;
 use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
@@ -44,7 +46,7 @@ fn pipeline_context() -> PipelineContext {
 }
 
 fn declared_pipeline_context(config: &Value) -> PipelineContext {
-    use otel_arrow_dfe_engine::context_declaration::{
+    use otel_arrow_dfe_engine::pdata_context::{
         ContextConsumerSelector, ContextDeclaration, ContextEntryTarget,
     };
     let parsed: Config = serde_json::from_value(config.clone()).unwrap();
@@ -100,7 +102,7 @@ fn declared_pipeline_context(config: &Value) -> PipelineContext {
 fn prepare_context(
     config: &Value,
     entries: Value,
-) -> Result<otel_arrow_dfe_engine::context_declaration::PreparedContext, EngineError> {
+) -> Result<otel_arrow_dfe_engine::pdata_context::PreparedContext, EngineError> {
     let spec: otel_arrow_dfe_config::engine::OtelDataflowSpec = serde_json::from_value(json!({
         "version":"otel_dataflow/v1", "engine":{},
         "policies":{"context":{"entries":entries}},
@@ -486,7 +488,7 @@ fn ordered_headers_skip_unusable_candidates() {
         ("preferred", ValueKind::Text, b"first.example:443"),
         ("preferred", ValueKind::Text, b"second.example:443"),
     ]);
-    let source: PropagationSelector = serde_json::from_value(json!({
+    let source: AttributeSource = serde_json::from_value(json!({
         "type":"transport_header","named":["absent", "preferred", "host"]
     }))
     .unwrap();
@@ -494,7 +496,7 @@ fn ordered_headers_skip_unusable_candidates() {
         resolve_source(&source, &context).unwrap(),
         Some(LiteralValue::Str("first.example:443".into()))
     );
-    let fallback: PropagationSelector = serde_json::from_value(json!({
+    let fallback: AttributeSource = serde_json::from_value(json!({
         "type":"transport_header","named":["missing", "host"]
     }))
     .unwrap();
@@ -502,7 +504,7 @@ fn ordered_headers_skip_unusable_candidates() {
         resolve_source(&fallback, &context).unwrap(),
         Some(LiteralValue::Str("last.example:80".into()))
     );
-    let text: PropagationSelector =
+    let text: AttributeSource =
         serde_json::from_value(json!({"type":"transport_header","named":["host"]})).unwrap();
     assert_eq!(
         resolve_source(&text, &context).unwrap(),
@@ -707,7 +709,7 @@ fn static_dynamic_composition() {
 /// Guarantees: Projection preserves the original text without interpreting, wrapping, or rejecting it.
 #[test]
 fn checked_context_attribute_range() {
-    let source: PropagationSelector =
+    let source: AttributeSource =
         serde_json::from_value(json!({"type":"named","named":["received:value"]})).unwrap();
     for integer in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
         let mut context = Context::default();
@@ -1042,7 +1044,7 @@ fn removed_source_transform_updates_are_rejected() {
 #[test]
 fn context_lookup_shape_validation() {
     let source = |name: &str| {
-        serde_json::from_value::<PropagationSelector>(json!({
+        serde_json::from_value::<AttributeSource>(json!({
             "type":"named","named":[name]
         }))
         .unwrap()
@@ -1188,7 +1190,7 @@ fn context_shape_error_permanently_nacks_original_message() {
 }
 
 /// Scenario: encoded input resolves successfully but a fault-injected transform fails after decoding.
-/// Guarantees: RETURN_DATA recovers the original encoded payload and context, with one failure duration.
+/// Guarantees: RETURN_DATA recovers the original encoded payload and context, and mutation timing records one failure.
 #[test]
 fn encoded_transform_failure_returns_original_and_records_one_failure() {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
@@ -1212,6 +1214,7 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
             &mut decoded,
             SignalType::Logs,
             &AttributesTransform::default(),
+            Interests::NODE_LOCAL_DURATION,
         )
         .unwrap_err()
         .to_string();
@@ -1230,7 +1233,7 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
         rt.config(),
     );
     rt.set_processor(processor)
-        .run_test_with_interests(Interests::NODE_LOCAL_DURATION, |mut ctx| async move {
+        .run_test(|mut ctx| async move {
             let (sender, mut receiver) = pipeline_completion_msg_channel(1);
             ctx.set_pipeline_completion_sender(sender);
             ctx.process(Message::PData(input)).await.unwrap();
@@ -1269,8 +1272,8 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
         .validate(|_| async {});
 }
 
-/// Scenario: literal, dynamic, and no-op messages run with duration telemetry enabled.
-/// Guarantees: successful mutations record one sample, while no-op messages record none and stay encoded.
+/// Scenario: literal, dynamic, and no-op mutation plans run with explicit duration interests.
+/// Guarantees: the processor's mutation path records one success sample per operation and none for no-op plans.
 #[test]
 fn compute_duration_records_once_or_skips_noop() {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
@@ -1291,52 +1294,42 @@ fn compute_duration_records_once_or_skips_noop() {
             1,
         ),
     ] {
-        let rt = TestRuntime::new();
-        let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        config.config = config_value;
-        let processor = create_attributes_processor(
-            declared_pipeline_context(&config.config),
-            test_node("duration"),
-            Arc::new(config),
-            rt.config(),
+        let mut processor = AttributesProcessor::from_config(
+            declared_pipeline_context(&config_value),
+            &config_value,
         )
         .unwrap();
-        let input = OtapPdata::new(
-            header_context(&[("host", ValueKind::Text, b"example.test")]),
-            fixture(SignalType::Logs, &[0]),
-        );
-        rt.set_processor(processor)
-            .run_test_with_interests(Interests::NODE_LOCAL_DURATION, move |mut ctx| async move {
-                ctx.process(Message::PData(input)).await.unwrap();
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 1);
-                assert_eq!(
-                    output[0].payload_ref().encoded_bytes().is_some(),
-                    expected_count == 0
-                );
-                let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .unwrap();
-                let snapshots: Vec<_> = receiver
-                    .try_iter()
-                    .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
-                    .collect();
-                assert_eq!(snapshots.len(), expected_count);
-                if expected_count == 1 {
-                    assert_eq!(
-                        snapshots[0].measurement_attribute_value("outcome"),
-                        Some("success")
-                    );
-                    let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
-                        panic!("expected duration distribution");
-                    };
-                    assert_eq!(duration.count(), 1);
-                }
-            })
-            .validate(|_| async {});
+        let context = header_context(&[("host", ValueKind::Text, b"example.test")]);
+        let dynamic = processor.plans[0].resolve(&context).unwrap();
+        let mut records = fixture(SignalType::Logs, &[0])
+            .try_into_otap(&CodecService::new().unwrap())
+            .unwrap();
+        let _ = processor
+            .apply_transform_with_stats(
+                &mut records,
+                SignalType::Logs,
+                &dynamic,
+                Interests::NODE_LOCAL_DURATION,
+            )
+            .unwrap();
+        let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+        let mut metrics_reporter = metrics_reporter;
+        processor.compute_duration.report(&mut metrics_reporter);
+        let snapshots: Vec<_> = receiver
+            .try_iter()
+            .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
+            .collect();
+        assert_eq!(snapshots.len(), expected_count);
+        if expected_count == 1 {
+            assert_eq!(
+                snapshots[0].measurement_attribute_value("outcome"),
+                Some("success")
+            );
+            let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
+                panic!("expected duration distribution");
+            };
+            assert_eq!(duration.count(), 1);
+        }
     }
 }
 
@@ -1378,7 +1371,7 @@ fn named_selector_declares_and_materializes_required_composites() {
             .entry(&ContextEntryName::try_from("unselected").unwrap())
             .is_none()
     );
-    let selected: PropagationSelector = serde_json::from_value(source["source"].clone()).unwrap();
+    let selected: AttributeSource = serde_json::from_value(source["source"].clone()).unwrap();
     assert_eq!(
         resolve_source(&selected, &context).unwrap(),
         Some(LiteralValue::Str("42".into()))
@@ -1416,11 +1409,9 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
         {"claim":"groups","store_as":"groups"}
     ]))
     .unwrap();
-    let input = otel_arrow_dfe_otap::testing::with_authorized_identity(
-        OtapPdata::new_default(fixture(SignalType::Logs, &[0])),
-        &policy,
-        &identity,
-    );
+    let mut metadata = otel_arrow_dfe_engine::pdata_context::Metadata::default();
+    metadata.capture_authorized_identity(&policy, &identity);
+    let input = OtapPdata::new_default(fixture(SignalType::Logs, &[0])).with_metadata(metadata);
     let (context, payload) = input.into_parts();
     for (names, expected) in [
         (vec!["userid", "uncaptured"], None),
@@ -1429,14 +1420,14 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
             Some(LiteralValue::Str("42".into())),
         ),
     ] {
-        let source: PropagationSelector = serde_json::from_value(json!({
+        let source: AttributeSource = serde_json::from_value(json!({
             "type":"authorized_identity","named":names
         }))
         .unwrap();
         validate_source(&source).unwrap();
         assert_eq!(resolve_source(&source, &context).unwrap(), expected);
     }
-    let groups: PropagationSelector = serde_json::from_value(json!({
+    let groups: AttributeSource = serde_json::from_value(json!({
         "type":"authorized_identity","named":["groups","UserId"]
     }))
     .unwrap();
@@ -1465,7 +1456,7 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
 /// Guarantees: declarations use value-only domain-scoped targets and an unbound update retains the installed plan.
 #[test]
 fn selector_declarations_and_live_update_binding_validation() {
-    use otel_arrow_dfe_engine::context_declaration::{
+    use otel_arrow_dfe_engine::pdata_context::{
         ContextDomain, ContextEntrySelectorForm, ContextEntryTarget,
     };
     for (kind, expected) in [
@@ -1490,7 +1481,7 @@ fn selector_declarations_and_live_update_binding_validation() {
             },
         ),
     ] {
-        let source: PropagationSelector =
+        let source: AttributeSource =
             serde_json::from_value(json!({"type":kind,"named":["x"]})).unwrap();
         let entries: Vec<_> = context_entries(&source).collect();
         assert_eq!(entries.len(), 1);

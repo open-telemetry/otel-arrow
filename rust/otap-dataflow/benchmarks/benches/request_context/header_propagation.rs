@@ -596,7 +596,6 @@ fn packed_headers(headers: Vec<(String, String)>) -> TransportHeaders {
             store_as: None,
             sensitive: false,
             value_kind: None,
-            transform: Default::default(),
         }],
     )
     .compile(|_| false);

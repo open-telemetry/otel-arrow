@@ -5032,7 +5032,6 @@ mod tests {
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
-                    transform: Default::default(),
                 })
                 .collect(),
         )
