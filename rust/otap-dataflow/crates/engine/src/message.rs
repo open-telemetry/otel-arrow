@@ -423,6 +423,7 @@ where
             // We only probe when the buffer is empty -- try_recv on an empty
             // channel distinguishes Closed from Empty without consuming data.
             if !accept_pdata
+                && self.shutting_down_deadline.is_none()
                 && self
                     .pdata_rx
                     .as_ref()
@@ -1439,7 +1440,7 @@ mod tests {
             }
             drop(pdata_tx);
             assert!(matches!(
-                inbox.recv_when_or_shutdown_started(true).await.expect("final shutdown"),
+                inbox.recv_when_or_shutdown_started(false).await.expect("final shutdown"),
                 Some(Message::Control(NodeControlMsg::Shutdown { deadline: observed, reason }))
                     if observed == deadline && reason == "shutdown"
             ));

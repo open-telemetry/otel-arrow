@@ -185,6 +185,15 @@ pub enum Error {
     #[error("failed to decode ADX input payload: {0}")]
     Decode(#[source] Box<CodecError>),
 
+    /// Decoding the complete source would exceed its preparation resource budget.
+    #[error("OTLP decoding {resource} exceeds {limit}")]
+    DecodeLimit {
+        /// Resource measured by admission, never source content.
+        resource: &'static str,
+        /// Maximum permitted resource use.
+        limit: usize,
+    },
+
     /// No usable credential remains and the provider cannot supply another.
     #[error("ADX bearer token unavailable")]
     AuthenticationUnavailable,
@@ -255,6 +264,7 @@ impl Error {
             }
             Self::PayloadView(_)
             | Self::Decode(_)
+            | Self::DecodeLimit { .. }
             | Self::RateLimited { .. }
             | Self::RowTooLarge { .. }
             | Self::RequestTooLarge { .. }
@@ -284,6 +294,7 @@ impl Error {
             }
             Self::PayloadView(_)
             | Self::Decode(_)
+            | Self::DecodeLimit { .. }
             | Self::RowTooLarge { .. }
             | Self::RequestTooLarge { .. }
             | Self::TooManyRows { .. }
@@ -345,6 +356,24 @@ impl Error {
 mod tests {
     use super::{CodecError, Error, response_body_summary};
     use http::StatusCode;
+
+    /// Scenario: a source exceeds either decoding resource limit.
+    /// Guarantees: the source is permanently refused and safe diagnostics identify the limit without source content.
+    #[test]
+    fn decoding_resource_limits_are_permanent_and_identify_the_resource() {
+        for resource in ["allocation_bytes", "fields_or_elements"] {
+            let error = Error::DecodeLimit {
+                resource,
+                limit: 4096,
+            };
+            assert!(error.is_refusal());
+            assert!(error.is_permanent_refusal());
+            assert_eq!(
+                error.log_safe_summary(),
+                format!("OTLP decoding {resource} exceeds 4096")
+            );
+        }
+    }
 
     /// Scenario: decoding fails because the codec service is busy or poisoned.
     /// Guarantees: internal service failures do not permanently refuse the input.

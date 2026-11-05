@@ -234,6 +234,14 @@ impl AzureDataExplorerExporterMetricsTracker {
                     signal = ?signal,
                 );
             }
+            Error::DecodeLimit { resource, limit } => {
+                otel_warn!(
+                    "azure_data_explorer_exporter.payload_refused",
+                    signal = ?signal,
+                    resource = *resource,
+                    limit = *limit,
+                );
+            }
             Error::Decode(_) => {
                 otel_warn!(
                     "azure_data_explorer_exporter.payload_refused",
