@@ -408,6 +408,7 @@ azure-key-vault-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/azure-key-v
 flat-file-api-key-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-api-key-auth"]
 flat-file-sasl-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-sasl-auth"]
 flat-file-user-pass-auth = ["otel-arrow-dfe-contrib-extensions/flat-file-user-pass-auth"]
+gcp-auth = ["otel-arrow-dfe-contrib-extensions/gcp-auth"]
 k8s-service-account-token-auth = ["otel-arrow-dfe-contrib-extensions/k8s-service-account-token-auth"]
 oauth2-client-auth = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth"]
 
