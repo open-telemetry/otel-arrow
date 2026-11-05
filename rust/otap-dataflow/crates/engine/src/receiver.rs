@@ -68,6 +68,8 @@ impl<PData> ReceiverContextMaterialization<PData> {
 
 /// Returns bindings for the legacy policy setters, creating handler-local
 /// bindings that retain any installed materialization plan.
+///
+/// TODO(4541): This will be removed in migration step 5.
 pub(crate) fn legacy_bindings_mut<'a, PData>(
     bindings: &'a mut Option<Arc<NodeBindings>>,
     materialization: Option<&ReceiverContextMaterialization<PData>>,
