@@ -53,6 +53,7 @@ impl Auth {
         let client = reqwest::Client::builder()
             .use_rustls_tls()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)
             .build()

@@ -380,6 +380,34 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
         oversized_err.contains("exceeds limit"),
         "expected size limit error, got {oversized_err}"
     );
+
+    let redirect_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "Location",
+            format!(
+                "{}/computeMetadata/v1/instance/service-accounts/default/token",
+                server.uri()
+            ),
+        ))
+        .mount(&redirect_server)
+        .await;
+
+    let redirect_cfg =
+        config_from_json(serde_json::json!({ "endpoint": redirect_server.uri() })).expect("valid");
+    let redirect_auth = Auth::new(&redirect_cfg).expect("auth builds");
+    let redirect_err = redirect_auth
+        .fetch()
+        .await
+        .expect_err("HTTP 302 redirect must not be followed")
+        .to_string();
+    assert!(
+        redirect_err.contains("302"),
+        "expected 302 status error, got {redirect_err}"
+    );
 }
 
 #[test]
