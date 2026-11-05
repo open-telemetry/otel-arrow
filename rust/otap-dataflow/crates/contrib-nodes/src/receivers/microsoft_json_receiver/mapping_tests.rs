@@ -13,6 +13,102 @@ fn no_environment(_: &str) -> Result<String, std::env::VarError> {
     Err(std::env::VarError::NotPresent)
 }
 
+/// Scenario: earlier wildcard, duplicate exact or metadata rules shadow an event-name selector.
+/// Guarantees: base and merged override compilation reject ambiguous policy selectors, including dotted-key overlaps.
+#[test]
+fn shadowed_event_name_selectors_are_configuration_errors() {
+    for (path, earlier) in [
+        ("name", json!({"path": "*", "target": {"kind": "drop"}})),
+        ("name", json!({"path": "name", "validate": {}})),
+        ("ext.name", json!({"path": "*", "target": {"kind": "drop"}})),
+        ("ext.name", json!({"path": "ext.*", "validate": {}})),
+        ("ext.app.name", json!({"path": "*.name", "validate": {}})),
+    ] {
+        let selector = json!({"path": path, "target": {"kind": "event_name"}});
+        let config: EndpointConfig = serde_json::from_value(json!({
+            "rules": [earlier, selector]
+        }))
+        .expect("config");
+        assert!(matches!(
+            CompiledEndpoint::compile(&config, None, &no_environment),
+            Err(MappingError::Config(_))
+        ));
+        let mut reordered = config.clone();
+        reordered.rules.reverse();
+        if earlier["path"] != path {
+            assert!(CompiledEndpoint::compile(&reordered, None, &no_environment).is_ok());
+        }
+
+        let overrides: EndpointConfig = serde_json::from_value(json!({
+            "rules": [earlier],
+            "event_overrides": {"Example": {"rules": [selector]}}
+        }))
+        .expect("override config");
+        let compiled = CompiledEndpoint::compile(&overrides, None, &no_environment);
+        if earlier["path"] == path {
+            assert!(
+                compiled.is_ok(),
+                "an exact override replaces the inherited rule"
+            );
+        } else {
+            assert!(matches!(
+                compiled,
+                Err(MappingError::Config(message)) if message.contains("overlapping")
+            ));
+        }
+    }
+    let ep = endpoint(
+        "rules: [{ path: name, target: { kind: event_name } }, { path: '*', target: { kind: drop } }]",
+    );
+    assert_eq!(
+        accepted(&ep, json!({"name": "Example"}))
+            .event_name
+            .as_deref(),
+        Some("Example")
+    );
+    assert!(matches!(
+        ep.map_event(&json!({"name": 123}), &MappingContext::default()),
+        Err(MappingError::Rejected(_))
+    ));
+    let ep = endpoint(
+        "rules: [{ path: '*.other', target: { kind: drop } }, { path: ext.name, target: { kind: event_name } }]",
+    );
+    for event in [
+        json!({"ext": {"name": "Example"}}),
+        json!({"ext.name": "Example"}),
+    ] {
+        assert_eq!(accepted(&ep, event).event_name.as_deref(), Some("Example"));
+    }
+}
+
+/// Scenario: both timestamp destinations repeatedly parse a valid timestamp with a long fractional second.
+/// Guarantees: a single parse succeeds with correct nanoseconds, while fanout fails on source-sized traversal work.
+#[test]
+fn timestamp_fanout_charges_source_work() {
+    let raw = format!("2026-01-01T00:00:00.{}Z", "0".repeat(64 * 1024));
+    let expected = 1_767_225_600_000_000_000_u64;
+    for kind in ["timestamp", "observed_timestamp"] {
+        let config = serde_json::from_value(json!({
+            "rules": [{"path": "value", "also": (0..4096).map(|_| json!({
+                "target": {"kind": kind}
+            })).collect::<Vec<_>>()}]
+        }))
+        .expect("config");
+        let mut ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+        assert_eq!(
+            ep.map_event(&json!({"value": raw}), &MappingContext::default()),
+            Err(MappingError::Limit("traversal work"))
+        );
+        ep.rules[0].rule.also.truncate(1);
+        let log = accepted(&ep, json!({"value": raw}));
+        if kind == "timestamp" {
+            assert_eq!(log.time_unix_nano, Some(expected));
+        } else {
+            assert_eq!(log.observed_time_unix_nano, Some(expected));
+        }
+    }
+}
+
 /// Scenario: a long source key fans out to thousands of explicit attribute and resource destinations.
 /// Guarantees: fixed destination keys do not require payload-sized source-path construction on each invocation.
 #[test]
