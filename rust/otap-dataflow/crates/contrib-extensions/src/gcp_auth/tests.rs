@@ -194,6 +194,65 @@ async fn string_expires_in_and_missing_token_type_are_accepted() {
 }
 
 #[tokio::test]
+async fn zero_expires_in_is_rejected_while_omitted_expires_in_uses_default_lifetime() {
+    let zero_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .and(header("Metadata-Flavor", "Google"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "gcp-zero-expiry-token",
+            "expires_in": 0,
+        })))
+        .mount(&zero_server)
+        .await;
+
+    let zero_cfg =
+        config_from_json(serde_json::json!({ "endpoint": zero_server.uri() })).expect("valid");
+    let zero_auth = Auth::new(&zero_cfg).expect("auth builds");
+    let zero_err = zero_auth
+        .fetch()
+        .await
+        .expect_err("expires_in: 0 must be rejected as already expired");
+    assert!(
+        zero_err.to_string().contains("expires_in"),
+        "expected expires_in error, got {zero_err}"
+    );
+
+    let omitted_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .and(header("Metadata-Flavor", "Google"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "gcp-omitted-expiry-token",
+        })))
+        .mount(&omitted_server)
+        .await;
+
+    let omitted_cfg = config_from_json(serde_json::json!({
+        "endpoint": omitted_server.uri(),
+        "default_token_lifetime": "15m",
+    }))
+    .expect("valid");
+    let omitted_auth = Auth::new(&omitted_cfg).expect("auth builds");
+    let before = Instant::now();
+    let token = omitted_auth
+        .fetch()
+        .await
+        .expect("omitted expires_in falls back to default_token_lifetime");
+    let after = Instant::now();
+    let expires_on = token.expires_on().expect("expiry present");
+    let expected = Duration::from_secs(15 * 60);
+    assert!(
+        expires_on >= before + expected && expires_on <= after + expected,
+        "expected default_token_lifetime (15m), got {expires_on:?}"
+    );
+}
+
+#[tokio::test]
 async fn non_bearer_token_type_and_http_errors_are_rejected() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -215,6 +274,28 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
         .await
         .expect_err("non-bearer token_type must be rejected");
     assert!(err.to_string().contains("unsupported token_type"));
+
+    for bad_token in ["   ", "tok with space", "tok\nwith\nnewline"] {
+        let bad_token_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/computeMetadata/v1/instance/service-accounts/default/token",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": bad_token,
+                "expires_in": 120,
+            })))
+            .mount(&bad_token_server)
+            .await;
+
+        let bad_cfg = config_from_json(serde_json::json!({ "endpoint": bad_token_server.uri() }))
+            .expect("valid");
+        let bad_auth = Auth::new(&bad_cfg).expect("auth builds");
+        let _ = bad_auth
+            .fetch()
+            .await
+            .expect_err("empty or whitespace access_token must be rejected");
+    }
 
     let failing_server = MockServer::start().await;
     Mock::given(method("GET"))

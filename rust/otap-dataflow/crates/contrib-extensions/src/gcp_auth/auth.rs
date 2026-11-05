@@ -195,11 +195,22 @@ fn to_bearer_token(
             message: "metadata server returned an empty `access_token`".to_string(),
         });
     }
+    if secret.bytes().any(|b| b <= b' ' || b >= 0x7f) {
+        return Err(Error::TokenAcquisition {
+            message: "metadata server returned an `access_token` containing whitespace or control characters".to_string(),
+        });
+    }
 
-    let expires_in = response
-        .expires_in
-        .filter(|&secs| secs > 0)
-        .map_or(fallback_lifetime, Duration::from_secs);
+    let expires_in = match response.expires_in {
+        Some(0) => {
+            return Err(Error::TokenAcquisition {
+                message: "metadata server returned an expired token (`expires_in` is 0)"
+                    .to_string(),
+            });
+        }
+        Some(secs) => Duration::from_secs(secs),
+        None => fallback_lifetime,
+    };
 
     Ok(BearerToken::from_relative_expiry(secret, expires_in))
 }
