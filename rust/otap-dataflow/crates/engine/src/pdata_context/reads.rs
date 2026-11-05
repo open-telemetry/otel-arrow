@@ -121,29 +121,24 @@ impl ValueRead {
                         }
                     }
                 };
-                let Some(first) = remaining.next() else {
-                    return Ok(None);
-                };
-                ReadBackend::Headers { first, remaining }
+                remaining
+                    .next()
+                    .map(|first| ReadBackend::Headers { first, remaining })
             }
             ValueReadBackend::AuthorizedIdentity { name, matching } => {
                 let Some(entries) = metadata.authorized_identity_entries() else {
                     return Ok(None);
                 };
                 let mut remaining = IdentityMatches::new(entries.iter(), name.as_str(), *matching);
-                let Some(first) = remaining.next() else {
-                    return Ok(None);
-                };
-                ReadBackend::AuthorizedIdentity { first, remaining }
+                remaining
+                    .next()
+                    .map(|first| ReadBackend::AuthorizedIdentity { first, remaining })
             }
-            ValueReadBackend::Composite { plan, projection } => {
-                match metadata.resolve_materialized_context(plan, projection)? {
-                    Some(projection) => ReadBackend::Composite(projection),
-                    None => return Ok(None),
-                }
-            }
+            ValueReadBackend::Composite { plan, projection } => metadata
+                .resolve_materialized_context(plan, projection)?
+                .map(ReadBackend::Composite),
         };
-        Ok(Some(Read {
+        Ok(backend.map(|backend| Read {
             backend,
             take: self.selector.take,
         }))

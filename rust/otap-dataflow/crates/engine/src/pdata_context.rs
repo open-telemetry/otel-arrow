@@ -259,7 +259,7 @@ pub enum ContextConsumerSelector {
     },
 }
 
-/// One step of a processor's `Edits` or `Merges` declaration.
+/// One step of a processor's `Edits` declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextAction {
     /// Appends the values the processor supplies for this transport header
@@ -1492,7 +1492,7 @@ mod tests {
     ];
 
     /// Registers the type router and processors that produce or merge context.
-    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 6] = [
+    static TEST_PROCESSORS: [crate::ProcessorFactory<()>; 5] = [
         crate::ProcessorFactory {
             name: "urn:otel:processor:type_router",
             create: unused_test_processor,
@@ -1508,7 +1508,7 @@ mod tests {
             validate_config: otel_arrow_dfe_config::validation::no_config,
         },
         crate::ProcessorFactory {
-            name: "urn:test:processor:produce",
+            name: "urn:test:processor:edit",
             create: unused_test_processor,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestEditConfig,
@@ -1535,17 +1535,6 @@ mod tests {
             context_declarations: Some(ContextDeclarationProvider::merging()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
-        },
-        crate::ProcessorFactory {
-            name: "urn:test:processor:edit-merge",
-            create: unused_test_processor,
-            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
-                TestEditConfig,
-            >()),
-            wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
-            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
-                TestEditConfig,
-            >,
         },
     ];
 
@@ -1776,16 +1765,12 @@ groups:
         assert!(changed.pipeline_bindings_match(&current, &key));
     }
 
-    /// Resolves a pipeline with producing, merging, and plain nodes in one chain.
-    fn resolve_role_pipeline(
-        merge_urn: &str,
-        merge_config: &str,
-        exporter_urn: &str,
-    ) -> ResolvedOtelDataflowSpec {
-        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&format!(
+    /// Resolves a pipeline with producing, editing, merging, and plain nodes in one chain.
+    fn resolve_role_pipeline() -> ResolvedOtelDataflowSpec {
+        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(
             r#"
 version: otel_dataflow/v1
-engine: {{}}
+engine: {}
 groups:
   default:
     pipelines:
@@ -1793,30 +1778,30 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:produce"
-            config: {{entry: generated}}
-          produce:
-            type: "urn:test:processor:produce"
-            config: {{entry: partition}}
+            config: {entry: generated}
+          edit:
+            type: "urn:test:processor:edit"
+            config: {entry: partition}
           merge:
-            type: "{merge_urn}"
-            config: {merge_config}
+            type: "urn:test:processor:merge"
+            config: {}
           plain:
             type: "urn:test:processor:plain"
-            config: {{}}
+            config: {}
           exporter:
-            type: "{exporter_urn}"
-            config: {{}}
+            type: "urn:test:exporter:example"
+            config: {}
         connections:
           - from: receiver
-            to: produce
-          - from: produce
+            to: edit
+          - from: edit
             to: merge
           - from: merge
             to: plain
           - from: plain
             to: exporter
-"#
-        ))
+"#,
+        )
         .expect("role pipeline YAML is valid")
         .resolve()
     }
@@ -1828,11 +1813,7 @@ groups:
     #[test]
     fn edit_and_merge_bindings_follow_declarations() {
         let compiled = test_pipeline_factory()
-            .compile_initial_context(&resolve_role_pipeline(
-                "urn:test:processor:merge",
-                "{}",
-                "urn:test:exporter:example",
-            ))
+            .compile_initial_context(&resolve_role_pipeline())
             .expect("context compiles");
         let key = pipeline("default", "main");
         let bindings = |node: &'static str| {
@@ -1849,16 +1830,16 @@ groups:
         assert!(receiver.merge().is_none());
         assert!(receiver.edit().is_none());
 
-        let produce = bindings("produce");
-        assert!(produce.arrival().is_none());
-        assert!(produce.merge().is_none());
-        let edit = produce.edit().expect("processor edit");
+        let edit = bindings("edit");
+        assert!(edit.arrival().is_none());
+        assert!(edit.merge().is_none());
+        let edit = edit.edit().expect("processor edit");
         assert!(
-            edit.edit_entry(ContextDomain::TransportHeader, &context_name("partition"))
+            edit.entry(ContextDomain::TransportHeader, &context_name("partition"))
                 .is_ok()
         );
         assert!(
-            edit.edit_entry(ContextDomain::TransportHeader, &context_name("generated"))
+            edit.entry(ContextDomain::TransportHeader, &context_name("generated"))
                 .is_err()
         );
 
@@ -1874,71 +1855,10 @@ groups:
         }
     }
 
-    /// Scenario: an exporter factory declares Merges.
-    /// Guarantees: compilation fails with the factory URN instead of attaching a merge binding to that node.
+    /// Scenario: factories violate node-kind restrictions or declare both Edits and Merges.
+    /// Guarantees: each declaration set is rejected with the factory URN and violated restriction.
     #[test]
-    fn merge_declaration_requires_processor() {
-        let Err(EngineError::ConfigError(error)) = test_pipeline_factory().compile_initial_context(
-            &resolve_role_pipeline("urn:test:processor:plain", "{}", "urn:test:exporter:merge"),
-        ) else {
-            panic!("merge declaration on an exporter must be rejected");
-        };
-        let message = error.to_string();
-        assert!(message.contains("urn:test:exporter:merge"), "{message}");
-        assert!(
-            message.contains("only supported by processors"),
-            "{message}"
-        );
-    }
-
-    /// Scenario: a processor factory declares both Edits and Merges.
-    /// Guarantees: compilation fails naming the factory URN, because a processor
-    /// forms its output context by exactly one edit or merge.
-    #[test]
-    fn edit_and_merge_are_exclusive() {
-        let Err(EngineError::ConfigError(error)) =
-            test_pipeline_factory().compile_initial_context(&resolve_role_pipeline(
-                "urn:test:processor:edit-merge",
-                "{entry: merged, merge: true}",
-                "urn:test:exporter:example",
-            ))
-        else {
-            panic!("a processor declaring Edits and Merges must be rejected");
-        };
-        let message = error.to_string();
-        assert!(
-            message.contains("urn:test:processor:edit-merge"),
-            "{message}"
-        );
-        assert!(
-            message.contains("more than one context edit or merge"),
-            "{message}"
-        );
-    }
-
-    /// Scenario: a processor factory declares Produces instead of an Edits or Merges `Add` action.
-    /// Guarantees: compilation fails naming the factory URN, so processors have one way to declare produced entries.
-    #[test]
-    fn processor_produces_is_rejected() {
-        let Err(EngineError::ConfigError(error)) =
-            test_pipeline_factory().compile_initial_context(&resolve_role_pipeline(
-                "urn:test:processor:produces",
-                "{entry: merged}",
-                "urn:test:exporter:example",
-            ))
-        else {
-            panic!("a processor declaring Produces must be rejected");
-        };
-        let message = error.to_string();
-        assert!(message.contains("urn:test:processor:produces"), "{message}");
-        assert!(message.contains("only supported by receivers"), "{message}");
-    }
-
-    /// Scenario: a receiver declares a context read and an exporter declares a produced entry.
-    /// Guarantees: both are rejected naming the factory URN and the kind restriction, because
-    /// receivers have no input context to read and exporters form no output context.
-    #[test]
-    fn reads_require_input_and_produces_require_output() {
+    fn invalid_node_context_declarations_are_rejected() {
         let factory = test_pipeline_factory();
         for (kind, urn, config, reason) in [
             (
@@ -1952,6 +1872,24 @@ groups:
                 "urn:test:exporter:produces",
                 serde_json::json!({"entry": "tenant"}),
                 "only supported by receivers",
+            ),
+            (
+                NodeKind::Exporter,
+                "urn:test:exporter:merge",
+                serde_json::json!({}),
+                "only supported by processors",
+            ),
+            (
+                NodeKind::Processor,
+                "urn:test:processor:produces",
+                serde_json::json!({"entry": "tenant"}),
+                "only supported by receivers",
+            ),
+            (
+                NodeKind::Processor,
+                "urn:test:processor:edit",
+                serde_json::json!({"entry": "tenant", "merge": true}),
+                "more than one context edit or merge",
             ),
         ] {
             let Err(EngineError::ConfigError(error)) =
@@ -2010,11 +1948,7 @@ groups:
     #[test]
     fn edit_and_merge_adapters_preserve_live_update_inputs() {
         let compiled = test_pipeline_factory()
-            .compile_initial_context(&resolve_role_pipeline(
-                "urn:test:processor:merge",
-                "{}",
-                "urn:test:exporter:example",
-            ))
+            .compile_initial_context(&resolve_role_pipeline())
             .expect("context compiles");
         let key = pipeline("default", "main");
         let mut without_adapters = compiled.bindings.as_ref().clone();

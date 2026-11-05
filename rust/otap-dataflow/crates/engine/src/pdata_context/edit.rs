@@ -25,7 +25,7 @@ impl PartialEq for EditEntry {
 
 impl Eq for EditEntry {}
 
-/// One value supplied for added entry.
+/// One value supplied for an added entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditValue<'a> {
     /// Handle issued by the node's edit binding.
@@ -75,7 +75,7 @@ impl EditBinding {
     }
 
     /// Returns the handle for an entry this node declared it adds.
-    pub fn edit_entry(
+    pub fn entry(
         &self,
         domain: ContextDomain,
         entry: &ContextEntryName,
@@ -98,13 +98,13 @@ impl EditBinding {
     pub fn form(
         &self,
         mut input: Metadata,
-        derived: &[EditValue<'_>],
+        values: &[EditValue<'_>],
     ) -> Result<Metadata, ContextError> {
-        if derived.is_empty() {
+        if values.is_empty() {
             return Ok(input);
         }
         let mut headers = input.take_transport_headers().unwrap_or_default();
-        for value in derived {
+        for value in values {
             let name = self.name_of(value.entry)?;
             headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
@@ -164,11 +164,6 @@ mod tests {
 
     /// Builds metadata carrying every field: headers, identity, peer, and a composite.
     fn populated_metadata(peer_addr: Option<SocketAddr>) -> Metadata {
-        tenant_metadata(b"acme", peer_addr)
-    }
-
-    /// Builds populated metadata whose `tenant` header and `request` composite carry `tenant`.
-    fn tenant_metadata(tenant: &[u8], peer_addr: Option<SocketAddr>) -> Metadata {
         let identity_policy: AuthorizedIdentityPolicy =
             serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
                 .expect("identity policy");
@@ -178,7 +173,7 @@ mod tests {
             "X-Tenant",
             true,
             ValueKind::Text,
-            tenant,
+            *b"acme",
         ));
         let mut metadata = Metadata::default();
         metadata.set_transport_headers(headers);
@@ -207,11 +202,11 @@ mod tests {
     /// Applies the partition processor's in-place header update: clone, take, push, and set.
     fn partition_header_update(
         input: &Metadata,
-        derived: &[(&ContextEntryName, ValueKind, &[u8])],
+        values: &[(&ContextEntryName, ValueKind, &[u8])],
     ) -> Metadata {
         let mut output = input.clone();
         let mut headers = output.take_transport_headers().unwrap_or_default();
-        for (name, kind, bytes) in derived {
+        for (name, kind, bytes) in values {
             headers.push(TransportHeader::new((*name).clone(), *kind, *bytes));
         }
         output.set_transport_headers(headers);
@@ -226,10 +221,10 @@ mod tests {
         let shard = name("shard");
         let binding = edit(&[partition.clone(), shard.clone()]);
         let partition_entry = binding
-            .edit_entry(ContextDomain::TransportHeader, &partition)
+            .entry(ContextDomain::TransportHeader, &partition)
             .expect("partition handle");
         let shard_entry = binding
-            .edit_entry(ContextDomain::TransportHeader, &shard)
+            .entry(ContextDomain::TransportHeader, &shard)
             .expect("shard handle");
 
         for input in [
@@ -250,7 +245,7 @@ mod tests {
             let expected =
                 partition_header_update(&input, &[(&partition, ValueKind::Text, b"0".as_slice())]);
             assert_eq!(actual, expected);
-            let headers = actual.transport_headers().expect("derived header");
+            let headers = actual.transport_headers().expect("added header");
             let header = headers
                 .find_by_name("partition")
                 .next()
@@ -288,23 +283,10 @@ mod tests {
                 ],
             );
             assert_eq!(actual, expected);
-            assert_eq!(actual.peer_addr(), input.peer_addr());
-            assert_eq!(
-                actual.authorized_identity_entries(),
-                input.authorized_identity_entries()
-            );
-            assert_eq!(
-                actual
-                    .materialized_context()
-                    .map(|context| context.entries()),
-                input
-                    .materialized_context()
-                    .map(|context| context.entries())
-            );
         }
     }
 
-    /// Scenario: an edit is formed without any derived values.
+    /// Scenario: an edit is formed without any added values.
     /// Guarantees: the output equals the input, including absent transport headers.
     #[test]
     fn edit_without_values_preserves_input() {
@@ -315,14 +297,6 @@ mod tests {
         ] {
             assert_eq!(binding.form(input.clone(), &[]), Ok(input));
         }
-        assert_eq!(
-            binding
-                .form(Metadata::default(), &[])
-                .expect("edit forms")
-                .transport_headers()
-                .map(|headers| headers.len()),
-            None
-        );
     }
 
     /// Scenario: construction-time lookups name an undeclared transport header or any authorized-identity entry.
@@ -337,9 +311,9 @@ mod tests {
             let Err(Error::UndeclaredContextEntry {
                 domain: actual_domain,
                 entry: actual_entry,
-            }) = binding.edit_entry(domain, &name(entry))
+            }) = binding.entry(domain, &name(entry))
             else {
-                panic!("{domain:?} `{entry}` is not a declared derived entry");
+                panic!("{domain:?} `{entry}` is not a declared added entry");
             };
             assert_eq!((actual_domain, actual_entry), (domain, name(entry)));
         }
@@ -364,7 +338,7 @@ mod tests {
         ] {
             assert_ne!(other, binding);
             let mismatched = other
-                .edit_entry(ContextDomain::TransportHeader, &other.added[0])
+                .entry(ContextDomain::TransportHeader, &other.added[0])
                 .expect("other handle");
             assert_eq!(
                 binding.form(Metadata::default(), &[value(&mismatched)]),
@@ -373,7 +347,7 @@ mod tests {
         }
 
         let own = binding
-            .edit_entry(ContextDomain::TransportHeader, &partition)
+            .entry(ContextDomain::TransportHeader, &partition)
             .expect("own handle");
         let clone = binding.clone();
         assert_eq!(clone, binding);

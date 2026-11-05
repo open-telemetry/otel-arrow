@@ -46,7 +46,13 @@ impl MetadataMerger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::auth::AuthorizedIdentity;
+    use crate::pdata_context::ContextMaterializationPlan;
     use otel_arrow_dfe_config::context::ContextEntryName;
+    use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+    use otel_arrow_dfe_config::context::policy::{
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+    };
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
@@ -58,21 +64,43 @@ mod tests {
 
     fn metadata(peer_addr: Option<SocketAddr>) -> Metadata {
         let mut metadata = Metadata::default();
+        let header_name = ContextEntryName::try_from("test-header").unwrap();
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::new(
-            ContextEntryName::try_from("test-header").unwrap(),
+            header_name.clone(),
             ValueKind::Text,
             *b"hello",
         ));
         metadata.set_transport_headers(headers);
+        let identity_policy: AuthorizedIdentityPolicy =
+            serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "subject"}]))
+                .expect("identity policy");
+        metadata.capture_authorized_identity(
+            &identity_policy,
+            &AuthorizedIdentity::new().with_subject("reader"),
+        );
+        metadata.materialize_context(
+            &ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
+                scope: ContextScope::Pipeline("group".into(), "pipeline".into()),
+                name: ContextEntryName::try_from("request").unwrap(),
+                definition: ContextEntryDefinition(vec![ContextEntryPart::TransportHeader {
+                    name: header_name,
+                    store_as: None,
+                }]),
+            }])
+            .expect("materialization plan"),
+        );
         if let Some(peer_addr) = peer_addr {
             metadata.set_peer_addr(peer_addr);
         }
+        assert!(metadata.transport_headers().is_some());
+        assert!(metadata.authorized_identity_entries().is_some());
+        assert!(metadata.materialized_context().is_some());
         metadata
     }
 
-    /// Scenario: a Merges binding sees various configurations.
-    /// Guarantees: output correctly sets peer addr and clears other fields.
+    /// Scenario: zero inputs, unanimous peers, distinct peers, and missing peers are merged.
+    /// Guarantees: only unanimous present peers survive; headers, identity, and composites are discarded.
     #[test]
     fn merges_peer_addr() {
         let a = Some(peer("10.0.0.1:1"));
@@ -89,14 +117,9 @@ mod tests {
             (&[a, b, a], None),
         ];
         for (peers, expected) in cases {
-            let inputs = peers
-                .iter()
-                .map(|peer_addr| metadata(*peer_addr))
-                .collect::<Vec<_>>();
             let mut merger = binding.merger();
-            for input in &inputs {
-                assert!(input.transport_headers().is_some());
-                merger.combine(input);
+            for peer_addr in peers {
+                merger.combine(&metadata(*peer_addr));
             }
             let merged = merger.finish();
 

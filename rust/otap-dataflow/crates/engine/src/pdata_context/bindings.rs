@@ -56,9 +56,9 @@ pub struct ArrivalBinding {
 }
 
 impl ArrivalBinding {
-    /// Captures headers and identity, records the peer, then
-    /// materializes composites. Fails when the node's context
-    /// requirements are not met.
+    /// Captures headers and identity, records the peer, then materializes composites.
+    ///
+    /// Currently infallible; the result reserves context validation for the new implementation.
     pub fn form(
         &self,
         arrival: &Arrival<'_>,
@@ -585,6 +585,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Scenario: propagation selects a primitive, a valid composite, and a stale composite.
+    /// Guarantees: the sink fails before emitting anything; legacy propagation drops all composites
+    /// but retains the selected primitive.
+    #[test]
+    fn sink_rejects_mismatched_context_without_partial_propagation() {
+        let constant = |entry: &str, value: &str| ContextEntryDeclaration {
+            name: name(entry),
+            ..declaration(vec![ContextEntryPart::Constant {
+                name: name("route"),
+                value: value.to_owned(),
+            }])
+        };
+        let mut declarations = [constant("stable", "fixed"), constant("request", "old")];
+        let arrival = ArrivalBinding {
+            header_capture: Some(capture_policy()),
+            materialization: ContextMaterializationPlan::compile(&declarations)
+                .expect("materialization plan"),
+            ..Default::default()
+        };
+        let (metadata, _) = arrival
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[("X-Tenant", b"acme")]),
+                identity: None,
+                peer: None,
+            })
+            .expect("arrival forms");
+        declarations[1] = constant("request", "new");
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(
+            propagation_policy(
+                serde_json::json!({
+                    "type": "named",
+                    "named": ["tenant", "stable:route", "request:route"]
+                }),
+                "stored_name",
+            ),
+            &declarations,
+        )
+        .expect("propagation compiles");
+        let sink = SinkBinding::new(policy);
+        assert_eq!(
+            sink.propagate(&metadata, |_| panic!(
+                "mismatched context must emit nothing"
+            )),
+            Err(ContextError::ContextMismatch)
+        );
+        let legacy = sink
+            .policy()
+            .propagate_materialized(
+                metadata.transport_headers().expect("captured headers"),
+                metadata.materialized_context(),
+            )
+            .map(|header| (header.header_name, header.value))
+            .collect::<Vec<_>>();
+        assert_eq!(legacy, [("tenant", b"acme".as_slice())]);
+        assert!(
+            sink.policy()
+                .propagate_materialized_only(metadata.materialized_context())
+                .next()
+                .is_none()
+        );
     }
 
     /// Scenario: local and shared exporter handlers receive compiled bindings and are cloned.
