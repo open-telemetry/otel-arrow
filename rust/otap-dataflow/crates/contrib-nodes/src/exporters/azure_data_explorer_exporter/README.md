@@ -163,12 +163,24 @@ levels of nesting and 65536 visited values per source message. Exceeding either
 complexity limit permanently refuses the source message and emits
 `transformation_limit_exceeded` with the observed and allowed values.
 
+Encoded OTLP also undergoes exporter-private resource admission before decoding:
+the decoded allocation estimate must not exceed 16 MiB, and at most 65536
+fields or packed scalar elements may be processed. Estimates conservatively
+include vector growth, strings, bytes, nested messages, and overwritten fields.
+These are per-source safety limits, not process memory limits or raw-input byte
+limits. Sources exceeding either are permanently refused in their entirety.
+The admission layouts reuse the existing OTLP field constants and Rust field
+types, with tests comparing every field and oneof case against Prost encodings.
+Prost still performs complete nested validation and applies protobuf merging,
+oneof, and unknown-field semantics after admission succeeds.
+
 Keep `max_pending_messages` small for HTTP receivers, especially when clients
 use HTTP/1.1 or many clients send concurrently. Coalescing delays their
 responses until ADX completes the corresponding request. The bound applies per
 exporter instance, so multiply it by the configured engine core count when
 estimating process-wide pending requests. It is both a global admission bound
-and a per-request message cap; accumulators, in-flight requests, retained
+and a per-request message cap; source preparation, accumulators, in-flight
+requests, retained
 authentication retries, and pending completion routes all count against it.
 At the global cap, partial requests are flushed to release capacity.
 `max_in_flight` independently bounds concurrent requests. With coalescing
@@ -203,6 +215,15 @@ without waiting for another input or their timers. It also observes the
 latched deadline while an overflow source is parked. That deadline bounds
 requests, completion routing, and the wait for capacity without requiring
 further inbox polling; unresolved work is canceled and recorded when it expires.
+Closing upstream after shutdown starts does not replace that original deadline.
+
+Non-OTLP inputs use the effect handler's cooperative codec view. The original
+source remains available for completion routing if preparation is canceled.
+Concurrent compressors share a 256 KiB work quantum across the exporter task,
+including ready-input iterations; stream setup and finalization also consume
+that quantum. The outer task yields before replenishing it. Individual streams
+also yield after 64 KiB of input. These are scheduling targets, not latency
+guarantees for synchronous library calls.
 
 If the bearer-token provider closes its stream while no usable token is
 cached, no replacement can arrive. The exporter retryably NACKs retained
@@ -270,6 +291,43 @@ count but keeps original client acknowledgements pending; configure its
 can acknowledge after local persistence, but its path must be placed on
 storage that survives the container, such as an Azure Files mount in Azure
 Container Apps. Ephemeral container storage is not durable across replacement.
+
+### Upstream batching compatibility
+
+The native OTAP batch processor flushes at 8192 items by default, while ADX
+accepts at most 1000 transformed rows per source by default. These defaults
+are not compatible for size-triggered batches of ordinary logs or spans.
+The exporter does not split a source, even with request coalescing disabled;
+an oversized source receives a permanent NACK.
+
+For ordinary logs and spans, explicitly configure the upstream processor's
+upper item limit to match ADX. A flush trigger alone is not an upper limit:
+
+```yaml
+nodes:
+  adx-batch:
+    type: "urn:otel:processor:batch"
+    config:
+      format: otap
+      otap:
+        min_size: 1000
+        max_size: 1000
+        sizer: items
+```
+
+Forcing OTAP makes this item policy apply to encoded inputs too. Preserving
+OTLP with its byte-based batching defaults does not enforce an ADX row limit.
+Alternatively, increase ADX `network_requests.max_rows` to accommodate the
+upstream item size, for example 8192, and set an explicit upstream `max_size`.
+Both choices must still satisfy ADX's uncompressed 4 MiB request limit and
+the configured per-row limit; large bodies require smaller batches.
+
+Metric data points are not ADX rows: histograms, exponential histograms, and
+summaries expand into multiple rows. Choose smaller item limits using the
+expected bucket/quantile expansion, or increase the ADX row limit accordingly.
+An individual expanded data point can itself exceed a request limit and be
+refused. See the
+[batch processor settings](../../../../core-nodes/src/processors/batch_processor/README.md).
 
 ### ADX provisioning
 
