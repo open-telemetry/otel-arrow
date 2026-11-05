@@ -793,6 +793,7 @@ impl AzureDataExplorerExporter {
                 {
                     break;
                 }
+                tokio::task::consume_budget().await;
                 tokio::select! {
                     () = poll_fn(|cx| compression_budget.poll_exhausted(cx)) => {
                         compression_budget.replenish().await;
@@ -884,6 +885,8 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
         tokio::pin!(margin_sleep);
         let mut armed_margin = None;
         let deadline = loop {
+            // Empty inputs and context-free completion routes can remain ready.
+            tokio::task::consume_budget().await;
             let shutdown_deadline = inbox.shutdown_deadline();
             draining |= shutdown_deadline.is_some();
             let ready = self.auth.is_ready();
@@ -1167,6 +1170,7 @@ mod tests {
             exporter,
             Sender::Local(LocalSender::mpsc(data_tx)),
             Receiver::Local(LocalReceiver::mpsc(data_rx)),
+            INTERESTS,
         )
     }
 
@@ -1174,6 +1178,7 @@ mod tests {
         exporter: AzureDataExplorerExporter,
         data: Sender<OtapPdata>,
         receiver: Receiver<OtapPdata>,
+        interests: Interests,
     ) -> (
         impl Future<Output = Result<TerminalState, EngineError>>,
         Driver,
@@ -1201,7 +1206,7 @@ mod tests {
                     runtime_tx,
                     completion_tx,
                     reporter,
-                    INTERESTS,
+                    interests,
                     test_pipeline_runtime_services(),
                 )
                 .await
@@ -1891,6 +1896,88 @@ mod tests {
         assert_eq!(total, 8192);
     }
 
+    async fn assert_unframed_inputs_yield(bytes: Bytes, outcome: &'static str) {
+        tokio::task::LocalSet::new()
+            .run_until(async move {
+                // A fresh task gives the first poll a fresh cooperative budget.
+                tokio::task::spawn_local(async move {
+                    const SOURCES: usize = 1024;
+                    let (exporter, tokens) = exporter(config("http://localhost:4319"));
+                    let compression_budget = exporter.compression_budget.clone();
+                    tokens
+                        .try_send(BearerToken::without_expiry("token".to_string()))
+                        .expect("token");
+                    let (tx, rx) = flume::bounded(SOURCES);
+                    let remaining = rx.clone();
+                    let (runtime, driver) = runtime_with_input(
+                        exporter,
+                        Sender::Shared(SharedSender::mpmc(tx)),
+                        Receiver::Shared(SharedReceiver::mpmc(rx)),
+                        Interests::empty(),
+                    );
+                    for _ in 0..SOURCES {
+                        let input = OtapPdata::new(
+                            Context::default(),
+                            OtlpProtoBytes::ExportLogsRequest(bytes.clone()).into(),
+                        );
+                        driver.data.try_send(input).expect("buffered source");
+                    }
+                    tokio::pin!(runtime);
+                    assert!(futures::poll!(&mut runtime).is_pending());
+                    assert!(
+                        remaining.len() < SOURCES,
+                        "the exporter must process input before yielding"
+                    );
+                    assert!(
+                        !remaining.is_empty(),
+                        "the exporter must yield before draining ready input"
+                    );
+                    assert_eq!(compression_budget.used.get(), 0);
+                    assert!(driver.completions.is_empty());
+                    let probe = tokio::task::spawn_local(async move {
+                        assert!(
+                            !remaining.is_empty(),
+                            "another local task must run while input remains ready"
+                        );
+                    });
+                    probe.await.expect("progress task");
+                    driver.shutdown().await;
+                    drop(driver);
+                    let terminal = tokio::time::timeout(Duration::from_secs(30), runtime)
+                        .await
+                        .expect("source completion and shutdown")
+                        .expect("runtime");
+                    assert_eq!(
+                        measurement(
+                            terminal.metrics(),
+                            "exporter.attempted",
+                            "logs",
+                            outcome,
+                            "messages"
+                        ),
+                        SOURCES as u64
+                    );
+                })
+                .await
+                .expect("unframed input scenario");
+            })
+            .await;
+    }
+
+    /// Scenario: shared input contains only empty OTLP sources with no completion context frames.
+    /// Guarantees: the exporter yields before draining input, another local task runs, and every source succeeds.
+    #[tokio::test(start_paused = true)]
+    async fn unframed_empty_sources_yield_to_other_local_tasks() {
+        assert_unframed_inputs_yield(Bytes::new(), "success").await;
+    }
+
+    /// Scenario: shared input contains only malformed nested OTLP sources with no completion context frames.
+    /// Guarantees: the exporter yields before draining input, another local task runs, and every source is refused.
+    #[tokio::test(start_paused = true)]
+    async fn unframed_malformed_sources_yield_to_other_local_tasks() {
+        assert_unframed_inputs_yield(Bytes::from_static(b"\x0a\x03\x1a\x05\x00"), "refused").await;
+    }
+
     /// Scenario: several compressors run with buffered upstream data on a current-thread runtime.
     /// Guarantees: their combined work stops at the task quantum and another local task runs before input drains.
     #[tokio::test]
@@ -1917,6 +2004,7 @@ mod tests {
                     exporter,
                     Sender::Shared(SharedSender::mpmc(tx)),
                     Receiver::Shared(SharedReceiver::mpmc(rx)),
+                    INTERESTS,
                 );
                 for _ in 0..16 {
                     driver
@@ -2790,6 +2878,7 @@ mod tests {
             exporter,
             Sender::Shared(SharedSender::mpmc(data_tx)),
             Receiver::Shared(SharedReceiver::mpmc(data_rx)),
+            INTERESTS,
         );
         tokio::pin!(runtime);
         let counter = Arc::new(WakeCounter::default());
