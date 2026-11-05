@@ -546,6 +546,9 @@ impl Mapper<'_> {
                 self.output.event_name = Some(name);
             }
             MappingTarget::Timestamp | MappingTarget::ObservedTimestamp => {
+                if let Some(raw) = value.as_str() {
+                    self.budget.charge(raw.len())?;
+                }
                 self.reserve(20)?;
                 let time = value
                     .as_str()

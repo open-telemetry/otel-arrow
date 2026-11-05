@@ -187,6 +187,9 @@ configuration errors. When overrides or iKey filtering are configured, the
 emitted name must match the name selected for policy checks; disagreeing
 dotted/nested representations or name-changing defaults/overrides reject the
 event rather than bypassing admission policy.
+An event-name rule must precede any overlapping field rule, including wildcard
+rules that could shadow it for literal dotted input. Compilation rejects
+shadowed selectors in both base and merged override mappings.
 
 Literal dotted SDK keys (for example `tags["ai.user.id"]`) match the same
 configured paths as nested objects, including wildcard segments within dotted
