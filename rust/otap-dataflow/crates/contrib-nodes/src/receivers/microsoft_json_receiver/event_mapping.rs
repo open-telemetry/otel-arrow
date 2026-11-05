@@ -331,7 +331,7 @@ impl Mapper<'_> {
             suppress_unmapped |= matches!(container.rule.target, Some(MappingTarget::Drop));
         }
         let replacement;
-        let value = if let Some(remap) = self.remap.filter(|_| path.as_slice() == ["iKey"]) {
+        let mut value = if let Some(remap) = self.remap.filter(|_| path.as_slice() == ["iKey"]) {
             replacement = Value::String(remap.to_owned());
             &replacement
         } else {
@@ -344,6 +344,7 @@ impl Mapper<'_> {
                 break;
             }
         }
+        let validated;
         if let Some(compiled) = matched {
             let rule = &compiled.rule;
             if let Some(keys) = &rule.allowed_keys {
@@ -356,8 +357,8 @@ impl Mapper<'_> {
                     }
                 }
             }
-            let validated = validate(value, rule.validate.as_ref(), &mut self.budget)?;
-            let Some(validated) = validated else {
+            validated = validate(value, rule.validate.as_ref(), &mut self.budget)?;
+            let Some(validated) = validated.as_ref() else {
                 return Ok((None, None));
             };
             let consumed = rule
@@ -369,20 +370,20 @@ impl Mapper<'_> {
                     .iter()
                     .any(|also| !matches!(also.target, MappingTarget::Drop));
             if let Some(target) = &rule.target {
-                self.target(target, &validated, path, Some(compiled))?;
+                self.target(target, validated, path, Some(compiled))?;
             }
             for also in &rule.also {
                 let transformed = match &also.transform {
                     Some(transform) => Cow::Owned(
-                        transform_value(transform, &validated, self.remaining, &mut self.budget)?
+                        transform_value(transform, validated, self.remaining, &mut self.budget)?
                             .ok_or_else(|| {
-                            MappingError::Rejected(format!(
-                                "transform cannot be applied at {}",
-                                path.join(".")
-                            ))
-                        })?,
+                                MappingError::Rejected(format!(
+                                    "transform cannot be applied at {}",
+                                    path.join(".")
+                                ))
+                            })?,
                     ),
-                    None => Cow::Borrowed(&validated),
+                    None => Cow::Borrowed(validated),
                 };
                 self.target(&also.target, &transformed, path, Some(compiled))?;
             }
@@ -400,6 +401,7 @@ impl Mapper<'_> {
                 }
                 return Ok((None, None));
             }
+            value = validated;
         }
         if let Value::Object(map) = value {
             return self.children(map, path, rules, suppress_unmapped);
@@ -423,7 +425,7 @@ impl Mapper<'_> {
             value = child;
         }
         self.budget
-            .charge(json_size(value, self.endpoint.limits.output_bytes)?)?;
+            .charge(json_size(value, self.budget.remaining())?)?;
         Ok(Some(value.clone()))
     }
 
@@ -451,7 +453,8 @@ impl Mapper<'_> {
             }
         }
         if path.is_empty() && self.endpoint.config.filtered_item_size {
-            let size = json_size(&retained, self.endpoint.limits.output_bytes)?;
+            let size = json_size(&retained, self.budget.remaining())?;
+            self.budget.charge(size)?;
             self.attribute(false, "filtered_item_size", &Value::from(size))?;
         }
         // Preserve empty source objects rather than treating them as absent.
@@ -498,20 +501,24 @@ impl Mapper<'_> {
         match target {
             MappingTarget::Drop => {}
             MappingTarget::Attribute { key, prefix } | MappingTarget::Resource { key, prefix } => {
-                let start = rule
-                    .and_then(|rule| rule.path.iter().position(|part| part == "*"))
-                    .unwrap_or(0);
-                let source = path
-                    .iter()
-                    .flat_map(|key| key.split('.'))
-                    .skip(start)
-                    .collect::<Vec<_>>()
-                    .join(".");
-                let key = format!(
-                    "{}{}",
-                    prefix.as_deref().unwrap_or(""),
-                    key.as_deref().unwrap_or(&source)
-                );
+                let source;
+                let destination = if let Some(key) = key {
+                    key.as_str()
+                } else {
+                    self.budget
+                        .charge(path.iter().map(|key| key.len() + 1).sum())?;
+                    let start = rule
+                        .and_then(|rule| rule.path.iter().position(|part| part == "*"))
+                        .unwrap_or(0);
+                    source = path
+                        .iter()
+                        .flat_map(|key| key.split('.'))
+                        .skip(start)
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    &source
+                };
+                let key = format!("{}{}", prefix.as_deref().unwrap_or(""), destination);
                 let encoded;
                 let value = if value.is_object() || value.is_array() {
                     let size = json_size(value, self.remaining)?;
@@ -571,6 +578,9 @@ impl Mapper<'_> {
                 }
             }
             MappingTarget::TraceFlags => {
+                if let Some(raw) = value.as_str() {
+                    self.budget.charge(raw.len())?;
+                }
                 self.reserve(10)?;
                 let flags = value
                     .as_u64()
@@ -580,6 +590,9 @@ impl Mapper<'_> {
                 self.output.flags = Some(flags);
             }
             MappingTarget::Severity { map } => {
+                if let Some(raw) = value.as_str() {
+                    self.budget.charge(raw.len().saturating_mul(2))?;
+                }
                 let key = scalar(value)
                     .ok_or_else(|| MappingError::Rejected("severity requires a scalar".into()))?;
                 let (number, text) = map
@@ -705,6 +718,7 @@ fn transform_value(
     limit: usize,
     budget: &mut Budget,
 ) -> Result<Option<Value>, MappingError> {
+    budget.charge(json_size(value, budget.remaining())?)?;
     if let ValueTransform::Format { template } = transform {
         budget.charge(template.len().saturating_mul(2))?;
         let Some(raw) = scalar(value) else {
@@ -730,7 +744,6 @@ fn transform_value(
         budget.charge(raw.len().saturating_mul(2).saturating_add(delimiter.len()))?;
         return Ok(transform.apply(value));
     }
-    budget.charge(json_size(value, limit)?)?;
     Ok(transform.apply(value))
 }
 

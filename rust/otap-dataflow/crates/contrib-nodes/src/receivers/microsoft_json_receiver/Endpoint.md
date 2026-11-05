@@ -78,6 +78,8 @@ UTF-8 JSON, and writes the byte count to the `filtered_item_size` integer log
 attribute. This is an emitted log attribute, not an additional endpoint
 configuration field. The generated size attribute is not included in its own
 measurement.
+Retained originals are counted against traversal work, not the output byte
+allowance; only the generated attribute consumes output capacity.
 
 ```yaml
 filtered_item_size: true
@@ -284,6 +286,9 @@ validate:
   non-finite values. `string_coerce` serializes non-string JSON compactly.
   Truncation respects UTF-8 character boundaries. A length policy of `reject`
   rejects the event regardless of the type-validation policy.
+  Validation-only rules also apply conversions and truncation to values kept
+  in the body. Child rules still run for containers; filtered item size counts
+  the retained original source values rather than their converted form.
   Invalid semantic destinations (timestamps, identifiers, flags or event names)
   and inapplicable additional-target transforms explicitly reject the event.
   They are not converted into successful records with missing OTel fields.
@@ -322,6 +327,10 @@ Available transforms:
 | `format` | Apply a template string with `{value}` placeholder. |
 | `dash_semver_name` | Extract the name portion from a dash-separated semver string. |
 | `dash_semver_version` | Extract the version portion from a dash-separated semver string. |
+
+Transform input inspection consumes traversal work independently of the output
+byte allowance, so large inputs can produce small outputs. Transformed and
+emitted values remain subject to output limits.
 
 ## Event overrides
 
