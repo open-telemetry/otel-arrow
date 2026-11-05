@@ -23,6 +23,10 @@ const METADATA_FLAVOR_GOOGLE: &str = "Google";
 /// Maximum number of bytes of a metadata server error body echoed in logs.
 const MAX_ERROR_BODY_BYTES: usize = 256;
 
+/// Maximum number of bytes read from a successful metadata server token
+/// response before rejecting it as oversized.
+const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
+
 /// A Google Cloud metadata token source.
 #[derive(Clone)]
 pub struct Auth {
@@ -82,17 +86,15 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_error_body_preview(response).await;
             return Err(Error::TokenAcquisition {
-                message: format!(
-                    "metadata server returned {status}: {}",
-                    truncate_body(&body)
-                ),
+                message: format!("metadata server returned {status}: {body}"),
             });
         }
 
+        let body = read_bounded_body(response, MAX_TOKEN_RESPONSE_BYTES).await?;
         let token: MetadataTokenResponse =
-            response.json().await.map_err(|e| Error::TokenAcquisition {
+            serde_json::from_slice(&body).map_err(|e| Error::TokenAcquisition {
                 message: format!("invalid metadata token response: {e}"),
             })?;
 
@@ -200,6 +202,57 @@ fn to_bearer_token(
         .map_or(fallback_lifetime, Duration::from_secs);
 
     Ok(BearerToken::from_relative_expiry(secret, expires_in))
+}
+
+/// Reads up to `max_bytes` from a successful HTTP response body, failing fast
+/// if `Content-Length` or the streamed payload exceeds the limit.
+async fn read_bounded_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Error> {
+    if let Some(content_length) = response.content_length()
+        && content_length > max_bytes as u64
+    {
+        return Err(Error::TokenAcquisition {
+            message: format!(
+                "metadata token response content-length ({content_length} bytes) exceeds limit ({max_bytes} bytes)"
+            ),
+        });
+    }
+
+    let mut buf = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| Error::TokenAcquisition {
+            message: format!("failed to read metadata token response body: {e}"),
+        })?
+    {
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(Error::TokenAcquisition {
+                message: format!("metadata token response body exceeds limit ({max_bytes} bytes)"),
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// Reads at most [`MAX_ERROR_BODY_BYTES`] of an error response body so a large
+/// error payload cannot allocate unbounded memory.
+async fn read_error_body_preview(mut response: reqwest::Response) -> String {
+    let mut buf = Vec::with_capacity(MAX_ERROR_BODY_BYTES + 1);
+    while buf.len() <= MAX_ERROR_BODY_BYTES {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = (MAX_ERROR_BODY_BYTES + 1).saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    truncate_body(&text)
 }
 
 /// Truncates an untrusted response body to [`MAX_ERROR_BODY_BYTES`] for

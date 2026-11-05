@@ -235,6 +235,33 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
         .to_string();
     assert!(http_err.contains("403"));
     assert!(http_err.contains("[truncated]"));
+    assert!(
+        http_err.len() < 512,
+        "error message must remain bounded, got {} bytes",
+        http_err.len()
+    );
+
+    let oversized_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(128 * 1024)))
+        .mount(&oversized_server)
+        .await;
+
+    let oversized_cfg =
+        config_from_json(serde_json::json!({ "endpoint": oversized_server.uri() })).expect("valid");
+    let oversized_auth = Auth::new(&oversized_cfg).expect("auth builds");
+    let oversized_err = oversized_auth
+        .fetch()
+        .await
+        .expect_err("oversized 200 response must fail")
+        .to_string();
+    assert!(
+        oversized_err.contains("exceeds limit"),
+        "expected size limit error, got {oversized_err}"
+    );
 }
 
 #[test]
