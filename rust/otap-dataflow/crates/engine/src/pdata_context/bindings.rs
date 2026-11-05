@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextMaterializationPlan, HeadersRead,
-    Metadata, ValueRead,
+    CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextError,
+    ContextMaterializationPlan, EditBinding, HeadersRead, MergeBinding, Metadata, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -57,8 +57,12 @@ pub struct ArrivalBinding {
 
 impl ArrivalBinding {
     /// Captures headers and identity, records the peer, then materializes composites.
-    #[must_use]
-    pub fn form(&self, arrival: &Arrival<'_>) -> (Metadata, Option<CaptureStats>) {
+    ///
+    /// Currently infallible; the result reserves context validation for the new implementation.
+    pub fn form(
+        &self,
+        arrival: &Arrival<'_>,
+    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         Self::form_with(
             self.header_capture.as_ref(),
             self.authorized_identity_capture.as_ref(),
@@ -72,7 +76,7 @@ impl ArrivalBinding {
         identity_policy: Option<&AuthorizedIdentityPolicy>,
         materialization: Option<&ContextMaterializationPlan>,
         arrival: &Arrival<'_>,
-    ) -> (Metadata, Option<CaptureStats>) {
+    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         let mut metadata = Metadata::default();
         let stats = capture.and_then(|policy| {
             let mut headers = TransportHeaders::new();
@@ -96,7 +100,7 @@ impl ArrivalBinding {
         if let Some(plan) = materialization {
             metadata.materialize_context(plan);
         }
-        (metadata, stats)
+        Ok((metadata, stats))
     }
 }
 
@@ -126,30 +130,30 @@ impl SinkBinding {
         &self.policy
     }
 
-    /// Emits the existing primitive and materialized propagation results in order.
+    /// Emits the existing primitive and materialized propagation
+    /// results in order. Fails when the context does not meet the
+    /// node's context requirements.
     pub fn propagate<'a>(
         &'a self,
         metadata: &'a Metadata,
-        mut emit: impl FnMut(&'a str, PropagatedValue<'a>),
-    ) {
+        mut emit: impl FnMut(PropagatedValue<'a>),
+    ) -> Result<(), ContextError> {
+        let materialized = self
+            .policy
+            .materialized_headers(metadata.materialized_context())?;
         for header in metadata
             .transport_headers()
             .into_iter()
             .flat_map(|headers| self.policy.propagate(headers))
-            .chain(
-                self.policy
-                    .materialized_headers(metadata.materialized_context()),
-            )
+            .chain(materialized)
         {
-            emit(
-                header.header_name,
-                PropagatedValue {
-                    wire_name: header.header_name,
-                    kind: header.value_kind,
-                    bytes: header.value,
-                },
-            );
+            emit(PropagatedValue {
+                wire_name: header.header_name,
+                kind: header.value_kind,
+                bytes: header.value,
+            });
         }
+        Ok(())
     }
 }
 
@@ -164,6 +168,10 @@ pub struct NodeBindings {
     /// Sorted by selector and unique, as produced by sorted declarations.
     pub(super) values: Box<[ValueRead]>,
     pub(super) headers: Option<HeadersRead>,
+    /// 1:1 edit; present only when a processor declares `Edits`.
+    pub(super) edit: Option<EditBinding>,
+    /// N:1 merge; present only when a processor declares `Merges`.
+    pub(super) merge: Option<MergeBinding>,
 }
 
 impl NodeBindings {
@@ -200,6 +208,18 @@ impl NodeBindings {
     #[must_use]
     pub fn headers(&self) -> Option<&HeadersRead> {
         self.headers.as_ref()
+    }
+
+    /// Returns the edit for a processor that declared `Edits`.
+    #[must_use]
+    pub fn edit(&self) -> Option<&EditBinding> {
+        self.edit.as_ref()
+    }
+
+    /// Returns the merge for a processor that declared `Merges`.
+    #[must_use]
+    pub fn merge(&self) -> Option<&MergeBinding> {
+        self.merge.as_ref()
     }
 
     pub(crate) fn header_capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
@@ -346,11 +366,13 @@ mod tests {
             expected.set_peer_addr(peer);
             expected.materialize_context(&binding.materialization);
 
-            let (actual, stats) = binding.form(&Arrival {
-                headers: input,
-                identity: None,
-                peer: Some(peer),
-            });
+            let (actual, stats) = binding
+                .form(&Arrival {
+                    headers: input,
+                    identity: None,
+                    peer: Some(peer),
+                })
+                .expect("arrival forms");
             assert_eq!(actual, expected);
             assert_eq!(stats, expected_stats);
             assert_eq!(
@@ -411,11 +433,13 @@ mod tests {
             ..Default::default()
         };
         for identity in [Some(&identity as &dyn Claims), None] {
-            let (actual, stats) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[("tenant", b"untrusted")]),
-                identity,
-                peer: None,
-            });
+            let (actual, stats) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[("tenant", b"untrusted")]),
+                    identity,
+                    peer: None,
+                })
+                .expect("arrival forms");
             let mut expected = Metadata::default();
             if let Some(identity) = identity {
                 expected.capture_authorized_identity(&policy, identity);
@@ -465,11 +489,13 @@ mod tests {
             .expect("materialization plan"),
             ..Default::default()
         };
-        let (mut metadata, stats) = binding.form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: None,
-            peer: None,
-        });
+        let (mut metadata, stats) = binding
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: None,
+                peer: None,
+            })
+            .expect("arrival forms");
         assert!(stats.is_none());
         let entry = metadata
             .materialized_context()
@@ -521,15 +547,17 @@ mod tests {
                     materialization: policy.materialization_plan().clone(),
                     ..Default::default()
                 };
-                let (metadata, _) = arrival.form(&Arrival {
-                    headers: ArrivalHeaders::Pairs(&[
-                        ("X-Tenant", b"first"),
-                        ("x-tenant", b"second"),
-                        ("X-Token-bin", b"\x00\xff"),
-                    ]),
-                    identity: None,
-                    peer: None,
-                });
+                let (metadata, _) = arrival
+                    .form(&Arrival {
+                        headers: ArrivalHeaders::Pairs(&[
+                            ("X-Tenant", b"first"),
+                            ("x-tenant", b"second"),
+                            ("X-Token-bin", b"\x00\xff"),
+                        ]),
+                        identity: None,
+                        peer: None,
+                    })
+                    .expect("arrival forms");
                 let expected = policy
                     .propagate_materialized(
                         metadata.transport_headers().expect("headers"),
@@ -545,10 +573,10 @@ mod tests {
                     .collect::<Vec<_>>();
                 let sink = SinkBinding::new(policy);
                 let mut actual = Vec::new();
-                sink.propagate(&metadata, |name, value| {
-                    assert_eq!(name, value.wire_name);
-                    actual.push((name.to_owned(), value.kind, value.bytes.to_vec()));
-                });
+                sink.propagate(&metadata, |value| {
+                    actual.push((value.wire_name.to_owned(), value.kind, value.bytes.to_vec()));
+                })
+                .expect("propagation succeeds");
                 assert_eq!(actual, expected);
                 assert!(
                     actual
@@ -557,6 +585,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Scenario: propagation selects a primitive, a valid composite, and a stale composite.
+    /// Guarantees: the sink fails before emitting anything; legacy propagation drops all composites
+    /// but retains the selected primitive.
+    #[test]
+    fn sink_rejects_mismatched_context_without_partial_propagation() {
+        let constant = |entry: &str, value: &str| ContextEntryDeclaration {
+            name: name(entry),
+            ..declaration(vec![ContextEntryPart::Constant {
+                name: name("route"),
+                value: value.to_owned(),
+            }])
+        };
+        let mut declarations = [constant("stable", "fixed"), constant("request", "old")];
+        let arrival = ArrivalBinding {
+            header_capture: Some(capture_policy()),
+            materialization: ContextMaterializationPlan::compile(&declarations)
+                .expect("materialization plan"),
+            ..Default::default()
+        };
+        let (metadata, _) = arrival
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[("X-Tenant", b"acme")]),
+                identity: None,
+                peer: None,
+            })
+            .expect("arrival forms");
+        declarations[1] = constant("request", "new");
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(
+            propagation_policy(
+                serde_json::json!({
+                    "type": "named",
+                    "named": ["tenant", "stable:route", "request:route"]
+                }),
+                "stored_name",
+            ),
+            &declarations,
+        )
+        .expect("propagation compiles");
+        let sink = SinkBinding::new(policy);
+        assert_eq!(
+            sink.propagate(&metadata, |_| panic!(
+                "mismatched context must emit nothing"
+            )),
+            Err(ContextError::ContextMismatch)
+        );
+        let legacy = sink
+            .policy()
+            .propagate_materialized(
+                metadata.transport_headers().expect("captured headers"),
+                metadata.materialized_context(),
+            )
+            .map(|header| (header.header_name, header.value))
+            .collect::<Vec<_>>();
+        assert_eq!(legacy, [("tenant", b"acme".as_slice())]);
+        assert!(
+            sink.policy()
+                .propagate_materialized_only(metadata.materialized_context())
+                .next()
+                .is_none()
+        );
     }
 
     /// Scenario: local and shared exporter handlers receive compiled bindings and are cloned.
@@ -736,13 +826,15 @@ mod tests {
             .collect::<Vec<_>>();
         let sink = SinkBinding::new(policy);
         let mut actual = Vec::new();
-        sink.propagate(&metadata, |name, value| {
-            actual.push((name.to_owned(), value.bytes.to_vec()))
-        });
+        sink.propagate(&metadata, |value| {
+            actual.push((value.wire_name.to_owned(), value.bytes.to_vec()))
+        })
+        .expect("propagation succeeds");
         assert_eq!(actual, expected);
         assert_eq!(actual, [("route".to_owned(), b"fixed".to_vec())]);
-        sink.propagate(&Metadata::default(), |_, _| {
+        sink.propagate(&Metadata::default(), |_| {
             panic!("unmaterialized metadata must emit nothing")
-        });
+        })
+        .expect("propagation succeeds");
     }
 }
