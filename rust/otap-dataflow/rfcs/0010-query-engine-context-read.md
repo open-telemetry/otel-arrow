@@ -578,7 +578,7 @@ Otherwise the claim contains multiple values and this returns type `[]String`.
 ---
 
 ```rs
-authorized_identity_claim_string_value(claim_name: String) -> String
+authorized_identity_claim_string_value(claim_name: String) -> String?
 ```
 
 Returns the value of the authorized identity claim if present.
