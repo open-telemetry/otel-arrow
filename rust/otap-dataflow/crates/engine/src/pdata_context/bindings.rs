@@ -63,22 +63,8 @@ impl ArrivalBinding {
         &self,
         arrival: &Arrival<'_>,
     ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
-        Self::form_with(
-            self.header_capture.as_ref(),
-            self.authorized_identity_capture.as_ref(),
-            Some(&self.materialization),
-            arrival,
-        )
-    }
-
-    pub(crate) fn form_with(
-        capture: Option<&CompiledHeaderCapturePolicy>,
-        identity_policy: Option<&AuthorizedIdentityPolicy>,
-        materialization: Option<&ContextMaterializationPlan>,
-        arrival: &Arrival<'_>,
-    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         let mut metadata = Metadata::default();
-        let stats = capture.and_then(|policy| {
+        let stats = self.header_capture.as_ref().and_then(|policy| {
             let mut headers = TransportHeaders::new();
             let stats = match &arrival.headers {
                 ArrivalHeaders::Pairs(pairs) => {
@@ -91,15 +77,15 @@ impl ArrivalBinding {
             metadata.set_transport_headers(headers);
             stats
         });
-        if let (Some(policy), Some(identity)) = (identity_policy, arrival.identity) {
+        if let (Some(policy), Some(identity)) =
+            (self.authorized_identity_capture.as_ref(), arrival.identity)
+        {
             metadata.capture_authorized_identity(policy, identity);
         }
         if let Some(peer) = arrival.peer {
             metadata.set_peer_addr(peer);
         }
-        if let Some(plan) = materialization {
-            metadata.materialize_context(plan);
-        }
+        metadata.materialize_context(&self.materialization);
         Ok((metadata, stats))
     }
 }
@@ -720,9 +706,10 @@ mod tests {
         ));
     }
 
-    /// Scenario: local and shared receivers use legacy setters, then install and clone compiled bindings.
+    /// Scenario: local and shared receivers lack arrival bindings, use legacy setters, then install and clone compiled bindings.
     /// Guarantees: legacy setters assemble the compiled arrival binding in the handler's node bindings,
     /// both formation paths agree, getters borrow compiled policies, and later setters do not mutate clones.
+    /// Missing bindings fail explicitly rather than forming incomplete metadata.
     #[test]
     fn receiver_handlers_preserve_legacy_and_compiled_formation() {
         use crate::runtime_services::PipelineRuntimeServices;
@@ -764,6 +751,10 @@ mod tests {
         macro_rules! check_handler {
             ($handler:expr) => {{
                 let mut handler = $handler;
+                assert_eq!(
+                    handler.form_context(&arrival),
+                    Err(ContextError::MissingArrivalBinding)
+                );
                 handler.set_capture_policy(binding.header_capture.clone());
                 handler.set_authorized_identity_policy(binding.authorized_identity_capture.clone());
                 handler.set_context_materializer(
@@ -799,6 +790,11 @@ mod tests {
                 assert!(handler.capture_policy().is_none());
                 assert!(handler.authorized_identity_policy().is_none());
                 assert_eq!(cloned.form_context(&arrival), expected);
+                handler.set_node_bindings(Arc::new(NodeBindings::default()));
+                assert_eq!(
+                    handler.form_context(&arrival),
+                    Err(ContextError::MissingArrivalBinding)
+                );
             }};
         }
         check_handler!(crate::local::receiver::EffectHandler::<Metadata>::new(

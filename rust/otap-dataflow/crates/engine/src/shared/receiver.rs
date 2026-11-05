@@ -42,7 +42,7 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::pdata_context::ContextMaterializationPlan;
-use crate::pdata_context::{Arrival, ArrivalBinding, ContextError, Metadata, NodeBindings};
+use crate::pdata_context::{Arrival, ContextError, Metadata, NodeBindings};
 use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
 #[cfg(any(test, feature = "test-utils"))]
@@ -226,25 +226,16 @@ impl<PData> EffectHandler<PData> {
     /// Forms complete request metadata without removing the legacy send hook.
     ///
     /// A receiver rejects the request when this fails.
+    /// Requires an installed arrival binding, even when no capture is configured.
     pub fn form_context(
         &self,
         arrival: &Arrival<'_>,
     ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
-        match self
-            .node_bindings
+        self.node_bindings
             .as_deref()
             .and_then(NodeBindings::arrival)
-        {
-            Some(binding) => binding.form(arrival),
-            None => ArrivalBinding::form_with(
-                None,
-                None,
-                self.context_materialization_plan
-                    .as_ref()
-                    .map(|plan| &plan.plan),
-                arrival,
-            ),
-        }
+            .ok_or(ContextError::MissingArrivalBinding)?
+            .form(arrival)
     }
 
     /// Materializes configured context entries before receiver output.
