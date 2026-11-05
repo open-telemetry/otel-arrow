@@ -141,7 +141,13 @@ pub(super) fn resolve_source(
         return Ok(context.transport_headers().and_then(|headers| {
             names.iter().find_map(|name| {
                 headers
-                    .find_by_name(name.name().as_str())
+                    .iter()
+                    .filter(|header| {
+                        header
+                            .name
+                            .as_str()
+                            .eq_ignore_ascii_case(name.name().as_str())
+                    })
                     .find_map(|header| {
                         if header.value.value_kind != ValueKind::Text {
                             return None;
