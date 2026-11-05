@@ -131,10 +131,17 @@ impl Config {
     /// `GCE_METADATA_HOST`, and [`DEFAULT_METADATA_ENDPOINT`] in that order.
     #[must_use]
     pub fn resolved_endpoint(&self) -> String {
+        self.resolved_endpoint_with_env(std::env::var(GCE_METADATA_HOST_ENV).ok().as_deref())
+    }
+
+    /// Resolves the base URL of the metadata server using the supplied
+    /// `GCE_METADATA_HOST` value instead of reading process environment state.
+    #[must_use]
+    pub(crate) fn resolved_endpoint_with_env(&self, env_host: Option<&str>) -> String {
         if let Some(endpoint) = &self.endpoint {
             return endpoint.trim().trim_end_matches('/').to_string();
         }
-        if let Ok(host) = std::env::var(GCE_METADATA_HOST_ENV) {
+        if let Some(host) = env_host {
             let trimmed = host.trim().trim_end_matches('/');
             if !trimmed.is_empty() {
                 if trimmed.starts_with("http://") || trimmed.starts_with("https://") {

@@ -90,8 +90,45 @@ fn config_defaults_apply_on_empty_or_null_config() {
         assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert_eq!(cfg.connect_timeout, Duration::from_secs(5));
         assert_eq!(cfg.startup_timeout, Duration::from_secs(30));
-        assert_eq!(cfg.resolved_endpoint(), DEFAULT_METADATA_ENDPOINT);
+        assert_eq!(
+            cfg.resolved_endpoint_with_env(None),
+            DEFAULT_METADATA_ENDPOINT
+        );
     }
+}
+
+#[test]
+fn resolved_endpoint_honors_config_and_env_override_precedence() {
+    let default_cfg = Config::default();
+    assert_eq!(
+        default_cfg.resolved_endpoint_with_env(None),
+        DEFAULT_METADATA_ENDPOINT
+    );
+    assert_eq!(
+        default_cfg.resolved_endpoint_with_env(Some("   ")),
+        DEFAULT_METADATA_ENDPOINT
+    );
+    assert_eq!(
+        default_cfg.resolved_endpoint_with_env(Some("169.254.169.254")),
+        "http://169.254.169.254"
+    );
+    assert_eq!(
+        default_cfg.resolved_endpoint_with_env(Some("http://169.254.169.254:8080/")),
+        "http://169.254.169.254:8080"
+    );
+    assert_eq!(
+        default_cfg.resolved_endpoint_with_env(Some("https://metadata.example.com/")),
+        "https://metadata.example.com"
+    );
+
+    let explicit_cfg = config_from_json(serde_json::json!({
+        "endpoint": "http://explicit.metadata.local/",
+    }))
+    .expect("valid config");
+    assert_eq!(
+        explicit_cfg.resolved_endpoint_with_env(Some("169.254.169.254")),
+        "http://explicit.metadata.local"
+    );
 }
 
 #[test]
