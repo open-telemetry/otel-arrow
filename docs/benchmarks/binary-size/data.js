@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793838069911,
+  "lastUpdate": 1793839332170,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -79965,6 +79965,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.27,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "63dcfba3f1c12d2bff082b76a48b5de753e26935",
+          "message": "chore(metrics): Add pull-based receiver lifecycle helper (#4570)\n\n# Chore Summary\n\nPR 3/3 behind:\n- #4554\n- #4555\n\nAdd reusable, policy-gated collection instrumentation in\n`otap::metrics`, with automatic outcome and duration accounting and\ncancellation-safe, exactly-once recording.\n\nSample instrumentation:\n\n```rust\n// Node-specific: accept bounded work before starting the attempt.\nlet output = self.metrics.boundary.processing()\n    .run(async |attempt| {\n        // Node-specific: collect, validate, and encode while servicing controls.\n        self.collect_with_controls(attempt.cancellation_handle()).await\n    })\n    .await?; // Ok records success; Err or a dropped future records failure.\n\n// Node-specific: handoff cannot change the collection outcome.\neffect_handler.send_message(output).await?;\n```\n\nThe APIs deliberately look similar, but account for different units of\nwork:\n\n```text\nINGRESS: one external message\n  ReceiverMetrics::processing()\n    .run(|processing| { ... })\n      |\n      +--> ReceiverMetrics::record(completed)\n             |\n             +--> receiver.received (input signal, outcome)\n\nPULL: one accepted collection attempt\n  ReceiverPullMetrics::processing()\n    .run(async |attempt| { ... })\n      |\n      +--> Ok                   --> record success\n      +--> Err / dropped future --> record failure\n      +--> cancellation_handle().cancel()\n             |\n             +--> record failure BEFORE cleanup\n                  late completion cannot count again\n\n  BOTH:\n    May produce zero or more output messages.\n    Reuse ReceiverProcessingMetricSet for duration.\n\n  WHY SEPARATE:\n    Ingress counts external messages with input signal attribution.\n    Pull counts collection attempts without requiring a signal.\n    Pull accounting can finish before cancelled work returns.\n```\n\n## Related issue\n\n#3822",
+          "timestamp": "2026-11-04T23:44:27Z",
+          "tree_id": "ed7461f87be3fef1193f57b01769580b1728d518",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/63dcfba3f1c12d2bff082b76a48b5de753e26935"
+        },
+        "date": 1793839303907,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.18,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.4,
             "unit": "MB"
           },
           {
