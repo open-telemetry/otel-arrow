@@ -89,7 +89,7 @@ configuration, which only refers to categories (see
 Every lint belongs to one of a predefined set of categories based on type of concern.
 
 | Category      | Meaning                                                                                                  |
-|---------------|----------------------------------------------------------------------------------------------------------|
+| ------------- | -------------------------------------------------------------------------------------------------------- |
 | `security`    | A security concern, e.g. the pipeline exposes data or endpoints to unauthorized access or interception.  |
 | `correctness` | The pipeline almost certainly does not do what its author intended (data dropped, misrouted, corrupted). |
 | `suspicious`  | A general category for things that are probably a mistake, but have legitimate uses.                     |
@@ -101,7 +101,7 @@ a lint in that category is detected. The default level of all categories is
 `warn`.
 
 | Level   | Effect                                                                |
-|---------|-----------------------------------------------------------------------|
+| ------- | --------------------------------------------------------------------- |
 | `allow` | Not reported                                                          |
 | `warn`  | Reported via telemetry                                                |
 | `deny`  | Reported via telemetry and offending pipelines rejected by the engine |
@@ -119,10 +119,10 @@ Lints are configured with a `lints` entry inside the existing `policies` section
 at the engine (root), pipeline group, and pipeline scopes. Each key is either a
 category or `default` and each value is a level:
 
-| Key             | Applies to                                                     |
-|-----------------|----------------------------------------------------------------|
-| `<category>`    | All lints in that category                                     |
-| `default`       | All lints whose category is not set at the same scope          |
+| Key          | Applies to                                            |
+| ------------ | ----------------------------------------------------- |
+| `<category>` | All lints in that category                            |
+| `default`    | All lints whose category is not set at the same scope |
 
 ```yaml
 version: otel_dataflow/v1
@@ -157,13 +157,13 @@ outwards (pipeline, group, engine). At each scope:
 If not configured at any scope, the lint is `warn`. In the example above, for
 pipeline `dev/main`:
 
-| Category      | Level   | Decided by                        |
-|---------------|---------|-----------------------------------|
-| `perf`        | `warn`  | pipeline `perf`                   |
-| `security`    | `warn`  | group `security`                  |
-| `correctness` | `allow` | group `default`                   |
-| `suspicious`  | `allow` | group `default`                   |
-| `style`       | `allow` | group `default`                   |
+| Category      | Level   | Decided by       |
+| ------------- | ------- | ---------------- |
+| `perf`        | `warn`  | pipeline `perf`  |
+| `security`    | `warn`  | group `security` |
+| `correctness` | `allow` | group `default`  |
+| `suspicious`  | `allow` | group `default`  |
+| `style`       | `allow` | group `default`  |
 
 ### Locations
 
@@ -328,11 +328,11 @@ Where the built-in packs live and how they are organized is an
 Lints can run in several places and how diagnostics are reported depends on the
 path:
 
-| Path                  | Error diagnostics                         | Warning diagnostics                                  |
-|-----------------------|-------------------------------------------|------------------------------------------------------|
-| Startup               | Engine does not start; in startup error   | Emitted as events once the subscriber is installed   |
-| `--validate-and-exit` | Printed to stderr; non-zero exit          | Printed to stderr; zero exit                         |
-| Live reconfiguration  | Change rejected; in the rejection message | Emitted as events; change admitted                   |
+| Path                  | Error diagnostics                         | Warning diagnostics                                |
+| --------------------- | ----------------------------------------- | -------------------------------------------------- |
+| Startup               | Engine does not start; in startup error   | Emitted as events once the subscriber is installed |
+| `--validate-and-exit` | Printed to stderr; non-zero exit          | Printed to stderr; zero exit                       |
+| Live reconfiguration  | Change rejected; in the rejection message | Emitted as events; change admitted                 |
 
 The `lint` crate returns diagnostics as plain values. The controller emits
 each reported diagnostic as a `pipeline.lint.diagnostic` event with
@@ -355,18 +355,18 @@ attributes:
   lint.config.path: groups.dev.pipelines.main.nodes.passthrough
 ```
 
-| Attribute               | Present                          | Description                                         |
-|-------------------------|----------------------------------|-----------------------------------------------------|
-| `lint.name`             | Always                           | Full lint name                                      |
-| `lint.category`         | Always                           | The lint's category                                 |
-| `lint.level`            | Always                           | `warn` or `deny`                                    |
-| `lint.location`         | Always                           | `pipeline` or `node`                                |
-| `pipeline.group.id`     | Always                           | Group (`system` for the observability pipeline)     |
-| `pipeline.id`           | Always                           | Pipeline                                            |
-| `node.id`, `node.urn`   | Location is node                 | Node and its type                                   |
-| `lint.related.node.ids` | Pipeline lint with related nodes | Comma-separated ids of the related nodes            |
-| `lint.level.scope`      | Level set by a `lints` policy    | `engine`, `group`, or `pipeline`                    |
-| `lint.config.path`      | Always                           | Config path of the location (see below)             |
+| Attribute               | Present                          | Description                                     |
+| ----------------------- | -------------------------------- | ----------------------------------------------- |
+| `lint.name`             | Always                           | Full lint name                                  |
+| `lint.category`         | Always                           | The lint's category                             |
+| `lint.level`            | Always                           | `warn` or `deny`                                |
+| `lint.location`         | Always                           | `pipeline` or `node`                            |
+| `pipeline.group.id`     | Always                           | Group (`system` for the observability pipeline) |
+| `pipeline.id`           | Always                           | Pipeline                                        |
+| `node.id`, `node.urn`   | Location is node                 | Node and its type                               |
+| `lint.related.node.ids` | Pipeline lint with related nodes | Comma-separated ids of the related nodes        |
+| `lint.level.scope`      | Level set by a `lints` policy    | `engine`, `group`, or `pipeline`                |
+| `lint.config.path`      | Always                           | Config path of the location (see below)         |
 
 `lint.config.path` locates the diagnostic in the configuration as a
 dot-separated path to the pipeline or node, e.g.
@@ -380,7 +380,7 @@ observability pipeline the path is rooted at `engine.observability.pipeline`.
 policies:
 
 | Lint configuration                             | Changed live?                               |
-|------------------------------------------------|---------------------------------------------|
+| ---------------------------------------------- | ------------------------------------------- |
 | Engine `policies.lints`                        | No; restart required                        |
 | Group `policies.lints`, group has pipelines    | No; restart required                        |
 | Group `policies.lints`, group has no pipelines | Yes, through reconcile                      |
@@ -521,4 +521,3 @@ significant added complexity.
 - Lints across pipelines connected by topics.
 - Documentation generated from `LintInfo`.
 - A connection location for rules about individual edges.
-
