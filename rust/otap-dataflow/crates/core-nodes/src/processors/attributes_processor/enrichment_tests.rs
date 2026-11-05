@@ -512,6 +512,33 @@ fn ordered_headers_skip_unusable_candidates() {
     );
 }
 
+/// Scenario: Header candidates and repeated captured names use different ASCII casing.
+/// Guarantees: Case-insensitive lookup preserves candidate priority and selects the first usable capture.
+#[test]
+fn mixed_case_headers_preserve_candidate_and_capture_order() {
+    for (captured_name, candidate_name) in [
+        ("x-forwarded-host", "X-Forwarded-Host"),
+        ("X-Forwarded-Host", "x-forwarded-host"),
+    ] {
+        let context = header_context(&[
+            ("host", ValueKind::Text, b"fallback.example"),
+            (captured_name, ValueKind::Binary, b"binary.example"),
+            (candidate_name, ValueKind::Text, &[0xff]),
+            (captured_name, ValueKind::Text, b" "),
+            (captured_name, ValueKind::Text, b"first.example:443"),
+            (candidate_name, ValueKind::Text, b"second.example:443"),
+        ]);
+        let source: AttributeSource = serde_json::from_value(json!({
+            "type":"transport_header","named":[candidate_name, "host"]
+        }))
+        .unwrap();
+        assert_eq!(
+            resolve_source(&source, &context).unwrap(),
+            Some(LiteralValue::Str("first.example:443".into()))
+        );
+    }
+}
+
 /// Scenario: Stored header text enriches every signal and attribute domain in both encodings.
 /// Guarantees: Insert/upsert/update project text verbatim, including ports and lists, without changing context snapshots.
 #[test]
