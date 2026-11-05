@@ -168,21 +168,19 @@ impl AzureDataExplorerClient {
             let export_attempt = first_attempt
                 .take()
                 .unwrap_or_else(|| self.new_attempt(metadata));
+            let request = self.try_send_request(
+                table,
+                json_mapping,
+                &endpoint,
+                auth_header.clone(),
+                &encoded_table,
+                operation_id,
+                attempt,
+                start,
+                compressed_data.clone(),
+            );
             let result = self
-                .try_send(
-                    table,
-                    json_mapping,
-                    &endpoint,
-                    auth_header.clone(),
-                    &encoded_table,
-                    operation_id,
-                    attempt,
-                    deadline,
-                    start,
-                    compressed_data.clone(),
-                    export_attempt,
-                    metadata,
-                )
+                .try_send(deadline, export_attempt, metadata, request)
                 .await;
 
             match result {
@@ -232,49 +230,29 @@ impl AzureDataExplorerClient {
         attempt
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Run one physical attempt under the operation deadline and record its
+    /// shared exporter outcome.
     async fn try_send(
         &self,
-        table: &str,
-        json_mapping: Option<&str>,
-        endpoint: &str,
-        auth_header: HeaderValue,
-        encoded_table: &str,
-        operation_id: uuid::Uuid,
-        attempt: u32,
         deadline: Instant,
-        operation_start: Instant,
-        compressed_data: Bytes,
         export_attempt: ExporterAttempt,
         metadata: ExportAttemptMetadata,
+        request: impl Future<Output = Result<Duration, Error>>,
     ) -> Result<Duration, Error> {
         let completed = export_attempt
             .run(async |attempt_metrics| {
                 attempt_metrics.set_item_count_with(|| metadata.items);
                 attempt_metrics.set_payload_size_with(|| metadata.payload_size);
-                let result = tokio::time::timeout_at(
-                    deadline,
-                    self.try_send_request(
-                        table,
-                        json_mapping,
-                        endpoint,
-                        auth_header,
-                        encoded_table,
-                        operation_id,
-                        attempt,
-                        operation_start,
-                        compressed_data,
-                    ),
-                )
-                .await
-                .map_err(|_| {
-                    self.metrics
-                        .borrow_mut()
-                        .record_http_response(HttpResponse::NetworkError);
-                    Error::OperationTimeout {
-                        timeout: self.timeout,
-                    }
-                })?;
+                let result = tokio::time::timeout_at(deadline, request)
+                    .await
+                    .map_err(|_| {
+                        self.metrics
+                            .borrow_mut()
+                            .record_http_response(HttpResponse::NetworkError);
+                        Error::OperationTimeout {
+                            timeout: self.timeout,
+                        }
+                    })?;
                 match result {
                     Ok(duration) => Ok(duration),
                     Err(error) if error.is_refusal() => Err(attempt_metrics.refused(error)),
@@ -317,6 +295,28 @@ impl AzureDataExplorerClient {
                     .record_http_response(HttpResponse::NetworkError);
                 Error::from_reqwest(error)
             })?;
+        self.handle_response(
+            response,
+            endpoint,
+            table,
+            json_mapping,
+            attempt,
+            operation_start,
+        )
+        .await
+    }
+
+    /// Classify a received ADX response, reading a bounded error body for
+    /// non-success statuses.
+    async fn handle_response(
+        &self,
+        response: reqwest::Response,
+        endpoint: &str,
+        table: &str,
+        json_mapping: Option<&str>,
+        attempt: u32,
+        operation_start: Instant,
+    ) -> Result<Duration, Error> {
         let status = response.status();
 
         if status.is_success() {
@@ -505,12 +505,14 @@ mod tests {
     use otel_arrow_dfe_otap::metrics::ExporterAttempt;
     use otel_arrow_dfe_telemetry::common_attributes::Outcome;
     use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
-    use reqwest::header::HeaderValue;
+    use reqwest::header::{CONTENT_LENGTH, HeaderValue};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::task::Poll;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::Instant;
     use wiremock::matchers::{body_bytes, header, header_regex, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1216,18 +1218,14 @@ mod tests {
         assert_eq!(http_response_metric(&snapshots, "network_error"), 1);
     }
 
-    /// Scenario: ADX sends error headers but stalls the response body until the operation deadline.
-    /// Guarantees: the physical attempt records only `network_error`, not both that and the HTTP status.
-    #[tokio::test]
+    /// Scenario: ADX returns a 500 status whose error body never arrives before the operation deadline.
+    /// Guarantees: the timed-out physical attempt is recorded as one failed attempt with only `network_error`, never also `http_5xx`.
+    #[tokio::test(start_paused = true)]
     async fn response_body_deadline_records_one_http_outcome() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("loopback listener");
-        let address = listener.local_addr().expect("listener address");
         let metrics = test_metrics();
         let client = AzureDataExplorerClient::new(
-            &format!("http://{address}"),
+            "http://adx.invalid",
             "database",
             reqwest::Client::new(),
             metrics.clone(),
@@ -1235,37 +1233,48 @@ mod tests {
             PAUSED_OPERATION_TIMEOUT,
             false,
         );
-        let payload = Bytes::from_static(b"compressed");
-        let (attempt, metadata) = export_attempt(&metrics, 1, payload.len());
-        let operation = client.send(
+        // Response headers are already available, so the deadline can only
+        // expire while the error body is being read. The body signals its
+        // first poll so the test can prove that stage was reached.
+        let (body_polled, mut body_poll_observed) = tokio::sync::oneshot::channel();
+        let mut body_polled = Some(body_polled);
+        let stalled_body = futures::stream::poll_fn(move |_| {
+            if let Some(body_polled) = body_polled.take() {
+                _ = body_polled.send(());
+            }
+            Poll::<Option<Result<Bytes, std::io::Error>>>::Pending
+        });
+        let response = http::Response::builder()
+            .status(500)
+            .header(CONTENT_LENGTH, 7)
+            .body(reqwest::Body::wrap_stream(stalled_body))
+            .expect("stalled error response");
+        let payload_size = b"compressed".len();
+        let (attempt, metadata) = export_attempt(&metrics, 1, payload_size);
+        let start = Instant::now();
+        let request = client.handle_response(
+            response.into(),
+            "http://adx.invalid/v1/rest/ingest/database/table",
             "table",
             Some("mapping"),
-            HeaderValue::from_static("******"),
-            payload,
-            attempt,
-            metadata,
+            1,
+            start,
         );
-        // The server holds the connection open without sending the declared
-        // body, so only the operation deadline can complete the attempt.
-        let server = async {
-            let mut stream = accept_request(&listener).await;
-            stream
-                .write_all(
-                    b"HTTP/1.1 500 Internal Server Error\r\n\
-                      Content-Length: 7\r\n\
-                      Content-Type: text/plain\r\n\
-                      Connection: close\r\n\r\n",
-                )
-                .await
-                .expect("response headers");
-            stream.flush().await.expect("flush response headers");
-            stream
-        };
 
-        let (_stream, error) = pause_time_after(operation, server).await;
-        assert!(matches!(error, Err(Error::OperationTimeout { .. })));
+        let error = client
+            .try_send(start + PAUSED_OPERATION_TIMEOUT, attempt, metadata, request)
+            .await
+            .expect_err("error body should reach the operation deadline");
 
+        assert!(matches!(error, Error::OperationTimeout { .. }));
+        body_poll_observed
+            .try_recv()
+            .expect("deadline should expire while reading the error body");
         let snapshots = metrics.borrow_mut().terminal_snapshots();
+        assert_eq!(
+            attempted_metric(&snapshots, Outcome::Failure, "messages"),
+            1
+        );
         assert_eq!(http_response_metric(&snapshots, "network_error"), 1);
         assert!(!snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.azure_data_explorer.http"
