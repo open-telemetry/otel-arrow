@@ -481,6 +481,18 @@ impl NodeContextDeclarations {
         self.declarations.iter()
     }
 
+    /// Iterates over component-owned declarations, excluding engine-managed policies.
+    fn component_declarations(&self) -> impl Iterator<Item = &ContextDeclaration> {
+        self.iter().filter(|declaration| {
+            !matches!(
+                declaration,
+                ContextDeclaration::HeaderCapture { .. }
+                    | ContextDeclaration::HeaderPropagation { .. }
+                    | ContextDeclaration::AuthorizedIdentityCapture { .. }
+            )
+        })
+    }
+
     /// Returns whether the declaration set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -547,10 +559,8 @@ pub struct CompiledContextBindings {
 /// Stores one node's declarations, selected composites, and runtime bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledNodeState {
-    /// Sorted component and engine declarations used for live-update comparison.
+    /// Sorted component and engine declarations; factory validation uses the component-only view.
     declarations: NodeContextDeclarations,
-    /// Declarations supplied by the component factory, used to validate node construction.
-    component_declarations: NodeContextDeclarations,
     /// Selected composite definitions, including the whole presence gate for member selections.
     composites: Box<[ConfigContextEntryDeclaration]>,
     /// Runtime bindings shared with node construction without compiler bookkeeping.
@@ -771,8 +781,7 @@ impl CompiledNodeState {
         requirements: &ContextRuntimeRequirements,
         materialization_plan: &ContextMaterializationPlan,
     ) -> Result<Self, Error> {
-        let declarations = prepared.declarations.clone();
-        let mut component_declarations = Vec::new();
+        let declarations = prepared.declarations;
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
@@ -780,56 +789,55 @@ impl CompiledNodeState {
         let mut headers = None;
         let mut edit = None;
         let mut merge = None;
-        for declaration in prepared.declarations {
+        for declaration in declarations.iter() {
             match declaration {
-                ContextDeclaration::Consumes { selector } => {
-                    match &selector {
-                        ContextConsumerSelector::Entries { entries } => {
-                            for entry in entries {
-                                values.push(ValueRead::compile(entry, materialization_plan)?);
-                            }
+                ContextDeclaration::Consumes { selector } => match selector {
+                    ContextConsumerSelector::Entries { entries } => {
+                        for entry in entries {
+                            values.push(ValueRead::compile(entry, materialization_plan)?);
                         }
-                        ContextConsumerSelector::AllCaptured { domain } => match domain {
-                            ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
-                            ContextDomain::AuthorizedIdentity => {
-                                return Err(invalid_context(
-                                    "all-captured authorized identity reads are not supported; use explicit named identity reads",
-                                ));
-                            }
-                        },
                     }
-                    component_declarations.push(ContextDeclaration::Consumes { selector });
-                }
-                ContextDeclaration::Produces { domain, entry } => {
-                    match domain {
-                        ContextDomain::TransportHeader => {}
+                    ContextConsumerSelector::AllCaptured { domain } => match domain {
+                        ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
                         ContextDomain::AuthorizedIdentity => {
-                            return Err(invalid_context(format!(
-                                "produced context entry `{entry}` is in the authorized-identity \
-                                 domain; only transport-header entries can be produced"
-                            )));
+                            return Err(invalid_context(
+                                "all-captured authorized identity reads are not supported; use explicit named identity reads",
+                            ));
                         }
+                    },
+                },
+                ContextDeclaration::Produces { domain, entry } => match domain {
+                    ContextDomain::TransportHeader => {}
+                    ContextDomain::AuthorizedIdentity => {
+                        return Err(invalid_context(format!(
+                            "produced context entry `{entry}` is in the authorized-identity \
+                                 domain; only transport-header entries can be produced"
+                        )));
                     }
-                    component_declarations.push(ContextDeclaration::Produces { domain, entry });
-                }
+                },
                 ContextDeclaration::HeaderCapture { policy } => {
-                    header_capture =
-                        Some(policy.compile(|name| requirements.preserves_original_name(name)));
+                    header_capture = Some(
+                        policy
+                            .clone()
+                            .compile(|name| requirements.preserves_original_name(name)),
+                    );
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
-                    header_propagation =
-                        Some(policy.bind(materialization_plan).map_err(invalid_context)?);
+                    header_propagation = Some(
+                        policy
+                            .clone()
+                            .bind(materialization_plan)
+                            .map_err(invalid_context)?,
+                    );
                 }
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
-                    authorized_identity_capture = Some(policy);
+                    authorized_identity_capture = Some(policy.clone());
                 }
                 ContextDeclaration::Edits { actions } => {
-                    edit = Some(EditBinding::compile(&actions)?);
-                    component_declarations.push(ContextDeclaration::Edits { actions });
+                    edit = Some(EditBinding::compile(actions)?);
                 }
                 ContextDeclaration::Merges => {
                     merge = Some(MergeBinding);
-                    component_declarations.push(ContextDeclaration::Merges);
                 }
             }
         }
@@ -849,7 +857,6 @@ impl CompiledNodeState {
         values.dedup_by(|left, right| left.selector() == right.selector());
         Ok(Self {
             declarations,
-            component_declarations: component_declarations.into_iter().collect(),
             composites: prepared.composites,
             bindings: Arc::new(NodeBindings {
                 arrival,
@@ -1022,7 +1029,14 @@ impl CompiledContextBindings {
             .get(pipeline)
             .and_then(|nodes| nodes.get(node))
         {
-            Some(expected) if expected.component_declarations == *declarations => Ok(()),
+            Some(expected)
+                if expected
+                    .declarations
+                    .component_declarations()
+                    .eq(declarations.iter()) =>
+            {
+                Ok(())
+            }
             _ => Err(Error::UnrecognizedContextDeclaration {}),
         }
     }
@@ -2028,7 +2042,7 @@ groups:
             .get_mut(&key)
             .expect("pipeline");
         assert_eq!(
-            nodes[&ConfigNodeId::from("merge")].component_declarations,
+            nodes[&ConfigNodeId::from("merge")].declarations,
             [ContextDeclaration::Merges].into_iter().collect()
         );
         for node in nodes.values_mut() {
