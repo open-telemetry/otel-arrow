@@ -222,8 +222,11 @@ source remains available for completion routing if preparation is canceled.
 Concurrent compressors share a 256 KiB work quantum across the exporter task,
 including ready-input iterations; stream setup and finalization also consume
 that quantum. The outer task yields before replenishing it. Individual streams
-also yield after 64 KiB of input. These are scheduling targets, not latency
-guarantees for synchronous library calls.
+also yield after 64 KiB of input. Every event-loop iteration also consumes the
+runtime's cooperative task budget, including empty inputs, preparation refusals,
+and completion routing, so these paths yield even when no compression is needed.
+These are scheduling targets, not latency guarantees for synchronous library
+calls.
 
 If the bearer-token provider closes its stream while no usable token is
 cached, no replacement can arrive. The exporter retryably NACKs retained
@@ -235,7 +238,9 @@ intended only for temporarily debugging export or connection issues. They log
 sensitive content at debug level and are not recommended in production unless
 strictly necessary. `log_failed_payload` controls the outbound request payload
 and sample row. `log_response_body` controls inbound ADX error response
-chunks. Either source may contain PII, schema values, telemetry attributes, or
+chunks, except for 401 bodies, which are not read so authentication recovery
+cannot be blocked by a stalled error body. Either source may contain PII,
+schema values, telemetry attributes, or
 other customer-sensitive data. Disable the setting immediately after
 diagnosis and ensure debug logs are handled according to applicable data
 protection requirements.
