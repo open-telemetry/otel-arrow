@@ -183,6 +183,12 @@ impl ClientTlsProvider {
             Ok(Some(candidate)) if candidate.matches(&self.current.load().material) => {
                 ReloadOutcome::Unchanged
             }
+            // TODO(#4165): validate() is synchronous CPU work on the pipeline
+            // thread, once per changed generation. Its cost scales with the CA
+            // bundle size (bounded by the file size cap) and may be higher on
+            // slower hardware. The engine-owned reload service should move it
+            // off the pipeline thread. A failed candidate is not kept as
+            // current, so invalid material is retried on later polls.
             Ok(Some(candidate)) => match candidate.validate() {
                 Ok(material) => {
                     let number = self.next_number.fetch_add(1, Ordering::Relaxed);

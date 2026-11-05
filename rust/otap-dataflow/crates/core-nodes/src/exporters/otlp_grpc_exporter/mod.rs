@@ -280,6 +280,11 @@ async fn build_grpc_client_pool(
     Ok(pool)
 }
 
+// TODO(#4165): rebuilding the pool is synchronous work on the pipeline thread
+// (tonic parses the CA bundle and client key while building each endpoint), once
+// per installed generation. It scales with the CA bundle size and may take
+// longer on slower hardware. The engine-owned reload service should take over
+// validation; consumers still build their own channels from its snapshots.
 async fn install_tls_generation(
     settings: &GrpcClientSettings,
     num_connections: usize,
