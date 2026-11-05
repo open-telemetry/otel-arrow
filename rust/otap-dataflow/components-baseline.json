@@ -111,6 +111,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:exporter:syslog",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:exporter:topic",
     "category": "Exporter",
     "description": null,

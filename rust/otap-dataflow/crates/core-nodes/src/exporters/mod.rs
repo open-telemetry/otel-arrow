@@ -15,6 +15,10 @@ pub mod file_exporter;
 #[cfg(feature = "topic")]
 pub mod topic_exporter;
 
+/// Syslog exporter.
+#[cfg(feature = "syslog")]
+pub mod syslog_exporter;
+
 /// Parquet exporter.
 #[cfg(feature = "parquet")]
 pub mod parquet_exporter;

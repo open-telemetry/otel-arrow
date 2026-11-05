@@ -109,6 +109,7 @@ core-exporters = [
     "otlp",
     "parquet",
     "topic",
+    "syslog",
 ]
 
 # Integrations with both sources and destinations.
@@ -136,6 +137,7 @@ transform = [
 
 # Exporters.
 file = []
+syslog = ["syslog-cef"]
 parquet = [
     "dep:object_store",
     "dep:parquet",

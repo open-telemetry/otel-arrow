@@ -1,0 +1,6 @@
+type: syslog
+status:
+  class: exporter
+  codeowners:
+    active:
+      - drewrelmas

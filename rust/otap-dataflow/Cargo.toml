@@ -353,6 +353,7 @@ transform = ["otel-arrow-dfe-core-nodes/transform"]
 
 # Core exporters.
 file = ["otel-arrow-dfe-core-nodes/file"]
+syslog = ["otel-arrow-dfe-core-nodes/syslog"]
 parquet = ["otel-arrow-dfe-core-nodes/parquet"]
 
 # Contrib-node feature forwarding. Keep these lists aligned with
