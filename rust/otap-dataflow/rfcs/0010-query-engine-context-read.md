@@ -658,7 +658,7 @@ accessing context.
 For example, perhaps we could have a "`context`" field that is a map, which
 could be indexed by special keys containing both a domain and a name.
 
-```
+```rs
 context["context_entry:entry_name"] 
 
 context["transport_headers:header_name"]
