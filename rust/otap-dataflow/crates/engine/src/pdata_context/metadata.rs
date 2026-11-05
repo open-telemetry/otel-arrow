@@ -17,10 +17,8 @@ use crate::capability::auth::ClaimValue;
 use crate::pdata_context::{
     ContextDomain, ContextError, ContextFieldLayout, ContextMaterializationPlan, ContextProjection,
     ContextValueCardinality, ContextValueKind, ContextValueSource, MaterializedContext,
-    MaterializedContextEntry, MaterializedContextProjection, MaterializedContextValue,
-    MaterializedContextValues,
+    MaterializedContextProjection, MaterializedContextValue, MaterializedContextValues,
 };
-use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, TransportHeadersData};
 
@@ -101,19 +99,6 @@ impl Metadata {
     #[must_use]
     pub fn materialized_context(&self) -> Option<&MaterializedContext> {
         (!self.materialized.is_empty()).then_some(&self.materialized)
-    }
-
-    /// Removes materialized composites for which `keep` returns false.
-    pub(super) fn retain_materialized_entries(
-        &mut self,
-        keep: impl FnMut(&ContextEntryName) -> bool,
-    ) {
-        self.materialized.retain_entries(keep);
-    }
-
-    /// Replaces materialized composites, retaining transport headers.
-    pub(super) fn set_materialized_entries(&mut self, entries: Vec<MaterializedContextEntry>) {
-        self.materialized.set_entries(entries);
     }
 
     /// Resolves an existing materialized composite projection.
@@ -567,6 +552,7 @@ impl PeerAddrMerger {
     }
 
     /// Folds one contributing input's `peer_addr` into the running merge.
+    /// TODO(4541) callers switch to combine()
     pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
         *self = match (*self, peer_addr) {
             (Self::Empty, None) => Self::Poisoned,
