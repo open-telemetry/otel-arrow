@@ -90,14 +90,19 @@ Exporters send data out of a pipeline.
 ## Feature Aggregates
 
 - `contrib-nodes`: enables contrib receivers, processors, and exporters, except
-  the explicitly opt-in Oracle, SQL Server, and PostgreSQL receivers.
-- `contrib-receivers`: enables contrib receivers except Oracle, SQL Server, and PostgreSQL.
+  the explicitly opt-in MySQL, Oracle, SQL Server, and PostgreSQL integrations.
+- `contrib-receivers`: enables contrib receivers except MySQL, Oracle, SQL Server, and PostgreSQL.
 - `contrib-processors`: enables all contrib processors.
 - `contrib-exporters`: enables all contrib exporters.
 - `kafka`: enables both the Kafka receiver and exporter.
 
 Enable `oracle` or `postgresql` explicitly to include those integrations.
 Oracle requires separately provisioned Oracle Client libraries.
+
+The `mysql` feature is explicitly opt-in and excluded from all aggregates and
+default features. It currently enables only a preparatory module placeholder
+and published dependencies, not an operational receiver or runtime factory.
+The root feature also enables `flat-file-user-pass-auth`.
 
 The `sql-server` feature is also explicitly opt-in and excluded from all
 aggregates. It needs no separately installed database client. The root feature
