@@ -5364,7 +5364,7 @@ groups:
 }
 
 /// Scenario: reconfiguration changes a deployed pipeline's context declaration.
-/// Guarantees: the temporary declaration freeze rejects the update, including on the rollout target.
+/// Guarantees: the conservative global-consistency guard also checks the rollout target's declarations.
 #[test]
 fn reconfigure_rejects_context_bindings_changes_to_target_pipeline() {
     let config = engine_config_with_pipeline(
@@ -5426,8 +5426,8 @@ connections:
 
 /// Scenario: reconfiguration keeps the same consumed entry but changes its read take from
 /// `Exists` to `All`, as when validation switches from a key check to a key-value check.
-/// Guarantees: an unchanged take is accepted, while a changed take is rejected with a restart
-/// requirement under the temporary declaration freeze, even though capture retains all values.
+/// Guarantees: the conservative guard accepts an unchanged take but rejects a changed take,
+/// even though capture retains all values and this change needs no additional captured information.
 #[test]
 fn reconfigure_rejects_context_read_take_changes_to_target_pipeline() {
     let pipeline_yaml = |all: bool| {

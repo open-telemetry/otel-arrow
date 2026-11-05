@@ -985,14 +985,15 @@ impl CompiledContextBindings {
             .authorized_identity_policy()
     }
 
-    /// Checks context compatibility for one pipeline during live updates.
+    /// Conservatively checks one pipeline's contribution to live-update context compatibility.
     ///
     /// Compares nodes that have component- or engine-owned context declarations.
     /// Changes to other nodes remain subject to normal pipeline rollout checks.
     ///
-    /// Currently requires identical declarations and selected composite definitions,
-    /// even when different declarations compile to equivalent runtime bindings.
-    /// Boundary-aware relaxation is deferred to #4611.
+    /// Equality of declarations and selected composite definitions is a proxy for
+    /// preserving shared context assumptions, not an invariant in itself. It can
+    /// reject safe changes: the compiler cannot yet prove which changes remain
+    /// compatible with surviving generations across topic boundaries (#4611).
     #[must_use]
     pub fn pipeline_context_compatible(&self, other: &Self, pipeline: &PipelineKey) -> bool {
         let current = self.by_pipeline.get(pipeline);

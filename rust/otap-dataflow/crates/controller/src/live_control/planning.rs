@@ -649,10 +649,10 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded from this comparison: a separate
-        // check freezes effective declarations for deployed pipelines. An
-        // absent group-level policy block is treated the same as one that
-        // only declares context entries, so moving context declarations
+        // Context declarations are excluded here: global context consistency is
+        // guarded using installed engine requirements and deployed pipelines'
+        // effective declarations. An absent group-level policy block is treated like
+        // one that only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
         fn normalized_group_policies(
             policies: Option<&otel_arrow_dfe_config::policy::Policies>,
@@ -802,10 +802,12 @@ impl<
         included_pipelines: Option<&HashSet<PipelineKey>>,
         candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
-        // Conservatively freeze declarations, including on the rollout target,
-        // until the compiler can check compatibility across topic boundaries (#4611).
-        // Runtime bindings are not compared. Original-name retention is checked
-        // separately by compile_context_bindings.
+        // The goal is global consistency with installed engine state, surviving
+        // pipeline generations, and their in-flight data. compile_context_bindings
+        // checks the known engine-wide capture requirements. For the remaining
+        // effects, declaration equality is a conservative proxy until the compiler
+        // can prove compatibility across topic boundaries (#4611). This includes
+        // the rollout target and may reject changes that would actually be safe.
         //
         // Compare against each pipeline's installed snapshot rather than the
         // controller's latest global snapshot, since prior rollouts may have
