@@ -9,27 +9,27 @@ Tracking Issue: open-telemetry/otel-arrow#4574
 
 ## Summary
 
-The goal of this RFC is to describe how we can incorporate the concept of linting
-into the Dataflow Engine project to help educate users on best practices and reduce
-mistakes in pipeline authorship.
+The goal of this RFC is to describe how we can incorporate the concept of
+linting into the Dataflow Engine project to help educate users on best practices
+and reduce mistakes in pipeline authorship.
 
 ## Motivation
 
-In the Dataflow Engine, we design nodes under the philosophy of
-composability. Each node offers simple behaviors that can be composed together
-into a pipeline to express more complicated logic. This forms a language
-for telemetry pipelines.
+In the Dataflow Engine, we design nodes under the philosophy of composability.
+Each node offers simple behaviors that can be composed together into a pipeline
+to express more complicated logic. This forms a language for telemetry
+pipelines.
 
 Not all pipeline programs that can be expressed in the language of nodes,
-connections, and configurations are good ones. Some nodes (probably) should
-not be placed before or after others, and some combinations of node
-configurations are unlikely to yield good results for performance,
-correctness, security, or other reasons.
+connections, and configurations are good ones. Some nodes (probably) should not
+be placed before or after others, and some combinations of node configurations
+are unlikely to yield good results for performance, correctness, security, or
+other reasons.
 
-The rules are many and it is unreasonable for any human (or agent),
-experienced or not, to be aware of the constantly evolving set of nodes and
-configurations nor the accumulated wisdom in how best to use them (let
-alone, consistently and perfectly apply these rules in practice).
+The rules are many and it is unreasonable for any human (or agent), experienced
+or not, to be aware of the constantly evolving set of nodes and configurations
+nor the accumulated wisdom in how best to use them (let alone, consistently and
+perfectly apply these rules in practice).
 
 Programming languages have addressed this problem through configurable linting
 systems. This is a proposal for a similar system for Dataflow Engine pipelines.
@@ -45,7 +45,8 @@ a valid pipeline at all.
 
 For example, telling an otap receiver to bind its listener to 0.0.0.0 has uses,
 but is a security concern worth warning about in a lint. Trying to set the otap
-receiver's `foobar` setting to `baz` on the other hand is nonsense and a hard error.
+receiver's `foobar` setting to `baz` on the other hand is nonsense and a hard
+error.
 
 Lints therefore are checked after validation:
 
@@ -59,20 +60,21 @@ Lints therefore are checked after validation:
 
 All lints are provided in packs via a new `lints` component type. See
 [Authoring lints](#authoring-lints). Every lint pack compiled into the engine
-runs by default (subject to its interests and level) and is controlled
-through [levels](#configuring-lints).
+runs by default (subject to its interests and level) and is controlled through
+[levels](#configuring-lints).
 
 The engine additionally may define some special lints, such as
-`lints:engine:unconnected_node`, for nodes that are not connected to the rest
-of the pipeline. These would not be defined in a pack per se, but still belong
-to a reserved `urn:otel:lints:engine` pack/namespace and are configured like
-any other lint.
+`lints:engine:unconnected_node`, for nodes that are not connected to the rest of
+the pipeline. These would not be defined in a pack per se, but still belong to a
+reserved `urn:otel:lints:engine` pack/namespace and are configured like any
+other lint.
 
 ### Lint names
 
-Every lint is named after the pack that provides it followed by the lint's
-id. Names follow the shortcut rules of component URNs (see
-[URN format](../docs/urns.md)) including special resolution for the otel namespace.
+Every lint is named after the pack that provides it followed by the lint's id.
+Names follow the shortcut rules of component URNs (see
+[URN format](../docs/urns.md)) including special resolution for the otel
+namespace.
 
 ```text
 urn:otel:lints:core-nodes:redundant_batch     built-in pack, canonical form
@@ -86,7 +88,8 @@ configuration, which only refers to categories (see
 
 ### Linting levels and categories
 
-Every lint belongs to one of a predefined set of categories based on type of concern.
+Every lint belongs to one of a predefined set of categories based on type of
+concern.
 
 | Category      | Meaning                                                                                                  |
 | ------------- | -------------------------------------------------------------------------------------------------------- |
@@ -96,8 +99,8 @@ Every lint belongs to one of a predefined set of categories based on type of con
 | `perf`        | Correct, but probably negatively impacts CPU, memory, or throughput.                                     |
 | `style`       | Correct and efficient, but redundant, deprecated, or unidiomatic.                                        |
 
-Each category resolves to a level that determines the engine's behavior when
-a lint in that category is detected. The default level of all categories is
+Each category resolves to a level that determines the engine's behavior when a
+lint in that category is detected. The default level of all categories is
 `warn`.
 
 | Level   | Effect                                                                |
@@ -106,18 +109,18 @@ a lint in that category is detected. The default level of all categories is
 | `warn`  | Reported via telemetry                                                |
 | `deny`  | Reported via telemetry and offending pipelines rejected by the engine |
 
-Configuring policy to `allow` a lint suppresses it and the engine will either not run
-the lint at all or ignore the result. Configuring policy to `warn` will cause the engine
-to emit telemetry when the lint is detected. Configuring policy to `deny` escalates the
-severity when the lint is detected. When a lint is detected in this case, the engine
-treats it similar to a config validation error which will stop offending pipelines from
-being accepted.
+Configuring policy to `allow` a lint suppresses it and the engine will either
+not run the lint at all or ignore the result. Configuring policy to `warn` will
+cause the engine to emit telemetry when the lint is detected. Configuring policy
+to `deny` escalates the severity when the lint is detected. When a lint is
+detected in this case, the engine treats it similar to a config validation error
+which will stop offending pipelines from being accepted.
 
 ### Configuring lints
 
-Lints are configured with a `lints` entry inside the existing `policies` sections
-at the engine (root), pipeline group, and pipeline scopes. Each key is either a
-category or `default` and each value is a level:
+Lints are configured with a `lints` entry inside the existing `policies`
+sections at the engine (root), pipeline group, and pipeline scopes. Each key is
+either a category or `default` and each value is a level:
 
 | Key          | Applies to                                            |
 | ------------ | ----------------------------------------------------- |
@@ -170,22 +173,21 @@ pipeline `dev/main`:
 Every diagnostic has a **location**, either a node or a pipeline.
 
 - A **node lint** is located at the node it is about.
-- A **pipeline lint** is located at the pipeline. A pipeline lint that
-  concerns specific nodes (for example, node ordering) lists them as
-  related nodes, similar to rustc's secondary spans.
+- A **pipeline lint** is located at the pipeline. A pipeline lint that concerns
+  specific nodes (for example, node ordering) lists them as related nodes,
+  similar to rustc's secondary spans.
 
-The engine's observability pipeline (`engine.observability.pipeline`) is
-linted like any other pipeline and reported under the group `system`.
+The engine's observability pipeline (`engine.observability.pipeline`) is linted
+like any other pipeline and reported under the group `system`.
 
 ## Reference-level explanation
 
 ### Authoring lints
 
-Lints are registered into the engine in packs via a `lints` component type.
-Lint packs have a URN like any other component. For example
-`urn:otel:lints:engine` is a pack of lints called `engine` in the `otel`
-namespace. A specific lint in this pack would be
-`urn:otel:lints:engine:unconnected_node`.
+Lints are registered into the engine in packs via a `lints` component type. Lint
+packs have a URN like any other component. For example `urn:otel:lints:engine`
+is a pack of lints called `engine` in the `otel` namespace. A specific lint in
+this pack would be `urn:otel:lints:engine:unconnected_node`.
 
 Code in this section is illustrative only, but here's an example of how lints
 will roughly be declared:
@@ -308,15 +310,15 @@ fn check_redundant_batch(cx: &LintContext<'_>, sink: &mut LintSink<'_>) {
 
 A few notes:
 
-Checks can be expensive, so the engine can skip a check whose category
-resolves to `allow` for the pipeline, and at pipelines or nodes that do not
-match a lint's interests. Each invocation gets a sink bound to exactly one lint
-and location, so a check cannot emit any other lint.
+Checks can be expensive, so the engine can skip a check whose category resolves
+to `allow` for the pipeline, and at pipelines or nodes that do not match a
+lint's interests. Each invocation gets a sink bound to exactly one lint and
+location, so a check cannot emit any other lint.
 
 Lints see node configs only as `serde_json::Value` which means that lints have
-to be written against the generic value api and also that defaults are not applied
-or visible to the lint. A lint could deserialize a `Value` into a type it
-has access to, though there are implications. See
+to be written against the generic value api and also that defaults are not
+applied or visible to the lint. A lint could deserialize a `Value` into a type
+it has access to, though there are implications. See
 [Using strongly typed configs during linting](#using-strongly-typed-configs-during-linting)
 for some tradeoffs.
 
@@ -334,15 +336,16 @@ path:
 | `--validate-and-exit` | Printed to stderr; non-zero exit          | Printed to stderr; zero exit                       |
 | Live reconfiguration  | Change rejected; in the rejection message | Emitted as events; change admitted                 |
 
-The `lint` crate returns diagnostics as plain values. The controller emits
-each reported diagnostic as a `pipeline.lint.diagnostic` event with
-`otel_warn!` (`warn`) or `otel_error!` (`deny`). The body is the message.
-For example:
+The `lint` crate returns diagnostics as plain values. The controller emits each
+reported diagnostic as a `pipeline.lint.diagnostic` event with `otel_warn!`
+(`warn`) or `otel_error!` (`deny`). The body is the message. For example:
 
 ```yaml
 event_name: pipeline.lint.diagnostic
 severity: WARNING
-body: "otap format: min_size is 0 and max_size is unset, so requests are never batched"
+body:
+  "otap format: min_size is 0 and max_size is unset, so requests are never
+  batched"
 attributes:
   lint.name: urn:otel:lints:core-nodes:forwards_everything
   lint.category: suspicious
@@ -369,10 +372,10 @@ attributes:
 | `lint.config.path`      | Always                           | Config path of the location (see below)         |
 
 `lint.config.path` locates the diagnostic in the configuration as a
-dot-separated path to the pipeline or node, e.g.
-`groups.dev.pipelines.main` for a pipeline lint or
-`groups.dev.pipelines.main.nodes.debug` for a node lint. For the
-observability pipeline the path is rooted at `engine.observability.pipeline`.
+dot-separated path to the pipeline or node, e.g. `groups.dev.pipelines.main` for
+a pipeline lint or `groups.dev.pipelines.main.nodes.debug` for a node lint. For
+the observability pipeline the path is rooted at
+`engine.observability.pipeline`.
 
 ### Live changes to lint configuration
 
@@ -386,32 +389,31 @@ policies:
 | Group `policies.lints`, group has no pipelines | Yes, through reconcile                      |
 | Pipeline `policies.lints`                      | Yes, through pipeline updates and reconcile |
 
-A group's `policies.lints` can change live only when the group has no
-pipelines in either the current or the desired configuration, matching the
-existing shared-policy rule. Per-pipeline update requests cannot change group
-policies.
+A group's `policies.lints` can change live only when the group has no pipelines
+in either the current or the desired configuration, matching the existing
+shared-policy rule. Per-pipeline update requests cannot change group policies.
 
 Every pipeline update, and every pipeline whose configuration differs in a
 reconcile (including changes that are planned as a `noop` rollout), runs the
-lint stage on the whole submitted pipeline, under the levels resolved from
-the candidate configuration, and rejects the change if any diagnostic is an
-error. This applies equally when only the pipeline's `lints` policy changed:
-tightening a level to `deny` is rejected if the running pipeline violates it.
+lint stage on the whole submitted pipeline, under the levels resolved from the
+candidate configuration, and rejects the change if any diagnostic is an error.
+This applies equally when only the pipeline's `lints` policy changed: tightening
+a level to `deny` is rejected if the running pipeline violates it.
 
-Lints do not affect a running pipeline, so `ResolvedPolicies` comparisons
-ignore `lints` in the same way they ignore `context`: both
-`ResolvedPolicies::eq` and `ResolvedPolicies::eq_ignoring_resources` (and
-therefore `ResolvedPipelineConfig::runtime_matches`) skip it. A change that
-only touches `lints` and passes the lint stage is planned as a `noop`
-rollout: the configuration is committed and no nodes are rolled.
+Lints do not affect a running pipeline, so `ResolvedPolicies` comparisons ignore
+`lints` in the same way they ignore `context`: both `ResolvedPolicies::eq` and
+`ResolvedPolicies::eq_ignoring_resources` (and therefore
+`ResolvedPipelineConfig::runtime_matches`) skip it. A change that only touches
+`lints` and passes the lint stage is planned as a `noop` rollout: the
+configuration is committed and no nodes are rolled.
 
 ## Drawbacks
 
 - A new component type, crate, and admission stage add surface area to the
   engine and to live reconfiguration.
-- Lints read raw `serde_json::Value` configs, so a lint that depends on
-  defaults or on derived settings must reimplement that logic and can drift
-  from the node it checks.
+- Lints read raw `serde_json::Value` configs, so a lint that depends on defaults
+  or on derived settings must reimplement that logic and can drift from the node
+  it checks.
 - Category-only levels are coarse. Silencing one intentional finding means
   lowering the whole category for the pipeline.
 - Lints add work to every admission. Interests and `allow` skipping bound the
@@ -421,21 +423,21 @@ rollout: the configuration is committed and no nodes are rolled.
 
 ### Configuring individual lints or packs
 
-Selectors naming a single lint (`lints:core-nodes:redundant_batch`), a pack,
-or a pack and category would allow fine-grained control. They require every
-lint to have a stable, unique name that is part of the configuration
-contract; aliases for renamed lints; rules for which selector wins when
-several match; meta lints for unknown or renamed selectors; and a registry
-to resolve them. Category-only configuration is significantly simpler. Finer
-selectors may be added later on top of categories, but there should be a
-demonstrated need for them first (see [Future possibilities](#future-possibilities)).
+Selectors naming a single lint (`lints:core-nodes:redundant_batch`), a pack, or
+a pack and category would allow fine-grained control. They require every lint to
+have a stable, unique name that is part of the configuration contract; aliases
+for renamed lints; rules for which selector wins when several match; meta lints
+for unknown or renamed selectors; and a registry to resolve them. Category-only
+configuration is significantly simpler. Finer selectors may be added later on
+top of categories, but there should be a demonstrated need for them first (see
+[Future possibilities](#future-possibilities)).
 
 ### Node-scope levels
 
 Allowing lints per node is where suppressions are most precise. For example one
 intentional `0.0.0.0` receiver maybe should not silence every other security
-finding in its pipeline. In the current proposal the only options are to lower the
-category for the whole pipeline or to accept the expected warning.
+finding in its pipeline. In the current proposal the only options are to lower
+the category for the whole pipeline or to accept the expected warning.
 
 Additionally, node-scope levels require a `lints` block on nodes (where
 `policies` does not exist), a location model that distinguishes node and
@@ -444,71 +446,71 @@ pipeline lints.
 
 ### Using strongly typed configs during linting
 
-Running lints in a lighter tool like `dfctl` means it must link every
-config type its lints use. Today those types live in the node crates, alongside
-their runtime implementations, `PData` types, and dependencies. To lint without
-them, each node family would need to move its config structs into a separate crate,
+Running lints in a lighter tool like `dfctl` means it must link every config
+type its lints use. Today those types live in the node crates, alongside their
+runtime implementations, `PData` types, and dependencies. To lint without them,
+each node family would need to move its config structs into a separate crate,
 add cargo features, or find some other solution to avoid linking all the runtime
 dependencies as well.
 
 ### Fusing linting with validation
 
 Running lints during validation could share work with validators and also make
-use of strongly typed config, but ties the lints to a node type, requires changes
-to the node factory APIs and other code additions.
+use of strongly typed config, but ties the lints to a node type, requires
+changes to the node factory APIs and other code additions.
 
 This would effectively be a second linting system for node-scoped lints, with
 significant added complexity.
 
 ### Other alternatives
 
-- **Extensions as lint packs, or lints as an extension capability.**
-  Extensions and capabilities are runtime components built on every core
-  and bound to nodes. Lints are needed at admission without building
-  anything, and are consumed by the engine rather than by nodes.
-- **Lint pack instances in the configuration.** A section listing packs
-  would allow differently configured instances, but adds instance ids and
-  live-reconfiguration rules. Running every compiled-in pack and scoping it
-  with levels covers the common cases with no new configuration.
-- **The full rustc level set.** `expect`, `forbid`, and CLI level flags each
-  add resolution rules and edge cases. They can be added later without
-  changing the design.
+- **Extensions as lint packs, or lints as an extension capability.** Extensions
+  and capabilities are runtime components built on every core and bound to
+  nodes. Lints are needed at admission without building anything, and are
+  consumed by the engine rather than by nodes.
+- **Lint pack instances in the configuration.** A section listing packs would
+  allow differently configured instances, but adds instance ids and
+  live-reconfiguration rules. Running every compiled-in pack and scoping it with
+  levels covers the common cases with no new configuration.
+- **The full rustc level set.** `expect`, `forbid`, and CLI level flags each add
+  resolution rules and edge cases. They can be added later without changing the
+  design.
 
 ## Prior art
 
 - **rustc and Clippy.** Lints grouped into categories (`correctness`,
-  `suspicious`, `perf`, `style`, ...) with `allow`/`warn`/`deny` levels
-  resolved from the innermost scope outwards. This RFC borrows the
-  categories, levels, and secondary-span style of related locations.
+  `suspicious`, `perf`, `style`, ...) with `allow`/`warn`/`deny` levels resolved
+  from the innermost scope outwards. This RFC borrows the categories, levels,
+  and secondary-span style of related locations.
 - **ESLint and Ruff.** Rule sets distributed as plugins, enabled and leveled
   through configuration, with rules grouped by concern.
-- **OPA / conftest.** Policy checks over structured configuration, written
-  in a dedicated language (rego) rather than compiled into the tool.
+- **OPA / conftest.** Policy checks over structured configuration, written in a
+  dedicated language (rego) rather than compiled into the tool.
 
 ## Unresolved questions
 
-- **Upgrades.** No lint denies by default, but a config that sets a
-  category to `deny` would start failing when a release adds a lint to it.
-  Category-only configuration makes this more likely, as there is no way to
-  deny only known lints. An option here could be to include a special
-  `nursery` category for new lints that can only warn, and the engine can
-  make some noise if a nursery lint would have raised an error.
-- **Where built-in packs live.** Packs could live next to the nodes they
-  lint (`core-nodes`, `contrib-nodes`), close to the code and its URN
-  constants. Or they could live in separate crates (e.g. `core-lints`)
-  depending only on `lint` and `config`, so tools like `dfctl` can link
-  them without the node runtimes.
+- **Upgrades.** No lint denies by default, but a config that sets a category to
+  `deny` would start failing when a release adds a lint to it. Category-only
+  configuration makes this more likely, as there is no way to deny only known
+  lints. An option here could be to include a special `nursery` category for new
+  lints that can only warn, and the engine can make some noise if a nursery lint
+  would have raised an error.
+- **Where built-in packs live.** Packs could live next to the nodes they lint
+  (`core-nodes`, `contrib-nodes`), close to the code and its URN constants. Or
+  they could live in separate crates (e.g. `core-lints`) depending only on
+  `lint` and `config`, so tools like `dfctl` can link them without the node
+  runtimes.
 
 ## Future possibilities
 
 - Configuring lint enforcement levels via CLI arguments
-- Configuring individual lints or packs, e.g. by lint name or pack URN, as
-  a more specific key alongside categories.
+- Configuring individual lints or packs, e.g. by lint name or pack URN, as a
+  more specific key alongside categories.
 - Loading lints via a declarative policy language such as rego
 - Configuring lint levels at node scope.
 - Reducing repeated deserialization of node configs across lints.
-- Resolving the full configuration for lints, including defaults, before
-  running them.
+- Resolving the full configuration for lints, including defaults, before running
+  them.
 - A node lint interest matching all nodes, or all nodes of a kind.
 - More levels, as in rustc: `expect` and `forbid`, and CLI level flags.
 - Returning lint warnings in admin API responses.
