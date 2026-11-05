@@ -63,6 +63,7 @@ mod codec;
 /// Benchmark-only access to syslog framing and lazy materialization.
 #[cfg(feature = "bench")]
 pub use codec::bench_support;
+#[cfg(feature = "syslog")]
 pub(crate) use codec::validated_messages;
 /// Parser module for syslog message parsing
 pub mod parser;

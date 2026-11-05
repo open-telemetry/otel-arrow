@@ -46,6 +46,7 @@ use crate::receivers::syslog_cef_receiver::{MAX_MESSAGE_SIZE, validated_messages
 pub const SYSLOG_EXPORTER_URN: &str = "urn:otel:exporter:syslog";
 const SYSLOG_BATCH: PdataEncoding = PdataEncoding::new("syslog-batch");
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const BATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,30 +208,39 @@ impl SyslogExporter {
             return Ok(());
         }
 
-        for (index, message) in messages.iter().enumerate() {
-            if let Err(error) = self.send_message(message).await {
-                // A TCP write may have reached the peer only in part. Discard the
-                // stream before any retry, and report the batch as a failed send.
-                self.tcp = None;
-                self.metrics
-                    .failed_messages
-                    .add((messages.len() - index) as u64);
-                self.metrics.failed_bytes.add(
-                    messages[index..]
-                        .iter()
-                        .map(|message| message.len() as u64)
-                        .sum(),
-                );
-                effect_handler
-                    .notify_nack(NackMsg::new(
-                        format!("syslog transport send failed: {error}"),
-                        pdata,
-                    ))
-                    .await?;
-                return Ok(());
+        let mut sent = 0;
+        let result = timeout(BATCH_TIMEOUT, async {
+            for message in &messages {
+                self.send_message(message).await?;
+                self.metrics.sent_messages.inc();
+                self.metrics.sent_bytes.add(message.len() as u64);
+                sent += 1;
             }
-            self.metrics.sent_messages.inc();
-            self.metrics.sent_bytes.add(message.len() as u64);
+            Ok::<(), io::Error>(())
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "syslog batch send timed out"))
+        .and_then(|result| result);
+        if let Err(error) = result {
+            // A TCP write may have reached the peer only in part. Discard the
+            // stream before any retry, and report the remainder as failed.
+            self.tcp = None;
+            self.metrics
+                .failed_messages
+                .add((messages.len() - sent) as u64);
+            self.metrics.failed_bytes.add(
+                messages[sent..]
+                    .iter()
+                    .map(|message| message.len() as u64)
+                    .sum(),
+            );
+            effect_handler
+                .notify_nack(NackMsg::new(
+                    format!("syslog transport send failed: {error}"),
+                    pdata,
+                ))
+                .await?;
+            return Ok(());
         }
         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
         Ok(())

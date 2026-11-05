@@ -449,6 +449,7 @@ fn validated_item_count(bytes: &[u8]) -> Result<usize, SyslogFramingError> {
 
 /// Validates the complete encoded batch and borrows its original wire messages.
 /// The bounded list prevents a malformed later frame from causing a partial send.
+#[cfg(any(test, feature = "syslog"))]
 pub(crate) fn validated_messages(bytes: &[u8]) -> Result<Vec<&[u8]>, SyslogFramingError> {
     let (count, frames) = validated_frames(bytes)?;
     validate_decode_limits(count, bytes.len())?;

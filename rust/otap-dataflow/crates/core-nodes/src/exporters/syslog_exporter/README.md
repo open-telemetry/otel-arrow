@@ -47,7 +47,8 @@ not part of this phase.
 
 The exporter sends messages sequentially with one pipeline-local connection
 and no extra queue, so slow sends backpressure the upstream channel. Network
-operations time out after five seconds. TCP connects on the first batch and
+operations time out after five seconds, and a whole batch after 30 seconds.
+TCP connects on the first batch and
 reconnects after a failed write. UDP sends one message per datagram.
 
 The exporter rejects empty messages. Newline framing rejects messages that
