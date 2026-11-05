@@ -43,7 +43,7 @@ enum ValueReadBackend {
 }
 
 impl ContextNameMatching {
-    pub(super) fn matches(self, stored: &str, configured: &str) -> bool {
+    fn matches(self, stored: &str, configured: &str) -> bool {
         match self {
             Self::Exact => stored == configured,
             Self::AsciiCaseInsensitive => stored.eq_ignore_ascii_case(configured),
@@ -97,19 +97,14 @@ impl ValueRead {
 
     /// Applies a compiled stored-name lookup or composite projection without allocating.
     ///
-    /// Missing values return `Ok(None)`. An identity claim read retains the
-    /// claim's cardinality, so an empty multi-valued claim is present. A
-    /// composite read retains the whole entry's presence gate and source
-    /// cardinalities. Each member yields at most the number of values the
-    /// selector's `take` requests. Identity `All` reads visit every matching
-    /// claim in capture-policy order; `Exists` and `First` stop at the first
-    /// matching claim.
+    /// Missing values return `None`. An identity claim read retains the claim's
+    /// cardinality, so an empty multi-valued claim is present. A composite read
+    /// retains the whole entry's presence gate and source cardinalities. Each
+    /// member yields at most the number of values the selector's `take` requests.
+    /// Identity `All` reads visit every matching claim in capture-policy order;
+    /// `Exists` and `First` stop at the first matching claim.
     ///
-    /// # Errors
-    ///
-    /// Fails with [`ContextError::ContextMismatch`] when a composite in the
-    /// metadata was materialized under a different plan or declaration than
-    /// this binding. A processor or exporter permanently nacks the input.
+    /// May fail with [`ContextError::ContextMismatch`].
     pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Result<Option<Read<'a>>, ContextError> {
         let backend = match &self.backend {
             ValueReadBackend::TransportHeader { name, matching } => {
@@ -784,8 +779,6 @@ mod tests {
 
     /// Scenario: composite reads select aliases, identity claims, and constants from one arrival.
     /// Guarantees: compiled projections match the legacy resolver, including empty-many cardinality.
-    /// Reading through a binding compiled from a changed declaration is a mismatch error, not
-    /// an absent entry.
     #[test]
     fn composite_reads_match_projections_and_presence_gates() {
         let composite = ContextEntryDeclaration {

@@ -11,14 +11,16 @@
 
 /// Runtime context policies shared independently of compiler bookkeeping.
 mod bindings;
-/// Node-facing projection and merge of message metadata.
-mod derived;
+/// Editing processors.
+mod edit;
 /// Runtime failures of context binding operations.
 mod error;
 /// Compiles logical context layouts and resolves member projections.
 mod layout;
 /// Materializes selected composites at runtime.
 mod materialization;
+/// Merging processors.
+mod merge;
 /// Request-scoped message metadata carried by pdata.
 mod metadata;
 /// Compiles and applies exporter transport-header propagation policies.
@@ -31,10 +33,11 @@ pub use bindings::{
     Arrival, ArrivalBinding, ArrivalHeaders, ClaimRef, Claims, NodeBindings, PropagatedValue,
     SinkBinding,
 };
-pub use derived::{EditBinding, MergeBinding, MetadataMerger, ProducedEntry, ProducedValue};
+pub use edit::{EditBinding, EditEntry, EditValue};
 pub use error::ContextError;
 pub use layout::*;
 pub use materialization::*;
+pub use merge::{MergeBinding, MetadataMerger};
 pub use metadata::{
     AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntriesIter,
     AuthorizedIdentityEntry, Metadata, PeerAddrMerger,
@@ -265,21 +268,6 @@ pub enum ContextAction {
         /// Produced transport-header entry.
         entry: ContextEntryName,
     },
-    /// Removes matching transport headers or one whole composite.
-    Delete {
-        /// Deleted entry.
-        target: ContextEntryTarget,
-    },
-}
-
-impl ContextAction {
-    /// Returns the composites named by delete actions.
-    fn composite_names(actions: &[Self]) -> impl Iterator<Item = &ContextEntryName> {
-        actions.iter().filter_map(|action| match action {
-            Self::Add { .. } => None,
-            Self::Delete { target } => target.composite_name(),
-        })
-    }
 }
 
 /// A node's declared context behavior.
@@ -312,28 +300,19 @@ pub enum ContextDeclaration {
         /// Resolved authorized identity policy.
         policy: AuthorizedIdentityPolicy,
     },
-    /// Declares that a processor forms a Context using one input
-    /// Context. With a single input context, the processor has broad
-    /// edit capabilities.
+    /// Declares that a processor forms each output context from one input context.
     Edits {
         /// Actions applied to the input.
         actions: Box<[ContextAction]>,
     },
-    /// Declares that a processor forms a Context using multiple input
-    /// Contexts.  With multiple inputs, the user has to declare which
-    /// entries to keep.
-    Merges {
-        /// Maintain these context entry targets provided they are equal.
-        keeps: Box<[ContextEntryTarget]>,
-        /// Actions applied to the merged output.
-        actions: Box<[ContextAction]>,
-    },
+    /// Declares that a processor forms each output context from many input contexts.
+    Merges,
 }
 
 impl ContextDeclaration {
     /// Returns whether this is an exclusive kind of processor binding.
     fn is_processor_materialization(&self) -> bool {
-        matches!(self, Self::Edits { .. } | Self::Merges { .. })
+        matches!(self, Self::Edits { .. } | Self::Merges)
     }
 
     /// Returns why a factory of `kind` may not return this declaration,
@@ -352,8 +331,8 @@ impl ContextDeclaration {
             (Self::Produces { .. }, NodeKind::Processor | NodeKind::Exporter) => {
                 Some("is only supported by receivers")
             }
-            (Self::Edits { .. } | Self::Merges { .. }, NodeKind::Processor) => None,
-            (Self::Edits { .. } | Self::Merges { .. }, NodeKind::Receiver | NodeKind::Exporter) => {
+            (Self::Edits { .. } | Self::Merges, NodeKind::Processor) => None,
+            (Self::Edits { .. } | Self::Merges, NodeKind::Receiver | NodeKind::Exporter) => {
                 Some("is only supported by processors")
             }
         }
@@ -408,7 +387,7 @@ impl ContextDeclaration {
             | Self::HeaderCapture { .. }
             | Self::AuthorizedIdentityCapture { .. }
             | Self::Edits { .. }
-            | Self::Merges { .. } => {}
+            | Self::Merges => {}
             Self::HeaderPropagation { policy } => {
                 requirements
                     .original_name_retention
@@ -539,14 +518,8 @@ impl ContextDeclarationProvider {
 fn default_merge_context_declarations(
     _: &serde_json::Value,
 ) -> Result<NodeContextDeclarations, Error> {
-    Ok([ContextDeclaration::Merges {
-        // TODO(3926) network_info is a special case, should be listed
-        // in `keeps` and users should be able to disable.
-        keeps: Box::new([]),
-        actions: Box::new([]),
-    }]
-    .into_iter()
-    .collect())
+    // TODO(3926): network_info is kept implicitly; users should be able to declare and disable it.
+    Ok([ContextDeclaration::Merges].into_iter().collect())
 }
 
 /// Deserializes typed node configuration and derives its context declarations.
@@ -622,22 +595,14 @@ impl PreparedNodeContextDeclarations {
                     ContextDeclaration::HeaderPropagation { policy } => {
                         policy.visit_composite_names(|name| names.push(name.clone()));
                     }
-                    ContextDeclaration::Edits { actions } => {
-                        names.extend(ContextAction::composite_names(actions).cloned());
-                    }
-                    ContextDeclaration::Merges { keeps, actions } => names.extend(
-                        keeps
-                            .iter()
-                            .filter_map(ContextEntryTarget::composite_name)
-                            .chain(ContextAction::composite_names(actions))
-                            .cloned(),
-                    ),
                     ContextDeclaration::Produces { .. }
                     | ContextDeclaration::Consumes {
                         selector: ContextConsumerSelector::AllCaptured { .. },
                     }
                     | ContextDeclaration::HeaderCapture { .. }
-                    | ContextDeclaration::AuthorizedIdentityCapture { .. } => {}
+                    | ContextDeclaration::AuthorizedIdentityCapture { .. }
+                    | ContextDeclaration::Edits { .. }
+                    | ContextDeclaration::Merges => {}
                 }
                 names
             })
@@ -856,16 +821,12 @@ impl CompiledNodeState {
                     authorized_identity_capture = Some(policy);
                 }
                 ContextDeclaration::Edits { actions } => {
-                    edit = Some(EditBinding::compile(&actions, materialization_plan)?);
+                    edit = Some(EditBinding::compile(&actions)?);
                     component_declarations.push(ContextDeclaration::Edits { actions });
                 }
-                ContextDeclaration::Merges { keeps, actions } => {
-                    merge = Some(MergeBinding::compile(
-                        &keeps,
-                        &actions,
-                        materialization_plan,
-                    )?);
-                    component_declarations.push(ContextDeclaration::Merges { keeps, actions });
+                ContextDeclaration::Merges => {
+                    merge = Some(MergeBinding);
+                    component_declarations.push(ContextDeclaration::Merges);
                 }
             }
         }
@@ -1368,10 +1329,7 @@ mod tests {
                 }]),
             }]
             .into_iter()
-            .chain(self.merge.then(|| ContextDeclaration::Merges {
-                keeps: Box::new([]),
-                actions: Box::new([]),
-            }))
+            .chain(self.merge.then_some(ContextDeclaration::Merges))
             .collect()
         }
     }
@@ -1896,11 +1854,11 @@ groups:
         assert!(produce.merge().is_none());
         let edit = produce.edit().expect("processor edit");
         assert!(
-            edit.produced(ContextDomain::TransportHeader, &context_name("partition"))
+            edit.edit_entry(ContextDomain::TransportHeader, &context_name("partition"))
                 .is_ok()
         );
         assert!(
-            edit.produced(ContextDomain::TransportHeader, &context_name("generated"))
+            edit.edit_entry(ContextDomain::TransportHeader, &context_name("generated"))
                 .is_err()
         );
 
@@ -2066,12 +2024,7 @@ groups:
             .expect("pipeline");
         assert_eq!(
             nodes[&ConfigNodeId::from("merge")].component_declarations,
-            [ContextDeclaration::Merges {
-                keeps: Box::new([]),
-                actions: Box::new([]),
-            }]
-            .into_iter()
-            .collect()
+            [ContextDeclaration::Merges].into_iter().collect()
         );
         for node in nodes.values_mut() {
             let bindings = Arc::make_mut(&mut node.bindings);
