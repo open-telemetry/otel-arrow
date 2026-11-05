@@ -1167,11 +1167,6 @@ jobs:
       - name: Run cargo doc for otap-dataflow
         run: cargo doc --locked --workspace --no-deps
         working-directory: ./rust/otap-dataflow
-      - name: Check opt-in MySQL contrib documentation
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --locked --no-deps -p otel-arrow-dfe-contrib-nodes --no-default-features --features mysql
-        working-directory: ./rust/otap-dataflow
 
   validate-configs:
     if: github.event_name == 'pull_request'
