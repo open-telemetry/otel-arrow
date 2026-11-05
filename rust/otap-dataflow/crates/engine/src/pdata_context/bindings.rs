@@ -262,7 +262,7 @@ impl NodeBindings {
         &mut self,
         policy: Option<CompiledHeaderPropagationPolicy>,
     ) {
-        self.sink = policy.map(|policy| SinkBinding { policy });
+        self.sink = policy.map(SinkBinding::new);
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -649,8 +649,9 @@ mod tests {
         );
     }
 
-    /// Scenario: local and shared exporter handlers receive compiled bindings and are cloned.
-    /// Guarantees: legacy getters borrow the sink's policy, clones share bindings, and setters remain isolated.
+    /// Scenario: local and shared exporter handlers use the legacy setter, then receive compiled bindings and are cloned.
+    /// Guarantees: the legacy setter stores its policy in the handler's node bindings, getters borrow
+    /// the sink's policy, clones share bindings, and setters remain isolated.
     #[test]
     fn exporter_handlers_share_sink_bindings() {
         use crate::runtime_services::PipelineRuntimeServices;
@@ -674,7 +675,13 @@ mod tests {
             ($handler:expr) => {{
                 let mut handler = $handler;
                 handler.set_propagation_policy(Some(policy.clone()));
-                assert!(handler.node_bindings().is_none());
+                assert_eq!(
+                    handler
+                        .node_bindings()
+                        .and_then(|bindings| bindings.sink())
+                        .map(SinkBinding::policy),
+                    Some(&policy)
+                );
                 assert!(std::ptr::eq(
                     handler.propagation_policy().expect("legacy policy"),
                     handler.sink().expect("legacy sink").policy()
@@ -710,7 +717,8 @@ mod tests {
     }
 
     /// Scenario: local and shared receivers use legacy setters, then install and clone compiled bindings.
-    /// Guarantees: both formation paths agree, getters borrow compiled policies, and later setters do not mutate clones.
+    /// Guarantees: legacy setters assemble the compiled arrival binding in the handler's node bindings,
+    /// both formation paths agree, getters borrow compiled policies, and later setters do not mutate clones.
     #[test]
     fn receiver_handlers_preserve_legacy_and_compiled_formation() {
         use crate::runtime_services::PipelineRuntimeServices;
@@ -758,7 +766,12 @@ mod tests {
                     binding.materialization.clone(),
                     Metadata::materialize_context,
                 );
-                assert!(handler.node_bindings().is_none());
+                assert_eq!(
+                    handler
+                        .node_bindings()
+                        .and_then(|bindings| bindings.arrival()),
+                    Some(&binding)
+                );
                 assert_eq!(handler.form_context(&arrival), expected);
                 handler.set_node_bindings(Arc::clone(&bindings));
                 let cloned = handler.clone();
@@ -782,6 +795,57 @@ mod tests {
                 assert!(handler.capture_policy().is_none());
                 assert!(handler.authorized_identity_policy().is_none());
                 assert_eq!(cloned.form_context(&arrival), expected);
+            }};
+        }
+        check_handler!(crate::local::receiver::EffectHandler::<Metadata>::new(
+            test_node("local"),
+            Default::default(),
+            None,
+            control.clone(),
+            reporter.clone(),
+            services.clone(),
+        ));
+        check_handler!(crate::shared::receiver::EffectHandler::<Metadata>::new(
+            test_node("shared"),
+            Default::default(),
+            None,
+            control,
+            reporter,
+            services,
+        ));
+    }
+
+    /// Scenario: receiver handlers install a materializer before any legacy policy setter.
+    /// Guarantees: the handler-local bindings created by the setter keep the installed plan,
+    /// so formation still materializes composites.
+    #[test]
+    fn legacy_setters_retain_installed_materialization() {
+        use crate::runtime_services::PipelineRuntimeServices;
+        use crate::testing::test_node;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+        let services = PipelineRuntimeServices::new(Default::default()).expect("runtime services");
+        let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (control, _control_rx) = crate::control::runtime_ctrl_msg_channel(1);
+        let plan =
+            ContextMaterializationPlan::compile(&[declaration(vec![ContextEntryPart::Constant {
+                name: name("route"),
+                value: "fixed".to_owned(),
+            }])])
+            .expect("materialization plan");
+        macro_rules! check_handler {
+            ($handler:expr) => {{
+                let mut handler = $handler;
+                handler.set_context_materializer(plan.clone(), Metadata::materialize_context);
+                handler.set_capture_policy(Some(capture_policy()));
+                let (metadata, _) = handler
+                    .form_context(&Arrival {
+                        headers: ArrivalHeaders::Pairs(&[]),
+                        identity: None,
+                        peer: None,
+                    })
+                    .expect("arrival forms");
+                assert!(metadata.materialized_context().is_some());
             }};
         }
         check_handler!(crate::local::receiver::EffectHandler::<Metadata>::new(

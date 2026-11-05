@@ -49,7 +49,6 @@ use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -102,9 +101,8 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Legacy propagation binding for manually constructed handlers.
-    propagation_policy: Option<Rc<SinkBinding>>,
-    /// Compiler-owned immutable bindings shared with the node's pipeline context.
+    /// Runtime bindings: compiler-owned and shared with the node's pipeline
+    /// context, or handler-local when created by the legacy policy setter.
     node_bindings: Option<Arc<NodeBindings>>,
 }
 
@@ -119,7 +117,6 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter, runtime_services),
             _pd: PhantomData,
-            propagation_policy: None,
             node_bindings: None,
         }
     }
@@ -146,11 +143,8 @@ impl<PData> EffectHandler<PData> {
 
     /// Sets the propagation policy for transport header filtering.
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        if let Some(bindings) = &mut self.node_bindings {
-            Arc::make_mut(bindings).set_header_propagation_policy(policy);
-        } else {
-            self.propagation_policy = policy.map(|policy| Rc::new(SinkBinding::new(policy)));
-        }
+        Arc::make_mut(self.node_bindings.get_or_insert_with(Default::default))
+            .set_header_propagation_policy(policy);
     }
 
     /// Returns this exporter's immutable runtime bindings.
@@ -160,17 +154,13 @@ impl<PData> EffectHandler<PData> {
     }
 
     pub(crate) fn set_node_bindings(&mut self, bindings: Arc<NodeBindings>) {
-        self.propagation_policy = None;
         self.node_bindings = Some(bindings);
     }
 
     /// Returns the compiled sink operation, if propagation is configured.
     #[must_use]
     pub fn sink(&self) -> Option<&SinkBinding> {
-        match &self.node_bindings {
-            Some(bindings) => bindings.sink(),
-            None => self.propagation_policy.as_deref(),
-        }
+        self.node_bindings.as_deref()?.sink()
     }
 
     /// Print an info message to the engine's diagnostic stream (stderr).
