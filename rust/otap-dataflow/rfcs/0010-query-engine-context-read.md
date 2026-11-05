@@ -533,7 +533,7 @@ zero values.
 
 ---
 
-```
+```rs
 is_authorized_identity_claim_scalar(claim_name: String) -> Boolean
 ```
 
@@ -630,7 +630,7 @@ signals | apply attributes {
 
 ## Rationale and alternatives
 
-_Alternative 1: Do it with Processors_
+### Alternative 1: Do it with Processors
 
 We could imagine bespoke processors, or configuration of existing processors,
 that perform the same behaviour we're able to implement with transform programs
@@ -649,7 +649,7 @@ this approach the bespoke configuration may become unwieldy and the combination
 of processors needed for complex behaviour adds both overhead and pipeline
 complexity.
 
-_Alternative 2: A `context` field_
+### Alternative 2: A `context` field
 
 Rather than having a collection of functions for accessing context, we could
 have one or more fields available on all types in the query engine for
@@ -666,7 +666,7 @@ context["transport_headers:header_name"]
 // and so on
 ```
 
-This has some drawbacks -- 
+This has some drawbacks --
 
 First, there's ambiguity in the case that someone configured a context policy
 whose name is literally one of the special identifiers we use for the domain.
@@ -678,6 +678,7 @@ policies:
       transport_headers: # uh oh!
       # ...
 ```
+
 Of course we could have business logic to prevent this in our policy definition,
 but it's also the case that we may in the future add new metadata domains
 so we can't predict necessarily all the reserved context entry names.
@@ -710,7 +711,7 @@ adding such a syntax in the future.
 
 ## Prior art
 
-_OTel Collector's Attribute Processor Data Model_
+### OTel Collector's Attribute Processor Data Model
 
 OTel Collector's Attribute Processor uses the fields `metadata` and `auth` to
 reference batch metadata.
@@ -740,7 +741,6 @@ This runs into the same problem discussed in the previous section with
 respect to field name conflicts in the OTel Data model, although in this case
 it's not simply hypothetical - `metadata` is the name of a field on metrics,
 which in OTAP we call `attributes`, but this could still incite confusion.
-
 
 ## Unresolved questions
 
