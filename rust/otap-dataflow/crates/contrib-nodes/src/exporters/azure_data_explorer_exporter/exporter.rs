@@ -15,34 +15,35 @@ use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
-use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::http_client_auth::{
     HttpClientAuthProvider, HttpClientAuthProviderEvents,
     new_http_client_auth_provider_from_bearer_token_provider,
 };
 use otel_arrow_dfe_otap::metrics::ExporterAttempt;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
 use otel_arrow_dfe_pdata_codec::{
-    AcceptedEncodings, CodecError, CodecOperation, CodecService, PdataView,
+    AcceptedEncodings, CodecError, CodecOperation, PdataView,
     builtins::{OTLP_ENCODING, resolve_otlp},
 };
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
-use prost::Message as _;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::io::Write;
 use std::rc::Rc;
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
 use tokio::time::Instant;
 
 use super::client::{AzureDataExplorerClient, ExportAttemptMetadata};
 use super::config::Config;
+use super::decode::{AdmissionError, DecodeAdmission, DecodeSchema};
 use super::error::Error;
 use super::metrics::{
     AzureDataExplorerExporterMetricsRc, AzureDataExplorerExporterMetricsTracker, PendingAttempt,
@@ -50,6 +51,9 @@ use super::metrics::{
 use super::transformer::Transformer;
 
 const COMPRESSION_YIELD_BYTES: usize = 64 * 1024;
+const COMPRESSION_TASK_WORK: usize = 4 * COMPRESSION_YIELD_BYTES;
+const MAX_DECODE_ALLOCATION: usize = 16 * 1024 * 1024;
+const MAX_DECODE_WORK: usize = 65_536;
 const AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
     validate_header_name: |name| {
         if *name == http::header::AUTHORIZATION {
@@ -90,6 +94,67 @@ struct PendingExport {
 
 type Resolutions = FuturesUnordered<LocalBoxFuture<'static, Result<(), EngineError>>>;
 
+#[derive(Debug, PartialEq)]
+struct ExtractedRecords {
+    records: Vec<Bytes>,
+    items: u64,
+}
+
+struct PreparingInput {
+    // Delivery ownership stays outside the cancellable codec future.
+    pdata: OtapPdata,
+    future: LocalBoxFuture<'static, Result<ExtractedRecords, Error>>,
+}
+
+#[derive(Default)]
+struct CompressionBudget {
+    used: Cell<usize>,
+    waiter: RefCell<Option<Waker>>,
+    #[cfg(test)]
+    started: Cell<usize>,
+}
+
+impl CompressionBudget {
+    async fn take(&self, requested: usize) -> usize {
+        poll_fn(|_| {
+            let available = COMPRESSION_TASK_WORK - self.used.get();
+            if available == 0 {
+                return Poll::Pending;
+            }
+            let amount = available.min(requested);
+            self.used.set(self.used.get() + amount);
+            if self.used.get() == COMPRESSION_TASK_WORK
+                && let Some(waiter) = self.waiter.borrow_mut().take()
+            {
+                waiter.wake();
+            }
+            Poll::Ready(amount)
+        })
+        .await
+    }
+
+    async fn charge(&self, mut amount: usize) {
+        while amount != 0 {
+            amount -= self.take(amount).await;
+        }
+    }
+
+    fn poll_exhausted(&self, cx: &mut TaskContext<'_>) -> Poll<()> {
+        if self.used.get() == COMPRESSION_TASK_WORK {
+            Poll::Ready(())
+        } else {
+            let _ = self.waiter.borrow_mut().replace(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    async fn replenish(&self) {
+        // Called in the outer task, never in a child selected alongside ready input.
+        tokio::task::yield_now().await;
+        self.used.set(0);
+    }
+}
+
 /// Azure Data Explorer (ADX) exporter for logs, metrics, and traces.
 pub struct AzureDataExplorerExporter {
     config: Config,
@@ -98,6 +163,8 @@ pub struct AzureDataExplorerExporter {
     client: AzureDataExplorerClient,
     auth: Box<dyn HttpClientAuthProvider>,
     accepted_encodings: AcceptedEncodings,
+    // All compression futures run on this node's core and share one work quantum.
+    compression_budget: Rc<CompressionBudget>,
 }
 
 impl AzureDataExplorerExporter {
@@ -139,6 +206,7 @@ impl AzureDataExplorerExporter {
                 token_provider,
             )),
             accepted_encodings: AcceptedEncodings::accept_encoded([otlp]),
+            compression_budget: Rc::default(),
         })
     }
 
@@ -160,77 +228,138 @@ impl AzureDataExplorerExporter {
         (name, mapping.as_deref().filter(|name| !name.is_empty()))
     }
 
+    async fn decode<T: DecodeSchema + prost::Message + Default>(bytes: &[u8]) -> Result<T, Error> {
+        let decode_error = |error| match error {
+            AdmissionError::Allocation(limit) => Error::DecodeLimit {
+                resource: "allocation_bytes",
+                limit,
+            },
+            AdmissionError::Work(limit) => Error::DecodeLimit {
+                resource: "fields_or_elements",
+                limit,
+            },
+            error => Error::Decode(Box::new(CodecError::operation(
+                &OTLP_ENCODING,
+                CodecOperation::Decode,
+                error,
+            ))),
+        };
+        let mut admission =
+            DecodeAdmission::new::<T>(bytes, MAX_DECODE_ALLOCATION, MAX_DECODE_WORK)
+                .map_err(decode_error)?;
+        while !admission.step(256, 64 * 1024).map_err(decode_error)? {
+            tokio::task::yield_now().await;
+        }
+        T::decode(bytes).map_err(|error| {
+            Error::Decode(Box::new(CodecError::operation(
+                &OTLP_ENCODING,
+                CodecOperation::Decode,
+                error,
+            )))
+        })
+    }
+
     fn extract_records(
         &self,
         pdata: &OtapPdata,
-        codecs: &CodecService,
-    ) -> Result<Vec<Bytes>, Error> {
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> LocalBoxFuture<'static, Result<ExtractedRecords, Error>> {
         let rows = self.config.network_requests.max_rows;
         let row_bytes = self.config.max_row_bytes;
         let bytes = self.config.network_requests.max_bytes;
-        let view = pdata
-            .payload_ref()
-            .view(codecs, &self.accepted_encodings)
-            .map_err(|error| Error::Decode(Box::new(error)))?;
-        let view_error = |error| Error::PayloadView(Box::new(error));
-        match view {
-            PdataView::Native(records) => match pdata.signal_type() {
-                SignalType::Logs => self.transformer.convert_logs(
-                    &OtapLogsView::try_from(records.as_ref()).map_err(view_error)?,
-                    rows,
-                    row_bytes,
-                    bytes,
-                ),
-                SignalType::Metrics => self.transformer.convert_metrics(
-                    &OtapMetricsView::try_from(records.as_ref()).map_err(view_error)?,
-                    rows,
-                    row_bytes,
-                    bytes,
-                ),
-                SignalType::Traces => self.transformer.convert_traces(
-                    &OtapTracesView::try_from(records.as_ref()).map_err(view_error)?,
-                    rows,
-                    row_bytes,
-                    bytes,
-                ),
-            },
-            PdataView::Encoded(encoded) => {
-                let decode_error = |error| {
-                    Error::Decode(Box::new(CodecError::operation(
-                        &OTLP_ENCODING,
-                        CodecOperation::Decode,
-                        error,
-                    )))
-                };
-                match encoded.signal_type() {
-                    SignalType::Logs => self.transformer.convert_logs(
-                        &LogsData::decode(encoded.bytes()).map_err(decode_error)?,
-                        rows,
-                        row_bytes,
-                        bytes,
-                    ),
-                    SignalType::Metrics => self.transformer.convert_metrics(
-                        &MetricsData::decode(encoded.bytes()).map_err(decode_error)?,
-                        rows,
-                        row_bytes,
-                        bytes,
-                    ),
-                    SignalType::Traces => self.transformer.convert_traces(
-                        &TracesData::decode(encoded.bytes()).map_err(decode_error)?,
-                        rows,
-                        row_bytes,
-                        bytes,
-                    ),
+        let payload = pdata.payload_ref().clone();
+        let signal = pdata.signal_type();
+        let accepted = self.accepted_encodings.clone();
+        let effect_handler = effect_handler.clone();
+        let transformer = self.transformer.clone();
+        Box::pin(async move {
+            let view = effect_handler
+                .view(&payload, &accepted)
+                .await
+                .map_err(|error| Error::Decode(Box::new(error)))?;
+            let view_error = |error| Error::PayloadView(Box::new(error));
+            let (records, items) = match view {
+                PdataView::Native(records) => {
+                    let items = records.num_items() as u64;
+                    let records = match signal {
+                        SignalType::Logs => transformer.convert_logs(
+                            &OtapLogsView::try_from(records.as_ref()).map_err(view_error)?,
+                            rows,
+                            row_bytes,
+                            bytes,
+                        ),
+                        SignalType::Metrics => transformer.convert_metrics(
+                            &OtapMetricsView::try_from(records.as_ref()).map_err(view_error)?,
+                            rows,
+                            row_bytes,
+                            bytes,
+                        ),
+                        SignalType::Traces => transformer.convert_traces(
+                            &OtapTracesView::try_from(records.as_ref()).map_err(view_error)?,
+                            rows,
+                            row_bytes,
+                            bytes,
+                        ),
+                    }?;
+                    (records, items)
                 }
-            }
-        }
+                PdataView::Encoded(encoded) => {
+                    let decoded = match encoded.signal_type() {
+                        SignalType::Logs => {
+                            OtlpProtoMessage::Logs(Self::decode::<LogsData>(encoded.bytes()).await?)
+                        }
+                        SignalType::Metrics => OtlpProtoMessage::Metrics(
+                            Self::decode::<MetricsData>(encoded.bytes()).await?,
+                        ),
+                        SignalType::Traces => OtlpProtoMessage::Traces(
+                            Self::decode::<TracesData>(encoded.bytes()).await?,
+                        ),
+                    };
+                    let items = decoded.num_items() as u64;
+                    let records = match &decoded {
+                        OtlpProtoMessage::Logs(logs) => {
+                            transformer.convert_logs(logs, rows, row_bytes, bytes)
+                        }
+                        OtlpProtoMessage::Metrics(metrics) => {
+                            transformer.convert_metrics(metrics, rows, row_bytes, bytes)
+                        }
+                        OtlpProtoMessage::Traces(traces) => {
+                            transformer.convert_traces(traces, rows, row_bytes, bytes)
+                        }
+                    }?;
+                    (records, items)
+                }
+            };
+            Ok(ExtractedRecords { records, items })
+        })
     }
 
-    async fn compress_batch(records: &[Bytes], level: u32) -> Result<Bytes, Error> {
+    fn start_preparation(
+        &self,
+        pdata: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> PreparingInput {
+        let future = if self.auth.is_ready() {
+            self.extract_records(&pdata, effect_handler)
+        } else {
+            Box::pin(std::future::ready(Err(Error::AuthenticationUnavailable)))
+        };
+        PreparingInput { pdata, future }
+    }
+
+    async fn compress_batch(
+        records: &[Bytes],
+        level: u32,
+        budget: &CompressionBudget,
+    ) -> Result<Bytes, Error> {
+        budget.charge(1024).await;
+        #[cfg(test)]
+        budget.started.set(budget.started.get() + 1);
         let mut encoder = GzEncoder::new(Vec::new(), Compression::new(level));
         let mut written = 0;
         for (index, record) in records.iter().enumerate() {
             if index != 0 {
+                budget.charge(1).await;
                 encoder.write_all(b"\n")?;
                 written += 1;
                 if written == COMPRESSION_YIELD_BYTES {
@@ -240,7 +369,9 @@ impl AzureDataExplorerExporter {
             }
             let mut remaining = record.as_ref();
             while !remaining.is_empty() {
-                let length = remaining.len().min(COMPRESSION_YIELD_BYTES - written);
+                let length = budget
+                    .take(remaining.len().min(COMPRESSION_YIELD_BYTES - written))
+                    .await;
                 encoder.write_all(&remaining[..length])?;
                 remaining = &remaining[length..];
                 written += length;
@@ -250,6 +381,7 @@ impl AzureDataExplorerExporter {
                 }
             }
         }
+        budget.charge(1024).await;
         Ok(Bytes::from(encoder.finish()?))
     }
 
@@ -286,13 +418,17 @@ impl AzureDataExplorerExporter {
 
     fn prepare(
         &self,
-        mut pdata: OtapPdata,
+        pdata: OtapPdata,
+        extracted: Result<ExtractedRecords, Error>,
         effect_handler: &EffectHandler<OtapPdata>,
         resolutions: &Resolutions,
     ) -> Option<Batch> {
         let signal = pdata.signal_type();
-        let items = pdata.num_items() as u64;
-        if !self.auth.is_ready() {
+        let items = extracted.as_ref().map_or_else(
+            |_| pdata.payload_ref().known_item_count().unwrap_or(0) as u64,
+            |extracted| extracted.items,
+        );
+        if matches!(&extracted, Err(Error::AuthenticationUnavailable)) {
             self.record_preparation(signal, items, Outcome::Failure);
             self.metrics
                 .borrow_mut()
@@ -302,8 +438,8 @@ impl AzureDataExplorerExporter {
             resolutions.push(Box::pin(async move { handler.notify_nack(nack).await }));
             return None;
         }
-        let records = match self.extract_records(&pdata, effect_handler.codec_service()) {
-            Ok(records) => records,
+        let records = match extracted {
+            Ok(extracted) => extracted.records,
             Err(error) => {
                 self.metrics.borrow_mut().record_input_error(signal, &error);
                 let outcome = if error.is_refusal() {
@@ -388,10 +524,11 @@ impl AzureDataExplorerExporter {
         let mut attempt = PendingAttempt::new(self.metrics.clone(), self.attempt(signal, items));
         let client = self.client.clone();
         let level = self.config.gzip_compression_level;
+        let compression_budget = self.compression_budget.clone();
         let future = Box::pin(async move {
             let compressed = match encoded {
                 Some(encoded) => encoded,
-                None => match Self::compress_batch(&records, level).await {
+                None => match Self::compress_batch(&records, level, &compression_budget).await {
                     Ok(compressed) => compressed,
                     Err(error) => {
                         otel_error!("azure_data_explorer_exporter.compression_failed", error = %error);
@@ -609,12 +746,16 @@ impl AzureDataExplorerExporter {
 
     fn reject_shutdown_input(
         &self,
-        mut pdata: OtapPdata,
+        pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
         resolutions: &Resolutions,
     ) {
         let signal = pdata.signal_type();
-        self.record_preparation(signal, pdata.num_items() as u64, Outcome::Failure);
+        self.record_preparation(
+            signal,
+            pdata.payload_ref().known_item_count().unwrap_or(0) as u64,
+            Outcome::Failure,
+        );
         self.metrics
             .borrow_mut()
             .record_batch(signal, Outcome::Failure);
@@ -626,23 +767,43 @@ impl AzureDataExplorerExporter {
         exports: &mut Vec<PendingExport>,
         resolutions: &mut Resolutions,
         batches: &mut VecDeque<Batch>,
+        preparing: &mut Option<PreparingInput>,
         effect_handler: &EffectHandler<OtapPdata>,
         deadline: Instant,
     ) -> Result<(), EngineError> {
+        let compression_budget = self.compression_budget.clone();
         let drain = async {
             loop {
                 self.dispatch_ready(exports, batches, true);
                 if !self.auth.is_ready() {
+                    if let Some(input) = preparing.take() {
+                        drop(input.future);
+                        self.reject_shutdown_input(input.pdata, effect_handler, resolutions);
+                    }
                     // Shutdown must not wait indefinitely for credentials. Preserve
                     // the original contexts and resolve them while time remains.
                     while let Some(batch) = batches.pop_front() {
                         self.queue_shutdown_batch(batch, effect_handler, resolutions);
                     }
                 }
-                if exports.is_empty() && resolutions.is_empty() && batches.is_empty() {
+                if exports.is_empty()
+                    && resolutions.is_empty()
+                    && batches.is_empty()
+                    && preparing.is_none()
+                {
                     break;
                 }
                 tokio::select! {
+                    () = poll_fn(|cx| compression_budget.poll_exhausted(cx)) => {
+                        compression_budget.replenish().await;
+                    }
+                    extracted = poll_fn(|cx| preparing.as_mut().expect("preparing input").future.as_mut().poll(cx)),
+                        if preparing.is_some() => {
+                        let input = preparing.take().expect("completed preparation");
+                        if let Some(batch) = self.prepare(input.pdata, extracted, effect_handler, resolutions) {
+                            self.append_batch(batch, batches);
+                        }
+                    }
                     completed = Self::next_export(exports), if !exports.is_empty() => {
                         self.complete_export(completed.0, completed.1, effect_handler, resolutions, batches);
                     }
@@ -670,6 +831,10 @@ impl AzureDataExplorerExporter {
                     .borrow_mut()
                     .record_batch(export.batch.signal, Outcome::Failure);
                 drop(export);
+            }
+            if let Some(input) = preparing.take() {
+                drop(input.future);
+                self.reject_shutdown_input(input.pdata, effect_handler, resolutions);
             }
             resolutions.clear();
             for batch in batches.drain(..) {
@@ -708,6 +873,8 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
         let mut batches: VecDeque<Batch> = VecDeque::new();
         let mut draining = false;
         let mut parked = None;
+        let mut preparing: Option<PreparingInput> = None;
+        let compression_budget = self.compression_budget.clone();
         let pending_limit = if self.config.network_requests.coalesce {
             self.config.network_requests.max_pending_messages
         } else {
@@ -738,23 +905,26 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                     );
                 }
             }
-            if Self::pending_messages(&exports, &resolutions, &batches) < pending_limit
+            if preparing.is_none()
+                && Self::pending_messages(&exports, &resolutions, &batches) < pending_limit
                 && let Some(pdata) = parked.take()
             {
                 if draining && !ready {
                     self.reject_shutdown_input(pdata, &effect_handler, &resolutions);
-                } else if let Some(batch) = self.prepare(pdata, &effect_handler, &resolutions) {
-                    self.append_batch(batch, &mut batches);
+                } else {
+                    preparing = Some(self.start_preparation(pdata, &effect_handler));
                 }
             }
-            let pending = Self::pending_messages(&exports, &resolutions, &batches);
+            let pending = Self::pending_messages(&exports, &resolutions, &batches)
+                + usize::from(preparing.is_some());
             self.dispatch_ready(
                 &mut exports,
                 &mut batches,
-                draining || pending >= pending_limit,
+                draining || (preparing.is_none() && pending >= pending_limit),
             );
-            let accepting =
-                pending < pending_limit && (ready || !self.auth.is_active() || draining);
+            let accepting = preparing.is_none()
+                && pending < pending_limit
+                && (ready || !self.auth.is_active() || draining);
             let flush_at = batches
                 .iter()
                 .filter(|batch| !batch.sealed)
@@ -776,6 +946,9 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                     break shutdown_deadline.expect("armed shutdown deadline");
                 }
                 () = &mut margin_sleep, if margin.is_some() => {}
+                () = poll_fn(|cx| compression_budget.poll_exhausted(cx)) => {
+                    compression_budget.replenish().await;
+                }
                 () = poll_fn(|cx| self.auth.poll_refresh(cx, &AUTH_EVENTS)), if self.auth.is_active() => {}
                 () = tokio::time::sleep_until(flush_at.unwrap_or_else(Instant::now)),
                     if flush_at.is_some() && ready && exports.len() < self.config.max_in_flight => {}
@@ -784,6 +957,13 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                 }
                 completed = Self::next_export(&mut exports), if !exports.is_empty() => {
                     self.complete_export(completed.0, completed.1, &effect_handler, &resolutions, &mut batches);
+                }
+                extracted = poll_fn(|cx| preparing.as_mut().expect("preparing input").future.as_mut().poll(cx)),
+                    if preparing.is_some() => {
+                    let input = preparing.take().expect("completed preparation");
+                    if let Some(batch) = self.prepare(input.pdata, extracted, &effect_handler, &resolutions) {
+                        self.append_batch(batch, &mut batches);
+                    }
                 }
                 message = inbox.recv_when_or_shutdown_started(accepting),
                     if parked.is_none() => match message? {
@@ -800,8 +980,8 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                             parked = Some(pdata);
                         } else if draining && !ready {
                             self.reject_shutdown_input(pdata, &effect_handler, &resolutions);
-                        } else if let Some(batch) = self.prepare(pdata, &effect_handler, &resolutions) {
-                            self.append_batch(batch, &mut batches);
+                        } else {
+                            preparing = Some(self.start_preparation(pdata, &effect_handler));
                         }
                     }
 
@@ -824,6 +1004,7 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
             &mut exports,
             &mut resolutions,
             &mut batches,
+            &mut preparing,
             &effect_handler,
             Instant::from_std(deadline),
         )
@@ -890,6 +1071,7 @@ mod tests {
     };
     use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use prost::Message as _;
     use std::io::Read;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1073,6 +1255,39 @@ mod tests {
             }
             .encode_to_vec(),
         )))
+    }
+
+    fn syslog_batch(count: u32) -> OtapPdata {
+        use otel_arrow_dfe_pdata_codec::{CodecRegistry, OtapPayload, PdataEncoding};
+        // Nil optional fields keep 8192 records within the separate transformation work limit.
+        let message = b"<34>1 - - - - - -";
+        // Version-1 receiver framing: one receipt-time/year run.
+        let mut bytes = b"SLG1".to_vec();
+        bytes.extend(count.to_be_bytes());
+        bytes.extend(1_735_787_045_000_000_000_i64.to_be_bytes());
+        bytes.extend(count.to_be_bytes());
+        bytes.extend(2025_i32.to_be_bytes());
+        for _ in 0..count {
+            bytes.extend(
+                u32::try_from(message.len())
+                    .expect("message length")
+                    .to_be_bytes(),
+            );
+            bytes.extend(message);
+        }
+        let codec = CodecRegistry::global()
+            .expect("registry")
+            .resolve(&PdataEncoding::new("syslog-batch"))
+            .expect("syslog codec");
+        OtapPdata::new(
+            Context::default(),
+            OtapPayload::from_encoded(
+                codec
+                    .admit(SignalType::Logs, Bytes::from(bytes))
+                    .expect("syslog source"),
+            ),
+        )
+        .test_subscribe_to(INTERESTS, Default::default(), 1)
     }
 
     fn signal_pdata(signal: SignalType, arrow: bool) -> OtapPdata {
@@ -1480,34 +1695,409 @@ mod tests {
         .await;
     }
 
+    /// Scenario: small protobuf sources contain a million empty records or data points.
+    /// Guarantees: every decoder permanently refuses allocation amplification without sending a partial export.
+    #[tokio::test]
+    async fn protobuf_admission_rejects_all_signal_allocation_amplification() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (exporter, tokens) = exporter(config(&server.uri()));
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let terminal = run(exporter, async move |mut driver| {
+            for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+                let bytes = if signal == SignalType::Metrics {
+                    nested_message(&[1, 2, 2, 5], &[0x0a, 0].repeat(1_000_000))
+                } else {
+                    nested_message(&[1, 2], &[0x12, 0].repeat(1_000_000))
+                };
+                driver
+                    .data
+                    .send(pdata(OtlpProtoBytes::new_from_bytes(signal, bytes)))
+                    .await
+                    .expect("input");
+                let PipelineCompletionMsg::DeliverNack { nack } = driver.completion().await else {
+                    panic!("amplified source must be refused");
+                };
+                assert!(nack.permanent);
+                assert_eq!(nack.cause, NackCause::Refused);
+                assert!(
+                    nack.reason
+                        == format!(
+                            "OTLP decoding allocation_bytes exceeds {MAX_DECODE_ALLOCATION}"
+                        )
+                        || nack.reason
+                            == format!(
+                                "OTLP decoding fields_or_elements exceeds {MAX_DECODE_WORK}"
+                            ),
+                    "admission must reject the source before transformation: {}",
+                    nack.reason,
+                );
+            }
+            driver.shutdown().await;
+        })
+        .await;
+        for signal in ["logs", "metrics", "traces"] {
+            assert_eq!(
+                measurement(
+                    terminal.metrics(),
+                    "exporter.attempted",
+                    signal,
+                    "refused",
+                    "messages"
+                ),
+                1
+            );
+        }
+    }
+
+    /// Scenario: an 8192-message syslog source is prepared, then another preparation is canceled.
+    /// Guarantees: real codec decoding yields to another local task and cancellation retains routable original bytes.
+    #[tokio::test]
+    async fn large_syslog_preparation_is_cooperative_and_preserves_delivery_ownership() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut cfg = config("http://localhost:4319");
+                cfg.network_requests.max_rows = 8192;
+                let (mut exporter, tokens) = exporter(cfg);
+                tokens
+                    .send(BearerToken::without_expiry("token".to_string()))
+                    .await
+                    .expect("token");
+                poll_fn(|cx| exporter.auth.poll_refresh(cx, &AUTH_EVENTS)).await;
+                let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
+                let mut handler = EffectHandler::new(
+                    test_node("adx"),
+                    reporter,
+                    test_pipeline_runtime_services(),
+                );
+                let (tx, mut completions) = pipeline_completion_msg_channel(8);
+                handler.set_pipeline_completion_msg_sender(tx);
+                let mut input = exporter.start_preparation(syslog_batch(8192), &handler);
+                assert!(futures::poll!(&mut input.future).is_pending());
+                let progress = Rc::new(Cell::new(false));
+                let observed = progress.clone();
+                let probe = tokio::task::spawn_local(async move {
+                    observed.set(true);
+                });
+                let extracted = tokio::time::timeout(Duration::from_secs(30), input.future)
+                    .await
+                    .expect("syslog preparation")
+                    .expect("decoded syslog");
+                assert!(
+                    progress.get(),
+                    "another task must run before preparation finishes"
+                );
+                probe.await.expect("progress task");
+                assert_eq!(extracted.items, 8192);
+                assert_eq!(extracted.records.len(), 8192);
+
+                let mut canceled = exporter.start_preparation(syslog_batch(8192), &handler);
+                let original = canceled
+                    .pdata
+                    .payload_ref()
+                    .encoded_bytes()
+                    .expect("encoded syslog")
+                    .clone();
+                assert!(futures::poll!(&mut canceled.future).is_pending());
+                drop(canceled.future);
+                let resolutions = Resolutions::new();
+                exporter.reject_shutdown_input(canceled.pdata, &handler, &resolutions);
+                let mut resolutions = resolutions;
+                resolutions
+                    .next()
+                    .await
+                    .expect("resolution")
+                    .expect("shutdown route");
+                let PipelineCompletionMsg::DeliverNack { nack } =
+                    completions.recv().await.expect("completion")
+                else {
+                    panic!("canceled source must be NACKed");
+                };
+                assert_eq!(nack.cause, NackCause::NodeShutdown);
+                assert_eq!(nack.refused.payload_ref().encoded_bytes(), Some(&original));
+            })
+            .await;
+    }
+
+    /// Scenario: the documented item batching settings split an ordinary 8192-log native source.
+    /// Guarantees: default ADX row limits accept every split, reject the unsplit source, and preserve all source items.
+    #[tokio::test]
+    async fn documented_upstream_item_batching_matches_exporter_limits() {
+        use otel_arrow_dfe_core_nodes::processors::batch_processor::Config as BatchConfig;
+        use otel_arrow_dfe_pdata::otap::batching::make_item_batches;
+        let batch_config: BatchConfig = serde_yaml::from_str(
+            "format: otap\notap:\n  min_size: 1000\n  max_size: 1000\n  sizer: items\n",
+        )
+        .expect("documented batch configuration");
+        let defaults: BatchConfig =
+            serde_yaml::from_str("{}").expect("default batch configuration");
+        assert_eq!(defaults.otap.min_size, Some(8192));
+        assert!(defaults.otap.max_size.is_none());
+        let source = to_arrow(pdata(OtlpProtoBytes::ExportLogsRequest(Bytes::from(
+            ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord::default(); 8192],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+            .encode_to_vec(),
+        ))));
+        let (exporter, _tokens) = exporter(config("http://localhost:4319"));
+        let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
+        let handler =
+            EffectHandler::new(test_node("adx"), reporter, test_pipeline_runtime_services());
+        assert!(matches!(
+            exporter.extract_records(&source, &handler).await,
+            Err(Error::TooManyRows {
+                actual: 1001,
+                limit: 1000
+            })
+        ));
+        let view = handler
+            .view(source.payload_ref(), &exporter.accepted_encodings)
+            .await
+            .expect("native source");
+        let PdataView::Native(records) = view else {
+            panic!("native OTAP required");
+        };
+        let batches = make_item_batches(
+            SignalType::Logs,
+            batch_config.otap.max_size,
+            vec![records.into_owned()],
+        )
+        .expect("item splitting");
+        assert_eq!(batches.len(), 9);
+        let mut total = 0;
+        for records in batches {
+            let source = OtapPdata::new(Context::default(), records.into());
+            let extracted = exporter
+                .extract_records(&source, &handler)
+                .await
+                .expect("compatible source");
+            assert!(extracted.records.len() <= exporter.config.network_requests.max_rows);
+            assert_eq!(extracted.items as usize, extracted.records.len());
+            total += extracted.items;
+        }
+        assert_eq!(total, 8192);
+    }
+
+    /// Scenario: several compressors run with buffered upstream data on a current-thread runtime.
+    /// Guarantees: their combined work stops at the task quantum and another local task runs before input drains.
+    #[tokio::test]
+    async fn concurrent_compression_with_buffered_input_yields_the_exporter_task() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .respond_with(ResponseTemplate::new(204))
+                    .expect(16)
+                    .mount(&server)
+                    .await;
+                let mut cfg = config(&server.uri());
+                cfg.max_in_flight = 8;
+                let (exporter, tokens) = exporter(cfg);
+                let budget = exporter.compression_budget.clone();
+                tokens
+                    .send(BearerToken::without_expiry("token".to_string()))
+                    .await
+                    .expect("token");
+                let (tx, rx) = flume::bounded(32);
+                let remaining = rx.clone();
+                let (runtime, mut driver) = runtime_with_input(
+                    exporter,
+                    Sender::Shared(SharedSender::mpmc(tx)),
+                    Receiver::Shared(SharedReceiver::mpmc(rx)),
+                );
+                for _ in 0..16 {
+                    driver
+                        .data
+                        .try_send(logs(&"x".repeat(2 * COMPRESSION_TASK_WORK)))
+                        .expect("buffered source");
+                }
+                tokio::pin!(runtime);
+                assert!(futures::poll!(&mut runtime).is_pending());
+                assert_eq!(budget.used.get(), COMPRESSION_TASK_WORK);
+                assert!(
+                    budget.started.get() >= 2,
+                    "multiple streams must share the work quantum"
+                );
+                assert!(!remaining.is_empty());
+                let probe = tokio::task::spawn_local(async move {
+                    assert!(
+                        !remaining.is_empty(),
+                        "another task must run while input remains buffered"
+                    );
+                });
+                tokio::time::timeout(Duration::from_secs(60), async {
+                    let (terminal, ()) = tokio::join!(&mut runtime, async {
+                        for _ in 0..16 {
+                            assert!(matches!(
+                                driver.completion().await,
+                                PipelineCompletionMsg::DeliverAck { .. }
+                            ));
+                        }
+                        driver.shutdown().await;
+                    });
+                    let _ = terminal.expect("runtime");
+                    probe.await.expect("progress task");
+                })
+                .await
+                .expect("compression and export completion");
+            })
+            .await;
+    }
+
+    /// Scenario: a decoded histogram point expands into several ADX rows after an unknown protobuf group.
+    /// Guarantees: attempted items count source data points rather than expanded rows or the raw counter's zero.
+    #[tokio::test]
+    async fn attempted_metric_items_are_counted_before_histogram_expansion() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+            Histogram, HistogramDataPoint,
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (exporter, tokens) = exporter(config(&server.uri()));
+        let mut bytes = b"\xa3\x06\xa4\x06".to_vec();
+        bytes.extend(
+            MetricsData {
+                resource_metrics: vec![ResourceMetrics {
+                    scope_metrics: vec![ScopeMetrics {
+                        metrics: vec![Metric {
+                            name: "latency".to_string(),
+                            data: Some(metric::Data::Histogram(Histogram {
+                                data_points: vec![HistogramDataPoint {
+                                    count: 3,
+                                    sum: Some(6.0),
+                                    explicit_bounds: vec![5.0],
+                                    bucket_counts: vec![1, 2],
+                                    ..Default::default()
+                                }],
+                                aggregation_temporality: 2,
+                            })),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+            .encode_to_vec(),
+        );
+        let input = pdata(OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)));
+        let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
+        let handler =
+            EffectHandler::new(test_node("adx"), reporter, test_pipeline_runtime_services());
+        let extracted = exporter
+            .extract_records(&input, &handler)
+            .await
+            .expect("histogram rows");
+        assert_eq!(extracted.items, 1);
+        assert!(extracted.records.len() > 1);
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let terminal = run(exporter, async move |mut driver| {
+            driver.data.send(input).await.expect("histogram source");
+            assert!(matches!(
+                driver.completion().await,
+                PipelineCompletionMsg::DeliverAck { .. }
+            ));
+            driver.shutdown().await;
+        })
+        .await;
+        assert_eq!(
+            measurement(
+                terminal.metrics(),
+                "exporter.attempted",
+                "metrics",
+                "success",
+                "items"
+            ),
+            1
+        );
+    }
+
     /// Scenario: valid OTLP contains unknown groups at the root, resource, scope, and resource metadata.
     /// Guarantees: all signals retain their valid rows instead of being refused or silently truncated.
     #[tokio::test]
     async fn protobuf_unknown_groups_preserve_all_signal_rows() {
-        let (exporter, _tokens) = exporter(config("http://localhost:4319"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(12)
+            .mount(&server)
+            .await;
+        let (exporter, tokens) = exporter(config(&server.uri()));
         let (_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
         let handler = EffectHandler::<OtapPdata>::new(
             test_node("adx"),
             reporter,
             test_pipeline_runtime_services(),
         );
+        let mut inputs = Vec::new();
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             let source = signal_pdata(signal, false);
             let valid = source.payload_ref().encoded_view().expect("OTLP source");
             let expected = exporter
-                .extract_records(&source, handler.codec_service())
+                .extract_records(&source, &handler)
+                .await
                 .expect("valid rows");
+            assert_eq!(expected.items, 1);
             for path in [&[][..], &[1][..], &[1, 2][..], &[1, 1, 3][..]] {
                 let mut bytes = nested_message(path, b"\xa3\x06\xa4\x06");
                 bytes.extend_from_slice(valid.bytes());
                 let input = pdata(OtlpProtoBytes::new_from_bytes(signal, bytes));
                 assert_eq!(
                     exporter
-                        .extract_records(&input, handler.codec_service())
+                        .extract_records(&input, &handler)
+                        .await
                         .expect("unknown protobuf groups must be accepted"),
                     expected,
                 );
+                inputs.push(input);
             }
+        }
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let terminal = run(exporter, async move |mut driver| {
+            for input in inputs {
+                driver.data.send(input).await.expect("input");
+                assert!(matches!(
+                    driver.completion().await,
+                    PipelineCompletionMsg::DeliverAck { .. }
+                ));
+            }
+            driver.shutdown().await;
+        })
+        .await;
+        for signal in ["logs", "metrics", "traces"] {
+            assert_eq!(
+                measurement(
+                    terminal.metrics(),
+                    "exporter.attempted",
+                    signal,
+                    "success",
+                    "items"
+                ),
+                4
+            );
         }
     }
 
@@ -1530,8 +2120,10 @@ mod tests {
                 nested_message(&[1, 2, 2], record),
             )));
             let rows = exporter
-                .extract_records(&input, handler.codec_service())
-                .expect("valid repeated body");
+                .extract_records(&input, &handler)
+                .await
+                .expect("valid repeated body")
+                .records;
             assert_eq!(rows.len(), 1);
             let row: serde_json::Value = serde_json::from_slice(&rows[0]).expect("row");
             assert_eq!(row["Body"], serde_json::json!(7));
@@ -1581,7 +2173,8 @@ mod tests {
             bytes.extend(corrupt);
             let input = pdata(OtlpProtoBytes::new_from_bytes(signal, bytes));
             let error = exporter
-                .extract_records(&input, handler.codec_service())
+                .extract_records(&input, &handler)
+                .await
                 .expect_err("corrupt source must not yield partial rows");
             assert!(error.is_permanent_refusal(), "{error}");
         }
@@ -1732,7 +2325,8 @@ mod tests {
             let handler: EffectHandler<OtapPdata> =
                 EffectHandler::new(test_node("adx"), reporter, test_pipeline_runtime_services());
             let reason = exporter
-                .extract_records(&source, handler.codec_service())
+                .extract_records(&source, &handler)
+                .await
                 .expect_err("source exceeds configured budget")
                 .log_safe_summary();
             assert!(reason.contains("16"));
@@ -1821,8 +2415,8 @@ mod tests {
         );
     }
 
-    /// Scenario: shutdown begins after a request is sent but before ADX returns its response.
-    /// Guarantees: an acceptance received before the shutdown deadline is ACKed rather than canceled.
+    /// Scenario: upstream closes after shutdown is latched while a one-slot exporter still has a request in flight.
+    /// Guarantees: disabled admission preserves the original grace deadline and the request can finish successfully.
     #[tokio::test]
     async fn shutdown_drains_inflight_success() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
@@ -1840,22 +2434,47 @@ mod tests {
                 .await
                 .expect("response");
         };
-        let (exporter, tokens) = exporter(config(&endpoint));
+        let mut cfg = config(&endpoint);
+        cfg.max_in_flight = 1;
+        let (exporter, tokens) = exporter(cfg);
         tokens
             .send(BearerToken::without_expiry("token".to_string()))
             .await
             .expect("token");
-        let work = run(exporter, async move |mut driver| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let work = async move {
+            let (runtime, mut driver) = runtime(exporter, 8);
+            tokio::pin!(runtime);
             driver.data.send(logs("data")).await.expect("pdata");
-            started_rx.await.expect("request started");
-            driver.shutdown().await;
+            tokio::select! {
+                result = &mut runtime => panic!("exporter stopped before request: {}", result.is_ok()),
+                result = started_rx => result.expect("request started"),
+            }
+            driver
+                .control
+                .send(NodeControlMsg::Shutdown {
+                    deadline,
+                    reason: "preserve grace period".to_string(),
+                })
+                .await
+                .expect("shutdown");
+            assert!(futures::poll!(&mut runtime).is_pending());
+            drop(driver.data);
+            assert!(futures::poll!(&mut runtime).is_pending());
             respond_tx.send(()).expect("release response");
+            let (terminal, completion) = tokio::join!(runtime, driver.completions.recv());
             assert!(matches!(
-                driver.completion().await,
+                completion.expect("completion"),
                 PipelineCompletionMsg::DeliverAck { .. }
             ));
-        });
-        let (terminal, ()) = tokio::join!(work, server);
+            terminal.expect("runtime")
+        };
+        let (terminal, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(work, server)
+        })
+        .await
+        .expect("shutdown and server completion");
+        assert_eq!(terminal.deadline(), deadline);
         assert_eq!(
             measurement(
                 terminal.metrics(),
@@ -1897,6 +2516,7 @@ mod tests {
                 &mut Vec::new(),
                 &mut resolutions,
                 &mut VecDeque::new(),
+                &mut None,
                 &handler,
                 Instant::now() + Duration::from_secs(1),
             )
@@ -1913,9 +2533,11 @@ mod tests {
             Bytes::from(vec![b'x'; COMPRESSION_YIELD_BYTES + 1]),
             Bytes::from_static(b"second"),
         ];
-        let compression = AzureDataExplorerExporter::compress_batch(&rows, 6);
+        let budget = CompressionBudget::default();
+        let compression = AzureDataExplorerExporter::compress_batch(&rows, 6, &budget);
         tokio::pin!(compression);
         assert!(futures::poll!(&mut compression).is_pending());
+        assert_eq!(budget.used.get(), COMPRESSION_YIELD_BYTES + 1024);
         let compressed = compression.await.expect("compression");
         let mut output = Vec::new();
         let _ = GzDecoder::new(compressed.as_ref())
@@ -2013,8 +2635,10 @@ mod tests {
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(8);
             let handler =
                 EffectHandler::new(test_node("adx"), reporter, test_pipeline_runtime_services());
+            let input = logs(&"x".repeat(4096));
+            let extracted = exporter.extract_records(&input, &handler).await;
             let export = exporter
-                .prepare(logs(&"x".repeat(4096)), &handler, &Resolutions::new())
+                .prepare(input, extracted, &handler, &Resolutions::new())
                 .expect("prepared export");
             let (_, header, generation) = exporter.auth.header().expect("token");
             let export = exporter.dispatch_batch(export, header, generation);
@@ -2227,6 +2851,7 @@ mod tests {
                 &mut Vec::new(),
                 &mut Resolutions::new(),
                 &mut batches,
+                &mut None,
                 &handler,
                 Instant::now() + Duration::from_secs(30),
             )
@@ -2773,8 +3398,10 @@ mod tests {
             let mut batches = VecDeque::new();
             let resolutions = Resolutions::new();
             for _ in 0..2 {
+                let input = logs("retained");
+                let extracted = exporter.extract_records(&input, &handler).await;
                 let source = exporter
-                    .prepare(logs("retained"), &handler, &resolutions)
+                    .prepare(input, extracted, &handler, &resolutions)
                     .expect("source");
                 exporter.append_batch(source, &mut batches);
             }
