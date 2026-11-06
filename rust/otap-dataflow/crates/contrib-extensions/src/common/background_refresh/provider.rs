@@ -51,6 +51,28 @@ const MAX_REFRESH_RETRY_SECS: u64 = 300;
 /// ever moves the refresh earlier, never past the expiry safety buffer.
 const REFRESH_JITTER_SECS: u64 = 60;
 
+/// Outcome of polling a [`BackgroundProviderSource`] when the source maintains
+/// its own internal credential cache (such as an SDK with its own refresh task).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackgroundFetchOutcome<T> {
+    /// A new or rotated value was acquired and must be published to the watch
+    /// channel and counted in acquisition/publish metrics.
+    Updated(T),
+    /// The previously cached value is still valid and unchanged; the watch
+    /// channel and acquisition/publish counters are left untouched.
+    Unchanged(T),
+}
+
+impl<T> BackgroundFetchOutcome<T> {
+    /// Unwraps the inner value regardless of whether it was updated or unchanged.
+    #[must_use]
+    pub fn into_value(self) -> T {
+        match self {
+            Self::Updated(value) | Self::Unchanged(value) => value,
+        }
+    }
+}
+
 /// The provider-specific half of a background extension: how one value is
 /// acquired, and how an acquisition failure is logged.
 ///
@@ -66,6 +88,28 @@ pub trait BackgroundProviderSource<T>: Send + Sync + 'static {
     /// Acquires a single value (no retries). Retry and scheduling policy belong
     /// to the refresh loop, not to the source.
     async fn fetch(&self) -> Result<T, Self::Error>;
+
+    /// Polls the source, distinguishing newly acquired values from unchanged
+    /// cache hits when the underlying SDK caches values internally.
+    ///
+    /// Sources that always fetch a fresh value implement [`Self::fetch`] and
+    /// rely on this default implementation, which wraps the returned value in
+    /// [`BackgroundFetchOutcome::Updated`].
+    async fn fetch_outcome(&self) -> Result<BackgroundFetchOutcome<T>, Self::Error> {
+        self.fetch().await.map(BackgroundFetchOutcome::Updated)
+    }
+
+    /// Whether a failed [`Self::fetch_outcome`] call should evict any currently
+    /// cached value from the watch channel.
+    ///
+    /// Defaults to `false` for expiry-driven sources (where the watch channel's
+    /// cached value remains usable until its own `expires_on` timestamp). SDKs
+    /// that manage token expiry internally without exposing `expires_on` return
+    /// `true` so that once the SDK reports an expired/failed credential, the
+    /// fast path stops serving the stale cached value.
+    fn clear_cache_on_error(&self) -> bool {
+        false
+    }
 
     /// Emits the source's "refresh failed" internal log event. Owned by the
     /// source because `otel_warn!` requires a literal event name.
@@ -363,17 +407,28 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     /// Acquires a value and publishes it to consumers.
     async fn refresh_once(&self) -> Result<T, S::Error> {
         let start = Instant::now();
-        match self.inner.source.fetch().await {
-            Ok(value) => {
+        match self.inner.source.fetch_outcome().await {
+            Ok(outcome) => {
                 let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
-                // Publish the value to consumers and update the cache. Using
-                // `send_replace` (rather than `send`) ensures the cache is
-                // updated even when no receivers are currently subscribed.
-                let _ = self.inner.tx.send_replace(Some(value.clone()));
-                // Record success + publish under a single metrics lock.
-                if let Ok(mut metrics) = self.inner.metrics.lock() {
-                    metrics.record_success(latency_ms);
-                    metrics.record_publish();
+                // NOTE: When polling an SDK that caches tokens internally,
+                // `BackgroundFetchOutcome::Unchanged` indicates an in-memory
+                // cache hit where the token has not rotated. Skip `send_replace`
+                // and metric recording once the watch channel is populated so
+                // subscribers do not receive duplicate emissions and metrics
+                // only count actual token acquisitions.
+                let should_publish = matches!(outcome, BackgroundFetchOutcome::Updated(_))
+                    || self.inner.tx.borrow().is_none();
+                let value = outcome.into_value();
+                if should_publish {
+                    // Publish the value to consumers and update the cache. Using
+                    // `send_replace` (rather than `send`) ensures the cache is
+                    // updated even when no receivers are currently subscribed.
+                    let _ = self.inner.tx.send_replace(Some(value.clone()));
+                    // Record success + publish under a single metrics lock.
+                    if let Ok(mut metrics) = self.inner.metrics.lock() {
+                        metrics.record_success(latency_ms);
+                        metrics.record_publish();
+                    }
                 }
                 // Clear the negative cache: acquisitions are healthy again.
                 if let Ok(mut failures) = self.inner.failures.lock() {
@@ -382,6 +437,9 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
                 Ok(value)
             }
             Err(err) => {
+                if self.inner.source.clear_cache_on_error() {
+                    let _ = self.inner.tx.send_replace(None);
+                }
                 if let Ok(mut metrics) = self.inner.metrics.lock() {
                     metrics.record_failure();
                 }
