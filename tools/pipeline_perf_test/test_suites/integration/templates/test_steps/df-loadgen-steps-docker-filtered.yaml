@@ -110,59 +110,57 @@ steps:
         post:
           - record_event:
               name: observation_stop
+  # Drain and remove each component's pipeline group, upstream first. Deleting a
+  # group (rather than calling groups/shutdown) keeps the engine process and its
+  # admin endpoint alive, so the final counts of the stopped pipelines remain
+  # scrapeable for engine.telemetry.metric_unregister_grace_period.
   # Stop the load generator from sending traffic (blocking until fully drained).
-  - name: Stop Load Generator
+  - name: Stop Load Generator Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8085/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
               raise_for_status: false
               on_error:
                 continue: true
     action:
       no_op: {}
-  # Stop the df-engine and wait for it to drain in-flight data to backend.
-  - name: Stop Engine
+  # Stop the df-engine pipelines and wait for them to drain in-flight data to the backend.
+  - name: Stop Engine Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8086/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
               raise_for_status: false
               on_error:
                 continue: true
     action:
       no_op: {}
-  # Stop the backend-service (ensures any internal processing completes).
-  - name: Stop Backend
+  # Stop the backend pipelines (ensures any internal processing completes).
+  - name: Stop Backend Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8087/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
               raise_for_status: false
               on_error:
                 continue: true
     action:
       no_op: {}
-  # Brief wait to ensure final metrics are visible before scraping.
-  - name: Wait For Metrics Update
+  # Let a few scrapes observe the final post-drain counts.
+  - name: Wait For Final Metrics
     action:
       wait:
-        delay_seconds: 1
+        delay_seconds: {{final_metrics_wait_secs | default(3)}}
   # Stop monitoring all components.
   - name: Stop Monitoring All
     action:
@@ -172,6 +170,40 @@ steps:
           - backend-service
           - load-generator
           - df-engine
+  # Shut down the (now empty) engines so the processes exit gracefully.
+  - name: Shutdown Engines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+          - send_http_request:
+              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+          - send_http_request:
+              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
   # Stop all running components.
   - name: Destroy All
     action:
