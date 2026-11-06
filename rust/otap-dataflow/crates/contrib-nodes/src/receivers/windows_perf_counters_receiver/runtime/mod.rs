@@ -4,7 +4,7 @@
 //! Scheduling, publishing, warnings, and shutdown for the single-core receiver.
 
 use super::config::Config;
-use super::metrics::WindowsPerfCountersMetrics;
+use super::metrics::{WindowsPerfCountersDropReason, WindowsPerfCountersMetrics};
 use super::otap_builder::project_points;
 use super::pdh::{NativePdh, Report, Stopped, Worker};
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
@@ -93,7 +93,7 @@ struct InFlight {
 struct WindowsPerfCountersReceiver {
     config: Config,
     node: String,
-    metrics: MetricSet<WindowsPerfCountersMetrics>,
+    metrics: WindowsPerfCountersMetrics,
     diagnostics: Diagnostics,
 }
 
@@ -202,18 +202,23 @@ impl WindowsPerfCountersReceiver {
         );
         // Both can count in one scrape: some queries collect while others fail.
         if !report.collect_failures.is_empty() {
-            self.metrics.scrape_failures.inc();
+            self.metrics.record_scrape(Outcome::Failure);
         }
         if !report.collected.is_empty() {
-            self.metrics.scrapes.inc();
+            self.metrics.record_scrape(Outcome::Success);
         }
         if let Some(duration) = duration {
-            self.metrics.scrape_duration.record(duration.as_secs_f64());
+            self.metrics
+                .operational
+                .scrape_duration
+                .record(duration.as_secs_f64());
         }
         self.metrics
+            .operational
             .counter_add_failures
             .add(report.add_failures.len() as u64);
         self.metrics
+            .operational
             .active_counters
             .set(report.active_counters as u64);
     }
@@ -253,7 +258,7 @@ impl WindowsPerfCountersReceiver {
                 biased;
                 message = control.recv() => match message.map_err(Error::ChannelRecvError)? {
                     NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
-                        let _ = metrics_reporter.report(&mut self.metrics);
+                        let _ = self.metrics.report(&mut metrics_reporter);
                     }
                     NodeControlMsg::DrainIngress { deadline, .. } => return Ok((deadline, true)),
                     NodeControlMsg::Shutdown { deadline, .. } => return Ok((deadline, false)),
@@ -264,7 +269,7 @@ impl WindowsPerfCountersReceiver {
                 _ = ticks.tick(), if !in_flight.as_ref().is_some_and(|p| p.start) => {
                     match in_flight.as_mut() {
                         Some(pending) => {
-                            self.metrics.scrape_overruns.inc();
+                            self.metrics.operational.scrape_overruns.inc();
                             if self.config.timeout.is_none() {
                                 pending.late = true;
                                 self.warn_overrun();
@@ -330,7 +335,8 @@ impl WindowsPerfCountersReceiver {
         match effect_handler.try_send_message_with_source_node(data) {
             Ok(()) => self.diagnostics.sent(),
             Err(TypedError::ChannelSendError(_)) => {
-                self.metrics.batches_dropped.inc();
+                self.metrics
+                    .record_dropped(WindowsPerfCountersDropReason::DownstreamSendError);
                 if self.diagnostics.dropped() {
                     otel_warn!(
                         "windows_perf_counters_receiver.batch.dropped",

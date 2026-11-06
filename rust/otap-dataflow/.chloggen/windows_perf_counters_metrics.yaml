@@ -1,0 +1,8 @@
+change_type: breaking
+component: pipeline
+note: "Migrate windows_perf_counters receiver self-metrics to enum attributes."
+issues: [3530]
+subtext: |
+  Migration: Update alerts and dashboards to use
+  `receiver.windows_perf_counters.scrapes.collections` with `outcome` (`success`, `failure`)
+  and `receiver.windows_perf_counters.drops.batches` with `reason` (`downstream_send_error`).
