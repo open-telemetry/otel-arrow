@@ -287,8 +287,8 @@ impl AggregateQuery {
 struct AggregateGroup {
     /// Metric set name (descriptor name)
     name: String,
-    /// Descriptor for retrieving metric metadata
-    brief: &'static MetricsDescriptor,
+    /// Metric field descriptors merged across all descriptors sharing this scope name.
+    fields: Vec<MetricsField>,
     /// Selected attributes for this group
     attributes: HashMap<String, AttributeValue>,
     /// Aggregated metrics by field name
@@ -582,7 +582,7 @@ fn aggregate_metric_groups(
         (
             HashMap<String, AttributeValue>,
             HashMap<String, MetricValue>,
-            &'static MetricsDescriptor,
+            Vec<MetricsField>,
         ),
     > = HashMap::new();
 
@@ -631,11 +631,19 @@ fn aggregate_metric_groups(
                         }
                     }
                 }
-                v.insert((attrs_map, HashMap::new(), descriptor))
+                v.insert((attrs_map, HashMap::new(), Vec::new()))
             }
         };
 
-        let (_attrs_map, metrics_map, _desc) = attrs_and_metrics;
+        let (_attrs_map, metrics_map, fields) = attrs_and_metrics;
+
+        // Merge field metadata across all descriptors sharing the same scope name so
+        // instruments from secondary descriptors are not dropped during rendering.
+        for field in descriptor.metrics {
+            if !fields.iter().any(|existing| existing.name == field.name) {
+                fields.push(*field);
+            }
+        }
 
         // Accumulate metrics
         for (field, value) in metrics_iter {
@@ -654,10 +662,10 @@ fn aggregate_metric_groups(
 
     // Convert to vector
     let mut groups: Vec<AggregateGroup> = Vec::with_capacity(agg.len());
-    for ((set_name, _), (attrs_map, metrics_map, desc)) in agg {
+    for ((set_name, _), (attrs_map, metrics_map, fields)) in agg {
         groups.push(AggregateGroup {
             name: set_name,
-            brief: desc,
+            fields,
             attributes: attrs_map,
             metrics: metrics_map,
         });
@@ -679,9 +687,9 @@ fn aggregate_metric_groups(
 fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata> {
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
-        // Build metrics vector using descriptor metadata where available
+        // Build metrics vector using merged descriptor metadata where available
         let mut metrics = Vec::with_capacity(g.metrics.len());
-        for field in g.brief.metrics.iter() {
+        for field in &g.fields {
             if let Some(val) = g.metrics.get(field.name) {
                 if is_empty_distribution(val) {
                     continue;
@@ -867,8 +875,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
         let mut first = true;
         for (fname, val) in &g.metrics {
             let field_type = g
-                .brief
-                .metrics
+                .fields
                 .iter()
                 .find(|f| f.name == fname.as_str())
                 .map(|f| f.value_type);
@@ -1163,7 +1170,7 @@ fn agg_prometheus_text(
         }
 
         // Collect metrics for this group
-        for field in g.brief.metrics.iter() {
+        for field in &g.fields {
             if let Some(value) = g.metrics.get(field.name) {
                 match value {
                     MetricValue::U64(_) | MetricValue::F64(_) => {
@@ -2737,7 +2744,7 @@ mod tests {
         let mut groups = [
             AggregateGroup {
                 name: "zebra_metrics".to_string(),
-                brief: &TEST_METRICS_DESCRIPTOR,
+                fields: TEST_METRICS_DESCRIPTOR.metrics.to_vec(),
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
@@ -2747,7 +2754,7 @@ mod tests {
             },
             AggregateGroup {
                 name: "alpha_metrics".to_string(),
-                brief: &TEST_METRICS_DESCRIPTOR_2,
+                fields: TEST_METRICS_DESCRIPTOR_2.metrics.to_vec(),
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
@@ -2758,7 +2765,7 @@ mod tests {
             },
             AggregateGroup {
                 name: "alpha_metrics".to_string(),
-                brief: &TEST_METRICS_DESCRIPTOR,
+                fields: TEST_METRICS_DESCRIPTOR.metrics.to_vec(),
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
@@ -3070,7 +3077,7 @@ mod tests {
     fn test_agg_prometheus_mmsc_metrics() {
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
-            brief: &MMSC_METRICS_DESCRIPTOR,
+            fields: MMSC_METRICS_DESCRIPTOR.metrics.to_vec(),
             attributes: HashMap::new(),
             metrics: {
                 let mut m = HashMap::new();
@@ -3127,7 +3134,7 @@ mod tests {
     fn test_agg_line_protocol_mmsc_metrics() {
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
-            brief: &MMSC_METRICS_DESCRIPTOR,
+            fields: MMSC_METRICS_DESCRIPTOR.metrics.to_vec(),
             attributes: HashMap::new(),
             metrics: {
                 let mut m = HashMap::new();
@@ -3151,6 +3158,150 @@ mod tests {
         assert!(output.contains("request_duration_max=100"));
         assert!(output.contains("request_duration_sum=250.5"));
         assert!(output.contains("request_duration_count=10i"));
+    }
+
+    /// Scenario: Multiple metric descriptors share the same scope name (for example
+    /// `channel.sender` descriptors reporting `messages` and `failures` separately).
+    /// Guarantees: Aggregate telemetry preserves field metadata and renders every
+    /// instrument across JSON, line-protocol, and Prometheus outputs without dropping
+    /// secondary descriptors.
+    #[test]
+    fn shared_scope_descriptors_retain_all_instruments_in_aggregate_outputs() {
+        static SHARED_ATTR_DESC: AttributesDescriptor = AttributesDescriptor {
+            name: "channel_attrs",
+            fields: &[AttributeField {
+                key: "channel.id",
+                r#type: AttributeValueType::String,
+                brief: "Channel identifier",
+            }],
+        };
+
+        #[derive(Debug)]
+        struct SharedAttrSet {
+            values: Vec<AttributeValue>,
+        }
+
+        impl SharedAttrSet {
+            fn new(channel_id: &str) -> Self {
+                Self {
+                    values: vec![AttributeValue::String(channel_id.to_string())],
+                }
+            }
+        }
+
+        impl AttributeSetHandler for SharedAttrSet {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &SHARED_ATTR_DESC
+            }
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        static SENDER_MESSAGES_DESC: MetricsDescriptor = MetricsDescriptor {
+            name: "channel.sender",
+            metrics: &[MetricsField {
+                name: "messages",
+                unit: "{msg}",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                brief: "Messages sent",
+                value_type: MetricValueType::U64,
+            }],
+        };
+
+        static SENDER_FAILURES_DESC: MetricsDescriptor = MetricsDescriptor {
+            name: "channel.sender",
+            metrics: &[MetricsField {
+                name: "failures",
+                unit: "{err}",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                brief: "Send failures",
+                value_type: MetricValueType::U64,
+            }],
+        };
+
+        #[derive(Debug, Default)]
+        struct SenderMessagesSet;
+        impl MetricSetHandler for SenderMessagesSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &SENDER_MESSAGES_DESC
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(42u64)]
+            }
+            fn clear_values(&mut self) {}
+            fn needs_flush(&self) -> bool {
+                true
+            }
+        }
+
+        #[derive(Debug, Default)]
+        struct SenderFailuresSet;
+        impl MetricSetHandler for SenderFailuresSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &SENDER_FAILURES_DESC
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(3u64)]
+            }
+            fn clear_values(&mut self) {}
+            fn needs_flush(&self) -> bool {
+                true
+            }
+        }
+
+        let registry = TelemetryRegistryHandle::new();
+        let _m1: otel_arrow_dfe_telemetry::metrics::MetricSet<SenderMessagesSet> =
+            registry.register_metric_set(SharedAttrSet::new("ch-1"));
+        let _m2: otel_arrow_dfe_telemetry::metrics::MetricSet<SenderFailuresSet> =
+            registry.register_metric_set(SharedAttrSet::new("ch-1"));
+
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "channel.sender");
+        assert_eq!(groups[0].fields.len(), 2);
+
+        // JSON with metadata retains both `messages` and `failures`.
+        let with_meta = groups_with_metadata(&groups);
+        assert_eq!(with_meta.len(), 1);
+        let metric_names: Vec<&str> = with_meta[0]
+            .metrics
+            .iter()
+            .map(|dp| dp.metadata.name)
+            .collect();
+        assert_eq!(metric_names, vec!["messages", "failures"]);
+
+        // Prometheus output renders both `messages_total` and `failures_total`.
+        let prom = agg_prometheus_text(&groups, Some(1000), "");
+        assert!(
+            prom.contains("# HELP messages_total Messages sent\n"),
+            "missing messages_total HELP in:\n{prom}"
+        );
+        assert!(
+            prom.contains("# HELP failures_total Send failures\n"),
+            "missing failures_total HELP in:\n{prom}"
+        );
+        assert!(
+            prom.contains(
+                "messages_total{otel_scope_name=\"channel.sender\",otel_scope_channel_id=\"ch-1\"} 42 1000\n"
+            ),
+            "missing messages_total sample in:\n{prom}"
+        );
+        assert!(
+            prom.contains(
+                "failures_total{otel_scope_name=\"channel.sender\",otel_scope_channel_id=\"ch-1\"} 3 1000\n"
+            ),
+            "missing failures_total sample in:\n{prom}"
+        );
+
+        // Line protocol output preserves integer type formatting for both fields.
+        let lp = agg_line_protocol_text(&groups, Some(1000));
+        assert!(
+            lp.contains("messages=42i") && lp.contains("failures=3i"),
+            "expected both integer fields in line protocol output:\n{lp}"
+        );
     }
 
     // ---------------------------------------------------------------------------
