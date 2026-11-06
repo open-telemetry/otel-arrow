@@ -4,7 +4,6 @@
 //! Shared configuration for gRPC-based receivers.
 
 use crate::compression::{self, CompressionMethod};
-use crate::otap_grpc::otlp::server_new::OtlpServerSettings;
 use otel_arrow_dfe_config::byte_units;
 use otel_arrow_dfe_config::tls::TlsServerConfig;
 use serde::Deserialize;
@@ -231,20 +230,13 @@ impl GrpcServerSettings {
         }
         (request_compression, response_compression)
     }
+}
 
-    /// Builds the gRPC server settings from this configuration.
-    #[must_use]
-    pub fn build_settings(&self) -> OtlpServerSettings {
-        let (request_compression_encodings, response_compression_encodings) =
-            self.compression_encodings();
-
-        OtlpServerSettings {
-            max_concurrent_requests: self.max_concurrent_requests,
-            wait_for_result: self.wait_for_result,
-            max_decoding_message_size: self.max_decoding_message_size.map(|value| value as usize),
-            request_compression_encodings,
-            response_compression_encodings,
-        }
+/// Tunes concurrency relative to the downstream pdata channel capacity.
+pub fn tune_max_concurrent_requests(config: &mut GrpcServerSettings, downstream_capacity: usize) {
+    let safe_capacity = downstream_capacity.max(1);
+    if config.max_concurrent_requests == 0 || config.max_concurrent_requests > safe_capacity {
+        config.max_concurrent_requests = safe_capacity;
     }
 }
 
@@ -345,7 +337,6 @@ impl Default for GrpcServerSettings {
 mod tests {
     use super::*;
     use crate::compression::{CompressionMethod, DEFAULT_COMPRESSION_METHODS};
-    use tonic::codec::CompressionEncoding;
 
     #[test]
     fn defaults_match_expected_compression() {
@@ -374,27 +365,6 @@ mod tests {
             settings.response_compression_methods(),
             vec![CompressionMethod::Gzip, CompressionMethod::Zstd]
         );
-    }
-
-    #[test]
-    fn build_settings_carries_core_limits_and_compression() {
-        let settings = GrpcServerSettings {
-            max_concurrent_requests: 42,
-            wait_for_result: true,
-            max_decoding_message_size: Some(8 * 1024 * 1024),
-            request_compression: Some(vec![CompressionMethod::Deflate]),
-            response_compression: Some(vec![CompressionMethod::Deflate]),
-            ..Default::default()
-        };
-
-        let built = settings.build_settings();
-        assert_eq!(built.max_concurrent_requests, 42);
-        assert!(built.wait_for_result);
-        assert_eq!(built.max_decoding_message_size, Some(8 * 1024 * 1024));
-
-        let (req, resp) = settings.compression_encodings();
-        assert!(req.is_enabled(CompressionEncoding::Deflate));
-        assert!(resp.is_enabled(CompressionEncoding::Deflate));
     }
 
     #[test]

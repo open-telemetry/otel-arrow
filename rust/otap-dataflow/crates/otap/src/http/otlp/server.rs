@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTLP/HTTP receiver implementation.
+//! OTLP HTTP receiver implementation.
 //!
 //! This module implements the OTLP/HTTP protocol endpoints:
 //! - `POST /v1/logs`
@@ -12,10 +12,9 @@
 //! the pipeline as `OtapPdata`, matching the OTLP/gRPC receiver's lazy-decoding strategy.
 
 use crate::bearer_authorization::{AuthorizationRejection, authorize_bearer};
-use crate::otap_grpc::common::AckRegistry;
-use crate::otap_grpc::otlp::server_new::AckSlot;
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use crate::otlp::metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
+use crate::receiver::ack::AckRegistry;
 use crate::socket_options;
 use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
@@ -28,7 +27,6 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::byte_units;
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
 use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
@@ -41,8 +39,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTrac
 use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
-use prost_types::Any;
-use serde::Deserialize;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
@@ -53,160 +49,11 @@ use tokio_util::task::TaskTracker;
 use zstd::stream::read::Decoder as ZstdDecoder;
 
 use crate::tls_utils::build_tls_acceptor;
-use otel_arrow_dfe_config::tls::TlsServerConfig;
 
-pub mod client_settings;
+use crate::http::settings::HttpServerSettings;
+use crate::receiver::ack::SlotGuard;
 
-/// OTLP protobuf content type
-pub const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
-
-/// Settings for the OTLP/HTTP server.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct HttpServerSettings {
-    /// Listening address for OTLP/HTTP (typically `0.0.0.0:4318`).
-    pub listening_addr: SocketAddr,
-
-    /// Maximum number of concurrent in-flight requests.
-    /// Defaults to `0`, which means the receiver adopts the downstream pdata channel capacity.
-    #[serde(default = "default_max_concurrent_requests")]
-    pub max_concurrent_requests: usize,
-
-    /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
-    #[serde(default = "default_tcp_nodelay")]
-    pub tcp_nodelay: bool,
-
-    /// TCP keepalive timeout for accepted sockets.
-    #[serde(default = "default_tcp_keepalive", with = "humantime_serde")]
-    pub tcp_keepalive: Option<Duration>,
-
-    /// Interval between TCP keepalive probes.
-    #[serde(default = "default_tcp_keepalive_interval", with = "humantime_serde")]
-    pub tcp_keepalive_interval: Option<Duration>,
-
-    /// Number of TCP keepalive probes before a connection is declared dead.
-    #[serde(default = "default_tcp_keepalive_retries")]
-    pub tcp_keepalive_retries: Option<u32>,
-
-    /// Maximum request body size, in bytes.
-    /// Accepts plain integers or suffixed strings such as `4MiB`.
-    ///
-    /// This limit applies to:
-    /// - Uncompressed bodies: the wire size (bytes received over network)
-    /// - Compressed bodies: BOTH the compressed wire size AND decompressed size
-    ///
-    /// Example scenarios with `max_request_body_size = 4MiB`:
-    /// - 5MiB compressed payload -> rejected during collection (wire size > 4MiB)
-    /// - 2MiB compressed payload expanding to 10MiB -> rejected during decompression
-    /// - 2MiB compressed payload expanding to 3MiB -> accepted
-    ///
-    /// This dual enforcement provides defense-in-depth against both bandwidth abuse
-    /// and decompression bombs (zip bombs).
-    #[serde(
-        default = "default_max_request_body_size",
-        deserialize_with = "deserialize_body_size"
-    )]
-    pub max_request_body_size: u32,
-
-    /// Whether to wait for the immediate downstream ACK/NACK before responding.
-    #[serde(default = "default_wait_for_result")]
-    pub wait_for_result: bool,
-
-    /// Timeout for processing a request (send + optional wait).
-    ///
-    /// If unset in configuration, defaults to a conservative value to reduce the
-    /// risk of slow-client (Slowloris-style) denial of service.
-    #[serde(default = "default_http_timeout", with = "humantime_serde")]
-    pub timeout: Option<Duration>,
-
-    /// Whether to accept gzip/deflate HTTP request bodies (via `Content-Encoding`).
-    ///
-    /// When disabled, non-identity encodings are rejected with `415 Unsupported Media Type`.
-    #[serde(default = "default_accept_compressed_requests")]
-    pub accept_compressed_requests: bool,
-
-    /// Optional TLS configuration.
-    #[serde(default)]
-    pub tls: Option<TlsServerConfig>,
-}
-
-impl Default for HttpServerSettings {
-    fn default() -> Self {
-        Self {
-            listening_addr: "127.0.0.1:4318".parse().expect("valid default addr"),
-            max_concurrent_requests: default_max_concurrent_requests(),
-            tcp_nodelay: default_tcp_nodelay(),
-            tcp_keepalive: default_tcp_keepalive(),
-            tcp_keepalive_interval: default_tcp_keepalive_interval(),
-            tcp_keepalive_retries: default_tcp_keepalive_retries(),
-            max_request_body_size: default_max_request_body_size(),
-            wait_for_result: default_wait_for_result(),
-            timeout: default_http_timeout(),
-            accept_compressed_requests: default_accept_compressed_requests(),
-            tls: None,
-        }
-    }
-}
-
-const fn default_max_concurrent_requests() -> usize {
-    0
-}
-
-const fn default_tcp_nodelay() -> bool {
-    true
-}
-
-const fn default_tcp_keepalive() -> Option<Duration> {
-    Some(Duration::from_secs(45))
-}
-
-const fn default_tcp_keepalive_interval() -> Option<Duration> {
-    Some(Duration::from_secs(15))
-}
-
-const fn default_tcp_keepalive_retries() -> Option<u32> {
-    Some(5)
-}
-
-const fn default_max_request_body_size() -> u32 {
-    // Keep this aligned with tonic's default max-decoding size (4MiB) for symmetry.
-    4 * 1024 * 1024
-}
-
-fn deserialize_body_size<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(byte_units::deserialize(deserializer)?.unwrap_or(default_max_request_body_size()))
-}
-
-const fn default_wait_for_result() -> bool {
-    false
-}
-
-const fn default_accept_compressed_requests() -> bool {
-    true
-}
-
-const fn default_http_timeout() -> Option<Duration> {
-    // Conservative default chosen to mitigate slow-client DoS while keeping parity
-    // with common collector defaults.
-    Some(Duration::from_secs(30))
-}
-
-/// Tune max concurrent requests relative to downstream capacity.
-pub fn tune_max_concurrent_requests(config: &mut HttpServerSettings, downstream_capacity: usize) {
-    let safe_capacity = downstream_capacity.max(1);
-    if config.max_concurrent_requests == 0 || config.max_concurrent_requests > safe_capacity {
-        config.max_concurrent_requests = safe_capacity;
-    }
-
-    // Safety: ensure timeouts are enabled by default even if older configs relied
-    // on `timeout: null` or omitted the field entirely.
-    if config.timeout.is_none() {
-        config.timeout = default_http_timeout();
-    }
-}
+use super::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH};
 
 fn content_type_is_protobuf(headers: &http::HeaderMap) -> bool {
     headers
@@ -251,23 +98,6 @@ fn ok_response(signal: SignalType) -> Response<Full<Bytes>> {
         HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
     );
     resp
-}
-
-/// Google RPC status format for HTTP error responses.
-///
-/// This follows the Google RPC error model, encoding status codes and messages
-/// in protobuf format for consistency with gRPC error handling.
-/// See: https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RpcStatus {
-    /// gRPC-compatible numeric status code.
-    #[prost(int32, tag = "1")]
-    pub code: i32,
-    /// Human-readable status message.
-    #[prost(string, tag = "2")]
-    pub message: String,
-    #[prost(message, repeated, tag = "3")]
-    details: Vec<Any>,
 }
 
 fn rpc_status_response(
@@ -384,15 +214,6 @@ fn rate_limit_burst_exceeded() -> Response<Full<Bytes>> {
 fn internal_error() -> Response<Full<Bytes>> {
     rpc_status_response(StatusCode::INTERNAL_SERVER_ERROR, 13, "internal error")
 }
-
-/// OTLP HTTP path for logs endpoint
-pub const LOGS_PATH: &str = "/v1/logs";
-
-/// OTLP HTTP path for metrics endpoint
-pub const METRICS_PATH: &str = "/v1/metrics";
-
-/// OTLP HTTP path for traces endpoint
-pub const TRACES_PATH: &str = "/v1/traces";
 
 fn map_path_to_signal(path: &str) -> Option<SignalType> {
     match path {
@@ -940,7 +761,8 @@ impl HttpHandler {
                         // Include the nack reason in the response for parity with gRPC.
                         // Permanent client rejections -> 400, other permanent failures -> 500,
                         // transient failures -> 503.
-                        let class = crate::nack_status::classify_nack(nack.permanent, nack.cause);
+                        let class =
+                            crate::receiver::nack::classify_nack(nack.permanent, nack.cause);
                         return Err(rpc_status_response(
                             class.http_status(),
                             class.grpc_code(),
@@ -974,17 +796,6 @@ impl HttpHandler {
         };
 
         Ok(result.unwrap_or_else(|resp| resp))
-    }
-}
-
-struct SlotGuard {
-    key: crate::accessory::slots::Key,
-    state: AckSlot,
-}
-
-impl Drop for SlotGuard {
-    fn drop(&mut self) {
-        self.state.cancel_slot(self.key);
     }
 }
 
@@ -1149,6 +960,7 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::receiver::ack::AckSlot;
 
     use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
     use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
@@ -1729,7 +1541,7 @@ mod tests {
         if let Some((_, ack)) =
             crate::testing::next_ack(otel_arrow_dfe_engine::control::AckMsg::new(received))
         {
-            let _ = crate::otap_grpc::common::route_ack_response(&ack_registry, ack);
+            let _ = crate::receiver::ack::route_ack_response(&ack_registry, ack);
         }
 
         let (status, _) = response.await.unwrap();

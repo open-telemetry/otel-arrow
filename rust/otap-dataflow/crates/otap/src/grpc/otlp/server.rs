@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementations of OTLP gRPC service servers that produce `OtapPdata` for the pipeline.
+//! OTLP gRPC service servers that produce encoded pdata for the pipeline.
 //!
 //! Request lifecycle:
 //! - decode: wrap incoming OTLP bytes into `OtapPdata` without deserializing
@@ -17,13 +17,13 @@ use std::mem;
 use std::sync::Arc;
 use std::task::Poll;
 
-use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::bearer_authorization::{AuthorizationRejection, authorize_bearer};
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use crate::otlp::metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use crate::rate_limit_layer::{
     grpc_rate_limit_burst_exceeded_status, grpc_rate_limit_saturated_status, grpc_rate_limit_status,
 };
+use crate::receiver::ack::{AckSlot, SlotGuard};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
@@ -31,122 +31,30 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
 use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
-use otel_arrow_dfe_engine::control::{CallData, NackMsg};
+use otel_arrow_dfe_engine::control::NackMsg;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
 
-use crate::nack_status::classify_nack;
+use crate::receiver::nack::classify_nack;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
 use std::sync::OnceLock;
-use tokio::sync::oneshot;
 use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
 use tonic::{Code, Status};
 use tower::{Layer, Service};
 
-use crate::otap_grpc::common::peer_addr_from_extensions;
-
-/// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
-/// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
-/// map entirely, avoiding extra allocations on the hot path.
-#[derive(Clone)]
-pub struct AckSlot(
-    // parking_lot mutex keeps the hot ACK/NACK path lock-free from poisoning.
-    pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
-);
-
-/// Receiver side of a wait-for-result subscription slot.
-pub type AckSlotReceiver = oneshot::Receiver<Result<(), NackMsg<OtapPdata>>>;
-
-impl AckSlot {
-    /// Build a new per-signal slot map sized for the configured concurrency.
-    #[must_use]
-    pub fn new(max_size: usize) -> Self {
-        Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
-    }
-
-    /// Returns true when there are no outstanding wait-for-result slots.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.lock().is_empty()
-    }
-
-    /// Completes all outstanding waiters with a shutdown Nack.
-    pub fn force_shutdown(&self, signal: SignalType, reason: &str) {
-        self.0.lock().drain(|sender| {
-            let _ = sender.send(Err(NackMsg::new(
-                reason,
-                OtapPdata::new_todo_context(OtapPayload::empty(signal)),
-            )));
-        });
-    }
-
-    /// Allocate a raw slot key plus its paired receiver.
-    pub(crate) fn allocate_slot(&self) -> Option<(SlotKey, AckSlotReceiver)> {
-        let mut guard = self.0.lock();
-        guard.allocate(oneshot::channel)
-    }
-
-    /// Allocate a wait-for-result subscription in calldata form.
-    #[must_use]
-    pub fn allocate_waiter(&self) -> Option<(CallData, AckSlotReceiver)> {
-        self.allocate_slot().map(|(key, rx)| (key.into(), rx))
-    }
-
-    /// Cancel an outstanding wait-for-result subscription.
-    pub(crate) fn cancel_slot(&self, key: SlotKey) {
-        self.0.lock().cancel(key);
-    }
-}
-
-/// The outcome from RouteResponse
-pub enum RouteResponse {
-    /// The Ack/Nack was sent.
-    Sent,
-    /// The Ack/Nack may have timed out.
-    Expired,
-    /// No subscription was found.
-    None,
-    /// The Ack/Nack had invalid call data.
-    Invalid,
-}
-
-impl AckSlot {
-    /// Routes the final outcome into the registered slot matching the provided `CallData`.
-    #[must_use]
-    pub fn route_response(
-        &self,
-        calldata: CallData,
-        result: Result<(), NackMsg<OtapPdata>>,
-    ) -> RouteResponse {
-        // Decode slot key from calldata
-        let key: SlotKey = match calldata.try_into() {
-            Ok(data) => data,
-            Err(_) => return RouteResponse::Invalid,
-        };
-
-        // Try to take the channel from the slot under the mutex.
-        let chan = self.0.lock().take(key);
-
-        // Try to send.
-        if chan.and_then(|sender| sender.send(result).ok()).is_some() {
-            RouteResponse::Sent
-        } else {
-            RouteResponse::Expired
-        }
-    }
-}
+use crate::grpc::server::peer_addr_from_extensions;
+use crate::grpc::settings::GrpcServerSettings;
 
 /// Common settings for OTLP receivers.
 /// Per-signal server settings derived from user configuration and shared with the services.
@@ -166,6 +74,23 @@ pub struct OtlpServerSettings {
     pub request_compression_encodings: EnabledCompressionEncodings,
     /// Response compression used
     pub response_compression_encodings: EnabledCompressionEncodings,
+}
+
+impl From<&GrpcServerSettings> for OtlpServerSettings {
+    fn from(settings: &GrpcServerSettings) -> Self {
+        let (request_compression_encodings, response_compression_encodings) =
+            settings.compression_encodings();
+
+        Self {
+            max_concurrent_requests: settings.max_concurrent_requests,
+            wait_for_result: settings.wait_for_result,
+            max_decoding_message_size: settings
+                .max_decoding_message_size
+                .map(|value| value as usize),
+            request_compression_encodings,
+            response_compression_encodings,
+        }
+    }
 }
 
 /// Encodes a default response for repeated use.
@@ -362,19 +287,6 @@ impl OtapBatchService {
             signal,
             rate_limit,
         }
-    }
-}
-
-/// Guard mechanism for cancelling a slot when Tonic timeout
-/// drops the future.
-pub(crate) struct SlotGuard {
-    pub(crate) key: SlotKey,
-    pub(crate) state: AckSlot,
-}
-
-impl Drop for SlotGuard {
-    fn drop(&mut self) {
-        self.state.cancel_slot(self.key);
     }
 }
 
@@ -917,6 +829,38 @@ impl NamedService for TraceServiceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: gRPC transport settings are converted for the OTLP services.
+    /// Guarantees: concurrency, waiting, message limits, and compression are preserved.
+    #[test]
+    fn settings_carry_core_limits_and_compression() {
+        use crate::compression::CompressionMethod;
+        use tonic::codec::CompressionEncoding;
+
+        let settings = GrpcServerSettings {
+            max_concurrent_requests: 42,
+            wait_for_result: true,
+            max_decoding_message_size: Some(8 * 1024 * 1024),
+            request_compression: Some(vec![CompressionMethod::Deflate]),
+            response_compression: Some(vec![CompressionMethod::Deflate]),
+            ..Default::default()
+        };
+
+        let built = OtlpServerSettings::from(&settings);
+        assert_eq!(built.max_concurrent_requests, 42);
+        assert!(built.wait_for_result);
+        assert_eq!(built.max_decoding_message_size, Some(8 * 1024 * 1024));
+        assert!(
+            built
+                .request_compression_encodings
+                .is_enabled(CompressionEncoding::Deflate)
+        );
+        assert!(
+            built
+                .response_compression_encodings
+                .is_enabled(CompressionEncoding::Deflate)
+        );
+    }
     use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
     use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
     use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
@@ -934,13 +878,28 @@ mod tests {
     /// Guarantees: both modes admit unchanged encoded OTLP without eager protobuf parsing.
     #[tokio::test]
     async fn decoder_admits_encoded_otlp_for_all_signals() {
+        use otel_arrow_dfe_pdata_codec::PdataEncoding;
+
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             for preallocate in [false, true] {
-                super::super::assert_encoded_decoder(
-                    OtlpBytesDecoder::new(signal, preallocate),
-                    signal,
-                )
-                .await;
+                let decoder = OtlpBytesDecoder::new(signal, preallocate);
+                // Valid gRPC framing around malformed protobuf proves admission stays lazy.
+                let body =
+                    http_body_util::Full::new(Bytes::from_static(&[0, 0, 0, 0, 2, 0xff, 0x80]));
+                let mut stream = tonic::Streaming::new_request(decoder, body, None, None);
+                let pdata = stream.message().await.unwrap().unwrap();
+                assert_eq!(pdata.payload_ref().encoding(), Some(&PdataEncoding::OTLP));
+                assert_eq!(pdata.signal_type(), signal);
+                assert_eq!(
+                    pdata
+                        .payload_ref()
+                        .encoded_bytes()
+                        .expect("OTLP decoder must admit encoded pdata")
+                        .as_ref(),
+                    &[0xff, 0x80]
+                );
+                assert_eq!(pdata.payload_ref().known_item_count(), None);
+                assert!(stream.message().await.unwrap().is_none());
             }
         }
     }

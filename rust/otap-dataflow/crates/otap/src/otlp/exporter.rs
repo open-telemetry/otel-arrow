@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared OTLP exporter utilities.
+//! Transport-independent OTLP exporter utilities.
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::future::Future;

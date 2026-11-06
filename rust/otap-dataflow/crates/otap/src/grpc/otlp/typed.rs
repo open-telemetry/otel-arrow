@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Expose the OTLP gRPC services.
+//! Typed OTLP gRPC services for fixtures and benchmarks.
 //!
 //! Provides a set of structs and enums that interact with the gRPC Server
 //!
