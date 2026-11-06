@@ -33,7 +33,11 @@ mod sysinfo_impl {
         let mut sys = match System::new() {
             Ok(sys) => sys,
             Err(error) => {
-                eprintln!("Cannot read process memory: {error}");
+                otel_arrow_dfe_telemetry::otel_warn!(
+                    "quiver_e2e.process.system_info_unavailable",
+                    metric = "memory",
+                    error = %error
+                );
                 return 0;
             }
         };

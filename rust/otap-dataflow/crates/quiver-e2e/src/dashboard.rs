@@ -60,7 +60,11 @@ fn read_process_syscalls() -> (u64, u64) {
     let mut sys = match System::new() {
         Ok(sys) => sys,
         Err(error) => {
-            eprintln!("Cannot read process I/O counters: {error}");
+            otel_arrow_dfe_telemetry::otel_warn!(
+                "quiver_e2e.process.system_info_unavailable",
+                metric = "io_counters",
+                error = %error
+            );
             return (0, 0);
         }
     };
@@ -148,7 +152,11 @@ fn read_process_rss_bytes() -> u64 {
     let mut sys = match System::new() {
         Ok(sys) => sys,
         Err(error) => {
-            eprintln!("Cannot read process RSS: {error}");
+            otel_arrow_dfe_telemetry::otel_warn!(
+                "quiver_e2e.process.system_info_unavailable",
+                metric = "rss",
+                error = %error
+            );
             return 0;
         }
     };
