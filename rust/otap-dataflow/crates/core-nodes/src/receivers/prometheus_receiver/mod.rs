@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use expfmt::arrow::{ArrowDecoder, DecodeOptions, OtapMetricRecords};
 use expfmt::format::{Format, FormatType, response_format};
 use linkme::distributed_slice;
+use otel_arrow_dfe_channel::error::{RecvError, SendError};
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::ReceiverFactory;
@@ -38,6 +39,7 @@ use otel_arrow_dfe_telemetry_macros::metric_set;
 use reqwest::Url;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::Value;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 use tokio::net::lookup_host;
@@ -311,9 +313,10 @@ impl TargetScraper {
     async fn scrape_target(
         &mut self,
         target_url: &Url,
+        ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
         effect_handler: &local::EffectHandler<OtapPdata>,
         metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
-    ) {
+    ) -> ControlFlow<Result<TerminalState, Error>> {
         let started = StdInstant::now();
         if let Some(metrics) = metrics.as_mut() {
             metrics.scrapes_started.add(1);
@@ -338,7 +341,7 @@ impl TargetScraper {
                     error = err.to_string(),
                     message = "HTTP scrape request failed"
                 );
-                return;
+                return ControlFlow::Continue(());
             }
         };
 
@@ -353,7 +356,7 @@ impl TargetScraper {
                 status = response.status().as_u16(),
                 message = "target returned non-2xx HTTP status"
             );
-            return;
+            return ControlFlow::Continue(());
         }
 
         let format = resolve_response_format(
@@ -376,7 +379,7 @@ impl TargetScraper {
                     error = err.to_string(),
                     message = "failed to read scrape response body"
                 );
-                return;
+                return ControlFlow::Continue(());
             }
         };
 
@@ -385,16 +388,25 @@ impl TargetScraper {
             .with_max_data_points_per_batch(self.max_data_points_per_batch);
 
         let mut scrape_ok = true;
-        let mut decoded_points = 0u64;
 
         if self.max_data_points_per_batch == 0 {
             match self.decoder.decode(body.as_ref(), &format, &decode_opts) {
                 Ok(records) => {
-                    decoded_points += records.num_data_points() as u64;
-                    if !records.is_empty()
-                        && !send_decoded_records(&records, effect_handler, metrics)
-                    {
-                        scrape_ok = false;
+                    if let Some(metrics) = metrics.as_mut() {
+                        metrics
+                            .data_points_decoded
+                            .add(records.num_data_points() as u64);
+                    }
+                    if !records.is_empty() {
+                        match send_decoded_records(&records, ctrl_msg_recv, effect_handler, metrics)
+                            .await
+                        {
+                            SendOutcome::Sent => {}
+                            SendOutcome::Failed => {
+                                scrape_ok = false;
+                            }
+                            SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
+                        }
                     }
                 }
                 Err(err) => {
@@ -414,12 +426,27 @@ impl TargetScraper {
             {
                 match chunk_res {
                     Ok(records) => {
-                        decoded_points += records.num_data_points() as u64;
-                        if !records.is_empty()
-                            && !send_decoded_records(&records, effect_handler, metrics)
-                        {
-                            scrape_ok = false;
-                            break;
+                        if let Some(metrics) = metrics.as_mut() {
+                            metrics
+                                .data_points_decoded
+                                .add(records.num_data_points() as u64);
+                        }
+                        if !records.is_empty() {
+                            match send_decoded_records(
+                                &records,
+                                ctrl_msg_recv,
+                                effect_handler,
+                                metrics,
+                            )
+                            .await
+                            {
+                                SendOutcome::Sent => {}
+                                SendOutcome::Failed => {
+                                    scrape_ok = false;
+                                    break;
+                                }
+                                SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
+                            }
                         }
                     }
                     Err(err) => {
@@ -437,7 +464,6 @@ impl TargetScraper {
         }
 
         if let Some(metrics) = metrics.as_mut() {
-            metrics.data_points_decoded.add(decoded_points);
             if scrape_ok {
                 metrics.scrapes_completed.add(1);
             } else {
@@ -445,6 +471,37 @@ impl TargetScraper {
             }
             metrics.scrape_duration_ns.record(elapsed_nanos(started));
         }
+        ControlFlow::Continue(())
+    }
+}
+
+async fn handle_control_msg(
+    msg: Result<NodeControlMsg<OtapPdata>, RecvError>,
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+) -> ControlFlow<Result<TerminalState, Error>> {
+    match msg {
+        Ok(NodeControlMsg::CollectTelemetry {
+            mut metrics_reporter,
+        }) => {
+            if let Some(metrics) = metrics.as_mut() {
+                let _ = metrics_reporter.report(metrics);
+            }
+            ControlFlow::Continue(())
+        }
+        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+            otel_info!("prometheus_receiver.drain_ingress");
+            if let Err(err) = effect_handler.notify_receiver_drained().await {
+                return ControlFlow::Break(Err(err));
+            }
+            ControlFlow::Break(Ok(terminal_state(deadline, metrics)))
+        }
+        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+            otel_info!("prometheus_receiver.shutdown");
+            ControlFlow::Break(Ok(terminal_state(deadline, metrics)))
+        }
+        Err(err) => ControlFlow::Break(Err(Error::ChannelRecvError(err))),
+        Ok(_) => ControlFlow::Continue(()),
     }
 }
 
@@ -469,23 +526,10 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
                 biased;
 
                 msg = ctrl_msg_recv.recv() => {
-                    match msg {
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            if let Some(metrics) = metrics.as_mut() {
-                                let _ = metrics_reporter.report(metrics);
-                            }
-                        }
-                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-                            otel_info!("prometheus_receiver.drain_ingress");
-                            effect_handler.notify_receiver_drained().await?;
-                            return Ok(terminal_state(deadline, &metrics));
-                        }
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            otel_info!("prometheus_receiver.shutdown");
-                            return Ok(terminal_state(deadline, &metrics));
-                        }
-                        Err(err) => return Err(Error::ChannelRecvError(err)),
-                        _ => {}
+                    if let ControlFlow::Break(exit) =
+                        handle_control_msg(msg, &effect_handler, &mut metrics).await
+                    {
+                        return exit;
                     }
                 }
 
@@ -503,9 +547,17 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
 
                     let targets = discovery.resolve_targets().await;
                     for target_url in &targets {
-                        scraper
-                            .scrape_target(target_url, &effect_handler, &mut metrics)
-                            .await;
+                        if let ControlFlow::Break(exit) = scraper
+                            .scrape_target(
+                                target_url,
+                                &mut ctrl_msg_recv,
+                                &effect_handler,
+                                &mut metrics,
+                            )
+                            .await
+                        {
+                            return exit;
+                        }
                         tokio::task::consume_budget().await;
                     }
                 }
@@ -514,11 +566,18 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
     }
 }
 
-fn send_decoded_records(
+enum SendOutcome {
+    Sent,
+    Failed,
+    Exit(Result<TerminalState, Error>),
+}
+
+async fn send_decoded_records(
     records: &OtapMetricRecords,
+    ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
-) -> bool {
+) -> SendOutcome {
     let otap = match records_to_otap(records) {
         Ok(otap) => otap,
         Err(err) => {
@@ -530,37 +589,53 @@ fn send_decoded_records(
                 error = err.to_string(),
                 message = "failed to convert decoded Arrow batch into OtapArrowRecords"
             );
-            return false;
+            return SendOutcome::Failed;
         }
     };
     let pdata = OtapPdata::new(Context::default(), otap.into());
-    match effect_handler.try_send_message_with_source_node(pdata) {
+    let send_result = match effect_handler.try_send_message_with_source_node(pdata) {
+        Ok(()) => Ok(()),
+        Err(TypedError::ChannelSendError(SendError::Full(pdata))) => {
+            // NOTE: Downstream consumers run on the same single-threaded LocalSet, so when the
+            // channel fills during multi-chunk decoding we must await capacity to let them poll
+            // while still servicing control messages.
+            let mut send = Box::pin(effect_handler.send_message_with_source_node(pdata));
+            loop {
+                tokio::select! {
+                    biased;
+
+                    msg = ctrl_msg_recv.recv() => {
+                        if let ControlFlow::Break(exit) =
+                            handle_control_msg(msg, effect_handler, metrics).await
+                        {
+                            return SendOutcome::Exit(exit);
+                        }
+                    }
+
+                    result = send.as_mut() => break result,
+                }
+            }
+        }
+        Err(other) => Err(other),
+    };
+
+    match send_result {
         Ok(()) => {
             if let Some(metrics) = metrics.as_mut() {
                 metrics.batches_sent.add(1);
             }
-            true
+            SendOutcome::Sent
         }
-        Err(TypedError::ChannelSendError(_)) => {
-            if let Some(metrics) = metrics.as_mut() {
-                metrics.send_failures.add(1);
-            }
-            otel_warn!(
-                "prometheus_receiver.dropped_backpressure",
-                message = "scraped metrics batch dropped due to downstream backpressure"
-            );
-            false
-        }
-        Err(other) => {
+        Err(err) => {
             if let Some(metrics) = metrics.as_mut() {
                 metrics.send_failures.add(1);
             }
             otel_warn!(
                 "prometheus_receiver.send_error",
-                error = other.to_string(),
+                error = err.to_string(),
                 message = "failed to send scraped metrics batch downstream"
             );
-            false
+            SendOutcome::Failed
         }
     }
 }
@@ -568,11 +643,60 @@ fn send_decoded_records(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_engine::control::{RuntimeControlMsg, runtime_ctrl_msg_channel};
+    use otel_arrow_dfe_engine::local::receiver::Receiver as _;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::testing::{
+        setup_test_runtime, test_node, test_pipeline_runtime_services,
+    };
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::testing::round_trip::otap_to_otlp;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    struct TestReceiverHarness {
+        ctrl_chan: local::ControlChannel<OtapPdata>,
+        ctrl_tx: otel_arrow_dfe_channel::mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        effect_handler: local::EffectHandler<OtapPdata>,
+        out_rx: otel_arrow_dfe_channel::mpsc::Receiver<OtapPdata>,
+        runtime_ctrl_rx: otel_arrow_dfe_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
+    }
+
+    fn build_test_harness(channel_capacity: usize) -> TestReceiverHarness {
+        let (out_tx, out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(channel_capacity);
+        let mut senders = HashMap::new();
+        let _ = senders.insert(
+            "".into(),
+            Sender::Local(otel_arrow_dfe_engine::local::message::LocalSender::mpsc(
+                out_tx,
+            )),
+        );
+        let (pipe_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel(8);
+        let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
+        let effect_handler = local::EffectHandler::new(
+            test_node("prometheus_test"),
+            senders,
+            None,
+            pipe_tx,
+            reporter,
+            test_pipeline_runtime_services(),
+        );
+        let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
+        let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
+            otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
+        );
+        let ctrl_chan = local::ControlChannel::new(ctrl_rx);
+        TestReceiverHarness {
+            ctrl_chan,
+            ctrl_tx,
+            effect_handler,
+            out_rx,
+            runtime_ctrl_rx,
+        }
+    }
 
     /// Scenario: configuration specifies a zero scrape interval.
     /// Guarantees: validation rejects the configuration before starting the receiver.
@@ -790,5 +914,172 @@ mod tests {
             .map(|sm| sm.metrics.len())
             .sum();
         assert_eq!(total_metrics, 4);
+    }
+
+    /// Scenario: a target serves four metrics with `max_data_points_per_batch = 1` while the
+    /// downstream channel has capacity 1 on the same single-threaded `LocalSet`.
+    /// Guarantees: chunk sending awaits downstream capacity instead of dropping batches so all
+    /// four chunks arrive in full before shutdown.
+    #[test]
+    fn awaits_downstream_capacity_across_streamed_chunks() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let payload = concat!(
+                "# TYPE test_metric_0 counter\ntest_metric_0 1\n",
+                "# TYPE test_metric_1 counter\ntest_metric_1 2\n",
+                "# TYPE test_metric_2 counter\ntest_metric_2 3\n",
+                "# TYPE test_metric_3 counter\ntest_metric_3 4\n",
+            );
+
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local test listener");
+            let addr = listener.local_addr().expect("listener address");
+
+            let server = tokio::task::spawn_local(async move {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            });
+
+            let receiver = PrometheusReceiver::new(Config {
+                scrape_interval: Duration::from_secs(60),
+                scrape_timeout: Duration::from_secs(5),
+                initial_delay: Duration::ZERO,
+                max_data_points_per_batch: 1,
+                targets: vec![addr.to_string()],
+                ..Config::default()
+            })
+            .expect("valid receiver config");
+
+            let TestReceiverHarness {
+                ctrl_chan,
+                ctrl_tx,
+                effect_handler,
+                out_rx,
+                runtime_ctrl_rx: _runtime_ctrl_rx,
+            } = build_test_harness(1);
+
+            let handle = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_chan, effect_handler).await
+            });
+
+            let mut received_points = 0usize;
+            for _ in 0..4 {
+                let mut pdata = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                    .await
+                    .expect("chunk arrives before timeout")
+                    .expect("downstream channel stays open");
+                received_points += pdata.num_items();
+            }
+            assert_eq!(received_points, 4);
+
+            ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: StdInstant::now() + Duration::from_secs(1),
+                    reason: "test complete".to_owned(),
+                })
+                .expect("send shutdown control message");
+
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .expect("receiver stops before timeout")
+                .expect("receiver task joins")
+                .expect("receiver exits cleanly");
+            let _ = server.await;
+        }));
+    }
+
+    /// Scenario: `DrainIngress` arrives while the receiver is parked waiting for capacity on a
+    /// full downstream channel during a multi-chunk scrape.
+    /// Guarantees: control messages are still serviced while blocked on backpressure, ingress
+    /// drain is notified to the runtime, and the receiver terminates cleanly.
+    #[test]
+    fn handles_drain_ingress_while_blocked_on_full_downstream_channel() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let payload = concat!(
+                "# TYPE blocked_metric_0 counter\nblocked_metric_0 10\n",
+                "# TYPE blocked_metric_1 counter\nblocked_metric_1 20\n",
+            );
+
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local test listener");
+            let addr = listener.local_addr().expect("listener address");
+
+            let server = tokio::task::spawn_local(async move {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            });
+
+            let receiver = PrometheusReceiver::new(Config {
+                scrape_interval: Duration::from_secs(60),
+                scrape_timeout: Duration::from_secs(5),
+                initial_delay: Duration::ZERO,
+                max_data_points_per_batch: 1,
+                targets: vec![addr.to_string()],
+                ..Config::default()
+            })
+            .expect("valid receiver config");
+
+            let TestReceiverHarness {
+                ctrl_chan,
+                ctrl_tx,
+                effect_handler,
+                out_rx,
+                mut runtime_ctrl_rx,
+            } = build_test_harness(1);
+
+            let handle = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_chan, effect_handler).await
+            });
+
+            // Wait until the first chunk fills the capacity-1 channel, then yield once more so
+            // the second chunk parks on `send_message_with_source_node` without draining `out_rx`.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while out_rx.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+                tokio::task::yield_now().await;
+            })
+            .await
+            .expect("first chunk fills downstream channel");
+
+            ctrl_tx
+                .send(NodeControlMsg::DrainIngress {
+                    deadline: StdInstant::now() + Duration::from_secs(1),
+                    reason: "test ingress drain".to_owned(),
+                })
+                .expect("send drain ingress control message");
+
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .expect("receiver drains before timeout")
+                .expect("receiver task joins")
+                .expect("receiver exits cleanly on drain");
+
+            let ctrl_event = tokio::time::timeout(Duration::from_secs(1), runtime_ctrl_rx.recv())
+                .await
+                .expect("runtime control message arrives")
+                .expect("runtime control channel open");
+            assert!(matches!(ctrl_event, RuntimeControlMsg::ReceiverDrained { .. }));
+            let _ = server.await;
+        }));
     }
 }
