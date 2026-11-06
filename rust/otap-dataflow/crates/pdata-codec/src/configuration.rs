@@ -487,6 +487,70 @@ mod tests {
         );
     }
 
+    /// Scenario: A pipeline selects an encode-only implementation for bytes admitted by a decoder.
+    /// Guarantees: Accepted views borrow the exact buffer without instances; native fallback still requires a decoder.
+    #[test]
+    fn encode_only_binding_preserves_borrowed_views() {
+        static CODECS: [CodecRegistration; 2] = [
+            CodecRegistration::new(&METADATA)
+                .with_implementation("input")
+                .with_default_for_encoding()
+                .with_decoder(|_| panic!("borrowing must not instantiate a decoder"))
+                .with_item_counter(|_, _| Some(1)),
+            CodecRegistration::new(&METADATA)
+                .with_implementation("output")
+                .with_encoder(|_| panic!("borrowing must not instantiate an encoder")),
+        ];
+        let registry = Arc::new(CodecRegistry::validate(&CODECS).unwrap());
+        let input = registry.resolve(&PdataEncoding::OTLP).unwrap();
+        let bytes = Bytes::from_static(b"opaque admitted bytes");
+        let encoded = input.admit(SignalType::Logs, bytes.clone()).unwrap();
+        let declaration: CodecsConfig =
+            serde_yaml::from_str("bindings: {otlp-bytes: {implementation: output}}").unwrap();
+        let service = CodecServiceBuilder::from_registry(registry)
+            .with_configuration(CodecsConfig::resolve([&declaration]))
+            .build()
+            .unwrap();
+        let selected = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+        assert!(!selected.can_decode());
+        let accepted = AcceptedEncodings::accept_encoded([selected]);
+        let payload = PdataPayload::from(encoded.clone());
+        for view in [
+            service.view(&encoded, &accepted).unwrap(),
+            finish_immediately(
+                payload.view_cooperative(&service, &accepted, || std::future::ready(())),
+            )
+            .unwrap(),
+        ] {
+            let PdataView::Encoded(view) = view else {
+                panic!("accepted bytes must stay encoded");
+            };
+            assert_eq!(view.encoding(), &PdataEncoding::OTLP);
+            assert_eq!(view.signal_type(), SignalType::Logs);
+            assert_eq!(view.bytes().as_ptr(), bytes.as_ptr());
+            assert_eq!(view.bytes(), &bytes);
+        }
+        assert!(matches!(
+            service.view(&encoded, &AcceptedEncodings::native()),
+            Err(CodecError::Unsupported {
+                operation: crate::CodecOperation::Decode,
+                ..
+            }),
+        ));
+        assert!(matches!(
+            finish_immediately(payload.view_cooperative(
+                &service,
+                &AcceptedEncodings::native(),
+                || std::future::ready(()),
+            )),
+            Err(CodecError::Unsupported {
+                operation: crate::CodecOperation::Decode,
+                ..
+            }),
+        ));
+        assert_eq!(service.test_instance_count().unwrap(), 0);
+    }
+
     /// Scenario: An encode-only registration receives an explicit decoding setting.
     /// Guarantees: Startup rejects the unsupported operation instead of ignoring its configuration.
     #[test]

@@ -23,12 +23,13 @@
 //! ```
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
-use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
+use otel_arrow_dfe_config::codecs::{CodecsConfig, ResolvedCodecsConfig};
 use otel_arrow_dfe_config::engine::{
     HttpAdminSettings, OtelDataflowSpec, ResolvedOtelDataflowSpec,
 };
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
 use otel_arrow_dfe_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::PipelineFactory;
@@ -267,6 +268,24 @@ pub(crate) fn canonical_codec_configuration(
         .canonical_configuration()
 }
 
+/// Validates declarations visible to an empty group before it gains pipelines.
+/// Preparation callbacks run without holding controller state or creating instances.
+pub(crate) fn validate_empty_group_codecs(
+    group_id: &PipelineGroupId,
+    group: &PipelineGroupConfig,
+    inherited: Option<&CodecsConfig>,
+) -> Result<(), CodecError> {
+    let configuration =
+        CodecsConfig::resolve([group.codecs.as_ref(), inherited].into_iter().flatten());
+    canonical_codec_configuration(&configuration)
+        .map(|_| ())
+        .map_err(|error| {
+            CodecError::configuration(format!(
+                "Invalid codecs for empty group={group_id}: {error}"
+            ))
+        })
+}
+
 /// Returns a validated snapshot with canonical codec settings for rollout comparisons.
 ///
 /// Validate even unused definitions and no-op updates. Codec preparation is
@@ -275,6 +294,13 @@ pub(crate) fn resolve_and_validate_engine_components<PData: 'static + Clone + De
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<ResolvedOtelDataflowSpec, Box<dyn std::error::Error>> {
+    // Empty groups have no resolved pipeline, but unused definitions and bindings
+    // still need startup validation, including inherited root declarations.
+    for (group_id, group) in &engine_cfg.groups {
+        if group.pipelines.is_empty() {
+            validate_empty_group_codecs(group_id, group, engine_cfg.codecs.as_ref())?;
+        }
+    }
     let mut configuration = engine_cfg.resolve();
     for resolved in &mut configuration.pipelines {
         validate_pipeline_components(

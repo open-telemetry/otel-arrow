@@ -1736,6 +1736,18 @@ impl<
                 message: err.to_string(),
             })?;
 
+        let inherited_codecs = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.live_config.codecs.clone()
+        };
+        startup::validate_empty_group_codecs(&pipeline_group_id, &group, inherited_codecs.as_ref())
+            .map_err(|error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+
         let mut state = self
             .state
             .lock()
@@ -1822,9 +1834,10 @@ impl<
         target
     }
 
-    /// Includes retained pipelines whose inherited codec settings actually changed.
-    /// Unchanged omitted pipelines remain absent, preserving partial-update behavior.
+    /// Includes retained pipelines whose effective codecs differ from their deployment.
+    /// Undeployed pipelines use live declarations; unchanged omitted pipelines stay absent.
     pub(super) fn reconcile_pipeline_requests(
+        &self,
         live_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
         target_resolved: &ResolvedOtelDataflowSpec,
@@ -1841,7 +1854,7 @@ impl<
                 })
             })
             .collect();
-        let previous: HashMap<_, _> = live_config
+        let mut previous: HashMap<_, _> = live_config
             .resolve()
             .pipelines
             .into_iter()
@@ -1853,6 +1866,22 @@ impl<
                 )
             })
             .collect();
+        // A successful pipeline rollout is committed before the whole reconcile
+        // finishes. If a later rollout fails, inherited declarations can still
+        // describe the old settings. Prefer each deployment's actual snapshot.
+        // Clone under the lock, but run codec preparation only after releasing it.
+        let committed_codecs: Vec<_> = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .logical_pipelines
+                .iter()
+                .map(|(key, deployment)| (key.clone(), deployment.resolved.codecs.clone()))
+                .collect()
+        };
+        previous.extend(committed_codecs);
         for target in &target_resolved.pipelines {
             if target.role != ResolvedPipelineRole::Regular {
                 continue;
@@ -2341,12 +2370,8 @@ impl<
             .map_err(|err| ControlPlaneError::InvalidRequest {
                 message: err.to_string(),
             })?;
-        startup::validate_engine_components(&desired_config, self.pipeline_factory).map_err(
-            |error| ControlPlaneError::InvalidRequest {
-                message: error.to_string(),
-            },
-        )?;
-
+        // Validate codec scopes on the merged target below: omitted pipelines
+        // can supply nearer overrides, so an omitted pipeline is not an empty group.
         let target_config =
             Self::reconcile_target_config(&live_config, &desired_config, request.delete_missing);
         Self::validate_live_state_dir_unchanged(&live_config, &target_config)?;
@@ -2364,7 +2389,7 @@ impl<
         Self::validate_reconcile_capabilities(&live_config, &target_config)?;
         Self::validate_live_observability_codecs_unchanged(&live_config, &target_resolved_config)?;
 
-        let mut desired_keys = Self::reconcile_pipeline_requests(
+        let mut desired_keys = self.reconcile_pipeline_requests(
             &live_config,
             &desired_config,
             &target_resolved_config,

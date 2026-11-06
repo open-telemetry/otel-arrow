@@ -6388,6 +6388,97 @@ fn reconcile_rejects_invalid_unused_codecs_before_noop() {
     }
 }
 
+/// Scenario: An empty group declares invalid or inherited valid codec settings at startup and through admin APIs.
+/// Guarantees: Invalid unused declarations fail before commit without leaking option values; valid root references remain usable.
+#[test]
+fn empty_group_codec_validation_precedes_startup_and_live_commit() {
+    let mut base = empty_engine_config();
+    base.codecs = Some(
+        serde_yaml::from_str("configurations: {ordinary: {implementation: otel.otlp}}").unwrap(),
+    );
+    let reconcile_runtime = test_runtime(&base);
+    let create_runtime = test_runtime(&base);
+    for declaration in [
+        "configurations: {unused: {implementation: unknown.codec}}",
+        "configurations: {unused: {implementation: otel.otlp, options: {unknown: SECRET_VALUE}}}",
+        "bindings: {unknown-encoding: {}}",
+        "bindings: {otlp-bytes: {implementation: unknown.codec}}",
+        "bindings: {otlp-bytes: {configuration: missing}}",
+    ] {
+        let mut group = PipelineGroupConfig::new();
+        group.codecs = Some(serde_yaml::from_str(declaration).unwrap());
+        let mut desired = base.clone();
+        _ = desired.groups.insert("g1".into(), group.clone());
+        let error = startup::validate_engine_components(&desired, &TEST_PIPELINE_FACTORY)
+            .expect_err("empty group declarations must be validated before startup");
+        assert!(error.to_string().contains("empty group=g1"));
+        assert!(!error.to_string().contains("SECRET_VALUE"));
+        for error in [
+            reconcile_runtime
+                .reconcile_engine_config(reconcile_request(desired, false))
+                .expect_err("invalid empty groups must not be reconciled"),
+            create_runtime
+                .create_group("g1", group)
+                .expect_err("invalid empty groups must not be created"),
+        ] {
+            assert!(
+                matches!(error, ControlPlaneError::InvalidRequest { ref message }
+                if message.contains("empty group=g1") && !message.contains("SECRET_VALUE"))
+            );
+        }
+        assert_eq!(reconcile_runtime.engine_config_snapshot(), base);
+        assert_eq!(create_runtime.engine_config_snapshot(), base);
+    }
+    let mut group = PipelineGroupConfig::new();
+    group.codecs =
+        Some(serde_yaml::from_str("bindings: {otlp-bytes: {configuration: ordinary}}").unwrap());
+    let mut desired = base.clone();
+    _ = desired.groups.insert("g1".into(), group.clone());
+    startup::validate_engine_components(&desired, &TEST_PIPELINE_FACTORY).unwrap();
+    assert_eq!(
+        reconcile_runtime
+            .reconcile_engine_config(reconcile_request(desired.clone(), false))
+            .unwrap()
+            .state,
+        EngineConfigReconcileState::Succeeded
+    );
+    _ = create_runtime.create_group("g1", group).unwrap();
+    assert_eq!(reconcile_runtime.engine_config_snapshot(), desired);
+    assert_eq!(create_runtime.engine_config_snapshot(), desired);
+}
+
+/// Scenario: A partial update omits a pipeline providing the named configuration referenced by its group.
+/// Guarantees: Codec preflight validates the merged scope and preserves a valid retained pipeline without a rollout.
+#[test]
+fn partial_reconcile_validates_codecs_in_retained_pipeline_scope() {
+    let pipeline = format!(
+        "        codecs:\n          configurations:\n            ordinary:\n              implementation: otel.otlp\n{}",
+        simple_pipeline_yaml(),
+    );
+    let mut config = engine_config_with_pipeline(&pipeline);
+    config
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .unwrap()
+        .codecs =
+        Some(serde_yaml::from_str("bindings: {otlp-bytes: {configuration: ordinary}}").unwrap());
+    startup::validate_engine_components(&config, &TEST_PIPELINE_FACTORY).unwrap();
+    let runtime = test_runtime(&config);
+    let mut desired = config.clone();
+    desired
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .unwrap()
+        .pipelines
+        .clear();
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, false))
+        .unwrap();
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert!(status.changes.is_empty());
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: A root binding changes only the observability pipeline during partial reconciliation.
 /// Guarantees: The unsupported effective change requires an engine restart and leaves live configuration unchanged.
 #[test]
@@ -6472,14 +6563,149 @@ fn reconcile_includes_retained_pipelines_with_changed_codec_settings() {
         let target =
             startup::resolve_and_validate_engine_components(&target, runtime.pipeline_factory)
                 .unwrap();
-        let requests =
-            ControllerRuntime::<()>::reconcile_pipeline_requests(&config, &desired, &target)
-                .unwrap();
+        let requests = runtime
+            .reconcile_pipeline_requests(&config, &desired, &target)
+            .unwrap();
         assert_eq!(requests.len(), expected);
         if expected == 1 {
             assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
         }
     }
+}
+
+/// Scenario: An inherited codec rollout commits p1, fails p2, then a revert omits both pipelines.
+/// Guarantees: Reconciliation restores p1's committed codec settings instead of mistaking old declarations for its running state.
+#[test]
+fn reconcile_restores_committed_codecs_after_partial_failure() {
+    fn create_receiver(
+        ctx: PipelineContext,
+        node: otel_arrow_dfe_engine::node::NodeId,
+        config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+        if config
+            .config
+            .get("fail_startup")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            startup_failing_receiver_create(ctx, node, config, receiver_config, capabilities)
+        } else {
+            recovery_test_receiver_create(ctx, node, config, receiver_config, capabilities)
+        }
+    }
+    static RECEIVERS: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: create_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: recovery_test_receiver_create,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ];
+    static FACTORY: PipelineFactory<()> = PipelineFactory::new(
+        RECEIVERS,
+        TEST_PROCESSOR_FACTORIES,
+        RECOVERY_TEST_EXPORTER_FACTORIES,
+        &[],
+    );
+    let mut config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let group = config.groups.get_mut(&PipelineGroupId::from("g1")).unwrap();
+    group.codecs = Some(
+        serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: best_effort}}}")
+            .unwrap(),
+    );
+    _ = group.pipelines.insert(
+        "p2".into(),
+        group.pipelines[&PipelineId::from("p1")].clone(),
+    );
+    let runtime = test_runtime_with_factory(&config, &FACTORY);
+    let _observed = ObservedStateRunner::start(&runtime);
+    // Wait for runtime shutdown before propagating a failed assertion.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let initial = runtime
+            .reconcile_engine_config(reconcile_request(config.clone(), false))
+            .unwrap();
+        assert_eq!(initial.state, EngineConfigReconcileState::Succeeded);
+        let key = PipelineKey::new("g1".into(), "p1".into());
+        let deployed_codecs = || {
+            runtime.state.lock().unwrap().logical_pipelines[&key]
+                .resolved
+                .codecs
+                .clone()
+        };
+        let original = startup::canonical_codec_configuration(&deployed_codecs()).unwrap();
+
+        let mut desired = config.clone();
+        let group = desired
+            .groups
+            .get_mut(&PipelineGroupId::from("g1"))
+            .unwrap();
+        group.codecs = Some(
+            serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: strict}}}").unwrap(),
+        );
+        let failing = rollback_test_pipeline_yaml(1, false).replacen(
+            "config: null",
+            "config: {fail_startup: true}",
+            1,
+        );
+        _ = group.pipelines.insert(
+            "p2".into(),
+            PipelineConfig::from_yaml("g1".into(), "p2".into(), &failing).unwrap(),
+        );
+        let failed = runtime
+            .reconcile_engine_config(reconcile_request(desired, false))
+            .unwrap();
+        assert_eq!(failed.state, EngineConfigReconcileState::Failed);
+        assert_eq!(failed.changes.len(), 2);
+        assert_eq!(failed.changes[0].pipeline_id, Some("p1".into()));
+        assert_eq!(failed.changes[0].state, "succeeded");
+        assert_eq!(failed.changes[1].pipeline_id, Some("p2".into()));
+        assert_eq!(failed.changes[1].state, "failed");
+        assert_eq!(runtime.engine_config_snapshot(), config);
+        assert_ne!(
+            startup::canonical_codec_configuration(&deployed_codecs()).unwrap(),
+            original
+        );
+
+        let mut revert = config.clone();
+        revert
+            .groups
+            .get_mut(&PipelineGroupId::from("g1"))
+            .unwrap()
+            .pipelines
+            .clear();
+        let restored = runtime
+            .reconcile_engine_config(reconcile_request(revert, false))
+            .unwrap();
+        assert_eq!(restored.state, EngineConfigReconcileState::Succeeded);
+        assert_eq!(restored.changes.len(), 1);
+        assert_eq!(restored.changes[0].pipeline_id, Some("p1".into()));
+        assert_eq!(restored.changes[0].action, ConfigChangeAction::Replace);
+        assert_eq!(
+            startup::canonical_codec_configuration(&deployed_codecs()).unwrap(),
+            original
+        );
+        assert_eq!(runtime.engine_config_snapshot(), config);
+    }));
+    let shutdown = runtime.request_shutdown_all(5);
+    let stopped = runtime.wait_for_global_shutdown_completion() && runtime.all_instances_exited();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    shutdown.unwrap();
+    assert!(
+        stopped,
+        "test runtimes must stop before the observed-state runner exits"
+    );
 }
 
 /// Scenario: An active pipeline switches from an inline strict binding to its equivalent named configuration.

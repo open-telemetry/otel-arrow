@@ -396,7 +396,8 @@ impl CodecService {
         bytes: &'a Bytes,
         accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
-        self.prepared(codec)?.codec.require_decoder(signal)?;
+        // Direct access borrows already-admitted bytes; the selected implementation
+        // needs a decoder only when this consumer requires native fallback.
         if accepted_encodings.accepts(codec) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
                 codec.encoding(),
