@@ -1132,9 +1132,9 @@ dependencies = [
 
 [[package]]
 name = "azure_core"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7dd9cc7f36a158fb897d029d97a9d2d52719a76ae2be2c729f63a380f5c4255"
+checksum = "26469e81377d019e0a1c7a5edc32300f40f1c62e5d63abc8a47e1e34ef10214f"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1147,8 +1147,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "typespec 1.2.0-beta.1",
- "typespec_client_core 1.2.0-beta.1",
+ "typespec 1.2.0-beta.2",
+ "typespec_client_core 1.2.0-beta.2",
 ]
 
 [[package]]
@@ -1195,13 +1195,13 @@ dependencies = [
 
 [[package]]
 name = "azure_identity"
-version = "1.1.0-beta.1"
+version = "1.1.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b90a143acdae0f21a90bbd056f1472ccf79850c834f79380d5ac303506efc9c"
+checksum = "cf1a0cb504f0420f78b5ec87db646284062e1987f822bfba1c97b2f3f697a8a6"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core 1.2.0-beta.1",
+ "azure_core 1.2.0-beta.2",
  "futures",
  "pin-project",
  "serde",
@@ -1219,7 +1219,7 @@ checksum = "ce7be32006514ec7f2ee98fcd89e743c6a20ef479ecf0fc548cff1fc9f36063e"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core 1.2.0-beta.1",
+ "azure_core 1.2.0-beta.2",
  "clap",
  "futures",
  "rustc_version",
@@ -7582,8 +7582,8 @@ name = "otel-arrow-dfe-contrib-extensions"
 version = "0.64.0"
 dependencies = [
  "async-trait",
- "azure_core 1.2.0-beta.1",
- "azure_identity 1.1.0-beta.1",
+ "azure_core 1.2.0-beta.2",
+ "azure_identity 1.1.0-beta.2",
  "azure_security_keyvault_secrets",
  "base64 0.23.1",
  "futures",
@@ -8000,8 +8000,8 @@ dependencies = [
  "arc-swap",
  "arrow",
  "async-trait",
- "azure_core 1.2.0-beta.1",
- "azure_identity 1.1.0-beta.1",
+ "azure_core 1.2.0-beta.2",
+ "azure_identity 1.1.0-beta.2",
  "base64 0.23.1",
  "bitflags 2.13.2",
  "bytes",
@@ -11106,7 +11106,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -11946,7 +11946,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.9.5",
 ]
 
 [[package]]
@@ -11983,9 +11983,9 @@ dependencies = [
 
 [[package]]
 name = "typespec"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1bfbf9f6c7d77a4bb34e5fd05493c752827adff113a86928072a2030a056ce8"
+checksum = "83fb7c081c0b8f01524f8ad7224878abc9de98d4b0bc71462b1f5354a9dfd5bf"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -12022,9 +12022,9 @@ dependencies = [
 
 [[package]]
 name = "typespec_client_core"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae3020b828414079402a68d56d134b24b8ec58f8287e87149dee6765bc38a525"
+checksum = "348f7adbbced48e6249d147298b00bf6cac86fb66d296451b0e33628edb8043e"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -12039,7 +12039,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
- "typespec 1.2.0-beta.1",
+ "typespec 1.2.0-beta.2",
  "typespec_macros 1.0.0",
  "url",
  "uuid",
