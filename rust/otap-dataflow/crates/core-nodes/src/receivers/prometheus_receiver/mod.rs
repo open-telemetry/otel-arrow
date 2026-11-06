@@ -80,6 +80,8 @@ pub struct PrometheusReceiverMetrics {
     pub scrape_duration_ns: Mmsc,
 }
 
+// TODO(bwplotka): Replace static and DNS target resolution with scrape.rs discovery once
+// https://github.com/prometheus/scrape.rs/issues/36 lands.
 /// Discovers and resolves configured static and DNS scrape target URLs.
 ///
 /// Kept separate from [`TargetScraper`] so future shared work coordination can supply per-core
@@ -240,6 +242,8 @@ fn terminal_state(
     }
 }
 
+// TODO(bwplotka): Upstream scraper Accept header construction, text 1.0.0 handling, and fallback
+// Content-Type resolution to expfmt::format in https://github.com/prometheus/scrape.rs/issues/34.
 /// Resolves the HTTP `Accept` header value advertised during scrapes.
 pub(crate) fn build_accept_header(enable_open_metrics: bool) -> &'static str {
     if enable_open_metrics {
@@ -249,6 +253,8 @@ pub(crate) fn build_accept_header(enable_open_metrics: bool) -> &'static str {
     }
 }
 
+// TODO(bwplotka): Replace fallback Content-Type resolution with expfmt::format scraper
+// negotiation once https://github.com/prometheus/scrape.rs/issues/34 lands.
 /// Determines the exposition [`Format`] from an HTTP `Content-Type` header.
 ///
 /// Falls back to OpenMetrics 1.0 when the media type starts with `application/openmetrics-text`
@@ -269,6 +275,8 @@ pub(crate) fn resolve_response_format(content_type: Option<&str>) -> Format {
     }
 }
 
+// TODO(bwplotka): Construct OtapArrowRecords::Metrics through otel-arrow-dfe-pdata-views
+// MetricsView once https://github.com/prometheus/scrape.rs/issues/28 lands.
 /// Converts a decoded [`OtapMetricRecords`] batch into [`OtapArrowRecords::Metrics`].
 ///
 /// When `honor_timestamps` is `false`, sample timestamps on metric data point tables are
@@ -306,6 +314,8 @@ const fn is_metric_data_point_table(payload_type: ArrowPayloadType) -> bool {
     )
 }
 
+// TODO(bwplotka): Remove post-decode timestamp column replacement once
+// DecodeOptions::with_honor_timestamps lands in https://github.com/prometheus/scrape.rs/issues/33.
 fn override_time_unix_nano(
     batch: &arrow::record_batch::RecordBatch,
     scrape_timestamp_ns: i64,
@@ -379,6 +389,8 @@ impl TargetScraper {
             metrics.scrapes_started.add(1);
         }
 
+        // TODO(bwplotka): Delegate single-target HTTP fetch, compression negotiation, and scrape
+        // headers to scrape.rs once https://github.com/prometheus/scrape.rs/issues/36 lands.
         let response = match self
             .client
             .get(target_url.clone())
@@ -447,6 +459,8 @@ impl TargetScraper {
 
         let mut scrape_ok = true;
 
+        // TODO(bwplotka): Switch to cooperative incremental decoding so large payloads yield to
+        // the local runtime once https://github.com/prometheus/scrape.rs/issues/27 lands.
         if self.max_data_points_per_batch == 0 {
             match self.decoder.decode(body.as_ref(), &format, &decode_opts) {
                 Ok(records) => {
