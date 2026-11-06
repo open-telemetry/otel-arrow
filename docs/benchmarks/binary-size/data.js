@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793990189254,
+  "lastUpdate": 1793993734426,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -81045,6 +81045,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/246c671ee02e23f69576a0763964712e1762bf8c"
         },
         "date": 1793990173919,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "bwplotka@gmail.com",
+            "name": "Bartlomiej Plotka",
+            "username": "bwplotka"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "9145c0f4179ad9c05c49fc7debe8edeb97eb3895",
+          "message": "feat(contrib-extensions): add GCP metadata auth extension (urn:otel:extension:gcp_auth) (#4650)\n\nThis would help us to benchmark some prototypes at Google 🤗  Thanks!\n\ncc @lmolkova @lquerel \n\nAdds `urn:otel:extension:gcp_auth` (feature `gcp-auth`) in\n`otel-arrow-dfe-contrib-extensions` to provide the `BearerTokenProvider`\ncapability backed by the Google Cloud (GCE / GKE) compute metadata\nserver\n(`/computeMetadata/v1/instance/service-accounts/{service_account}/token`\nwith `Metadata-Flavor: Google`).\n\nTokens are cached and refreshed ahead of expiry via\n`TokenProviderExtension` so `urn:otel:exporter:otlp_grpc` and\n`urn:otel:exporter:otlp_http` can authenticate to Google Cloud Telemetry\n(`https://telemetry.googleapis.com:443`) on GKE and GCE.\n\n---------\n\nSigned-off-by: Bartek Plotka <bwplotka@gmail.com>",
+          "timestamp": "2026-11-06T18:48:12Z",
+          "tree_id": "8104c90cecc655cbe5c02340ea61025e1253370d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9145c0f4179ad9c05c49fc7debe8edeb97eb3895"
+        },
+        "date": 1793993711370,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
