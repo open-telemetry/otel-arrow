@@ -115,7 +115,12 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 /// service account, and scopes.
 fn build_token_url(config: &Config) -> Result<reqwest::Url, Error> {
     let base = config.resolved_endpoint();
-    let mut url = super::config::validate_base_endpoint(&base, "endpoint")
+    let field_name = if config.endpoint.is_some() {
+        "endpoint"
+    } else {
+        super::config::GCE_METADATA_HOST_ENV
+    };
+    let mut url = super::config::validate_base_endpoint(&base, field_name)
         .map_err(|reason| Error::BuildHttpClient { reason })?;
 
     let service_account = config.service_account.trim();

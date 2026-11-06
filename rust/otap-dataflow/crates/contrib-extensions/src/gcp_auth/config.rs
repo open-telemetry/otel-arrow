@@ -143,12 +143,12 @@ impl Config {
     #[must_use]
     pub(crate) fn resolved_endpoint_with_env(&self, env_host: Option<&str>) -> String {
         if let Some(endpoint) = &self.endpoint {
-            return endpoint.trim().trim_end_matches('/').to_string();
+            return trim_endpoint_trailing_slashes(endpoint.trim()).to_string();
         }
         if let Some(host) = env_host {
-            let trimmed = host.trim().trim_end_matches('/');
+            let trimmed = trim_endpoint_trailing_slashes(host.trim());
             if !trimmed.is_empty() {
-                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                if http_scheme_len(trimmed).is_some() {
                     return trimmed.to_string();
                 }
                 return format!("http://{trimmed}");
@@ -217,6 +217,35 @@ impl Config {
     }
 }
 
+/// Returns the byte length of the `http://` or `https://` scheme prefix when
+/// present (case-insensitively).
+fn http_scheme_len(raw: &str) -> Option<usize> {
+    if raw
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        Some(8)
+    } else if raw
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+    {
+        Some(7)
+    } else {
+        None
+    }
+}
+
+/// Strips trailing `/` characters from an endpoint or host string without
+/// stripping the `//` separator of an `http://` or `https://` scheme prefix.
+fn trim_endpoint_trailing_slashes(raw: &str) -> &str {
+    let min_len = http_scheme_len(raw).unwrap_or(0);
+    let mut end = raw.len();
+    while end > min_len && raw.as_bytes()[end - 1] == b'/' {
+        end -= 1;
+    }
+    &raw[..end]
+}
+
 /// Parses and validates a metadata server base URL, ensuring it uses `http://`
 /// or `https://`, has a non-empty host, and carries no credentials, query
 /// parameters, or fragment.
@@ -225,7 +254,7 @@ pub(crate) fn validate_base_endpoint(raw: &str, field_name: &str) -> Result<reqw
     if trimmed.is_empty() {
         return Err(format!("`{field_name}` must not be empty when set"));
     }
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+    if http_scheme_len(trimmed).is_none() {
         return Err(format!(
             "`{field_name}` must start with `http://` or `https://`"
         ));

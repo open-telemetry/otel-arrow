@@ -129,6 +129,19 @@ fn resolved_endpoint_honors_config_and_env_override_precedence() {
         default_cfg.resolved_endpoint_with_env(Some("https://metadata.example.com/")),
         "https://metadata.example.com"
     );
+    assert_eq!(
+        default_cfg.resolved_endpoint_with_env(Some("HTTP://169.254.169.254:8080/")),
+        "HTTP://169.254.169.254:8080"
+    );
+    for scheme_only in ["http://", "https://", "http:///"] {
+        let resolved = default_cfg.resolved_endpoint_with_env(Some(scheme_only));
+        let err = config::validate_base_endpoint(&resolved, config::GCE_METADATA_HOST_ENV)
+            .expect_err("scheme-only GCE_METADATA_HOST must be rejected");
+        assert!(
+            err.contains(config::GCE_METADATA_HOST_ENV),
+            "expected GCE_METADATA_HOST in validation error, got {err}"
+        );
+    }
 
     let explicit_cfg = config_from_json(serde_json::json!({
         "endpoint": "http://explicit.metadata.local/",
