@@ -11,13 +11,7 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::functions::core::coalesce::CoalesceFunc;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::{md5, sha256, sha512};
-use datafusion::functions::datetime::to_char;
-use datafusion::functions::encoding::encode;
-use datafusion::functions::math::log10;
-use datafusion::functions::string::{
-    concat, concat_ws, ends_with, lower, ltrim, replace, rtrim, starts_with, upper, uuid,
-};
+use datafusion::functions::string::{concat, concat_ws, replace};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
@@ -38,18 +32,12 @@ use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 use regex::Regex;
 
-#[cfg(feature = "sha1-hash")]
-use crate::consts::SHA1_FUNC_NAME;
-use crate::consts::{
-    ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
-    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
-    STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
-    XXH128_FUNC_NAME,
-};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::batch::SignalTypePredicate;
 use crate::pipeline::expr::join::is_one_to_many;
+use crate::pipeline::expr::planner::func::{
+    BatchEvalFuncDef, DataFusionFunctionDef, FunctionDefinition,
+};
 use crate::pipeline::expr::types::{
     ExprLogicalType, attribute_field_type, cast_expr, coerce_arithmetic, data_point_field_type,
     nested_struct_field_type, root_field_type,
@@ -64,12 +52,11 @@ use crate::pipeline::functions::is_type::IsTypeFunc;
 use crate::pipeline::functions::regex_match::RegexMatchFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
-use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, now, regexp_substr, substring, uuidv7, xxh3_hash,
-    xxh128_hash,
-};
+use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
+
+mod func;
 
 /// Planner that converts AST expressions into `ScopedExpr` execution trees.
 pub(crate) struct ExprPlanner<'a> {
@@ -789,13 +776,44 @@ impl<'a> ExprPlanner<'a> {
             });
         };
 
-        let df_udf = DataFusionFunctionDef::from_func_name(func_name).ok_or_else(|| {
-            Error::InvalidPipelineError {
+        match FunctionDefinition::from_func_name(func_name) {
+            Some(FunctionDefinition::BatchEval(batch_eval_func_def)) => {
+                self.plan_batch_eval_function_invocation(invoke_expr, batch_eval_func_def)
+            }
+            Some(FunctionDefinition::DataFusion(df_udf)) => {
+                self.plan_df_function_invocation(invoke_expr, functions, &func_name, df_udf)
+            }
+            None => Err(Error::InvalidPipelineError {
                 cause: format!("Unknown function '{func_name}"),
                 query_location: Some(invoke_expr.get_query_location().clone()),
-            }
-        })?;
+            }),
+        }
+    }
 
+    fn plan_batch_eval_function_invocation(
+        &self,
+        invoke_expr: &InvokeFunctionScalarExpression,
+        batch_eval_func_def: BatchEvalFuncDef,
+    ) -> Result<PlannedOp> {
+        let batch_eval = batch_eval_func_def.create_batch_eval_instance(self.node_bindings)?;
+
+        return Ok(PlannedOp {
+            expr: ScopedExpr::Eval {
+                scope: DataScope::StaticScalar,
+                eval: LeafEval::BatchEval(batch_eval),
+            },
+            expr_type: batch_eval_func_def.logical_type().clone(),
+            requires_dict_downcast: false,
+        });
+    }
+
+    fn plan_df_function_invocation(
+        &self,
+        invoke_expr: &InvokeFunctionScalarExpression,
+        functions: &[PipelineFunction],
+        func_name: &str,
+        df_udf: DataFusionFunctionDef,
+    ) -> Result<PlannedOp> {
         let invoke_arg_exprs = invoke_expr.get_arguments();
         let num_args = invoke_arg_exprs.len();
 
@@ -2026,65 +2044,6 @@ enum FunctionArgScope {
     Combined(DataScope),
     /// Args require a joining data with different scopes.
     Join(Vec<ScopedExpr>),
-}
-
-struct DataFusionFunctionDef {
-    scalar_udf: Arc<ScalarUDF>,
-    return_type: ExprLogicalType,
-    requires_dict_downcast: bool,
-    cast_result_to: Option<DataType>,
-}
-
-impl DataFusionFunctionDef {
-    fn new(
-        scalar_udf: Arc<ScalarUDF>,
-        return_type: ExprLogicalType,
-        requires_dict_downcast: bool,
-        cast_result_to: Option<DataType>,
-    ) -> Self {
-        Self {
-            scalar_udf,
-            return_type,
-            requires_dict_downcast,
-            cast_result_to,
-        }
-    }
-
-    fn from_func_name(func_name: &str) -> Option<Self> {
-        // TODO: some functions may produce different result types depending on the input type.
-        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
-        // to compute the return type from the types of the input expressions.
-        // TODO: some of these functions that involve expanding to dictionary, we may wish to
-        // implement our own versions that can operate directly on dictionary arrays (or fix this
-        // upstream in datafusion_functions)
-        Some(match func_name {
-            ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
-            ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
-            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
-            LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
-            NOW_FUNC_NAME => Self::new(now(), ExprLogicalType::TimestampNanosecond, false, None),
-            REGEXP_SUBSTR_FUNC_NAME => {
-                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
-            }
-            FORMAT_DATETIME_FUNC_NAME => Self::new(to_char(), ExprLogicalType::String, false, None),
-            RTRIM_FUNC_NAME => Self::new(rtrim(), ExprLogicalType::String, true, None),
-            SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
-            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::String, true, Some(DataType::Utf8)),
-            FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
-            MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
-            #[cfg(feature = "sha1-hash")]
-            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
-            SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
-            STARTS_WITH_FUNC_NAME => Self::new(starts_with(), ExprLogicalType::Boolean, true, None),
-            XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),
-            XXH128_FUNC_NAME => Self::new(xxh128_hash(), ExprLogicalType::Binary, true, None),
-            UUID_FUNC_NAME => Self::new(uuid(), ExprLogicalType::String, false, None),
-            UUIDV7_FUNC_NAME => Self::new(uuidv7(), ExprLogicalType::String, false, None),
-            UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
-            LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
-            _ => return None,
-        })
-    }
 }
 
 impl ScopedExpr {

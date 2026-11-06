@@ -44,7 +44,7 @@ trait MetadataUdfImpl {
 
 /// TODO docs
 #[derive(Debug)]
-struct HasTransportHeaderPredicate {
+pub(crate) struct HasTransportHeaderPredicate {
     declared_metadata_read: Option<ValueRead>,
 }
 
@@ -55,7 +55,7 @@ impl MetadataUdfImpl for HasTransportHeaderPredicate {
 }
 
 impl HasTransportHeaderPredicate {
-    fn try_new(
+    pub fn try_new(
         header_name: &str,
         node_context_bindings: &NodeBindings,
         query_location: Option<&QueryLocation>,
@@ -81,10 +81,14 @@ impl BatchEval for HasTransportHeaderPredicate {
     ) -> Result<ScalarValue> {
         let result = match &self.declared_metadata_read {
             Some(declared_metadata_read) => {
+                println!("IT's SOME");
                 let metadata = eval_ctx.state().get_metadata();
                 ScalarValue::Boolean(Some(value_exists(metadata, declared_metadata_read)?))
             }
-            None => ScalarValue::Null,
+            None => {
+                println!("ITS null");
+                ScalarValue::Null
+            },
         };
 
         Ok(result)

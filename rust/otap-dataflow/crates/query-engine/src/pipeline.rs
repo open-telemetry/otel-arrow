@@ -543,7 +543,8 @@ impl Pipeline {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::io::Write;
+use std::sync::Arc;
 
     use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
 
@@ -560,7 +561,7 @@ mod test {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otel_arrow_dfe_pdata::testing::round_trip::{
-        otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics,
+        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics
     };
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
@@ -882,5 +883,24 @@ mod test {
     fn test_infer_signal_context_exact_token_match() {
         let pipeline_expr = KqlParser::parse("logsfoo | where true").unwrap().pipeline;
         assert!(SignalContext::try_infer(&pipeline_expr).is_err());
+    }
+
+
+    #[test]
+    fn infernal_proto_write() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
+        use prost::Message;
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .event_name("hello").finish()
+        ]);
+
+        let mut as_bytes = Vec::new();
+        logs_data.encode(&mut as_bytes).unwrap();
+
+        let mut file = std::fs::File::create("/tmp/otlp_bytes.proto").unwrap();
+        assert!(file.write(&as_bytes).unwrap() > 0);
+        file.flush().unwrap();
+        drop(file);
     }
 }

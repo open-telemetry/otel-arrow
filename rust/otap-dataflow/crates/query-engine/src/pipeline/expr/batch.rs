@@ -15,11 +15,11 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use crate::error::Result;
 use crate::pipeline::expr::eval::EvalContext;
 
-mod metadata;
+pub(crate) mod metadata;
 
 /// An evaluation of a property of the entire `OtapArrowRecords` batch.
 ///
-/// Results are uniform across all rows.
+/// Results are uniform across all rows, so the evaluation produces a [`ScalarValue`].
 pub(crate) trait BatchEval: std::fmt::Debug {
     /// Evaluate against the entire batch.
     fn evaluate(
