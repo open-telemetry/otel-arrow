@@ -180,8 +180,11 @@ impl PipelineStage for ApplyPipelineStage {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use arrow::{array::UInt8Array, datatypes::DataType};
     use otel_arrow_contrib_data_engine_kql_parser::Parser;
+    use otel_arrow_dfe_engine::pdata_context::NodeBindings;
     use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -211,8 +214,13 @@ mod test {
     };
 
     /// Create a planner for log signal pipelines (used in tests).
-    fn logs_planner() -> PipelinePlanner {
-        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    fn logs_planner() -> PipelinePlanner<'static> {
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> =
+            LazyLock::new(|| NodeBindings::default());
+        PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &DEFAULT_NODE_BINDINGS,
+        )
     }
 
     mod data_point;

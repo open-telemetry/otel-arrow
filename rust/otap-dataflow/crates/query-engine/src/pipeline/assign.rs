@@ -2741,6 +2741,7 @@ mod test {
         datatypes::DataType,
     };
     use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_dfe_engine::pdata_context::NodeBindings;
     use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -3071,8 +3072,11 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3102,8 +3106,11 @@ mod test {
         let pipeline = P::parse("logs | extend bad_column = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3136,8 +3143,11 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3160,8 +3170,11 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -6200,8 +6213,11 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
 
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {

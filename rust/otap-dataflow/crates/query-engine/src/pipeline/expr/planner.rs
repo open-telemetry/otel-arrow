@@ -33,6 +33,7 @@ use otel_arrow_contrib_data_engine_expressions::{
     StringValue, TextScalarExpression, ValueType,
 };
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::pdata_context::NodeBindings;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 use regex::Regex;
@@ -71,7 +72,7 @@ use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType}
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 /// Planner that converts AST expressions into `ScopedExpr` execution trees.
-pub(crate) struct ExprPlanner {
+pub(crate) struct ExprPlanner<'a> {
     /// Whether attribute key matching should be case-sensitive. Defaults to `true`.
     /// When `false`, attribute key filtering uses case-insensitive comparison.
     attr_key_case_sensitive: bool,
@@ -79,6 +80,10 @@ pub(crate) struct ExprPlanner {
     /// Which type within the OTel data-model hierarchy should be treated as the root record
     /// the expression that is being planned.
     record_type: RecordType,
+
+    /// Context bindings associated the the DFE component instance that will evaluate the
+    /// query-engine pipeline containing the expression being planned.
+    node_bindings: &'a NodeBindings,
 }
 
 /// Intermediate planning result that carries type information alongside the `ScopedExpr`
@@ -88,12 +93,17 @@ pub(crate) struct PlannedOp {
     pub requires_dict_downcast: bool,
 }
 
-impl ExprPlanner {
+impl<'a> ExprPlanner<'a> {
     /// Creates a new `ExprPlanner`
-    pub fn new(attr_key_case_sensitive: bool, record_type: RecordType) -> Self {
+    pub fn new(
+        attr_key_case_sensitive: bool,
+        record_type: RecordType,
+        node_bindings: &'a NodeBindings,
+    ) -> Self {
         Self {
             attr_key_case_sensitive,
             record_type,
+            node_bindings,
         }
     }
 
@@ -856,9 +866,9 @@ impl ExprPlanner {
     ///   col("arg_N") references for multi-join)
     /// - `FunctionArgScope`: whether all args share a scope or require multi-join
     /// - `bool`: dict_downcast
-    fn plan_function_args<'a>(
+    fn plan_function_args<'expr>(
         &self,
-        arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
+        arg_exprs: impl Iterator<Item = &'expr ScalarExpression>,
         functions: &[PipelineFunction],
     ) -> Result<(Vec<Expr>, FunctionArgScope, Option<DataScope>, bool)> {
         let planned_args: Vec<PlannedOp> = arg_exprs
@@ -2516,6 +2526,8 @@ pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use super::*;
 
     use datafusion::common::cast::as_boolean_array;
@@ -2536,8 +2548,8 @@ mod test {
     use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::{AttributesIdentifier, SignalContext};
-    use crate::pipeline::{Pipeline, SignalKind};
     use crate::pipeline::state::ExecutionState;
+    use crate::pipeline::{Pipeline, SignalKind};
 
     fn ql() -> QueryLocation {
         QueryLocation::new_fake()
@@ -2579,6 +2591,15 @@ mod test {
         )))
     }
 
+    fn make_expr_planner(
+        attr_key_case_sensitive: bool,
+        record_type: RecordType,
+    ) -> ExprPlanner<'static> {
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> =
+            LazyLock::new(|| NodeBindings::default());
+        ExprPlanner::new(attr_key_case_sensitive, record_type, &DEFAULT_NODE_BINDINGS)
+    }
+
     /// Test OTAP batch: 3 log records with severity fields and attributes.
     fn test_otap() -> otel_arrow_dfe_pdata::OtapArrowRecords {
         let logs = to_logs_data(vec![
@@ -2606,7 +2627,7 @@ mod test {
 
     #[test]
     fn test_plan_column_reference() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2641,7 +2662,7 @@ mod test {
 
     #[test]
     fn test_plan_attribute_access() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
         let expr = make_attr_expr("x");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2678,7 +2699,7 @@ mod test {
 
     #[test]
     fn test_plan_static_literal() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
         let expr = make_int_literal(42);
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2709,7 +2730,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2754,7 +2775,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2771,7 +2792,7 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_comparison() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2811,7 +2832,7 @@ mod test {
 
     #[test]
     fn test_plan_and_two_root_predicates() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2863,7 +2884,7 @@ mod test {
 
     #[test]
     fn test_plan_signal_type_check() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         let get_record_type =
             ScalarExpression::GetRecordType(GetRecordTypeScalarExpression::new(ql()));
@@ -2895,7 +2916,7 @@ mod test {
 
     #[test]
     fn test_plan_scalar_logical() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2933,7 +2954,7 @@ mod test {
 
     #[test]
     fn test_plan_not() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2973,7 +2994,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_string() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // attributes["x"] == "a"
         let attr_expr = make_attr_expr("x");
@@ -3013,7 +3034,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_literal_on_left() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // "a" == attributes["x"] (literal on left)
         let literal_expr = make_string_literal("a");
@@ -3072,7 +3093,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // attributes["count"] > 7
         let attr_expr = make_attr_expr("count");
@@ -3113,7 +3134,7 @@ mod test {
         // attributes["x"] == "a" AND attributes["x"] == "a" (same key, same value)
         // Both should use fused paths and then BitmapAnd combines them
 
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         let left = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -3175,7 +3196,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // attributes["num"] + 2 > 5
         let attr_expr = make_attr_expr("num");
@@ -3228,7 +3249,7 @@ mod test {
     /// the left child is all-false.
     #[test]
     fn test_plan_cross_scope_and_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             true,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -3275,7 +3296,7 @@ mod test {
     /// the left child is all-true.
     #[test]
     fn test_plan_cross_scope_or_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             true,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -3325,7 +3346,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             true,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );

@@ -18,6 +18,7 @@ use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::col;
 use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::pdata_context::NodeBindings;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -333,6 +334,9 @@ pub struct PipelineOptions {
 
     /// Which signal types the pipeline may encounter
     pub signal_context: SignalContext,
+
+    /// Context bindings for DFE pipeline node that will invoke this pipeline
+    pub node_bindings: Arc<NodeBindings>,
 }
 
 impl Default for PipelineOptions {
@@ -340,6 +344,7 @@ impl Default for PipelineOptions {
         Self {
             filter_attribute_keys_case_sensitive: true,
             signal_context: SignalContext::All,
+            node_bindings: Arc::new(NodeBindings::default()),
         }
     }
 }
@@ -452,11 +457,13 @@ impl Pipeline {
         // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
-            let planner =
-                PipelinePlanner::new(RecordType::Signal(self.options.signal_context.clone()))
-                    .with_filter_attribute_keys_case_sensitive(
-                        self.options.filter_attribute_keys_case_sensitive,
-                    );
+            let planner = PipelinePlanner::new(
+                RecordType::Signal(self.options.signal_context.clone()),
+                &self.options.node_bindings,
+            )
+            .with_filter_attribute_keys_case_sensitive(
+                self.options.filter_attribute_keys_case_sensitive,
+            );
             let mut stages =
                 planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
 

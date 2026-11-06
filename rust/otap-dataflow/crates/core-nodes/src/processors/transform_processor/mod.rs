@@ -124,11 +124,22 @@ impl TransformOperationError {
 
 impl TransformProcessor {
     /// Create new instance from serialized configuration
-    fn from_config(pipeline_ctx: &PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+    fn from_config(
+        pipeline_ctx: &PipelineContext,
+        node_id: &NodeId,
+        config: &Value,
+    ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse TransformProcessor config: {e}"),
             })?;
+
+        // extract the context bindings from the pipeline context
+        let context_bindings = pipeline_ctx.compiled_context_bindings();
+        let node_bindings = context_bindings
+            .node_bindings(&pipeline_ctx.pipeline_key(), &node_id.name)
+            .cloned()
+            .unwrap_or_default();
 
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
@@ -155,6 +166,7 @@ impl TransformProcessor {
                 let options = PipelineOptions {
                     signal_context,
                     filter_attribute_keys_case_sensitive,
+                    node_bindings,
                 };
                 let pipeline = Pipeline::new_with_options(pipeline_expr, options);
                 (vec![Transform { pipeline }], TransformLanguage::Kql)
@@ -168,6 +180,7 @@ impl TransformProcessor {
                 let options = PipelineOptions {
                     signal_context,
                     filter_attribute_keys_case_sensitive,
+                    node_bindings,
                 };
                 let pipeline = Pipeline::new_with_options(pipeline_expr, options);
                 (vec![Transform { pipeline }], TransformLanguage::Opl)
@@ -184,6 +197,7 @@ impl TransformProcessor {
                         let pipeline_options = PipelineOptions {
                             filter_attribute_keys_case_sensitive,
                             signal_context: SignalContext::Single(SignalKind::Logs),
+                            node_bindings: Arc::clone(&node_bindings),
                         };
                         transforms.push(Transform {
                             pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
@@ -480,7 +494,7 @@ fn create_transform_processor(
     processor_config: &ProcessorConfig,
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let processor = TransformProcessor::from_config(&pipeline_ctx, &user_config.config)?;
+    let processor = TransformProcessor::from_config(&pipeline_ctx, &node_id, &user_config.config)?;
     Ok(ProcessorWrapper::local(
         processor,
         node_id,
@@ -864,6 +878,10 @@ mod test {
         );
         let processor = TransformProcessor::from_config(
             &pipeline_context,
+            &NodeId {
+                index: 0,
+                name: std::borrow::Cow::Borrowed("test"),
+            },
             &json!({ "kql_query": "logs | where severity_text == \"ERROR\"" }),
         )
         .expect("created processor");
