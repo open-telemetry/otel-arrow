@@ -10,85 +10,176 @@ use crate::*;
 impl<'a> Dictionary<'a> {
     /// Transforms values, reusing keys and validity buffers when indexes and null keys are unchanged.
     /// Empty value sets and non-null single-value outputs are normalized to null or scalar dictionaries.
-    pub(crate) fn transform_into_any<FTransform>(
+    pub(crate) fn transform_into_any<
+        TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
+        FTransform,
+    >(
         self,
+        diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
         mut transform: FTransform,
-    ) -> Result<Dictionary<'a>, DictionaryValueError>
+    ) -> Dictionary<'a>
     where
         FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
     {
         let (keys, values) = self.into_parts();
 
         match keys {
-            DictionaryKeyArray::KeyArray(key_array) => {
-                transform_primitive_array_into_any(key_array, values, transform)
-            }
+            DictionaryKeyArray::KeyArray(key_array) => transform_primitive_array_into_any(
+                diagnostic_receiver,
+                key_array,
+                values,
+                transform,
+            ),
             DictionaryKeyArray::BooleanArray {
                 data_type,
                 values: key_array,
             } => match data_type {
-                DictionaryKeyType::Int8 => transform_boolean_array_into_any_typed::<Int8Type, _>(
-                    data_type, key_array, values, transform,
-                ),
-                DictionaryKeyType::Int16 => transform_boolean_array_into_any_typed::<Int16Type, _>(
-                    data_type, key_array, values, transform,
-                ),
-                DictionaryKeyType::Int32 => transform_boolean_array_into_any_typed::<Int32Type, _>(
-                    data_type, key_array, values, transform,
-                ),
-                DictionaryKeyType::Int64 => transform_boolean_array_into_any_typed::<Int64Type, _>(
-                    data_type, key_array, values, transform,
-                ),
+                DictionaryKeyType::Int8 => {
+                    transform_boolean_array_into_any_typed::<Int8Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
+                    )
+                }
+                DictionaryKeyType::Int16 => {
+                    transform_boolean_array_into_any_typed::<Int16Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
+                    )
+                }
+                DictionaryKeyType::Int32 => {
+                    transform_boolean_array_into_any_typed::<Int32Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
+                    )
+                }
+                DictionaryKeyType::Int64 => {
+                    transform_boolean_array_into_any_typed::<Int64Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
+                    )
+                }
 
-                DictionaryKeyType::UInt8 => transform_boolean_array_into_any_typed::<UInt8Type, _>(
-                    data_type, key_array, values, transform,
-                ),
+                DictionaryKeyType::UInt8 => {
+                    transform_boolean_array_into_any_typed::<UInt8Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
+                    )
+                }
                 DictionaryKeyType::UInt16 => {
-                    transform_boolean_array_into_any_typed::<UInt16Type, _>(
-                        data_type, key_array, values, transform,
+                    transform_boolean_array_into_any_typed::<UInt16Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
                     )
                 }
                 DictionaryKeyType::UInt32 => {
-                    transform_boolean_array_into_any_typed::<UInt32Type, _>(
-                        data_type, key_array, values, transform,
+                    transform_boolean_array_into_any_typed::<UInt32Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
                     )
                 }
                 DictionaryKeyType::UInt64 => {
-                    transform_boolean_array_into_any_typed::<UInt64Type, _>(
-                        data_type, key_array, values, transform,
+                    transform_boolean_array_into_any_typed::<UInt64Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        key_array,
+                        values,
+                        transform,
                     )
                 }
             },
             DictionaryKeyArray::UniqueValues { data_type, length } => match data_type {
-                DictionaryKeyType::Int8 => transform_unique_values_into_any_typed::<Int8Type, _>(
-                    data_type, length, values, transform,
-                ),
-                DictionaryKeyType::Int16 => transform_unique_values_into_any_typed::<Int16Type, _>(
-                    data_type, length, values, transform,
-                ),
-                DictionaryKeyType::Int32 => transform_unique_values_into_any_typed::<Int32Type, _>(
-                    data_type, length, values, transform,
-                ),
-                DictionaryKeyType::Int64 => transform_unique_values_into_any_typed::<Int64Type, _>(
-                    data_type, length, values, transform,
-                ),
+                DictionaryKeyType::Int8 => {
+                    transform_unique_values_into_any_typed::<Int8Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
+                    )
+                }
+                DictionaryKeyType::Int16 => {
+                    transform_unique_values_into_any_typed::<Int16Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
+                    )
+                }
+                DictionaryKeyType::Int32 => {
+                    transform_unique_values_into_any_typed::<Int32Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
+                    )
+                }
+                DictionaryKeyType::Int64 => {
+                    transform_unique_values_into_any_typed::<Int64Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
+                    )
+                }
 
-                DictionaryKeyType::UInt8 => transform_unique_values_into_any_typed::<UInt8Type, _>(
-                    data_type, length, values, transform,
-                ),
+                DictionaryKeyType::UInt8 => {
+                    transform_unique_values_into_any_typed::<UInt8Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
+                    )
+                }
                 DictionaryKeyType::UInt16 => {
-                    transform_unique_values_into_any_typed::<UInt16Type, _>(
-                        data_type, length, values, transform,
+                    transform_unique_values_into_any_typed::<UInt16Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
                     )
                 }
                 DictionaryKeyType::UInt32 => {
-                    transform_unique_values_into_any_typed::<UInt32Type, _>(
-                        data_type, length, values, transform,
+                    transform_unique_values_into_any_typed::<UInt32Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
                     )
                 }
                 DictionaryKeyType::UInt64 => {
-                    transform_unique_values_into_any_typed::<UInt64Type, _>(
-                        data_type, length, values, transform,
+                    transform_unique_values_into_any_typed::<UInt64Type, _, _>(
+                        diagnostic_receiver,
+                        data_type,
+                        length,
+                        values,
+                        transform,
                     )
                 }
             },
@@ -99,70 +190,123 @@ impl<'a> Dictionary<'a> {
             } => {
                 let value = match value_index {
                     None => ValueOrRef::Null,
-                    Some(value_index) => values.get_value_at(value_index)?,
+                    Some(value_index) => match values.get_value_at(value_index) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            diagnostic_receiver.add_diagnostic_if_enabled(
+                                ColumnarEngineDiagnosticLevel::Warn,
+                                || e.to_string(),
+                            );
+                            ValueOrRef::Null
+                        }
+                    },
                 };
 
-                Ok(match transform(&value) {
+                match transform(&value) {
                     ValueOrRef::Null => Dictionary::new_null(data_type.clone(), length),
                     v => Dictionary::new_scalar(data_type.clone(), length, v),
-                })
+                }
             }
         }
     }
 }
 
-fn transform_primitive_array_into_any<'a, FTransform>(
+fn transform_primitive_array_into_any<
+    'a,
+    TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
+    FTransform,
+>(
+    diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
     keys: DictionaryArrowKeyArray,
     values: DictionaryValueArray<'a>,
     transform: FTransform,
-) -> Result<Dictionary<'a>, DictionaryValueError>
+) -> Dictionary<'a>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
 {
     let key_data_type = keys.data_type();
 
     match keys {
-        DictionaryArrowKeyArray::Int8(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
-        DictionaryArrowKeyArray::Int16(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
-        DictionaryArrowKeyArray::Int32(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
-        DictionaryArrowKeyArray::Int64(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
+        DictionaryArrowKeyArray::Int8(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
+        DictionaryArrowKeyArray::Int16(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
+        DictionaryArrowKeyArray::Int32(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
+        DictionaryArrowKeyArray::Int64(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
 
-        DictionaryArrowKeyArray::UInt8(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
-        DictionaryArrowKeyArray::UInt16(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
-        DictionaryArrowKeyArray::UInt32(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
-        DictionaryArrowKeyArray::UInt64(keys) => {
-            transform_primitive_array_into_any_typed(key_data_type, keys, values, transform)
-        }
+        DictionaryArrowKeyArray::UInt8(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
+        DictionaryArrowKeyArray::UInt16(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
+        DictionaryArrowKeyArray::UInt32(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
+        DictionaryArrowKeyArray::UInt64(keys) => transform_primitive_array_into_any_typed(
+            diagnostic_receiver,
+            key_data_type,
+            keys,
+            values,
+            transform,
+        ),
     }
 }
 
-fn transform_primitive_array_into_any_typed<'a, K: ArrowDictionaryKeyType, FTransform>(
+fn transform_primitive_array_into_any_typed<
+    'a,
+    K: ArrowDictionaryKeyType,
+    TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
+    FTransform,
+>(
+    diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
     key_data_type: DictionaryKeyType,
     keys: PrimitiveArray<K>,
     values: DictionaryValueArray<'a>,
     mut transform: FTransform,
-) -> Result<Dictionary<'a>, DictionaryValueError>
+) -> Dictionary<'a>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
     DictionaryKeyArray: From<PrimitiveArray<K>>,
 {
     let key_length = keys.len();
 
-    let (mut transformed_values, value_index_lookup) = values.transform_into_set(&mut transform)?;
+    let (mut transformed_values, value_index_lookup) =
+        values.transform_into_set(diagnostic_receiver, &mut transform);
 
     let mut null_value = None;
     if value_index_lookup.is_none() {
@@ -173,31 +317,41 @@ where
             .as_ref()
             .is_none_or(|value| matches!(value, ValueOrRef::Null))
         {
-            return Ok(dictionary_with_unchanged_keys(
-                keys.into(),
-                transformed_values,
-            ));
+            return dictionary_with_unchanged_keys(keys.into(), transformed_values);
         }
     }
 
     let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
     let mut key_writer = key_builder.get_writer();
     let mut null_index = None;
+
+    let mut key_overflows = 0;
 
     for (key_index, value_index) in keys.into_iter().enumerate() {
         if let Some(value_index) = value_index.map(<K as ArrowPrimitiveType>::Native::as_usize) {
             if let Some(value_index_lookup) = value_index_lookup.as_ref() {
                 if let Some(Some(transformed_value_index)) = value_index_lookup.get(&value_index) {
-                    unsafe {
-                        key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
-                    };
+                    if unsafe {
+                        key_writer
+                            .set_value_index_unchecked(key_index, *transformed_value_index)
+                            .is_ok()
+                    } {
+                        continue;
+                    }
+                    key_overflows += 1;
                 } else {
                     unsafe { key_writer.set_null_unchecked(key_index) };
+                    continue;
                 }
-                continue;
             } else {
-                unsafe { key_writer.set_value_index_unchecked(key_index, value_index)? };
-                continue;
+                if unsafe {
+                    key_writer
+                        .set_value_index_unchecked(key_index, value_index)
+                        .is_ok()
+                } {
+                    continue;
+                }
+                key_overflows += 1;
             }
         }
 
@@ -213,11 +367,18 @@ where
                         <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
                     ),
                     v => {
-                        let (index, _) = transformed_values.insert_full(v);
-                        (
-                            true,
-                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(index)?,
-                        )
+                        let (value_index, _) = transformed_values.insert_full(v);
+                        if let Ok(typed_value_index) =
+                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(value_index)
+                        {
+                            (true, typed_value_index)
+                        } else {
+                            key_overflows += 1;
+                            (
+                                false,
+                                <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
+                            )
+                        }
                     }
                 };
                 null_index = Some(v);
@@ -233,34 +394,47 @@ where
         unsafe { key_writer.set_null_unchecked(key_index) };
     }
 
+    if key_overflows > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(ColumnarEngineDiagnosticLevel::Warn, || {
+            format!(
+                "Encountered {key_overflows} value(s) which could not be stored due to key overflow"
+            )
+        });
+    }
+
     if transformed_values.is_empty() {
-        return Ok(Dictionary::new_null(key_data_type, key_length));
+        return Dictionary::new_null(key_data_type, key_length);
     } else if transformed_values.len() == 1 && !key_builder.has_nulls() {
-        return Ok(Dictionary::new_scalar(
+        return Dictionary::new_scalar(
             key_data_type,
             key_length,
             transformed_values.into_iter().next().expect("has value"),
-        ));
+        );
     }
 
-    Ok(unsafe {
-        Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into())
-    })
+    unsafe { Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into()) }
 }
 
-fn transform_boolean_array_into_any_typed<'a, K: ArrowDictionaryKeyType, FTransform>(
+fn transform_boolean_array_into_any_typed<
+    'a,
+    K: ArrowDictionaryKeyType,
+    TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
+    FTransform,
+>(
+    diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
     key_data_type: DictionaryKeyType,
     keys: BooleanArray,
     values: DictionaryValueArray<'a>,
     mut transform: FTransform,
-) -> Result<Dictionary<'a>, DictionaryValueError>
+) -> Dictionary<'a>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
     DictionaryKeyArray: From<PrimitiveArray<K>>,
 {
     let key_length = keys.len();
 
-    let (mut transformed_values, value_index_lookup) = values.transform_into_set(&mut transform)?;
+    let (mut transformed_values, value_index_lookup) =
+        values.transform_into_set(diagnostic_receiver, &mut transform);
 
     let mut null_value = None;
     if value_index_lookup.is_none() {
@@ -271,13 +445,13 @@ where
             .as_ref()
             .is_none_or(|value| matches!(value, ValueOrRef::Null))
         {
-            return Ok(dictionary_with_unchanged_keys(
+            return dictionary_with_unchanged_keys(
                 DictionaryKeyArray::BooleanArray {
                     data_type: key_data_type,
                     values: keys,
                 },
                 transformed_values,
-            ));
+            );
         }
     }
 
@@ -285,20 +459,33 @@ where
     let mut key_writer = key_builder.get_writer();
     let mut null_index = None;
 
+    let mut key_overflows = 0;
+
     for (key_index, value_index) in keys.into_iter().enumerate() {
         if let Some(value_index) = value_index.map(|v| if v { 1 } else { 0 }) {
             if let Some(value_index_lookup) = value_index_lookup.as_ref() {
                 if let Some(Some(transformed_value_index)) = value_index_lookup.get(&value_index) {
-                    unsafe {
-                        key_writer.set_value_index_unchecked(key_index, *transformed_value_index)?
-                    };
+                    if unsafe {
+                        key_writer
+                            .set_value_index_unchecked(key_index, *transformed_value_index)
+                            .is_ok()
+                    } {
+                        continue;
+                    }
+                    key_overflows += 1;
                 } else {
                     unsafe { key_writer.set_null_unchecked(key_index) };
+                    continue;
                 }
-                continue;
             } else {
-                unsafe { key_writer.set_value_index_unchecked(key_index, value_index)? };
-                continue;
+                if unsafe {
+                    key_writer
+                        .set_value_index_unchecked(key_index, value_index)
+                        .is_ok()
+                } {
+                    continue;
+                }
+                key_overflows += 1;
             }
         }
 
@@ -314,11 +501,18 @@ where
                         <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
                     ),
                     v => {
-                        let (index, _) = transformed_values.insert_full(v);
-                        (
-                            true,
-                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(index)?,
-                        )
+                        let (value_index, _) = transformed_values.insert_full(v);
+                        if let Ok(typed_value_index) =
+                            DictionaryKeyArrayWriter::<'_, K>::get_typed_value_index(value_index)
+                        {
+                            (true, typed_value_index)
+                        } else {
+                            key_overflows += 1;
+                            (
+                                false,
+                                <K as ArrowPrimitiveType>::Native::from_usize(0).unwrap(),
+                            )
+                        }
                     }
                 };
                 null_index = Some(v);
@@ -334,44 +528,57 @@ where
         unsafe { key_writer.set_null_unchecked(key_index) };
     }
 
+    if key_overflows > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(ColumnarEngineDiagnosticLevel::Warn, || {
+            format!(
+                "Encountered {key_overflows} value(s) which could not be stored due to key overflow"
+            )
+        });
+    }
+
     if transformed_values.is_empty() {
-        return Ok(Dictionary::new_null(key_data_type, key_length));
+        return Dictionary::new_null(key_data_type, key_length);
     } else if transformed_values.len() == 1 && !key_builder.has_nulls() {
-        return Ok(Dictionary::new_scalar(
+        return Dictionary::new_scalar(
             key_data_type,
             key_length,
             transformed_values.into_iter().next().expect("has value"),
-        ));
+        );
     }
 
-    Ok(unsafe {
-        Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into())
-    })
+    unsafe { Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into()) }
 }
 
-fn transform_unique_values_into_any_typed<'a, K: ArrowDictionaryKeyType, FTransform>(
+fn transform_unique_values_into_any_typed<
+    'a,
+    K: ArrowDictionaryKeyType,
+    TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
+    FTransform,
+>(
+    diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
     key_data_type: DictionaryKeyType,
     key_length: usize,
     values: DictionaryValueArray<'a>,
     transform: FTransform,
-) -> Result<Dictionary<'a>, DictionaryValueError>
+) -> Dictionary<'a>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
     DictionaryKeyArray: From<PrimitiveArray<K>>,
 {
-    let (transformed_values, value_index_lookup) = values.transform_into_set(transform)?;
+    let (transformed_values, value_index_lookup) =
+        values.transform_into_set(diagnostic_receiver, transform);
 
     let value_index_lookup = match value_index_lookup {
         None => {
             // Note: Reaching here means nothing was remapped so we can skip
             // building a new key array.
-            return Ok(dictionary_with_unchanged_keys(
+            return dictionary_with_unchanged_keys(
                 DictionaryKeyArray::UniqueValues {
                     data_type: key_data_type,
                     length: key_length,
                 },
                 transformed_values,
-            ));
+            );
         }
         Some(lookup) => lookup,
     };
@@ -379,27 +586,42 @@ where
     let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
     let mut key_writer = key_builder.get_writer();
 
+    let mut key_overflows = 0;
+
     for key_index in 0..key_length {
         if let Some(Some(transformed_value_index)) = value_index_lookup.get(&key_index) {
-            unsafe { key_writer.set_value_index_unchecked(key_index, *transformed_value_index)? };
-        } else {
-            unsafe { key_writer.set_null_unchecked(key_index) };
+            if unsafe {
+                key_writer
+                    .set_value_index_unchecked(key_index, *transformed_value_index)
+                    .is_ok()
+            } {
+                continue;
+            }
+            key_overflows += 1;
         }
+
+        unsafe { key_writer.set_null_unchecked(key_index) };
+    }
+
+    if key_overflows > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(ColumnarEngineDiagnosticLevel::Warn, || {
+            format!(
+                "Encountered {key_overflows} value(s) which could not be stored due to key overflow"
+            )
+        });
     }
 
     if transformed_values.is_empty() {
-        return Ok(Dictionary::new_null(key_data_type, key_length));
+        return Dictionary::new_null(key_data_type, key_length);
     } else if transformed_values.len() == 1 && !key_builder.has_nulls() {
-        return Ok(Dictionary::new_scalar(
+        return Dictionary::new_scalar(
             key_data_type,
             key_length,
             transformed_values.into_iter().next().expect("has value"),
-        ));
+        );
     }
 
-    Ok(unsafe {
-        Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into())
-    })
+    unsafe { Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into()) }
 }
 
 fn dictionary_with_unchanged_keys<'a>(

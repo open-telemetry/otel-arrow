@@ -112,6 +112,53 @@ pub trait ColumnarEngineDiagnosticReceiver<'a> {
         F: FnOnce() -> String;
 
     fn add_diagnostic(&self, diagnostic: ColumnarEngineDiagnostic<'a>);
+
+    fn bind(
+        &self,
+        expression: &'a dyn Expression,
+    ) -> ColumnarEngineBoundDiagnosticReceiver<'a, '_, Self>
+    where
+        Self: Sized,
+    {
+        ColumnarEngineBoundDiagnosticReceiver {
+            receiver: self,
+            expression,
+        }
+    }
+}
+
+pub(crate) struct ColumnarEngineBoundDiagnosticReceiver<
+    'a,
+    'b,
+    R: ColumnarEngineDiagnosticReceiver<'a>,
+> {
+    receiver: &'b R,
+    expression: &'a dyn Expression,
+}
+
+impl<'a, 'b, R: ColumnarEngineDiagnosticReceiver<'a>>
+    ColumnarEngineBoundDiagnosticReceiver<'a, 'b, R>
+{
+    pub fn is_diagnostic_level_enabled(
+        &self,
+        diagnostic_level: ColumnarEngineDiagnosticLevel,
+    ) -> bool {
+        self.receiver.is_diagnostic_level_enabled(diagnostic_level)
+    }
+
+    pub fn add_diagnostic_if_enabled<F>(
+        &self,
+        diagnostic_level: ColumnarEngineDiagnosticLevel,
+        generate_message: F,
+    ) where
+        F: FnOnce() -> String,
+    {
+        self.receiver.add_diagnostic_if_enabled(
+            diagnostic_level,
+            self.expression,
+            generate_message,
+        );
+    }
 }
 
 pub(crate) struct ColumnarEngineDiagnosticReceiverImpl<'a, 'pipeline> {

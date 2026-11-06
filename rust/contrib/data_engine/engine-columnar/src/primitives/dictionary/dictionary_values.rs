@@ -82,21 +82,24 @@ impl<'a> DictionaryValueArray<'a> {
         }
     }
 
-    pub fn transform_into_set<FTransform>(
+    pub fn transform_into_set<TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>, FTransform>(
         self,
-        mut transform: FTransform,
-    ) -> Result<(ValueOrRefSet<'a>, IndexLookup), DictionaryValueError>
+        diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
+        transform: FTransform,
+    ) -> (ValueOrRefSet<'a>, IndexLookup)
     where
         FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
     {
         match self {
-            DictionaryValueArray::Array(a) => transform_array_into_set(transform, a),
-            DictionaryValueArray::Vec(a) => iter_into_set(a.iter().map(|v| Ok(transform(v)))),
-            DictionaryValueArray::Set(a) => iter_into_set(a.iter().map(|v| Ok(transform(v)))),
+            DictionaryValueArray::Array(a) => {
+                transform_array_into_set(diagnostic_receiver, transform, a)
+            }
+            DictionaryValueArray::Vec(a) => iter_into_set(a.iter().map(transform)),
+            DictionaryValueArray::Set(a) => iter_into_set(a.iter().map(transform)),
             DictionaryValueArray::Boolean => iter_into_set(
                 [ValueOrRef::Boolean(false), ValueOrRef::Boolean(true)]
                     .iter()
-                    .map(|v| Ok(transform(v))),
+                    .map(transform),
             ),
         }
     }
@@ -417,56 +420,60 @@ fn build_null_buffer(nulls: impl ExactSizeIterator<Item = bool>) -> Option<NullB
     builder.map(|builder| NullBuffer::new(builder.build()))
 }
 
-fn transform_array_into_set<'a, FTransform>(
+fn transform_array_into_set<'a, TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>, FTransform>(
+    diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
     mut transform: FTransform,
     value: DictionaryArrowValueArray,
-) -> Result<SetWithLookup<ValueOrRef<'a>>, DictionaryValueError>
+) -> SetWithLookup<ValueOrRef<'a>>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
 {
-    match value {
+    let mut integer_conversion_failures = 0;
+    let mut datetime_conversion_failures = 0;
+
+    let results = match value {
         DictionaryArrowValueArray::Int8(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::Int16(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::Int32(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::Int64(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, ValueOrRef::Integer))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
 
         DictionaryArrowValueArray::UInt8(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::UInt16(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::UInt32(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::UInt64(array) => iter_into_set(
             array
@@ -480,33 +487,39 @@ where
                             })
                     })
                 })
-                .map(|v| v.map(|v| transform(&v))),
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        integer_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
         ),
 
         DictionaryArrowValueArray::Float16(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Double(f64::from(v))))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::Float32(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Double(v as f64)))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
         DictionaryArrowValueArray::Float64(array) => iter_into_set(
             array
                 .into_iter()
                 .map(|v| v.map_or(ValueOrRef::Null, ValueOrRef::Double))
-                .map(|v| Ok(transform(&v))),
+                .map(|v| transform(&v)),
         ),
 
         DictionaryArrowValueArray::Utf8(array) => {
-            iter_into_set(StringArrayIter::new(&array).map(|v| Ok(transform(&v))))
+            iter_into_set(StringArrayIter::new(&array).map(|v| transform(&v)))
         }
         DictionaryArrowValueArray::LargeUtf8(array) => {
-            iter_into_set(StringArrayIter::new(&array).map(|v| Ok(transform(&v))))
+            iter_into_set(StringArrayIter::new(&array).map(|v| transform(&v)))
         }
 
         DictionaryArrowValueArray::TimestampSecond(array) => iter_into_set(
@@ -521,7 +534,13 @@ where
                         )
                     })
                 })
-                .map(|v| v.map(|v| transform(&v))),
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
         ),
         DictionaryArrowValueArray::TimestampMillisecond(array) => iter_into_set(
             array
@@ -535,7 +554,13 @@ where
                         )
                     })
                 })
-                .map(|v| v.map(|v| transform(&v))),
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
         ),
         DictionaryArrowValueArray::TimestampMicrosecond(array) => iter_into_set(
             array
@@ -549,7 +574,13 @@ where
                         )
                     })
                 })
-                .map(|v| v.map(|v| transform(&v))),
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
         ),
         DictionaryArrowValueArray::TimestampNanosecond(array) => iter_into_set(
             array
@@ -563,13 +594,32 @@ where
                         )
                     })
                 })
-                .map(|v| v.map(|v| transform(&v))),
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
         ),
 
         DictionaryArrowValueArray::FixedSizeBinary(array) => {
-            iter_into_set(FixedSizeBinaryArrayIter::new(&array).map(|v| Ok(transform(&v))))
+            iter_into_set(FixedSizeBinaryArrayIter::new(&array).map(|v| transform(&v)))
         }
+    };
+
+    if integer_conversion_failures > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(
+            ColumnarEngineDiagnosticLevel::Warn,
+            || format!("Encountered {integer_conversion_failures} UInt64 value(s) which could not be converted into 'Integer'"));
     }
+    if datetime_conversion_failures > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(
+            ColumnarEngineDiagnosticLevel::Warn,
+            || format!("Encountered {datetime_conversion_failures} Timestamp value(s) which could not be converted into 'DateTime'"));
+    }
+
+    results
 }
 
 fn init_lookup(capacity: usize, fill_count: usize) -> AHashMap<usize, Option<usize>> {
@@ -580,17 +630,15 @@ fn init_lookup(capacity: usize, fill_count: usize) -> AHashMap<usize, Option<usi
     lookup
 }
 
-fn iter_into_set<'a, I>(values: I) -> Result<SetWithLookup<ValueOrRef<'a>>, DictionaryValueError>
+fn iter_into_set<'a, I>(values: I) -> SetWithLookup<ValueOrRef<'a>>
 where
-    I: Iterator<Item = Result<ValueOrRef<'a>, DictionaryValueError>> + ExactSizeIterator,
+    I: Iterator<Item = ValueOrRef<'a>> + ExactSizeIterator,
 {
     let capacity = values.len();
     let mut set = IndexSet::with_capacity_and_hasher(capacity, RandomState::new());
     let mut lookup = None;
 
     for (value_index, value) in values.enumerate() {
-        let value = value?;
-
         if matches!(value, ValueOrRef::Null) {
             lookup
                 .get_or_insert_with(|| init_lookup(capacity, value_index))
@@ -608,7 +656,7 @@ where
         }
     }
 
-    Ok((set, lookup))
+    (set, lookup)
 }
 
 struct StringArrayIter<'a, 'b, T: OffsetSizeTrait> {
