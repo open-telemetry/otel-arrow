@@ -13,8 +13,9 @@ Both implemented profiles support initial Prometheus integration:
 | Basic (default) | Fixed fleet, catalog updates, no-op reconciliation, shutdown |
 | Cooperative (opt-in) | Basic operations plus live resize, compatible replacement, rollback, qualified per-core recovery |
 
-Durable ownership, source progress adapters, and the Fenced profile remain future
-work. An initial Filelog integration can use this API for discovery and
+Optional local durable authority is available for both profiles. Source progress
+adapters and the Fenced profile remain future work. An initial Filelog
+integration can use this API for discovery and
 cooperative distribution, but cannot claim checkpoint ownership or durable
 delivery guarantees from it.
 
@@ -190,6 +191,70 @@ Cancellation or `Timeout` leaves the outcome unknown: query `resolve()` or await
 the same receipt again. Neither authorizes overlapping ownership. Final receipts
 are retained for replay. Unconfirmed provider cleanup blocks further updates;
 shutdown remains available. No controller state mutex is held while waiting.
+
+## Optional durable authority
+
+Enable the engine's `durable-authority` Cargo feature to include the bundled
+SQLite backend. Default engine builds keep the in-memory backend without linking
+SQLite. The node implementer can chain
+`with_durable_authority(DurableOptions::new(root, namespace))` onto a Basic or
+Cooperative declaration. The root is a provisioned,
+private Linux state directory. The namespace must identify the source state
+independently of runtime generations and settings revisions. Changing the root,
+namespace, limits, or takeover policy requires a restart. Declaration validation
+does not open storage; initialization runs on the dedicated writer thread before
+provider readiness allows node construction.
+
+Effective grants and source progress share one local SQLite transaction boundary.
+Activation and retirement wait for definite storage outcomes, while discovery
+and lifecycle control remain serviceable. A cancelled activation that committed
+late is retired before re-offering its work. The controller joins the writer at
+shutdown; Basic and Cooperative users can continue using the default in-memory
+backend.
+
+`participant.progress_writer()` supplies a direct publication path outside the
+coordinator event loop. Each `ProgressMutation` retains an `Arc<AdmissionTicket>`;
+use one ticket for all records contributed by an admitted publication when
+appropriate. The source adapter establishes completion/Ack or explicit-loss
+authorization before it submits checkpoint progress:
+
+```rust,ignore
+let ticket = Arc::new(grant.try_admit()?);
+let completed = publish_and_await_completion(&ticket).await?;
+let receipt = writer.commit(vec![ProgressMutation::new(
+    ticket, completed.source_id, expected_revision, completed.encoded_progress,
+)])?;
+let operation = receipt.operation(); // Retain this before awaiting.
+match receipt.wait().await? {
+    ProgressOutcome::Applied => mark_committed(),
+    ProgressOutcome::Rejected => reconcile_checkpoint(),
+    ProgressOutcome::Unknown => resolve_before_continuing(operation).await?,
+}
+```
+
+A publication can atomically update several source records and assignments in
+one namespace. Every record checks its exact current grant and expected source
+revision. Reopen preserves progress and durably fences the old epoch. A lost
+reply is resolved through `writer.resolve(operation)`; it never authorizes
+advancing a frontier or repeating a mutation under a new ID without resolution.
+`writer.read(source_id)` returns bounded opaque state for source-specific recovery.
+
+The writer has a separate bounded publication queue, a reserved authority queue,
+and independent byte budgets. `writer.status()` exposes their counts without
+source identifiers. Current transactions cannot preempt a kernel I/O wait;
+priority control remains serviceable in the host while ownership changes wait
+for storage. `Capacity` applies backpressure before submission; retain the source's
+pending frontier until its receipt is `Applied`, including when submission fails.
+Storage failure
+invalidates the domain rather than falling back to in-memory authority.
+
+This backend alone does not qualify a source's progress or publication adapter.
+`FencedProgress`, progress requirements beyond `None`, and `AllowFencedTakeover`
+remain rejected until source qualification. `CooperativeOnly` still requires
+physical worker release. Filelog checkpoint migration, state-aware handoff, and
+supported completion topologies are separate source-integration work. See the
+[storage contract](../crates/work-coordinator-state/README.md) for the format,
+receipt window, retained-state quotas, and supported failure model.
 
 ## Bounds and failure behavior
 

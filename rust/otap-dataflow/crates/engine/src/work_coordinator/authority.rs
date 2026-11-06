@@ -40,8 +40,8 @@ pub enum BackendOutcome {
 ///
 /// Commands are serialized by the host. An unknown outcome must be resolved
 /// before another owner can activate. Basic fails closed on unresolved outcomes.
-/// Durable progress will require a writer in this same authority domain; this
-/// trait alone does not promise durable source progress or fenced takeover.
+/// Durable implementations pair this with a writer in the same authority domain;
+/// this trait alone does not qualify a source adapter or fenced takeover.
 #[async_trait(?Send)]
 pub trait AssignmentBackend: 'static {
     /// Activate exactly this grant, after an offer has been accepted.
@@ -61,7 +61,7 @@ pub trait AssignmentBackend: 'static {
     -> Result<BackendOutcome, CoordinatorError>;
 }
 
-/// Nonpersistent authority for Basic consumers, with bounded active grants.
+/// Nonpersistent authority for Basic and Cooperative consumers, with bounded grants.
 /// Only the most recent command receipt is retained; older receipts are unknown.
 pub struct InMemoryBackend {
     active: HashMap<WorkId, GrantIdentity>,
@@ -224,7 +224,7 @@ impl AssignmentGrant {
 /// detached worker has stopped. The participant must join workers before release.
 #[derive(Debug)]
 pub struct AdmissionTicket {
-    grant: AssignmentGrant,
+    pub(super) grant: AssignmentGrant,
 }
 
 impl AdmissionTicket {

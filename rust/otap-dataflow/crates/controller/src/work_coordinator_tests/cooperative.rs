@@ -76,15 +76,22 @@ fn cooperative_declarations(
 ) -> Result<Vec<CoordinatorDeclaration>, otel_arrow_dfe_config::error::Error> {
     let settings = json!({"sink": config.config["sink"], "version": config.config["version"], "targets": config.config["targets"]});
     let initial = settings.clone();
-    Ok(vec![
-        CoordinatorDeclaration::new::<Scrapes, _>("targets", move || {
-            Box::new(CooperativeDiscovery {
-                settings: initial,
-                _local: Rc::new(()),
-            })
+    let mut declaration = CoordinatorDeclaration::new::<Scrapes, _>("targets", move || {
+        Box::new(CooperativeDiscovery {
+            settings: initial,
+            _local: Rc::new(()),
         })
-        .with_reconciliation(settings, |old, next| old["sink"] == next["sink"]),
-    ])
+    })
+    .with_reconciliation(settings, |old, next| old["sink"] == next["sink"]);
+    if let Some(root) = config.config["state_root"].as_str() {
+        declaration = declaration.with_durable_authority(
+            otel_arrow_dfe_engine::work_coordinator::DurableOptions::new(
+                root.into(),
+                "controller-fixture-targets".into(),
+            ),
+        );
+    }
+    Ok(vec![declaration])
 }
 
 struct CooperativeScraper {
@@ -243,16 +250,6 @@ static COOPERATIVE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     &[],
 );
 
-fn config(
-    sink: &str,
-    cores: usize,
-    version: u64,
-    targets: usize,
-    fail_core: Option<usize>,
-) -> OtelDataflowSpec {
-    config_with_block(sink, cores, version, targets, fail_core, None)
-}
-
 fn config_with_block(
     sink: &str,
     cores: usize,
@@ -261,7 +258,27 @@ fn config_with_block(
     fail_core: Option<usize>,
     block_install_core: Option<usize>,
 ) -> OtelDataflowSpec {
-    let settings = json!({"sink": sink, "version": version, "targets": targets, "fail_core": fail_core, "block_install_core": block_install_core});
+    config_with_state(
+        sink,
+        cores,
+        version,
+        targets,
+        fail_core,
+        block_install_core,
+        None,
+    )
+}
+
+fn config_with_state(
+    sink: &str,
+    cores: usize,
+    version: u64,
+    targets: usize,
+    fail_core: Option<usize>,
+    block_install_core: Option<usize>,
+    state_root: Option<&std::path::Path>,
+) -> OtelDataflowSpec {
+    let settings = json!({"sink": sink, "version": version, "targets": targets, "fail_core": fail_core, "block_install_core": block_install_core, "state_root": state_root});
     engine_config_with_pipeline(&format!(
         r#"
         policies:
@@ -296,18 +313,24 @@ struct Fixture {
     sink: UdpSocket,
     events: Vec<String>,
     targets: usize,
+    state_root: Option<tempfile::TempDir>,
 }
 impl Fixture {
     fn start(cores: usize, targets: usize) -> Self {
+        Self::start_storage(cores, targets, None)
+    }
+    fn start_storage(cores: usize, targets: usize, state_root: Option<tempfile::TempDir>) -> Self {
         let sink = UdpSocket::bind("127.0.0.1:0").expect("fixture socket");
         sink.set_read_timeout(Some(Duration::from_secs(20)))
             .expect("deadline");
-        let initial = config(
+        let initial = config_with_state(
             &sink.local_addr().expect("sink address").to_string(),
             cores,
             0,
             targets,
             None,
+            None,
+            state_root.as_ref().map(|root| root.path()),
         );
         let runtime = test_runtime_with_factory(&initial, &COOPERATIVE_FACTORY);
         let observed = ObservedStateRunner::start(&runtime);
@@ -327,6 +350,7 @@ impl Fixture {
             sink,
             events: Vec::new(),
             targets,
+            state_root,
         };
         for core in &deployment.placement.cores {
             let _ = fixture
@@ -379,12 +403,14 @@ impl Fixture {
             .clone()
     }
     fn rollout(&self, cores: usize, version: u64, fail_core: Option<usize>) -> RolloutStatus {
-        let target = config(
+        let target = config_with_state(
             &self.sink.local_addr().expect("sink").to_string(),
             cores,
             version,
             self.targets,
             fail_core,
+            None,
+            self.state_root.as_ref().map(|root| root.path()),
         )
         .resolve()
         .pipelines
@@ -647,6 +673,35 @@ fn empty_catalog_reconciles_without_ownership_deadlock() {
     assert_eq!(
         fixture.rollout(2, 1, None).state,
         ApiPipelineRolloutState::Succeeded
+    );
+    assert!(fixture.runtime.take_runtime_error().is_none());
+}
+
+/// Scenario: real pipeline instances use a durable authority through resize and settings replacement.
+/// Guarantees: persistent grant acknowledgements preserve live reconciliation, discovery stays shared, and shutdown joins the independent writer.
+#[test]
+#[cfg(target_os = "linux")]
+fn durable_authority_survives_controller_reconciliation() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("private storage fixture");
+    let mut fixture = Fixture::start_storage(2, 4, Some(root));
+    let hosts = fixture.hosts();
+    assert_eq!(
+        fixture.rollout(3, 0, None).state,
+        ApiPipelineRolloutState::Succeeded
+    );
+    assert_eq!(
+        fixture.rollout(2, 1, None).state,
+        ApiPipelineRolloutState::Succeeded
+    );
+    fixture.until(|events| events.iter().any(|e| e == "committed 1"));
+    assert!(Arc::ptr_eq(&hosts, &fixture.hosts()));
+    assert_eq!(
+        fixture.events.iter().filter(|e| *e == "discovery").count(),
+        1
     );
     assert!(fixture.runtime.take_runtime_error().is_none());
 }

@@ -2,7 +2,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+
+#[derive(Clone, Copy)]
+enum BackendKind {
+    Activate,
+    Retire,
+}
+struct BackendRequest {
+    kind: BackendKind,
+    grant: GrantIdentity,
+    receipt: Option<oneshot::Sender<Result<(), CoordinatorError>>>,
+    automatic: bool,
+}
+pub(super) struct BackendCompletion {
+    backend: Box<dyn AssignmentBackend>,
+    request: BackendRequest,
+    outcome: Result<BackendOutcome, CoordinatorError>,
+}
 
 struct Session<P: WorkProtocol> {
     port: Port<P>,
@@ -13,6 +30,8 @@ struct Entry<P: WorkProtocol> {
     versions: BTreeMap<u64, Arc<WorkSpec<P>>>,
     phase: Option<AssignmentPhase>,
     target: Option<ParticipantSession>,
+    pending: bool,
+    cancelled_offer: bool,
 }
 struct Stage {
     operation: OperationId,
@@ -42,7 +61,9 @@ pub(super) struct Fleet<P: WorkProtocol> {
     lifecycle: mpsc::Sender<CoordinatorLifecycleEvent>,
     notices: Notices<P>,
     participants: Arc<Mutex<HashMap<(usize, u64), WorkParticipant<P>>>>,
-    backend: InMemoryBackend,
+    backend: Option<Box<dyn AssignmentBackend>>,
+    backend_queue: VecDeque<BackendRequest>,
+    pub(super) backend_pending: Option<LocalBoxFuture<'static, BackendCompletion>>,
     term: u64,
     operation: u64,
     revision: u64,
@@ -67,8 +88,8 @@ impl<P: WorkProtocol> Fleet<P> {
         lifecycle: mpsc::Sender<CoordinatorLifecycleEvent>,
         notices: Notices<P>,
         participants: Arc<Mutex<HashMap<(usize, u64), WorkParticipant<P>>>>,
+        backend: Box<dyn AssignmentBackend>,
     ) -> Self {
-        let capacity = domain.limits.catalog_items;
         Self {
             incarnation: uuid::Uuid::new_v4(),
             domain,
@@ -91,7 +112,9 @@ impl<P: WorkProtocol> Fleet<P> {
             lifecycle,
             notices,
             participants,
-            backend: InMemoryBackend::new(capacity),
+            backend: Some(backend),
+            backend_queue: VecDeque::new(),
+            backend_pending: None,
             term: 0,
             operation: 0,
             revision: 0,
@@ -247,6 +270,10 @@ impl<P: WorkProtocol> Fleet<P> {
                     }
                     Some(AssignmentPhase::Revoking(grant))
                 }
+                Some(AssignmentPhase::Offered(grant)) if entry.pending => {
+                    entry.cancelled_offer = true;
+                    Some(AssignmentPhase::Offered(grant))
+                }
                 _ => None,
             };
         }
@@ -366,6 +393,8 @@ impl<P: WorkProtocol> Fleet<P> {
                     versions: BTreeMap::new(),
                     phase: None,
                     target: None,
+                    pending: false,
+                    cancelled_offer: false,
                 });
             let _ = entry
                 .versions
@@ -392,7 +421,7 @@ impl<P: WorkProtocol> Fleet<P> {
         self.garbage_collect();
         self.allocate()
     }
-    async fn participant(&mut self, control: &Control) -> Result<(), CoordinatorError> {
+    fn participant(&mut self, control: &Control) -> Result<Option<BackendKind>, CoordinatorError> {
         self.domain.check()?;
         if !self.live(control.session) {
             return Err(CoordinatorError::Stale);
@@ -402,17 +431,21 @@ impl<P: WorkProtocol> Fleet<P> {
                 .get_mut(&control.session)
                 .ok_or(CoordinatorError::Stale)?
                 .state = ParticipantState::ReadyForAssignments;
-            return self.allocate();
+            self.allocate()?;
+            return Ok(None);
         }
         let grant = control.grant.as_ref().ok_or(CoordinatorError::Stale)?;
         if grant.session != control.session || grant.incarnation != self.incarnation {
             return Err(CoordinatorError::Stale);
         }
-        let phase = self
+        let entry = self
             .catalog
             .get(&grant.work_id)
-            .and_then(|entry| entry.phase.clone())
             .ok_or(CoordinatorError::Stale)?;
+        if entry.pending {
+            return Err(CoordinatorError::Capacity);
+        }
+        let phase = entry.phase.clone().ok_or(CoordinatorError::Stale)?;
         match (control.kind, phase) {
             (AckKind::Accept, AssignmentPhase::Offered(offer)) if offer == *grant => {
                 if self.domain.stopping.load(Ordering::Acquire)
@@ -420,44 +453,22 @@ impl<P: WorkProtocol> Fleet<P> {
                 {
                     return Err(CoordinatorError::Unavailable);
                 }
-                let operation = self.next_operation()?;
-                if self.backend.activate(operation, grant).await? != BackendOutcome::Confirmed {
-                    return Err(CoordinatorError::Failed(
-                        "activation was not confirmed".into(),
-                    ));
-                }
-                let _ = self
-                    .domain
-                    .admission
-                    .lock()
-                    .grants
-                    .insert(grant.term, Lease::default());
-                let _ = self.sessions[&control.session]
-                    .port
-                    .member
-                    .owned
-                    .fetch_add(1, Ordering::AcqRel);
-                self.catalog
-                    .get_mut(&grant.work_id)
-                    .expect("catalog entry")
-                    .phase = Some(AssignmentPhase::Active(AssignmentGrant {
-                    identity: grant.clone(),
-                    admission: Arc::clone(&self.domain.admission),
-                }));
+                self.catalog.get_mut(&grant.work_id).expect("entry").pending = true;
+                Ok(Some(BackendKind::Activate))
             }
             (AckKind::Activated, AssignmentPhase::Active(active)) if active.identity() == grant => {
                 let mut admission = self.domain.admission.lock();
                 if self.domain.stopping.load(Ordering::Acquire) {
                     return Err(CoordinatorError::Unavailable);
                 }
-                let lease = admission
+                admission
                     .grants
                     .get_mut(&grant.term)
-                    .ok_or(CoordinatorError::Stale)?;
-                if lease.accepting {
-                    return Ok(());
-                }
-                lease.accepting = true;
+                    .ok_or(CoordinatorError::Stale)?
+                    .accepting = true;
+                drop(admission);
+                self.allocate()?;
+                Ok(None)
             }
             (AckKind::Released, AssignmentPhase::Revoking(active))
                 if active.identity() == grant =>
@@ -474,37 +485,148 @@ impl<P: WorkProtocol> Fleet<P> {
                         "release requires settled tickets and joined workers",
                     ));
                 }
-                let operation = self.next_operation()?;
-                if self.backend.retire(operation, grant).await? != BackendOutcome::Confirmed {
-                    return Err(CoordinatorError::Failed(
-                        "retirement was not confirmed".into(),
-                    ));
-                }
-                let _ = self.domain.admission.lock().grants.remove(&grant.term);
-                let _ = self.sessions[&control.session]
-                    .port
-                    .member
-                    .owned
-                    .fetch_sub(1, Ordering::AcqRel);
-                self.catalog
-                    .get_mut(&grant.work_id)
-                    .expect("catalog entry")
-                    .phase = None;
-                self.garbage_collect();
+                self.catalog.get_mut(&grant.work_id).expect("entry").pending = true;
+                Ok(Some(BackendKind::Retire))
             }
-            _ => return Err(CoordinatorError::Stale),
+            _ => Err(CoordinatorError::Stale),
         }
-        self.allocate()
+    }
+
+    fn start_backend(&mut self) -> Result<(), CoordinatorError> {
+        if self.backend_pending.is_some() {
+            return Ok(());
+        }
+        let Some(request) = self.backend_queue.pop_front() else {
+            return Ok(());
+        };
+        let operation = self.next_operation()?;
+        let mut backend = self
+            .backend
+            .take()
+            .expect("one backend operation at a time");
+        self.backend_pending = Some(Box::pin(async move {
+            let mut outcome = match request.kind {
+                BackendKind::Activate => backend.activate(operation, &request.grant).await,
+                BackendKind::Retire => backend.retire(operation, &request.grant).await,
+            };
+            if matches!(outcome, Ok(BackendOutcome::Unknown)) {
+                outcome = backend.resolve(operation).await;
+            }
+            BackendCompletion {
+                backend,
+                request,
+                outcome,
+            }
+        }));
+        Ok(())
+    }
+
+    pub fn backend_completed(
+        &mut self,
+        completion: BackendCompletion,
+    ) -> Result<(), CoordinatorError> {
+        self.backend_pending = None;
+        self.backend = Some(completion.backend);
+        if completion.outcome? != BackendOutcome::Confirmed {
+            return Err(CoordinatorError::Failed(
+                "assignment authority outcome was not confirmed".into(),
+            ));
+        }
+        let BackendRequest {
+            kind,
+            grant,
+            mut receipt,
+            automatic,
+        } = completion.request;
+        match kind {
+            BackendKind::Activate => {
+                let entry = self
+                    .catalog
+                    .get(&grant.work_id)
+                    .ok_or(CoordinatorError::Stale)?;
+                if entry.cancelled_offer
+                    || !self.eligible(grant.session, &grant.work_id)
+                    || self.domain.stopping.load(Ordering::Acquire)
+                {
+                    // No executable grant was published, so no worker could have
+                    // admitted an operation. Retire a late durable activation
+                    // before reallocating; never infer failure from cancellation.
+                    self.catalog
+                        .get_mut(&grant.work_id)
+                        .expect("entry")
+                        .cancelled_offer = true;
+                    self.backend_queue.push_front(BackendRequest {
+                        kind: BackendKind::Retire,
+                        grant,
+                        receipt: receipt.take(),
+                        automatic: true,
+                    });
+                } else {
+                    let _ = self
+                        .domain
+                        .admission
+                        .lock()
+                        .grants
+                        .insert(grant.term, Lease::default());
+                    let _ = self.sessions[&grant.session]
+                        .port
+                        .member
+                        .owned
+                        .fetch_add(1, Ordering::AcqRel);
+                    let entry = self.catalog.get_mut(&grant.work_id).expect("entry");
+                    entry.pending = false;
+                    entry.phase = Some(AssignmentPhase::Active(AssignmentGrant {
+                        identity: grant,
+                        admission: Arc::clone(&self.domain.admission),
+                    }));
+                }
+            }
+            BackendKind::Retire => {
+                if !automatic {
+                    let _ = self.domain.admission.lock().grants.remove(&grant.term);
+                    let _ = self.sessions[&grant.session]
+                        .port
+                        .member
+                        .owned
+                        .fetch_sub(1, Ordering::AcqRel);
+                }
+                let entry = self
+                    .catalog
+                    .get_mut(&grant.work_id)
+                    .ok_or(CoordinatorError::Stale)?;
+                entry.pending = false;
+                entry.cancelled_offer = false;
+                entry.phase = None;
+            }
+        }
+        self.sweep_exits()?;
+        // Publish the new complete view before waking a node on another OS
+        // thread. Otherwise it can accept an obsolete offer from the prior view.
+        if let Some(receipt) = receipt {
+            let _ = receipt.send(if automatic {
+                Err(CoordinatorError::Stale)
+            } else {
+                Ok(())
+            });
+        }
+        self.start_backend()
     }
     pub async fn command(&mut self, command: HostControl<P>) -> Result<(), CoordinatorError> {
         match command {
-            HostControl::Participant(control) => {
-                let result = self.participant(&control).await;
-                if matches!(result, Err(CoordinatorError::Failed(_))) {
-                    return result;
+            HostControl::Participant(control) => match self.participant(&control) {
+                Ok(Some(kind)) => {
+                    self.backend_queue.push_back(BackendRequest {
+                        kind,
+                        grant: control.grant.expect("validated grant"),
+                        receipt: Some(control.receipt),
+                        automatic: false,
+                    });
+                    self.start_backend()?;
                 }
-                let _ = control.receipt.send(result);
-            }
+                result => {
+                    let _ = control.receipt.send(result.map(|_| ()));
+                }
+            },
             HostControl::Register(port, receipt) => {
                 let session = port.member.session;
                 let valid = self
@@ -900,6 +1022,12 @@ impl<P: WorkProtocol> Fleet<P> {
             .filter(|(_, session)| {
                 !session.port.member.alive.load(Ordering::Acquire)
                     && session.port.member.owned.load(Ordering::Acquire) == 0
+                    && !self.catalog.values().any(|entry| {
+                        entry.pending
+                            && entry.phase.as_ref().is_some_and(|phase| {
+                                identity(phase).session == session.port.member.session
+                            })
+                    })
             })
             .map(|(id, _)| *id)
             .collect();
@@ -1007,6 +1135,7 @@ impl<P: WorkProtocol> Fleet<P> {
             return Ok(());
         };
         if !stage.provider_done
+            || self.catalog.values().any(|entry| entry.pending)
             || !matches!(
                 stage.phase,
                 ReconciliationPhase::CommitDecided | ReconciliationPhase::Aborting

@@ -16,6 +16,7 @@ rust-version.workspace = true
 workspace = true
 
 [features]
+durable-authority = ["otel-arrow-dfe-work-coordinator-state/sqlite"]
 testing = []
 jemalloc = ["dep:tikv-jemalloc-ctl", "dep:tikv-jemalloc-sys"]
 jemalloc-testing = ["jemalloc"]
@@ -29,6 +30,7 @@ otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine-macros = { workspace = true }
 otel-arrow-dfe-component-inventory-syntax = { workspace = true }
 otel-arrow-dfe-state = { workspace = true }
+otel-arrow-dfe-work-coordinator-state = { workspace = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
@@ -63,6 +65,7 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
+otel-arrow-dfe-work-coordinator-state = { workspace = true, features = ["test-utils"] }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

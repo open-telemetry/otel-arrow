@@ -4,7 +4,7 @@
 use super::*;
 use serde_json::json;
 
-fn spec(core_id: usize, generation: u64) -> ParticipantSpec {
+pub(super) fn spec(core_id: usize, generation: u64) -> ParticipantSpec {
     ParticipantSpec {
         core_id,
         generation,
@@ -56,7 +56,7 @@ async fn prepare(h: &mut Harness, value: u64) -> (OperationId, u64) {
     (prepared.operation(), revision)
 }
 
-async fn register(
+pub(super) async fn register(
     h: &Harness,
     instance: ParticipantSpec,
     revision: u64,
@@ -97,7 +97,10 @@ async fn assignment(
     }
 }
 
-async fn install(participant: &mut WorkParticipant<Targets>, metadata: &str) -> AssignmentGrant {
+pub(super) async fn install(
+    participant: &mut WorkParticipant<Targets>,
+    metadata: &str,
+) -> AssignmentGrant {
     let offer = assignment(participant, |phase| {
         matches!(phase, AssignmentPhase::Offered(_))
     })
@@ -128,7 +131,7 @@ async fn install(participant: &mut WorkParticipant<Targets>, metadata: &str) -> 
     grant
 }
 
-async fn revoking(participant: &mut WorkParticipant<Targets>) -> AssignmentGrant {
+pub(super) async fn revoking(participant: &mut WorkParticipant<Targets>) -> AssignmentGrant {
     let assignment = assignment(participant, |phase| {
         matches!(phase, AssignmentPhase::Revoking(_))
     })

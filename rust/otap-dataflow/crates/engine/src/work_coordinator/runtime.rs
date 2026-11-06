@@ -6,7 +6,7 @@ use super::{
     authority::{AdmissionState, Lease},
     *,
 };
-use futures::{Future, future::LocalBoxFuture};
+use futures::{Future, FutureExt, future::LocalBoxFuture};
 use std::sync::atomic::AtomicU64;
 use tokio::sync::Notify;
 mod fleet;
@@ -29,6 +29,7 @@ pub(super) type PrepareFn = Box<
             CoordinatorLimits,
             CapabilityProfile,
             Arc<serde_json::Value>,
+            Option<DurableOptions>,
             Arc<dyn Fn(String) + Send + Sync>,
         ) -> Result<(CoordinatorBinding, CoordinatorTask), CoordinatorError>
         + Send,
@@ -61,7 +62,7 @@ struct Member {
     owned: AtomicUsize,
 }
 
-struct Domain {
+pub(super) struct Domain {
     profile: CapabilityProfile,
     members: Mutex<BTreeMap<ParticipantSession, Arc<Member>>>,
     nonce: AtomicU64,
@@ -74,7 +75,8 @@ struct Domain {
     exits: Notify,
     limits: CoordinatorLimits,
     status: Mutex<CoordinatorStatus>,
-    admission: Arc<Mutex<AdmissionState>>,
+    pub(super) admission: Arc<Mutex<AdmissionState>>,
+    progress: std::sync::OnceLock<ProgressWriter>,
     stopping: AtomicBool,
     stopped: watch::Sender<bool>,
     remaining: AtomicUsize,
@@ -84,7 +86,7 @@ struct Domain {
 }
 
 impl Domain {
-    fn fail(&self, message: String) {
+    pub(super) fn fail(&self, message: String) {
         let was_running = {
             let mut state = self.admission.lock();
             std::mem::replace(&mut state.running, false)
@@ -107,7 +109,7 @@ impl Domain {
         self.fail("coordinator stopped".into());
     }
 
-    fn check(&self) -> Result<(), CoordinatorError> {
+    pub(super) fn check(&self) -> Result<(), CoordinatorError> {
         if self.admission.lock().running {
             Ok(())
         } else {
@@ -705,6 +707,17 @@ pub struct WorkParticipant<P: WorkProtocol> {
 }
 
 impl<P: WorkProtocol> WorkParticipant<P> {
+    /// Dedicated conditional progress path, available only with durable authority.
+    pub fn progress_writer(&self) -> Result<ProgressWriter, CoordinatorError> {
+        self.domain.check()?;
+        self.domain
+            .progress
+            .get()
+            .cloned()
+            .ok_or(CoordinatorError::Invalid(
+                "no durable progress writer declared",
+            ))
+    }
     /// Out-of-band authority loss, for selecting alongside long-running I/O.
     #[must_use]
     pub fn authority_loss(&self) -> watch::Receiver<bool> {
@@ -1051,6 +1064,7 @@ pub(super) fn prepare<P, F>(
     limits: CoordinatorLimits,
     profile: CapabilityProfile,
     settings: Arc<serde_json::Value>,
+    authority: Option<DurableOptions>,
     factory: F,
     failure: Arc<dyn Fn(String) + Send + Sync>,
 ) -> Result<(CoordinatorBinding, CoordinatorTask), CoordinatorError>
@@ -1074,6 +1088,7 @@ where
     let (stopped, mut stop_rx) = watch::channel(false);
     let domain = Arc::new(Domain {
         profile,
+        progress: std::sync::OnceLock::new(),
         members: Mutex::new(BTreeMap::new()),
         nonce: AtomicU64::new(sessions.iter().map(|s| s.nonce).max().unwrap_or(0)),
         operation: AtomicU64::new(0),
@@ -1144,48 +1159,77 @@ where
         run: Box::new(move || {
             Box::pin(async move {
                 let _guard = guard;
-                let runtime = CoordinatorRuntime {
-                    key,
-                    domain: Arc::clone(&domain),
-                    ready: Some(ready_tx),
-                    catalogs: catalog_tx,
-                    requests,
-                    notices: Arc::clone(&notices),
-                    lifecycle: Some(lifecycle_rx),
-                    registry: registry_rx,
-                    limits,
-                };
-                let mut fleet = Fleet::new(
-                    Arc::clone(&domain),
-                    ports,
-                    registry,
-                    lifecycle_tx,
-                    notices,
-                    participants,
-                );
-                let provider = factory().run(runtime);
-                tokio::pin!(provider);
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = stop_rx.changed() => return match provider.await { Err(CoordinatorError::Unavailable) if domain.stopping.load(Ordering::Acquire) => Ok(()), result => result },
-                        _ = domain.exits.notified() => { fleet.sweep_exits()?; }
-                        control = controls.recv() => { fleet.command(control.ok_or(CoordinatorError::Unavailable)?).await?; }
-                        result = async { match &mut fleet.provider_pending { Some(pending) => pending.await, None => std::future::pending().await } } => { fleet.provider_completed(result)?; }
-                        result = &mut provider => return match result {
-                            Ok(()) | Err(CoordinatorError::Unavailable)
-                                if domain.stopping.load(Ordering::Acquire) && *stop_rx.borrow() => Ok(()),
-                            Ok(()) => Err(CoordinatorError::Failed("provider returned before shutdown".into())),
-                            Err(error) => Err(error),
-                        },
-                        catalog = catalogs.recv() => {
-                            let catalog = catalog.ok_or(CoordinatorError::Unavailable)?;
-                            let result = fleet.catalog(catalog.revision, catalog.works.into_vec());
-                            let _ = catalog.receipt.send(result);
+                let (backend, worker): (Box<dyn AssignmentBackend>, Option<durable::Worker>) =
+                    if let Some(options) = authority {
+                        let (backend, writer, worker) =
+                            durable::start(options, Arc::downgrade(&domain)).await?;
+                        domain.progress.set(writer).map_err(|_| {
+                            CoordinatorError::Failed("progress writer initialized twice".into())
+                        })?;
+                        (backend, Some(worker))
+                    } else {
+                        (Box::new(InMemoryBackend::new(limits.catalog_items)), None)
+                    };
+                let result = std::panic::AssertUnwindSafe(async {
+                    let runtime = CoordinatorRuntime {
+                        key,
+                        domain: Arc::clone(&domain),
+                        ready: Some(ready_tx),
+                        catalogs: catalog_tx,
+                        requests,
+                        notices: Arc::clone(&notices),
+                        lifecycle: Some(lifecycle_rx),
+                        registry: registry_rx,
+                        limits,
+                    };
+                    let mut fleet = Fleet::new(
+                        Arc::clone(&domain),
+                        ports,
+                        registry,
+                        lifecycle_tx,
+                        notices,
+                        participants,
+                        backend,
+                    );
+                    let provider = factory().run(runtime);
+                    tokio::pin!(provider);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = stop_rx.changed() => return match provider.await { Err(CoordinatorError::Unavailable) if domain.stopping.load(Ordering::Acquire) => Ok(()), result => result },
+                            _ = domain.exits.notified() => { fleet.sweep_exits()?; }
+                            control = controls.recv() => { fleet.command(control.ok_or(CoordinatorError::Unavailable)?).await?; }
+                            result = async { match &mut fleet.backend_pending { Some(pending) => pending.await, None => std::future::pending().await } } => { fleet.backend_completed(result)?; }
+                            result = async { match &mut fleet.provider_pending { Some(pending) => pending.await, None => std::future::pending().await } } => { fleet.provider_completed(result)?; }
+                            result = &mut provider => return match result {
+                                Ok(()) | Err(CoordinatorError::Unavailable)
+                                    if domain.stopping.load(Ordering::Acquire) && *stop_rx.borrow() => Ok(()),
+                                Ok(()) => Err(CoordinatorError::Failed("provider returned before shutdown".into())),
+                                Err(error) => Err(error),
+                            },
+                            catalog = catalogs.recv() => {
+                                let catalog = catalog.ok_or(CoordinatorError::Unavailable)?;
+                                let result = fleet.catalog(catalog.revision, catalog.works.into_vec());
+                                let _ = catalog.receipt.send(result);
+                            }
                         }
+                        fleet.progress()?;
+                        tokio::task::yield_now().await;
                     }
-                    fleet.progress()?;
-                    tokio::task::yield_now().await;
+                })
+                .catch_unwind()
+                .await;
+                domain.fail("work coordinator host exited".into());
+                let cleanup = match worker {
+                    Some(worker) => worker.shutdown().await,
+                    None => Ok(()),
+                };
+                match result {
+                    Ok(result) => {
+                        cleanup?;
+                        result
+                    }
+                    Err(panic) => std::panic::resume_unwind(panic),
                 }
             })
         }),

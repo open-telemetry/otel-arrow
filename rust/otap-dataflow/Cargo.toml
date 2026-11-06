@@ -69,6 +69,7 @@ otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.64.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.64.0", path = "crates/expohisto" }
 otel-arrow-dfe-filelog-checkpoint = { version = "0.64.0", path = "crates/filelog-checkpoint" }
+otel-arrow-dfe-work-coordinator-state = { version = "0.64.0", path = "crates/work-coordinator-state", default-features = false }
 otel-arrow-dfe-otap = { version = "0.64.0", path = "crates/otap" }
 otel-arrow-dfe-wasm-guest-sdk = { path = "crates/wasm-guest-sdk", default-features = false }
 otel-arrow-dfe-scraper = { version = "0.64.0", path = "crates/scraper" }
@@ -124,6 +125,7 @@ libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 fs2 = "0.4.3"
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "fallible_uint"] }
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"

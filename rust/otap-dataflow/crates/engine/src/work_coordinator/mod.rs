@@ -11,9 +11,14 @@
 //! handoff and qualified recovery. See `docs/work-coordinator.md` for integration.
 
 mod authority;
+mod durable;
 mod lifecycle;
 mod runtime;
 
+pub use durable::{
+    DurableLimits, DurableOptions, ProgressMutation, ProgressOperationId, ProgressOutcome,
+    ProgressReceipt, ProgressWriter, SourceProgress, TakeoverPolicy, WriterStatus,
+};
 pub use lifecycle::{
     CoordinatorLifecycleEvent, CoordinatorRevision, ParticipantSpec, ProviderReceipt,
     ReconciliationOutcome, ReconciliationPhase, ReconciliationReceipt, SettingsCompatibility,
@@ -264,6 +269,7 @@ pub struct CoordinatorDeclaration {
     pub limits: CoordinatorLimits,
     descriptor: CoordinatorDescriptor,
     factory: runtime::PrepareFn,
+    authority: Option<DurableOptions>,
 }
 
 /// Validated declaration identity/settings for controller reconciliation.
@@ -278,6 +284,7 @@ pub struct CoordinatorDescriptor {
     /// Immutable node-specific settings.
     pub settings: Arc<serde_json::Value>,
     compatible: Option<SettingsCompatibility>,
+    authority: Option<DurableOptions>,
 }
 impl CoordinatorDescriptor {
     /// Check compatibility without constructing a provider or changing live state.
@@ -287,6 +294,7 @@ impl CoordinatorDescriptor {
             || self.protocol != next.protocol
             || self.provider != next.provider
             || self.limits != next.limits
+            || self.authority != next.authority
             || !self
                 .compatible
                 .is_some_and(|compatible| compatible(&self.settings, &next.settings))
@@ -318,10 +326,16 @@ impl CoordinatorDeclaration {
                 limits: CoordinatorLimits::default(),
                 settings: Arc::new(serde_json::Value::Null),
                 compatible: None,
+                authority: None,
             },
-            factory: Box::new(move |key, sessions, limits, profile, settings, failure| {
-                runtime::prepare::<P, F>(key, sessions, limits, profile, settings, factory, failure)
-            }),
+            authority: None,
+            factory: Box::new(
+                move |key, sessions, limits, profile, settings, authority, failure| {
+                    runtime::prepare::<P, F>(
+                        key, sessions, limits, profile, settings, authority, factory, failure,
+                    )
+                },
+            ),
         }
     }
 
@@ -340,6 +354,15 @@ impl CoordinatorDeclaration {
         self
     }
 
+    /// Persist grants and opaque conditional progress in a node-declared local
+    /// namespace. This does not qualify a source adapter or enable forced takeover.
+    #[must_use]
+    pub fn with_durable_authority(mut self, options: DurableOptions) -> Self {
+        self.descriptor.authority = Some(options.clone());
+        self.authority = Some(options);
+        self
+    }
+
     /// Obtain validated controller metadata, without constructing the provider.
     pub fn descriptor(&self) -> Result<CoordinatorDescriptor, CoordinatorError> {
         self.validate()?;
@@ -352,6 +375,14 @@ impl CoordinatorDeclaration {
     /// Check admission requirements without starting a host or opening resources.
     pub fn validate(&self) -> Result<(), CoordinatorError> {
         self.limits.validate()?;
+        if let Some(options) = &self.authority {
+            options.validate()?;
+            if options.limits.assignments < self.limits.catalog_items {
+                return Err(CoordinatorError::Invalid(
+                    "durable assignment capacity is smaller than the catalog limit",
+                ));
+            }
+        }
         if self.role.is_empty() || self.role.len() > 128 {
             return Err(CoordinatorError::Invalid("invalid coordinator role"));
         }
@@ -385,6 +416,7 @@ impl CoordinatorDeclaration {
             self.limits,
             self.profile,
             self.descriptor.settings,
+            self.authority,
             failure,
         )
     }

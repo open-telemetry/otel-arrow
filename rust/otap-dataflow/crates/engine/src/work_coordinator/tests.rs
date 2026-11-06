@@ -10,6 +10,8 @@ use tokio::{
     time::{Duration, timeout},
 };
 
+#[cfg(target_os = "linux")]
+mod persistent;
 mod reconciliation;
 
 #[derive(Debug)]
@@ -90,6 +92,14 @@ impl Harness {
         Self::start_profile(cores, limits, false).await
     }
     async fn start_profile(cores: usize, limits: CoordinatorLimits, cooperative: bool) -> Self {
+        Self::start_authority(cores, limits, cooperative, None).await
+    }
+    async fn start_authority(
+        cores: usize,
+        limits: CoordinatorLimits,
+        cooperative: bool,
+        authority: Option<DurableOptions>,
+    ) -> Self {
         let (commands, rx) = mpsc::channel(8);
         let (initialized, init_rx) = oneshot::channel();
         let (lifecycle, events) = mpsc::channel(2);
@@ -102,6 +112,9 @@ impl Harness {
         });
         if cooperative {
             declaration = declaration.with_reconciliation(serde_json::Value::Null, |_, _| true);
+        }
+        if let Some(authority) = authority {
+            declaration = declaration.with_durable_authority(authority);
         }
         declaration.limits = limits;
         let (errors_tx, errors) = mpsc::unbounded_channel();
