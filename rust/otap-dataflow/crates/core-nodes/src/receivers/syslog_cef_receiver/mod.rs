@@ -1801,7 +1801,7 @@ mod tests {
     use otel_arrow_dfe_engine::message::Receiver as EngineReceiver;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
-        receiver::{NotSendValidateContext, TestContext, TestRuntime, WithDefaultArrivalBinding},
+        receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
     use std::collections::HashMap;
@@ -2404,7 +2404,7 @@ mod tests {
 
         // run the test
         test_runtime
-            .set_receiver(receiver.with_default_arrival_binding_for_test())
+            .set_receiver(receiver)
             .run_test(udp_scenario(listening_addr))
             .run_validation(udp_validation_procedure());
     }
@@ -2431,7 +2431,7 @@ mod tests {
 
         // run the test
         test_runtime
-            .set_receiver(receiver_wrapper.with_default_arrival_binding_for_test())
+            .set_receiver(receiver_wrapper)
             .run_test(tcp_scenario(listening_addr))
             .run_validation(tcp_validation_procedure());
     }
@@ -2458,7 +2458,7 @@ mod tests {
 
         // run the test
         test_runtime
-            .set_receiver(receiver_wrapper.with_default_arrival_binding_for_test())
+            .set_receiver(receiver_wrapper)
             .run_test(tcp_incomplete_scenario(listening_addr))
             .run_validation(tcp_incomplete_validation_procedure());
     }
@@ -2483,7 +2483,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver.with_default_arrival_binding_for_test())
+            .set_receiver(receiver)
             .run_test(move |_ctx| {
                 Box::pin(async move {
                     let mut stream = TcpStream::connect(listening_addr)
@@ -2587,7 +2587,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver.with_default_arrival_binding_for_test())
+            .set_receiver(receiver)
             .run_test(move |_ctx| {
                 Box::pin(async move {
                     let mut stream = TcpStream::connect(listening_addr)
@@ -2690,7 +2690,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver.with_default_arrival_binding_for_test())
+            .set_receiver(receiver)
             .run_test(move |_ctx| {
                 Box::pin(async move {
                     let socket = UdpSocket::bind("127.0.0.1:0")
@@ -2880,7 +2880,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver_wrapper.with_default_arrival_binding_for_test())
+            .set_receiver(receiver_wrapper)
             .run_test(tcp_octet_counted_scenario(
                 listening_addr,
                 b"hello\n".to_vec(),
@@ -2916,7 +2916,7 @@ mod tests {
         ));
 
         test_runtime
-            .set_receiver(receiver_wrapper.with_default_arrival_binding_for_test())
+            .set_receiver(receiver_wrapper)
             .run_test(tcp_octet_counted_scenario(listening_addr, payload, true))
             .run_validation(|mut ctx| {
                 Box::pin(async move {
@@ -3053,7 +3053,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver_wrapper.with_default_arrival_binding_for_test())
+            .set_receiver(receiver_wrapper)
             .run_test(tcp_truncation_scenario(listening_addr))
             .run_validation(tcp_truncation_validation_procedure());
     }
