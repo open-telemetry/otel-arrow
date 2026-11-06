@@ -1165,10 +1165,10 @@ mod tests {
         assert_eq!(telemetry_registry.entity_count(), 0);
     }
 
-    /// Scenario: without a collector and with no grace period, a metric set is unregistered
-    /// while dirty, after an unrelated export has already run against the registry.
-    /// Guarantees: a prior export does not switch on retention; the dirty unregister removes the
-    /// entry and its entity immediately, as it would with no export at all.
+    /// Scenario: without a collector and with no grace period, a one-off export of the metric
+    /// set's values completes, then the set is unregistered while holding newer unexported values.
+    /// Guarantees: matches the pre-grace behavior. A completed export does not switch on retention,
+    /// so the dirty unregister removes the entry and its entity immediately.
     #[test]
     fn test_direct_export_does_not_retain_later_dirty_unregistration() {
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -1176,13 +1176,20 @@ mod tests {
             telemetry_registry.register_metric_set(MockAttributeSet::new("standalone".to_owned()));
         let metrics_key = metric_set.metric_set_key();
 
-        // An unrelated export runs first; it must not enable dirty retention.
-        assert!(
-            telemetry_registry
-                .drain_metric_export_batch_at(u64::MAX)
-                .is_empty()
+        // A one-off export of the set's values completes first; it must not
+        // enable dirty retention for later unregisters.
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(3), MetricValue::U64(5)],
+        );
+        let first_batch = telemetry_registry.drain_metric_export_batch_at(u64::MAX);
+        assert_eq!(
+            first_batch.metric_sets[0].values,
+            vec![MetricValue::U64(3), MetricValue::U64(5)]
         );
 
+        // A newer snapshot arrives and the set is then unregistered while dirty.
         telemetry_registry.accumulate_metric_set_snapshot(
             metrics_key,
             0,
