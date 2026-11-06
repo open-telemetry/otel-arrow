@@ -2829,7 +2829,7 @@ dependencies = [
  "log",
  "num-traits",
  "object_store",
- "sqlparser",
+ "sqlparser 0.62.0",
  "tokio",
  "uuid",
  "web-time",
@@ -2998,7 +2998,7 @@ dependencies = [
  "itertools 0.15.0",
  "serde",
  "serde_json",
- "sqlparser",
+ "sqlparser 0.62.0",
 ]
 
 [[package]]
@@ -3331,7 +3331,7 @@ dependencies = [
  "indexmap 2.14.2",
  "log",
  "regex",
- "sqlparser",
+ "sqlparser 0.62.0",
 ]
 
 [[package]]
@@ -7696,7 +7696,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smallvec",
- "sqlparser",
+ "sqlparser 0.63.0",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
@@ -10796,8 +10796,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c6d1b651dc4edf07eead2a0c6c78016ce971bc2c10da5266861b13f25e7cec"
 dependencies = [
  "log",
- "recursive",
  "sqlparser_derive",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
+dependencies = [
+ "log",
+ "recursive",
 ]
 
 [[package]]
