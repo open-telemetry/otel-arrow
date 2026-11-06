@@ -10,6 +10,8 @@ use tokio::{
     time::{Duration, timeout},
 };
 
+mod reconciliation;
+
 #[derive(Debug)]
 struct Targets;
 impl WorkProtocol for Targets {
@@ -19,6 +21,11 @@ impl WorkProtocol for Targets {
 }
 
 enum Command {
+    CatalogAt(
+        u64,
+        Vec<WorkSpec<Targets>>,
+        oneshot::Sender<Result<(), CoordinatorError>>,
+    ),
     Catalog(
         Vec<WorkSpec<Targets>>,
         oneshot::Sender<Result<(), CoordinatorError>>,
@@ -35,6 +42,7 @@ enum Command {
 struct Discovery {
     commands: mpsc::Receiver<Command>,
     initialized: oneshot::Sender<()>,
+    lifecycle: mpsc::Sender<CoordinatorLifecycleEvent>,
 }
 #[async_trait(?Send)]
 impl WorkCoordinator<Targets> for Discovery {
@@ -45,7 +53,9 @@ impl WorkCoordinator<Targets> for Discovery {
         let Self {
             mut commands,
             initialized,
+            lifecycle,
         } = *self;
+        let mut events = runtime.lifecycle_events()?;
         runtime.ready()?;
         let _ = initialized.send(());
         let mut stopped = runtime.shutdown_signal();
@@ -53,7 +63,9 @@ impl WorkCoordinator<Targets> for Discovery {
             tokio::select! {
                 biased;
                 _ = stopped.changed() => return Ok(()),
+                Some(event) = events.recv() => { lifecycle.send(event).await.map_err(|_| CoordinatorError::Unavailable)?; }
                 command = commands.recv() => match command.ok_or(CoordinatorError::Unavailable)? {
+                    Command::CatalogAt(revision, works, tx) => { let _ = tx.send(runtime.replace_catalog_for(revision, works).await); }
                     Command::Catalog(works, tx) => { let _ = tx.send(runtime.replace_catalog(works).await); }
                     Command::Notice(session, notice, tx) => { let _ = tx.send(runtime.notice(session, notice)); }
                     Command::Request(tx) => { let _ = tx.send(runtime.recv().await?); }
@@ -70,18 +82,27 @@ struct Harness {
     commands: mpsc::Sender<Command>,
     errors: mpsc::UnboundedReceiver<String>,
     host: tokio::task::JoinHandle<Result<(), CoordinatorError>>,
+    lifecycle: mpsc::Receiver<CoordinatorLifecycleEvent>,
 }
 
 impl Harness {
     async fn start(cores: usize, limits: CoordinatorLimits) -> Self {
+        Self::start_profile(cores, limits, false).await
+    }
+    async fn start_profile(cores: usize, limits: CoordinatorLimits, cooperative: bool) -> Self {
         let (commands, rx) = mpsc::channel(8);
         let (initialized, init_rx) = oneshot::channel();
+        let (lifecycle, events) = mpsc::channel(2);
         let mut declaration = CoordinatorDeclaration::new::<Targets, _>("targets", move || {
             Box::new(Discovery {
                 commands: rx,
                 initialized,
+                lifecycle,
             })
         });
+        if cooperative {
+            declaration = declaration.with_reconciliation(serde_json::Value::Null, |_, _| true);
+        }
         declaration.limits = limits;
         let (errors_tx, errors) = mpsc::unbounded_channel();
         let (binding, task) = declaration
@@ -105,6 +126,7 @@ impl Harness {
             commands,
             errors,
             host,
+            lifecycle: events,
         }
     }
     fn participant(&self, core: usize) -> WorkParticipant<Targets> {

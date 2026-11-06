@@ -798,36 +798,33 @@ impl<
             .work_coordinators_for(&pipeline_key)
             .is_some_and(|hosts| hosts.is_cooperative());
         if coordinated && !error.coordinator_cleanup_proven {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 format!("coordinator worker cleanup is unproven: {}", error.message),
             );
             return;
         }
         if !policy.enabled {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 format!("runtime recovery is disabled: {}", error.message),
             );
             return;
         }
         if restart_count >= policy.max_restarts {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 error.message,
             );
@@ -865,28 +862,23 @@ impl<
                         None,
                         Some(failed_key.core_id),
                     );
-                    runtime.clear_runtime_recovery_worker(
-                        &worker_pipeline_key,
-                        failed_key.core_id,
-                        worker_id,
-                    );
+
                     runtime.fail_runtime_recovery(
                         &worker_pipeline_key,
                         failed_key.core_id,
                         failed_key.deployment_generation,
-                        restart_count,
+                        worker_id,
                         worker_policy.max_restarts,
                         report.detail_message(),
                     );
                 }
             });
         if let Err(spawn_error) = spawn_result {
-            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
                 &pipeline_key,
                 failed_key.core_id,
                 failed_key.deployment_generation,
-                restart_count,
+                worker_id,
                 policy.max_restarts,
                 format!("failed to spawn runtime recovery worker: {spawn_error}"),
             );
@@ -921,15 +913,11 @@ impl<
                     return;
                 }
                 RuntimeRecoveryAttemptDecision::Exhausted => {
-                    let restart_count = self
-                        .runtime_recovery_restart_count(&pipeline_key, core_id)
-                        .unwrap_or(policy.max_restarts);
-                    self.clear_runtime_recovery_worker(&pipeline_key, core_id, worker_id);
                     self.fail_runtime_recovery(
                         &pipeline_key,
                         core_id,
                         failed_generation,
-                        restart_count,
+                        worker_id,
                         policy.max_restarts,
                         last_error,
                     );
@@ -1310,6 +1298,17 @@ impl<
                 let accepted = instance.accepted_condition().status == ConditionStatus::True;
                 let ready = instance.ready_condition().status == ConditionStatus::True;
                 if accepted && ready {
+                    if let Some(hosts) = self.work_coordinators_for(pipeline_key) {
+                        hosts
+                            .activate(
+                                otel_arrow_dfe_engine::work_coordinator::ParticipantSpec {
+                                    core_id,
+                                    generation: target_key.deployment_generation,
+                                },
+                                deadline,
+                            )
+                            .map_err(RecoveryReadyError::Failed)?;
+                    }
                     return Ok(());
                 }
                 if matches!(
@@ -1472,80 +1471,45 @@ impl<
         self.state_changed.notify_all();
     }
 
-    /// Releases ownership of one per-core recovery worker.
-    fn clear_runtime_recovery_worker(
-        &self,
-        pipeline_key: &PipelineKey,
-        core_id: usize,
-        worker_id: u64,
-    ) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(recovery) = state
-            .runtime_recoveries
-            .get_mut(&(pipeline_key.clone(), core_id))
-            && recovery.worker_id == Some(worker_id)
-        {
-            recovery.worker_id = None;
-            recovery.candidate_generation = None;
-        }
-        self.state_changed.notify_all();
-    }
-
-    /// Returns the current replacement count for one logical core.
-    fn runtime_recovery_restart_count(
-        &self,
-        pipeline_key: &PipelineKey,
-        core_id: usize,
-    ) -> Option<usize> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .runtime_recoveries
-            .get(&(pipeline_key.clone(), core_id))
-            .map(|recovery| recovery.restart_count)
-    }
-
     /// Serialize failure with candidate commit. A candidate rolls back, while
-    /// an already committed deployment stops only its own generation.
+    /// a committed host stops its dependent instances across all generations.
     pub(super) fn fail_coordinated_deployment(
         &self,
         key: &PipelineKey,
         owner: &Arc<state::DeploymentCoordinators>,
         error: String,
     ) {
-        let instances =
+        let host_identity = Arc::downgrade(owner);
+        let instances = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if owner.failure.set(error.clone()).is_err() {
+                return;
+            }
+            if state
+                .logical_pipelines
+                .get(key)
+                .is_some_and(|deployment| Arc::ptr_eq(&deployment.work_coordinators, owner))
             {
-                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                if owner.failure.set(error.clone()).is_err() {
-                    return;
-                }
-                if state
-                    .logical_pipelines
-                    .get(key)
-                    .is_some_and(|deployment| Arc::ptr_eq(&deployment.work_coordinators, owner))
-                {
-                    state
-                        .runtime_instances
-                        .iter()
-                        .filter(|(id, instance)| {
-                            id.pipeline_group_id == *key.pipeline_group_id()
-                                && id.pipeline_id == *key.pipeline_id()
-                                && instance.coordinator_owner.as_ref().is_some_and(
-                                    |instance_owner| instance_owner.ptr_eq(&Arc::downgrade(owner)),
-                                )
-                                && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
-                        })
-                        .filter_map(|(id, instance)| {
-                            Some((id.clone(), instance.control_sender.clone()?))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                }
-            };
+                state
+                    .runtime_instances
+                    .iter()
+                    .filter(|(id, instance)| {
+                        id.pipeline_group_id == *key.pipeline_group_id()
+                            && id.pipeline_id == *key.pipeline_id()
+                            && instance
+                                .coordinator_owner
+                                .as_ref()
+                                .is_some_and(|instance_owner| instance_owner.ptr_eq(&host_identity))
+                            && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    })
+                    .filter_map(|(id, instance)| {
+                        Some((id.clone(), instance.control_sender.clone()?))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
         if let Some(Ok(hosts)) = owner.hosts.get() {
             hosts.bindings.stop();
         }
@@ -1561,23 +1525,39 @@ impl<
         self.state_changed.notify_all();
     }
 
-    /// Converts an unrecoverable core failure into coordinated engine failure.
+    /// Release the failed recovery worker and report the error to its owning scope.
     fn fail_runtime_recovery(
         self: &Arc<Self>,
         pipeline_key: &PipelineKey,
         core_id: usize,
         failed_generation: u64,
-        restart_count: usize,
+        worker_id: u64,
         max_restarts: usize,
         error: String,
     ) {
-        let owner = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .logical_pipelines
-            .get(pipeline_key)
-            .map(|deployment| Arc::clone(&deployment.work_coordinators));
+        // Capture the host before releasing this worker's reservation. A later
+        // deployment may reuse the pipeline key with a different coordinator.
+        let (owner, restart_count) = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(recovery) = state
+                .runtime_recoveries
+                .get_mut(&(pipeline_key.clone(), core_id))
+            else {
+                return;
+            };
+            if recovery.worker_id != Some(worker_id) {
+                return;
+            }
+            recovery.worker_id = None;
+            recovery.candidate_generation = None;
+            let restart_count = recovery.restart_count;
+            let owner = state
+                .logical_pipelines
+                .get(pipeline_key)
+                .map(|deployment| Arc::clone(&deployment.work_coordinators));
+            self.state_changed.notify_all();
+            (owner, restart_count)
+        };
         if let Some(owner) = owner
             && owner
                 .hosts
@@ -1669,20 +1649,10 @@ impl<
                 return Ok(());
             }
 
-            let mut observed_terminal_phase = false;
-            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
-                && let Some(instance) =
-                    status.instance_status(deployed_key.core_id, deployed_key.deployment_generation)
-            {
-                observed_terminal_phase = matches!(
-                    instance.phase(),
-                    PipelinePhase::Failed(_)
-                        | PipelinePhase::Rejected(_)
-                        | PipelinePhase::Deleted
-                        | PipelinePhase::Stopped
-                );
-            }
-
+            // A rollback can relaunch the same core and generation with a fresh
+            // runtime record. Its old observed terminal event may still be in
+            // the asynchronous store. Only this launch's readiness flag and
+            // physical exit record decide startup success or failure.
             if let Some(exit) = self.instance_exit(deployed_key) {
                 return match exit {
                     RuntimeInstanceExit::Success => Err(format!(
@@ -1691,13 +1661,6 @@ impl<
                     )),
                     RuntimeInstanceExit::Error(error) => Err(error.message),
                 };
-            }
-
-            if observed_terminal_phase {
-                return Err(format!(
-                    "pipeline failed to become ready on core {} (generation {})",
-                    deployed_key.core_id, deployed_key.deployment_generation
-                ));
             }
 
             if Instant::now() >= deadline {

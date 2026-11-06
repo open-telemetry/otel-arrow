@@ -18,4 +18,4 @@ issues: [4001]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Nodes opt into coordinated handoff and settings reconciliation. Durable ownership and progress guarantees remain separate work.
+subtext: Live updates wait for work release and replacement readiness. Per-core recovery requires proven worker cleanup. Durable progress guarantees remain separate work.

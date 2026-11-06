@@ -8,6 +8,9 @@ use otel_arrow_dfe_engine::work_coordinator::{
 };
 use std::{collections::BTreeSet, net::UdpSocket, rc::Rc};
 
+#[path = "work_coordinator_tests/cooperative.rs"]
+mod cooperative;
+
 #[derive(Debug)]
 struct Scrapes;
 impl WorkProtocol for Scrapes {
