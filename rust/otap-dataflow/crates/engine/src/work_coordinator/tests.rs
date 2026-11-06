@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use futures::FutureExt;
 use std::collections::BTreeSet;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -584,6 +585,75 @@ async fn shutdown_cannot_be_undone_by_late_activation() {
         h.finish().await;
     })
     .await;
+}
+
+/// Scenario: the final shutdown signal arrives while a provider's return branch is being polled.
+/// Guarantees: acknowledged shutdown completion succeeds, while the same early return without shutdown still fails closed.
+#[tokio::test]
+async fn shutdown_during_provider_poll_is_classified_from_current_state() {
+    struct ReturningProvider {
+        polled: std::sync::mpsc::SyncSender<()>,
+        released: std::sync::mpsc::Receiver<()>,
+    }
+    #[async_trait(?Send)]
+    impl WorkCoordinator<Targets> for ReturningProvider {
+        async fn run(
+            self: Box<Self>,
+            mut runtime: CoordinatorRuntime<Targets>,
+        ) -> Result<(), CoordinatorError> {
+            runtime.ready()?;
+            self.polled
+                .send(())
+                .expect("controller observes provider poll");
+            // This deliberately blocks one poll to let a real controller
+            // thread signal shutdown after select's shutdown branch was pending.
+            self.released
+                .recv_timeout(Duration::from_secs(30))
+                .expect("controller releases provider poll");
+            Ok(())
+        }
+    }
+    for stop in [true, false] {
+        let (polled, observed) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let declaration = CoordinatorDeclaration::new::<Targets, _>("targets", move || {
+            Box::new(ReturningProvider { polled, released })
+        });
+        let (binding, task) = declaration
+            .prepare(
+                CoordinatorKey {
+                    group_id: "g".into(),
+                    pipeline_id: "p".into(),
+                    node_id: "input".into(),
+                    role: "targets".into(),
+                },
+                vec![ParticipantSession {
+                    core_id: 0,
+                    generation: 0,
+                    nonce: 1,
+                }],
+                Arc::new(|_| {}),
+            )
+            .expect("prepare returning provider");
+        let controller = std::thread::spawn(move || {
+            observed
+                .recv_timeout(Duration::from_secs(30))
+                .expect("provider enters controlled poll");
+            if stop {
+                binding.stop();
+            }
+            release.send(()).expect("release provider");
+        });
+        let (_ready, run) = task.into_parts();
+        let result = std::panic::AssertUnwindSafe(run()).catch_unwind().await;
+        controller.join().expect("controller joined");
+        let result = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        if stop {
+            result.expect("shutdown observed during provider poll");
+        } else {
+            assert!(matches!(result, Err(CoordinatorError::Failed(_))));
+        }
+    }
 }
 
 /// Scenario: shutdown occurs before a worker subscribes to authority loss.

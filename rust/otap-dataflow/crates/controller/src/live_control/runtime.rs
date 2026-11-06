@@ -95,9 +95,10 @@ impl<
             state.logical_pipelines.values().cloned().collect()
         };
         let mut first = None;
+        let deadline = Instant::now() + work_coordinator::SHUTDOWN_TIMEOUT;
         for deployment in deployments {
             if let Some(Ok(hosts)) = deployment.work_coordinators.get()
-                && let Err(error) = hosts.shutdown()
+                && let Err(error) = hosts.shutdown_until(deadline)
             {
                 let _ = first.get_or_insert(error);
             }
