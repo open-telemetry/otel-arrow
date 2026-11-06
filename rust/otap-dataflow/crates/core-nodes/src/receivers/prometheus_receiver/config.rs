@@ -31,6 +31,8 @@ const fn default_true() -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    // TODO(bwplotka): Populate service.name, service.instance.id, and relabeled target
+    // attributes via ArrowDecoder once https://github.com/prometheus/scrape.rs/issues/35 lands.
     /// Logical job name associated with scraped targets.
     #[serde(default = "default_job_name")]
     pub job_name: String,
@@ -89,6 +91,8 @@ impl Default for Config {
     }
 }
 
+// TODO(bwplotka): Replace static URL normalization with scrape.rs discovery once
+// https://github.com/prometheus/scrape.rs/issues/36 lands.
 /// Normalizes a static target (`host:port` or full URL) into an HTTP(S) URL.
 pub(crate) fn normalize_target_url(
     raw_target: &str,
