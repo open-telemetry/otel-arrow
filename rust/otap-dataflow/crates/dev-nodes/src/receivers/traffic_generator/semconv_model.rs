@@ -54,15 +54,10 @@ pub struct MetricTemplate {
     pub unit: String,
     /// Instrument kind.
     pub instrument: InstrumentSpec,
-    /// Number points are emitted as `as_int` (`code_generation.metric_value_type: int`).
-    pub int_value: bool,
     /// Attribute generators.
     pub attributes: Vec<AttributeGen>,
-    /// Value sampler (`value`); integer output for int number metrics,
-    /// double output for histogram observations.
+    /// Value sampler (`value`) for number points and histogram observations.
     pub value: Option<ValueSampler>,
-    /// Data points per metric (`data_points`).
-    pub data_points: Option<ValueSampler>,
     /// Observations per histogram data point (`observations`).
     pub observations: Option<ValueSampler>,
     /// Histogram bucket bounds (`bounds`, or the SDK defaults).
@@ -87,10 +82,8 @@ pub struct EventTemplate {
 pub struct SemconvModel {
     /// Span groups, in registry order.
     pub spans: Vec<SpanTemplate>,
-    /// Metric groups, in registry order. `None` for metric groups without an
-    /// instrument: they still occupy a slot in the rotation (and are skipped
-    /// when generating), so the metric rotation follows registry order.
-    pub metrics: Vec<Option<MetricTemplate>>,
+    /// Metric groups with an instrument, in registry order.
+    pub metrics: Vec<MetricTemplate>,
     /// Event groups, in registry order.
     pub events: Vec<EventTemplate>,
 }
@@ -147,7 +140,7 @@ impl SemconvModel {
 
 enum Template {
     Span(SpanTemplate),
-    Metric(Option<MetricTemplate>),
+    Metric(MetricTemplate),
     Event(EventTemplate),
 }
 
@@ -221,24 +214,13 @@ fn compile_group(
                 Some(m) => annotation::parse_metric_spec(m, instrument)?,
                 None => MetricSpec::default(),
             };
-            let int_value = annotation::metric_value_is_int(group.annotations.as_ref());
-            // Histogram observations are aggregated as doubles.
-            let value_integer = int_value && !matches!(instrument, InstrumentSpec::Histogram);
-            Ok(Some(Template::Metric(Some(MetricTemplate {
+            Ok(Some(Template::Metric(MetricTemplate {
                 name: group.metric_name.clone().unwrap_or_default(),
                 description: group.brief.clone(),
                 unit: group.unit.clone().unwrap_or_default(),
                 instrument: instrument.clone(),
-                int_value,
                 attributes,
-                value: spec
-                    .value
-                    .as_ref()
-                    .map(|v| ValueSampler::new(v, value_integer)),
-                data_points: spec
-                    .data_points
-                    .as_ref()
-                    .map(|v| ValueSampler::new(v, true)),
+                value: spec.value.as_ref().map(|v| ValueSampler::new(v, false)),
                 observations: spec
                     .observations
                     .as_ref()
@@ -246,10 +228,14 @@ fn compile_group(
                 bounds: spec
                     .bounds
                     .unwrap_or_else(|| DEFAULT_HISTOGRAM_BOUNDS.to_vec()),
-            }))))
+            })))
         }
-        (GroupType::Metric, None) if map.is_none() => Ok(Some(Template::Metric(None))),
+        // Groups that produce no signal accept no annotation.
         _ if map.is_none() => Ok(None),
+        (GroupType::Metric, None) => Err(AnnotationError::new(
+            NAMESPACE,
+            "annotations are not supported on metric groups without an instrument",
+        )),
         _ => Err(AnnotationError::new(
             NAMESPACE,
             "annotations are only supported on metric, span, and event groups",

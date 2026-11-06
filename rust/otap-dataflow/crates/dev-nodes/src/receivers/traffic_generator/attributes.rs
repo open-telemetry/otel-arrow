@@ -211,8 +211,8 @@ impl AttributeGen {
 
     /// Generate one name/value pair.
     pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> KeyValue {
-        // Draw the value before the template key so the RNG draw order (and
-        // therefore seeded output) matches the per-call generation it replaced.
+        // The value is drawn before the template key; seeded tests depend on
+        // this draw order.
         let value = self.value.sample(rng);
         let name = match &self.name {
             NameGen::Fixed(n) => n.clone(),

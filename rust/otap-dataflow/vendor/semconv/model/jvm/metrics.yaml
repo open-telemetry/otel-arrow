@@ -69,7 +69,6 @@ groups:
           distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
         bounds: [0.01, 0.1, 1, 10]
         observations: { range: { min: 10, max: 100 } }
-        data_points: { values: [1, 2, 3], weights: [6, 3, 1] }
     brief: "Duration of JVM garbage collection actions."
     instrument: histogram
     unit: "s"

@@ -76,10 +76,13 @@ mod test {
     const ITERATIONS: usize = 10;
 
     fn get_registry() -> ResolvedRegistry {
+        // weaver fetches remote registries over rustls without choosing a crypto
+        // provider. Production installs one at startup; tests must do it here.
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
             None,
-            &otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::vendored_registry_path(
+            &otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path(
             ),
             &mut semconv_errors,
         )
@@ -114,7 +117,7 @@ mod test {
         let mut otel_proto_simulator = OtelProtoSimulator::default();
 
         let registry = otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel::compile(&get_registry())
-            .expect("vendored registry annotations are valid");
+            .expect("registry annotations are valid");
 
         for _ in 0..ITERATIONS {
             // generate data and simulate the protocol and compare result

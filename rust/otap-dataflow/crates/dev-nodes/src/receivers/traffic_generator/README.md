@@ -93,37 +93,6 @@ semantic conventions registry, cloning
 crypto provider, and the upstream registry carries no `traffic-generator`
 annotations, so values fall back to enum members, examples, and type defaults.
 
-The vendored registry in
-[`vendor/semconv/model`](../../../../../vendor/semconv/README.md) carries one
-representative annotation for each supported annotation kind, so the feature
-can be exercised and tested without annotating the whole registry. Every other
-group and attribute falls back as described above.
-
-| Kind | Annotated element | File |
-| --- | --- | --- |
-| span `duration`, `status` | `span.azure.cosmosdb.client` | `db/spans.yaml` |
-| histogram `value`, `bounds`, `observations`, `data_points` | `metric.jvm.gc.duration` | `jvm/metrics.yaml` |
-| counter `value` (exponential) | `metric.jvm.class.loaded` | `jvm/metrics.yaml` |
-| updowncounter `value` (uniform) | `metric.jvm.thread.count` | `jvm/metrics.yaml` |
-| gauge `value` (discrete double) | `metric.jvm.cpu.recent_utilization` | `jvm/metrics.yaml` |
-| event `severity` | `event.feature_flag.evaluation` | `feature-flags/events.yaml` |
-| int, lognormal | `azure.cosmosdb.request.body.size` | `azure/registry.yaml` |
-| double, normal | `azure.cosmosdb.operation.request_charge` | `azure/registry.yaml` |
-| enum, weighted subset | `azure.cosmosdb.connection.mode` | `azure/registry.yaml` |
-| `string[]`, `length` and `items` | `azure.cosmosdb.operation.contacted_regions` | `azure/registry.yaml` |
-| string, unweighted values | `db.operation.name` | `db/registry.yaml` |
-| int, zipf | `db.response.returned_rows` | `db/registry.yaml` |
-| `template[string]`, `keys` and `value` | `db.query.parameter` | `db/registry.yaml` |
-| boolean, weighted | `jvm.thread.daemon` | `jvm/registry.yaml` |
-| `any`, mixed scalars | `feature_flag.result.value` | `feature-flags/registry.yaml` |
-
-The span, metrics, and event above reference the annotated attributes, so
-generating from them exercises every annotation together. To use the vendored
-registry, set `registry_path` to its location (a local folder); the directory
-is resolved from the source tree and is not shipped inside deployed binaries.
-Any registry set through `registry_path` (a local folder, an archive, or a git
-repository) is used as is.
-
 ### Placement
 
 Annotations live under the `traffic-generator` key of a Weaver `annotations`
@@ -171,7 +140,7 @@ Every generated value is described by a value spec in one of two forms:
 
 | Form | Keys | Meaning |
 | --- | --- | --- |
-| Discrete | `values` (required), `weights` (optional) | Pick one of `values`; uniform unless `weights` is given. Weights are relative, `>= 0`, and must sum to `> 0`. |
+| Discrete | `values` (required), `weights` (optional) | Pick one of `values`; uniform unless `weights` is given. Weights are relative, `>= 0`, and must have a finite sum `> 0`. |
 | Continuous | `range: { min, max }` (required), `distribution` (optional) | Sample a number in `[min, max]` (inclusive); uniform unless `distribution` is given. Int and double only. |
 
 `values` and `range` are mutually exclusive, `weights` requires `values`, and
@@ -200,7 +169,7 @@ distribution is rejected.
 | `string`, `boolean` | Discrete value spec. |
 | enum | Discrete value spec; every value must be a member value. Members that are not listed are never generated. |
 | `any` | Discrete value spec with mixed scalars. |
-| `T[]` | `length` (int value spec, `>= 0`) and `items` (value spec for `T`); each item is sampled independently. |
+| `T[]` | `length` (int value spec, `0` to `1024`) and `items` (value spec for `T`); each item is sampled independently. |
 | `template[T]` | `keys` (string value spec) and `value` (value spec for `T`, or `length` / `items` for array templates). The emitted name is `<prefix>.<key>`, for example `http.request.header.content-type`. |
 
 ```yaml
@@ -226,8 +195,7 @@ distribution is rejected.
 | Group | Key | Spec | Default when absent |
 | --- | --- | --- | --- |
 | metric | `value` | Int or double value spec; counters require values `>= 0` | `1` |
-| metric | `data_points` | Int value spec, `>= 1`; attributes are resampled per point | `1` |
-| histogram metric | `observations` | Int value spec, `>= 1`; observations aggregated into each point | `1` |
+| histogram metric | `observations` | Int value spec, `1` to `100000`; observations aggregated into each point | `1` |
 | histogram metric | `bounds` | Strictly increasing list of numbers | `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]` |
 | span | `duration` | Value spec in milliseconds, `>= 0` | 10 microseconds |
 | span | `status` | Discrete, `unset` / `ok` / `error` | Status not set |
@@ -239,15 +207,12 @@ distribution is rejected.
   instrument: histogram
   unit: s
   annotations:
-    code_generation:
-      metric_value_type: double
     traffic-generator:
       value:
         range: { min: 0.0, max: 60.0 }
         distribution: { type: lognormal, mean: 0.1, stddev: 0.2 }
       bounds: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
       observations: { range: { min: 10, max: 100 } }
-      data_points: { values: [1, 2, 3], weights: [6, 3, 1] }
 
 - id: event.http.server.request.exception
   type: event
@@ -258,16 +223,16 @@ distribution is rejected.
 
 Metric output, with or without annotations:
 
-- Number points are `as_int` when the group's
-  `code_generation.metric_value_type` is `int`, otherwise `as_double`.
+- Number points are `as_double`.
 - Counters and updowncounters are emitted as sums with delta temporality, so
   every point is an independent increment and replayed `pre_generated`
   batches stay valid.
 - Histograms use delta temporality; each point carries bucket counts, count,
   sum, min, and max. Bucket `i` counts observations `x` with
   `bounds[i-1] < x <= bounds[i]`.
-- `max_signal_count` counts data points for metrics, so `data_points` above 1
-  reaches the limit with fewer metrics.
+- Each metric carries a single data point, so batch sizes, rates, and
+  `max_signal_count` count metrics and data points alike.
+- Metric groups without an `instrument` are skipped.
 
 ### Value precedence
 
@@ -295,8 +260,10 @@ annotation with its group, attribute, and key path:
 Validation rejects unknown keys at every level (for example `weight` instead
 of `weights`), keys used in the wrong context (`observations` on a gauge,
 `items` on a scalar), values that do not match the attribute type, invalid
-distribution parameters, unknown status and severity names, and bounds that
-are not strictly increasing.
+distribution parameters, unknown status and severity names, bounds that are
+not strictly increasing, counts above their limits (`observations` 100000,
+array `length` 1024), int ranges beyond +/-2^53, and weights whose sum is not
+finite.
 
 With `generation_strategy: pre_generated`, values are sampled once at startup
 and replayed, so variety exists only across the pre-generated batches.

@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyValueKind;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
-    AggregationTemporality, HistogramDataPoint, metric::Data, number_data_point,
+    AggregationTemporality, HistogramDataPoint, Metric, metric::Data, number_data_point,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -38,10 +38,10 @@ use super::sampler::{
     IndexSampler, NumberSampler, ValueSampler, lognormal_params, normal_cdf, normal_inverse_sf,
     normal_quantile, normal_sf,
 };
-use super::semconv_model::SemconvModel;
+use super::semconv_model::{SemconvModel, severity_entry, status_entry};
 use super::semconv_signal::{
-    bucketize, semconv_otlp_logs_with_rng, semconv_otlp_metrics_with_rng,
-    semconv_otlp_traces_with_rng, severity_number, status_code,
+    bucket_index, semconv_otlp_logs_with_rng, semconv_otlp_metrics_with_rng,
+    semconv_otlp_traces_with_rng,
 };
 
 // ===========================================================================
@@ -73,12 +73,7 @@ fn yaml_map(src: &str) -> Mapping {
 }
 
 fn parse_scalar(src: &str, kind: ScalarKind) -> Result<ValueSpec, AnnotationError> {
-    annotation::parse_value_spec(
-        &yaml_map(src),
-        annotation::NAMESPACE,
-        kind,
-        &["values", "weights", "range", "distribution"],
-    )
+    annotation::parse_value_spec(&yaml_map(src), annotation::NAMESPACE, kind)
 }
 
 fn primitive(p: PrimitiveOrArrayTypeSpec) -> AttributeType {
@@ -909,7 +904,7 @@ fn parse_attribute_rejects_wrong_context_keys() {
             &primitive(PrimitiveOrArrayTypeSpec::Ints),
         ),
         &format!("{ns}.length.range.min"),
-        ">= 0",
+        "must be in 0..=1024",
     );
     expect_err(
         parse_attr(
@@ -1028,28 +1023,27 @@ fn lookup_namespace_shapes() {
 // ===========================================================================
 
 /// Scenario: A full histogram annotation is parsed.
-/// Guarantees: All four histogram keys are captured, including bounds.
+/// Guarantees: All three histogram keys are captured, including bounds.
 #[test]
 fn parse_histogram_metric_spec() {
     let spec = annotation::parse_metric_spec(
         &yaml_map(
             "value: { range: { min: 0.001, max: 10 }, distribution: { type: lognormal, mean: 0.2, stddev: 0.5 } }\n\
              observations: { range: { min: 10, max: 1000 } }\n\
-             bounds: [0.005, 0.01, 0.1, 1]\n\
-             data_points: { values: [1, 2] }",
+             bounds: [0.005, 0.01, 0.1, 1]",
         ),
         &InstrumentSpec::Histogram,
     )
     .expect("valid");
     assert!(spec.value.is_some());
     assert!(spec.observations.is_some());
-    assert!(spec.data_points.is_some());
     assert_eq!(spec.bounds, Some(vec![0.005, 0.01, 0.1, 1.0]));
 }
 
 /// Scenario: Invalid metric annotations are parsed.
 /// Guarantees: Histogram-only keys on other instruments, negative counter
-/// increments, non-increasing bounds, and zero data points are rejected.
+/// increments, non-increasing bounds, zero observations, and the unsupported
+/// `data_points` key (metrics carry one data point) are rejected.
 #[test]
 fn parse_metric_spec_rejections() {
     let ns = annotation::NAMESPACE;
@@ -1091,11 +1085,11 @@ fn parse_metric_spec_rejections() {
     );
     expect_err(
         annotation::parse_metric_spec(
-            &yaml_map("data_points: { values: [0] }"),
+            &yaml_map("data_points: { values: [2] }"),
             &InstrumentSpec::Gauge,
         ),
-        &format!("{ns}.data_points.values[0]"),
-        ">= 1",
+        ns,
+        "unknown key \"data_points\" for metric group",
     );
     expect_err(
         annotation::parse_metric_spec(
@@ -1103,7 +1097,7 @@ fn parse_metric_spec_rejections() {
             &InstrumentSpec::Histogram,
         ),
         &format!("{ns}.observations.range.min"),
-        ">= 1",
+        "must be in 1..=100000",
     );
     expect_err(
         annotation::parse_metric_spec(
@@ -1165,12 +1159,12 @@ fn parse_span_and_event_specs() {
 #[test]
 fn severity_and_status_mappings() {
     for (i, name) in annotation::SEVERITY_NAMES.iter().enumerate() {
-        assert_eq!(severity_number(name), Some(i as i32 + 1));
+        assert_eq!(severity_entry(name), Some((i as i32 + 1, *name)));
     }
-    assert_eq!(severity_number("LOUD"), None);
-    assert_eq!(status_code("unset"), Some(0));
-    assert_eq!(status_code("ok"), Some(1));
-    assert_eq!(status_code("error"), Some(2));
+    assert_eq!(severity_entry("LOUD"), None);
+    assert_eq!(status_entry("unset"), Some(0));
+    assert_eq!(status_entry("ok"), Some(1));
+    assert_eq!(status_entry("error"), Some(2));
 }
 
 // ===========================================================================
@@ -1978,35 +1972,43 @@ fn validate_registry_reports_every_error() {
 // Signals
 // ===========================================================================
 
-/// Scenario: Observations are bucketized with OTLP explicit bounds.
-/// Guarantees: Upper-inclusive buckets, an overflow bucket, and counts that
-/// sum to the number of observations.
+/// Scenario: Observations are assigned to OTLP explicit buckets.
+/// Guarantees: Buckets are upper-inclusive and values above the last bound
+/// land in the overflow bucket at index `bounds.len()`.
 #[test]
-fn bucketize_uses_upper_inclusive_bounds() {
-    let counts = bucketize(&[0.0, 1.0, 1.5, 2.0, 2.0001, 99.0], &[1.0, 2.0]);
-    assert_eq!(counts, vec![2, 2, 2]);
-    assert_eq!(bucketize(&[], &DEFAULT_HISTOGRAM_BOUNDS).len(), 16);
+fn bucket_index_uses_upper_inclusive_bounds() {
+    let bounds = [1.0, 2.0];
+    let indexes: Vec<usize> = [0.0, 1.0, 1.5, 2.0, 2.0001, 99.0]
+        .iter()
+        .map(|x| bucket_index(&bounds, *x))
+        .collect();
+    assert_eq!(indexes, vec![0, 0, 1, 1, 2, 2]);
+    assert_eq!(
+        bucket_index(&DEFAULT_HISTOGRAM_BOUNDS, f64::MAX),
+        DEFAULT_HISTOGRAM_BOUNDS.len()
+    );
 }
 
 /// Scenario: Metrics are generated from every metric group in the vendored
 /// registry, annotated or not.
-/// Guarantees: Counters are delta and non-negative, sums are delta, int
-/// metrics emit `as_int` points, double metrics emit `as_double` points, and
-/// histograms have consistent buckets, count, sum, min, and max.
+/// Guarantees: The batch holds exactly the requested number of metrics,
+/// counters are delta and non-negative, sums are delta, every number point is
+/// `as_double`, and histograms have consistent buckets, count, sum, min, and
+/// max.
 #[test]
 fn generated_metrics_are_well_formed() {
     let groups = groups_of(GroupType::Metric);
+    let requested = groups.len() * 3;
     let mut r = rng();
-    let data = semconv_otlp_metrics_with_rng(groups.len() * 3, model(), &mut r);
+    let data = semconv_otlp_metrics_with_rng(requested, model(), &mut r);
     let by_name: HashMap<&str, _> = groups
         .iter()
         .map(|g| (g.metric_name.as_deref().unwrap_or_default(), *g))
         .collect();
     let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
-    assert_eq!(metrics.len(), groups.len() * 3);
+    assert_eq!(metrics.len(), requested);
     for metric in metrics {
         let group = by_name[metric.name.as_str()];
-        let int_value = annotation::metric_value_is_int(group.annotations.as_ref());
         match metric.data.as_ref().expect("data") {
             Data::Sum(sum) => {
                 assert_eq!(
@@ -2018,7 +2020,7 @@ fn generated_metrics_are_well_formed() {
                     group.instrument == Some(InstrumentSpec::Counter)
                 );
                 for p in &sum.data_points {
-                    let v = number_value(p.value.as_ref(), int_value, &metric.name);
+                    let v = number_value(p.value.as_ref(), &metric.name);
                     if sum.is_monotonic {
                         assert!(v >= 0.0, "{}: negative counter increment {v}", metric.name);
                     }
@@ -2027,7 +2029,7 @@ fn generated_metrics_are_well_formed() {
             Data::Gauge(g) => {
                 assert!(!g.data_points.is_empty());
                 for p in &g.data_points {
-                    let _ = number_value(p.value.as_ref(), int_value, &metric.name);
+                    let _ = number_value(p.value.as_ref(), &metric.name);
                 }
             }
             Data::Histogram(h) => {
@@ -2040,16 +2042,21 @@ fn generated_metrics_are_well_formed() {
     }
 }
 
-fn number_value(v: Option<&number_data_point::Value>, int: bool, name: &str) -> f64 {
+/// The value of a number point, which the generator always emits as a double.
+fn number_value(v: Option<&number_data_point::Value>, name: &str) -> f64 {
     match v.expect("value set") {
-        number_data_point::Value::AsInt(i) => {
-            assert!(int, "{name}: double metric emitted as int");
-            *i as f64
-        }
-        number_data_point::Value::AsDouble(d) => {
-            assert!(!int, "{name}: int metric emitted as double");
-            *d
-        }
+        number_data_point::Value::AsDouble(d) => *d,
+        number_data_point::Value::AsInt(i) => panic!("{name}: number point emitted as int {i}"),
+    }
+}
+
+/// Number of data points in a generated metric.
+fn point_count(metric: &Metric) -> usize {
+    match metric.data.as_ref().expect("data") {
+        Data::Sum(s) => s.data_points.len(),
+        Data::Gauge(g) => g.data_points.len(),
+        Data::Histogram(h) => h.data_points.len(),
+        other => panic!("unexpected data {other:?}"),
     }
 }
 
@@ -2081,8 +2088,7 @@ fn assert_histogram_point_consistent(p: &HistogramDataPoint, name: &str) {
 /// Span group annotated with `duration` and `status`; its attributes
 /// carry the int, double, enum, string, array, and template annotations.
 const REPRESENTATIVE_SPAN: &str = "span.azure.cosmosdb.client";
-/// Histogram metric annotated with `value`, `bounds`, `observations`, and
-/// `data_points`.
+/// Histogram metric annotated with `value`, `bounds`, and `observations`.
 const REPRESENTATIVE_HISTOGRAM: &str = "jvm.gc.duration";
 /// Counter metric annotated with an exponential `value`.
 const REPRESENTATIVE_COUNTER: &str = "jvm.class.loaded";
@@ -2173,10 +2179,8 @@ fn representative_model(spans: &[&str], metrics: &[&str], events: &[&str]) -> Se
         metrics: m
             .metrics
             .iter()
-            .flatten()
             .filter(|t| metrics.contains(&t.name.as_str()))
             .cloned()
-            .map(Some)
             .collect(),
         events: m
             .events
@@ -2356,10 +2360,11 @@ fn representative_span_respects_annotations() {
 /// counter, updowncounter, and gauge groups, and the updowncounter carries
 /// an annotated boolean attribute.
 /// Guarantees: The histogram uses the annotated `bounds`, per-point
-/// observation counts, value range, and 1 to 3 data points per metric; the
-/// counter emits monotonic int increments within its exponential range; the
-/// updowncounter emits non-monotonic ints within its uniform range with a
-/// weighted boolean attribute; the gauge emits only the annotated doubles.
+/// observation counts, and value range, with one data point per metric; the
+/// counter emits monotonic increments within its exponential range; the
+/// updowncounter emits non-monotonic values within its uniform range with a
+/// weighted boolean attribute; the gauge emits only the annotated doubles;
+/// the batch holds exactly the requested number of metrics.
 #[test]
 fn representative_metrics_respect_annotations() {
     const ROUNDS: usize = 200;
@@ -2393,7 +2398,7 @@ fn representative_metrics_respect_annotations() {
             (REPRESENTATIVE_COUNTER, Data::Sum(s)) => {
                 assert!(s.is_monotonic);
                 for p in &s.data_points {
-                    let v = number_value(p.value.as_ref(), true, name);
+                    let v = number_value(p.value.as_ref(), name);
                     assert!((0.0..=100.0).contains(&v), "{name} value {v}");
                     let _ = counter_values.insert(v as i64);
                 }
@@ -2401,7 +2406,7 @@ fn representative_metrics_respect_annotations() {
             (REPRESENTATIVE_UPDOWNCOUNTER, Data::Sum(s)) => {
                 assert!(!s.is_monotonic);
                 for p in &s.data_points {
-                    let v = number_value(p.value.as_ref(), true, name);
+                    let v = number_value(p.value.as_ref(), name);
                     assert!((10.0..=200.0).contains(&v), "{name} value {v}");
                     match attr_scalar(&p.attributes, "jvm.thread.daemon") {
                         Scalar::Bool(b) => *daemon.entry(b).or_default() += 1,
@@ -2411,7 +2416,7 @@ fn representative_metrics_respect_annotations() {
             }
             (REPRESENTATIVE_GAUGE, Data::Gauge(g)) => {
                 for p in &g.data_points {
-                    let v = number_value(p.value.as_ref(), false, name);
+                    let v = number_value(p.value.as_ref(), name);
                     let _ = gauge_values.insert(v.to_bits());
                 }
             }
@@ -2419,7 +2424,7 @@ fn representative_metrics_respect_annotations() {
         }
     }
 
-    assert_eq!(histogram_points, HashSet::from([1, 2, 3]));
+    assert_eq!(histogram_points, HashSet::from([1]));
     assert!(counter_values.len() > 5, "counter values should vary");
     assert!(
         daemon[&true] > daemon[&false],
@@ -2449,7 +2454,7 @@ fn representative_event_respects_annotations() {
     let mut values = HashSet::new();
     for rec in records {
         assert_eq!(
-            severity_number(&rec.severity_text),
+            severity_entry(&rec.severity_text).map(|(n, _)| n),
             Some(rec.severity_number)
         );
         let _ = severities.insert(rec.severity_text.clone());
@@ -2561,14 +2566,18 @@ fn compiled_value_sampler_matches_per_call_sampling() {
 }
 
 /// Scenario: The vendored registry is compiled into a `SemconvModel`.
-/// Guarantees: The model has one template per span, metric, and event group
-/// (in registry order) and one attribute generator per group attribute, so
-/// generation cycles over exactly the same groups as the registry.
+/// Guarantees: The model has one template per span group, per metric group
+/// with an instrument, and per event group (in registry order), and one
+/// attribute generator per group attribute, so generation cycles over exactly
+/// the groups that can produce a signal.
 #[test]
 fn compiled_model_mirrors_registry_groups() {
     let m = model();
     let spans = groups_of(GroupType::Span);
-    let metrics = groups_of(GroupType::Metric);
+    let metrics: Vec<_> = groups_of(GroupType::Metric)
+        .into_iter()
+        .filter(|g| g.instrument.is_some())
+        .collect();
     let events = groups_of(GroupType::Event);
     assert_eq!(m.spans.len(), spans.len());
     assert_eq!(m.metrics.len(), metrics.len());
@@ -2578,17 +2587,9 @@ fn compiled_model_mirrors_registry_groups() {
         assert_eq!(t.attributes.len(), g.attributes.len());
     }
     for (t, g) in m.metrics.iter().zip(&metrics) {
-        match t {
-            Some(t) => {
-                assert_eq!(Some(&t.name), g.metric_name.as_ref());
-                assert_eq!(t.attributes.len(), g.attributes.len());
-                assert_eq!(
-                    t.int_value,
-                    annotation::metric_value_is_int(g.annotations.as_ref())
-                );
-            }
-            None => assert!(g.instrument.is_none()),
-        }
+        assert_eq!(Some(&t.name), g.metric_name.as_ref());
+        assert_eq!(Some(&t.instrument), g.instrument.as_ref());
+        assert_eq!(t.attributes.len(), g.attributes.len());
     }
     for (t, g) in m.events.iter().zip(&events) {
         assert_eq!(Some(&t.name), g.name.as_ref());
@@ -2692,4 +2693,190 @@ fn compiled_model_generation_is_reproducible() {
         strip(semconv_otlp_logs_with_rng(n, model(), &mut a)),
         strip(semconv_otlp_logs_with_rng(n, model(), &mut b))
     );
+}
+
+// ===========================================================================
+// Limits: one data point per metric, count caps, numeric safety
+// ===========================================================================
+
+/// Scenario: Metrics are generated from every metric group in the vendored
+/// registry (gauges, sums, and histograms), cycling three times.
+/// Guarantees: The batch holds exactly the requested number of metrics and
+/// every metric carries exactly one data point, so payload item counts
+/// (data points) equal the metric count the producer requested.
+#[test]
+fn every_metric_carries_one_data_point() {
+    let requested = model().metrics.len() * 3;
+    let data = semconv_otlp_metrics_with_rng(requested, model(), &mut rng());
+    let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
+    assert_eq!(metrics.len(), requested);
+    for metric in metrics {
+        assert_eq!(point_count(metric), 1, "{}", metric.name);
+    }
+}
+
+/// Scenario: Metrics are requested from a model without metric templates.
+/// Guarantees: Generation returns an empty batch instead of looping forever.
+#[test]
+fn metric_generation_without_metrics_is_empty() {
+    let data = semconv_otlp_metrics_with_rng(10, &SemconvModel::default(), &mut rng());
+    assert!(data.resource_metrics[0].scope_metrics[0].metrics.is_empty());
+}
+
+/// Scenario: Count specs (`observations`, array `length`) are annotated
+/// with values above their caps, in both discrete and continuous form.
+/// Guarantees: Each is rejected at parse time with the offending key path, so
+/// a registry cannot request allocations or sampling work large enough to
+/// panic or stall the receiver.
+#[test]
+fn parse_rejects_counts_above_caps() {
+    let ns = annotation::NAMESPACE;
+    expect_err(
+        annotation::parse_metric_spec(
+            &yaml_map("observations: { values: [1, 100001] }"),
+            &InstrumentSpec::Histogram,
+        ),
+        &format!("{ns}.observations.values[1]"),
+        "must be in 1..=100000",
+    );
+    expect_err(
+        annotation::parse_metric_spec(
+            &yaml_map("observations: { range: { min: 1, max: 1000000000000000000 } }"),
+            &InstrumentSpec::Histogram,
+        ),
+        &format!("{ns}.observations.range"),
+        "must be within",
+    );
+    expect_err(
+        annotation::parse_metric_spec(
+            &yaml_map("observations: { range: { min: 1, max: 100001 } }"),
+            &InstrumentSpec::Histogram,
+        ),
+        &format!("{ns}.observations.range.max"),
+        "must be in 1..=100000",
+    );
+    expect_err(
+        parse_attr(
+            "length: { values: [1025] }\nitems: { values: [1] }",
+            &primitive(PrimitiveOrArrayTypeSpec::Ints),
+        ),
+        &format!("{ns}.length.values[0]"),
+        "must be in 0..=1024",
+    );
+    let _ = annotation::parse_metric_spec(
+        &yaml_map(&format!(
+            "observations: {{ range: {{ min: 1, max: {} }} }}",
+            annotation::MAX_OBSERVATIONS
+        )),
+        &InstrumentSpec::Histogram,
+    )
+    .expect("counts at the caps are valid");
+    let _ = parse_attr(
+        "length: { values: [0, 1024] }\nitems: { values: [1] }",
+        &primitive(PrimitiveOrArrayTypeSpec::Ints),
+    )
+    .expect("lengths at the caps are valid");
+}
+
+/// Scenario: Int ranges are annotated with bounds beyond +/-2^53, including a
+/// zipf range spanning nearly the whole i64 domain.
+/// Guarantees: They are rejected at parse time, so int sampling never loses
+/// precision and zipf never computes an overflowing rank count; bounds at
+/// exactly +/-2^53 are accepted and compile into a sampler.
+#[test]
+fn parse_rejects_int_ranges_beyond_safe_integers() {
+    let ns = annotation::NAMESPACE;
+    expect_err(
+        parse_scalar("range: { min: 0, max: 9007199254740994 }", ScalarKind::Int),
+        &format!("{ns}.range"),
+        "must be within",
+    );
+    expect_err(
+        parse_scalar(
+            "range: { min: -9223372036854775808, max: 9223372036854775807 }\n\
+             distribution: { type: zipf, exponent: 1.1 }",
+            ScalarKind::Int,
+        ),
+        &format!("{ns}.range"),
+        "must be within",
+    );
+    let spec = parse_scalar(
+        "range: { min: -9007199254740992, max: 9007199254740992 }\n\
+         distribution: { type: zipf, exponent: 1.1 }",
+        ScalarKind::Int,
+    )
+    .expect("bounds at 2^53 are valid");
+    let sampler = ValueSampler::new(&spec, true);
+    let mut r = rng();
+    for _ in 0..100 {
+        let x = sampler.sample_f64(&mut r);
+        assert!(x.abs() <= 9_007_199_254_740_992.0, "{x}");
+    }
+}
+
+/// Scenario: Weights are individually finite but their sum overflows to
+/// infinity.
+/// Guarantees: The spec is rejected at parse time instead of producing an
+/// infinite cumulative total that would select arbitrary values.
+#[test]
+fn parse_rejects_weights_with_overflowing_sum() {
+    expect_err(
+        parse_scalar(
+            "values: [1, 2, 3]\nweights: [1.0e308, 1.0e308, 0]",
+            ScalarKind::Int,
+        ),
+        &format!("{}.weights", annotation::NAMESPACE),
+        "sum must be finite",
+    );
+}
+
+/// An RNG whose every draw is the maximum value, which makes `random::<f64>()`
+/// return the largest value below 1.0.
+struct MaxRng;
+
+impl rand::TryRng for MaxRng {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(u32::MAX)
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(u64::MAX)
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        dst.fill(u8::MAX);
+        Ok(())
+    }
+}
+
+/// Scenario: A weighted sampler whose trailing items have zero weight is
+/// drawn with the largest possible uniform value. With a subnormal total,
+/// `u * total` rounds up to `total`, so the target lands on or past every
+/// cumulative weight.
+/// Guarantees: The last positive-weight index is returned; zero-weight items
+/// are never selected, even when rounding pushes the target to the total.
+#[test]
+fn index_sampler_never_selects_trailing_zero_weights() {
+    let sampler = IndexSampler::new(4, Some(&[0.1, 0.2, 0.0, 0.0]));
+    assert_eq!(sampler.sample(&mut MaxRng), 1);
+    let smallest_subnormal = f64::from_bits(1);
+    let sampler = IndexSampler::new(3, Some(&[0.0, smallest_subnormal, 0.0]));
+    assert_eq!(sampler.sample(&mut MaxRng), 1);
+}
+
+/// Scenario: A span is annotated with a duration so large that the start
+/// timestamp plus the duration in nanoseconds overflows `u64`.
+/// Guarantees: Generation does not panic and the end timestamp saturates at
+/// `u64::MAX`, never wrapping before the start time.
+#[test]
+fn huge_span_duration_saturates_end_time() {
+    let mut model = representative_model(&[REPRESENTATIVE_SPAN], &[], &[]);
+    let spec = parse_scalar("values: [1.0e300]", ScalarKind::Double).expect("valid");
+    model.spans[0].duration_ms = Some(ValueSampler::new(&spec, false));
+    let traces = semconv_otlp_traces_with_rng(1, &model, &mut rng());
+    let span = &traces.resource_spans[0].scope_spans[0].spans[0];
+    assert_eq!(span.end_time_unix_nano, u64::MAX);
+    assert!(span.end_time_unix_nano >= span.start_time_unix_nano);
 }

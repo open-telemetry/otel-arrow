@@ -299,7 +299,9 @@ impl NumberSampler {
                 }
             }
             Distribution::Zipf { exponent } => {
-                let n = (range.max - range.min) as u64 + 1;
+                // Int range bounds are validated to +/-2^53, so the rank
+                // count fits in u64 without overflow.
+                let n = zipf_rank_count(&range);
                 if n <= ZIPF_TABLE_CAP {
                     Continuous::ZipfTable {
                         cumulative: zipf_table(n, exponent),
@@ -324,7 +326,7 @@ impl NumberSampler {
     /// Force the rejection-inversion zipf sampler regardless of range size.
     #[cfg(test)]
     pub(crate) fn new_zipf_rejection(range: Range, exponent: f64) -> Self {
-        let n = (range.max - range.min) as u64 + 1;
+        let n = zipf_rank_count(&range);
         Self {
             lo: range.min,
             hi: range.max,
@@ -390,6 +392,12 @@ impl NumberSampler {
     }
 }
 
+/// Number of integer ranks in an inclusive int range.
+fn zipf_rank_count(range: &Range) -> u64 {
+    debug_assert!(range.min <= range.max);
+    ((range.max - range.min) as u64).saturating_add(1)
+}
+
 fn zipf_table(n: u64, exponent: f64) -> Vec<f64> {
     let mut acc = 0.0;
     (1..=n)
@@ -420,35 +428,55 @@ pub fn range_mass(range: &Range, distribution: &Distribution, integer: bool) -> 
 #[derive(Debug, Clone)]
 pub struct IndexSampler {
     len: usize,
-    cumulative: Option<Vec<f64>>,
+    weighted: Option<Weighted>,
+}
+
+/// Cumulative weights and the last index with a positive weight.
+#[derive(Debug, Clone)]
+struct Weighted {
+    cumulative: Vec<f64>,
+    last_positive: usize,
 }
 
 impl IndexSampler {
     /// Build a sampler over `len` items with optional relative weights.
+    ///
+    /// Weights are validated at parse time: non-negative, finite sum, and
+    /// at least one positive weight.
     #[must_use]
     pub fn new(len: usize, weights: Option<&[f64]>) -> Self {
-        let cumulative = weights.map(|w| {
+        let weighted = weights.map(|w| {
             let mut acc = 0.0;
-            w.iter()
+            let cumulative = w
+                .iter()
                 .map(|x| {
                     acc += x;
                     acc
                 })
-                .collect::<Vec<_>>()
+                .collect();
+            let last_positive = w.iter().rposition(|x| *x > 0.0).unwrap_or(0);
+            Weighted {
+                cumulative,
+                last_positive,
+            }
         });
-        Self { len, cumulative }
+        Self { len, weighted }
     }
 
-    /// Draw an index in `0..len`.
+    /// Draw an index in `0..len`. Zero-weight items are never selected.
     pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> usize {
-        match &self.cumulative {
+        match &self.weighted {
             None => rng.random_range(0..self.len),
-            Some(c) => {
-                let total = *c.last().unwrap_or(&0.0);
+            Some(w) => {
+                let total = w.cumulative.last().copied().unwrap_or(0.0);
                 let target = rng.random::<f64>() * total;
-                // First index whose cumulative weight exceeds target; zero
-                // weights are never selected.
-                c.partition_point(|x| *x <= target).min(self.len - 1)
+                // First index whose cumulative weight exceeds target. Rounding
+                // can leave target at or above the last cumulative value, so
+                // clamp to the last positive weight rather than the last item
+                // (which may have weight zero).
+                w.cumulative
+                    .partition_point(|x| *x <= target)
+                    .min(w.last_positive)
             }
         }
     }
@@ -506,7 +534,8 @@ impl ValueSampler {
     /// Discrete samplers pick one of `values` (weighted when `weights` is
     /// present, uniform otherwise). Continuous samplers sample the range with
     /// inverse transform sampling.
-    pub fn sample_value<R: Rng + ?Sized>(&self, rng: &mut R) -> Scalar {
+    #[cfg(test)]
+    pub(crate) fn sample_value<R: Rng + ?Sized>(&self, rng: &mut R) -> Scalar {
         match self {
             ValueSampler::Discrete { values, index } => values[index.sample(rng)].clone(),
             ValueSampler::Continuous { sampler, integer } => {
@@ -524,10 +553,8 @@ impl ValueSampler {
     pub fn sample_f64<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
         match self {
             ValueSampler::Discrete { values, index } => scalar_f64(&values[index.sample(rng)]),
-            ValueSampler::Continuous { sampler, integer } => {
-                let x = sampler.sample_f64(rng);
-                if *integer { (x as i64) as f64 } else { x }
-            }
+            // Integer samplers already return integral values.
+            ValueSampler::Continuous { sampler, .. } => sampler.sample_f64(rng),
         }
     }
 

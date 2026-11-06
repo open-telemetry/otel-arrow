@@ -31,7 +31,6 @@ rand.workspace = true
 rand_distr.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 weaver_common.workspace = true
@@ -45,4 +44,5 @@ otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
+serde_yaml.workspace = true
 zstd.workspace = true

@@ -23,6 +23,11 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 use weaver_semconv::YamlValue;
+use weaver_semconv::v1::attribute::{
+    AttributeType, EnumEntriesSpec, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
+    ValueSpec as SemconvValueSpec,
+};
+use weaver_semconv::v1::group::InstrumentSpec;
 
 /// A JSON object, used as the annotation mapping type.
 ///
@@ -30,10 +35,6 @@ use weaver_semconv::YamlValue;
 /// mappings are `serde_json` objects even though registry authors write them
 /// as YAML.
 type Mapping = Map<String, Value>;
-use weaver_semconv::v1::attribute::{
-    AttributeType, PrimitiveOrArrayTypeSpec, TemplateTypeSpec, ValueSpec as SemconvValueSpec,
-};
-use weaver_semconv::v1::group::InstrumentSpec;
 
 /// The annotation namespace read by the traffic generator.
 pub const NAMESPACE: &str = "traffic-generator";
@@ -202,8 +203,6 @@ pub enum AttributeSpec {
 pub struct MetricSpec {
     /// Data point value (or per-observation value for histograms).
     pub value: Option<ValueSpec>,
-    /// Number of data points per emitted metric.
-    pub data_points: Option<ValueSpec>,
     /// Number of observations aggregated into each histogram data point.
     pub observations: Option<ValueSpec>,
     /// Histogram bucket bounds (strictly increasing).
@@ -249,6 +248,22 @@ pub const DEFAULT_HISTOGRAM_BOUNDS: [f64; 15] = [
 /// mass underflows to zero are rejected as unreachable.
 pub const MIN_RANGE_MASS: f64 = f64::MIN_POSITIVE;
 
+/// Largest accepted histogram `observations` value.
+///
+/// Every observation is sampled on the receiver task, so a histogram batch
+/// does at most `max_batch_size * MAX_OBSERVATIONS` samples.
+pub const MAX_OBSERVATIONS: u64 = 100_000;
+
+/// Largest accepted array attribute `length` value.
+pub const MAX_ARRAY_LENGTH: u64 = 1_024;
+
+/// Largest integer magnitude accepted for int `range` bounds.
+///
+/// Continuous int specs are sampled as `f64`, which represents every integer
+/// exactly only up to 2^53. Discrete int `values` are emitted as-is and are
+/// not limited.
+pub const MAX_SAFE_INT: i64 = 1 << 53;
+
 const VALUE_SPEC_KEYS: [&str; 4] = ["values", "weights", "range", "distribution"];
 const ARRAY_KEYS: [&str; 2] = ["length", "items"];
 const TEMPLATE_KEYS: [&str; 2] = ["keys", "value"];
@@ -272,18 +287,6 @@ pub fn lookup(
         Value::Null => Ok(None),
         _ => Err(AnnotationError::new(NAMESPACE, "must be a mapping")),
     }
-}
-
-/// Read `code_generation.metric_value_type` from a group's annotations.
-///
-/// Returns `true` when the metric is declared as `int`.
-#[must_use]
-pub fn metric_value_is_int(annotations: Option<&BTreeMap<String, YamlValue>>) -> bool {
-    annotations
-        .and_then(|a| a.get("code_generation"))
-        .and_then(|v| v.0.get("metric_value_type"))
-        .and_then(Value::as_str)
-        == Some("int")
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +349,7 @@ pub fn parse_attribute_spec(map: &Mapping, ty: &AttributeType) -> AnnotationResu
             PrimitiveOrArrayTypeSpec::Booleans => array(map, path, ScalarKind::Bool),
         },
         AttributeType::Enum { members } => {
-            let spec = parse_value_spec(map, path, enum_kind(members), &VALUE_SPEC_KEYS)?;
+            let spec = parse_value_spec(map, path, enum_kind(members))?;
             check_enum_members(&spec, members, path)?;
             Ok(AttributeSpec::Scalar(spec))
         }
@@ -354,8 +357,7 @@ pub fn parse_attribute_spec(map: &Mapping, ty: &AttributeType) -> AnnotationResu
             check_keys(map, path, &TEMPLATE_KEYS)?;
             let keys_map = required_map(map, path, "keys")?;
             let keys_path = format!("{path}.keys");
-            let keys =
-                parse_value_spec(keys_map, &keys_path, ScalarKind::String, &VALUE_SPEC_KEYS)?;
+            let keys = parse_value_spec(keys_map, &keys_path, ScalarKind::String)?;
             let value_map = required_map(map, path, "value")?;
             let value_path = format!("{path}.value");
             let value = match t {
@@ -390,12 +392,7 @@ fn scalar(map: &Mapping, path: &str, kind: ScalarKind) -> AnnotationResult<Attri
             "`keys` is only valid on template attributes",
         ));
     }
-    Ok(AttributeSpec::Scalar(parse_value_spec(
-        map,
-        path,
-        kind,
-        &VALUE_SPEC_KEYS,
-    )?))
+    Ok(AttributeSpec::Scalar(parse_value_spec(map, path, kind)?))
 }
 
 fn array(map: &Mapping, path: &str, kind: ScalarKind) -> AnnotationResult<AttributeSpec> {
@@ -408,14 +405,14 @@ fn array(map: &Mapping, path: &str, kind: ScalarKind) -> AnnotationResult<Attrib
     check_keys(map, path, &ARRAY_KEYS)?;
     let length_map = required_map(map, path, "length")?;
     let length_path = format!("{path}.length");
-    let length = parse_value_spec(length_map, &length_path, ScalarKind::Int, &VALUE_SPEC_KEYS)?;
-    check_non_negative(&length, &length_path)?;
+    let length = parse_value_spec(length_map, &length_path, ScalarKind::Int)?;
+    check_count(&length, &length_path, 0, MAX_ARRAY_LENGTH)?;
     let items_map = required_map(map, path, "items")?;
-    let items = parse_value_spec(items_map, &format!("{path}.items"), kind, &VALUE_SPEC_KEYS)?;
+    let items = parse_value_spec(items_map, &format!("{path}.items"), kind)?;
     Ok(AttributeSpec::Array { length, items })
 }
 
-fn enum_kind(members: &[weaver_semconv::v1::attribute::EnumEntriesSpec]) -> ScalarKind {
+fn enum_kind(members: &[EnumEntriesSpec]) -> ScalarKind {
     let mut kind = None;
     for m in members {
         let k = match m.value {
@@ -441,7 +438,7 @@ fn enum_kind(members: &[weaver_semconv::v1::attribute::EnumEntriesSpec]) -> Scal
 
 fn check_enum_members(
     spec: &ValueSpec,
-    members: &[weaver_semconv::v1::attribute::EnumEntriesSpec],
+    members: &[EnumEntriesSpec],
     path: &str,
 ) -> AnnotationResult<()> {
     let ValueSpec::Discrete { values, .. } = spec else {
@@ -481,9 +478,9 @@ pub fn parse_metric_spec(
     let path = NAMESPACE;
     let histogram = matches!(instrument, InstrumentSpec::Histogram);
     let allowed: &[&str] = if histogram {
-        &["value", "data_points", "observations", "bounds"]
+        &["value", "observations", "bounds"]
     } else {
-        &["value", "data_points"]
+        &["value"]
     };
     for key in map.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -498,22 +495,16 @@ pub fn parse_metric_spec(
     let mut spec = MetricSpec::default();
     if let Some(m) = optional_map(map, path, "value")? {
         let p = format!("{path}.value");
-        let v = parse_value_spec(m, &p, ScalarKind::Double, &VALUE_SPEC_KEYS)?;
+        let v = parse_value_spec(m, &p, ScalarKind::Double)?;
         if matches!(instrument, InstrumentSpec::Counter) {
             check_non_negative(&v, &p)?;
         }
         spec.value = Some(v);
     }
-    if let Some(m) = optional_map(map, path, "data_points")? {
-        let p = format!("{path}.data_points");
-        let v = parse_value_spec(m, &p, ScalarKind::Int, &VALUE_SPEC_KEYS)?;
-        check_at_least_one(&v, &p)?;
-        spec.data_points = Some(v);
-    }
     if let Some(m) = optional_map(map, path, "observations")? {
         let p = format!("{path}.observations");
-        let v = parse_value_spec(m, &p, ScalarKind::Int, &VALUE_SPEC_KEYS)?;
-        check_at_least_one(&v, &p)?;
+        let v = parse_value_spec(m, &p, ScalarKind::Int)?;
+        check_count(&v, &p, 1, MAX_OBSERVATIONS)?;
         spec.observations = Some(v);
     }
     if let Some(b) = map.get("bounds") {
@@ -536,13 +527,13 @@ pub fn parse_span_spec(map: &Mapping) -> AnnotationResult<SpanSpec> {
     let mut spec = SpanSpec::default();
     if let Some(m) = optional_map(map, path, "duration")? {
         let p = format!("{path}.duration");
-        let v = parse_value_spec(m, &p, ScalarKind::Double, &VALUE_SPEC_KEYS)?;
+        let v = parse_value_spec(m, &p, ScalarKind::Double)?;
         check_non_negative(&v, &p)?;
         spec.duration = Some(v);
     }
     if let Some(m) = optional_map(map, path, "status")? {
         let p = format!("{path}.status");
-        let v = parse_value_spec(m, &p, ScalarKind::String, &VALUE_SPEC_KEYS)?;
+        let v = parse_value_spec(m, &p, ScalarKind::String)?;
         check_names(&v, &p, &STATUS_NAMES, "status")?;
         spec.status = Some(v);
     }
@@ -563,7 +554,7 @@ pub fn parse_event_spec(map: &Mapping) -> AnnotationResult<EventSpec> {
     let mut spec = EventSpec::default();
     if let Some(m) = optional_map(map, path, "severity")? {
         let p = format!("{path}.severity");
-        let v = parse_value_spec(m, &p, ScalarKind::String, &VALUE_SPEC_KEYS)?;
+        let v = parse_value_spec(m, &p, ScalarKind::String)?;
         check_names(&v, &p, &SEVERITY_NAMES, "severity")?;
         spec.severity = Some(v);
     }
@@ -602,9 +593,8 @@ pub fn parse_value_spec(
     map: &Mapping,
     path: &str,
     kind: ScalarKind,
-    allowed: &[&str],
 ) -> AnnotationResult<ValueSpec> {
-    check_keys(map, path, allowed)?;
+    check_keys(map, path, &VALUE_SPEC_KEYS)?;
     let has_values = map.contains_key("values");
     let has_range = map.contains_key("range");
     let has_weights = map.contains_key("weights");
@@ -661,11 +651,20 @@ pub fn parse_value_spec(
             ));
         }
         let range = parse_range(map.get("range"), &format!("{path}.range"))?;
-        if kind == ScalarKind::Int && (range.min.fract() != 0.0 || range.max.fract() != 0.0) {
-            return Err(AnnotationError::new(
-                &format!("{path}.range"),
-                "int ranges require integer bounds",
-            ));
+        if kind == ScalarKind::Int {
+            if range.min.fract() != 0.0 || range.max.fract() != 0.0 {
+                return Err(AnnotationError::new(
+                    &format!("{path}.range"),
+                    "int ranges require integer bounds",
+                ));
+            }
+            let limit = MAX_SAFE_INT as f64;
+            if range.min < -limit || range.max > limit {
+                return Err(AnnotationError::new(
+                    &format!("{path}.range"),
+                    format!("int range bounds must be within +/-{MAX_SAFE_INT}"),
+                ));
+            }
         }
         let distribution = match map.get("distribution") {
             None => Distribution::Uniform,
@@ -698,7 +697,11 @@ fn parse_weights(value: &Value, path: &str, len: usize) -> AnnotationResult<Vec<
         }
         out.push(w);
     }
-    if out.iter().sum::<f64>() <= 0.0 {
+    let total = out.iter().sum::<f64>();
+    if !total.is_finite() {
+        return Err(AnnotationError::new(path, "weights sum must be finite"));
+    }
+    if total <= 0.0 {
         return Err(AnnotationError::new(path, "weights must sum to > 0"));
     }
     Ok(out)
@@ -961,24 +964,39 @@ fn check_non_negative(spec: &ValueSpec, path: &str) -> AnnotationResult<()> {
     }
 }
 
-fn check_at_least_one(spec: &ValueSpec, path: &str) -> AnnotationResult<()> {
+/// Check that an int count spec only produces values in `min..=max`.
+fn check_count(spec: &ValueSpec, path: &str, min: u64, max: u64) -> AnnotationResult<()> {
+    let message = || format!("must be in {min}..={max}");
+    let in_bounds = |n: f64| n >= min as f64 && n <= max as f64;
     match spec {
-        ValueSpec::Continuous { range, .. } if range.min < 1.0 => Err(AnnotationError::new(
-            &format!("{path}.range.min"),
-            "must be >= 1",
-        )),
+        ValueSpec::Continuous { range, .. } => {
+            if !in_bounds(range.min) {
+                return Err(AnnotationError::new(
+                    &format!("{path}.range.min"),
+                    message(),
+                ));
+            }
+            if !in_bounds(range.max) {
+                return Err(AnnotationError::new(
+                    &format!("{path}.range.max"),
+                    message(),
+                ));
+            }
+            Ok(())
+        }
         ValueSpec::Discrete { values, .. } => {
             for (i, v) in values.iter().enumerate() {
-                if matches!(v, Scalar::Int(n) if *n < 1) {
+                if let Scalar::Int(n) = v
+                    && !in_bounds(*n as f64)
+                {
                     return Err(AnnotationError::new(
                         &format!("{path}.values[{i}]"),
-                        "must be >= 1",
+                        message(),
                     ));
                 }
             }
             Ok(())
         }
-        _ => Ok(()),
     }
 }
 

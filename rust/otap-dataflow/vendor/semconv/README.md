@@ -22,10 +22,10 @@ ranges and distributions (see the
 [receiver README](../../crates/dev-nodes/src/receivers/traffic_generator/README.md#registry)).
 A `dev-nodes` test fails if any representative annotation goes missing.
 
-This copy is available by setting the `traffic_generator` receiver's
-`registry_path` to this folder (`data_source: semantic_conventions`). Tests and
-benchmarks that generate semantic-convention traffic load this copy from disk,
-so they don't need network access or a TLS crypto provider.
+The `dev-nodes` annotation tests load this copy from disk. Other users opt in
+by setting the `traffic_generator` receiver's `registry_path` to this folder
+(`data_source: semantic_conventions`); the default `registry_path` remains the
+upstream git repository.
 
 Don't edit these files by hand, other than the `traffic-generator`
 annotations.

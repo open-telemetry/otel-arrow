@@ -120,6 +120,8 @@ fn attributes<R: Rng + ?Sized>(attributes: &[AttributeGen], rng: &mut R) -> Vec<
 // ---------------------------------------------------------------------------
 
 /// Span duration in nanoseconds (annotation `duration` is in milliseconds).
+///
+/// The float-to-int cast saturates, so huge durations clamp to `u64::MAX`.
 fn span_duration_ns<R: Rng + ?Sized>(span: &SpanTemplate, rng: &mut R) -> u64 {
     match &span.duration_ms {
         Some(d) => (d.sample_f64(rng) * 1_000_000.0).round().max(0.0) as u64,
@@ -151,26 +153,6 @@ fn metric_value<R: Rng + ?Sized>(metric: &MetricTemplate, rng: &mut R) -> f64 {
         .map_or(DEFAULT_METRIC_VALUE, |v| v.sample_f64(rng))
 }
 
-/// Number of data points per metric from the `data_points` annotation (1 when absent).
-fn data_point_count<R: Rng + ?Sized>(metric: &MetricTemplate, rng: &mut R) -> usize {
-    metric
-        .data_points
-        .as_ref()
-        .map_or(1, |d| d.sample_count(rng).max(1))
-}
-
-/// Map a severity short name to its SeverityNumber value (1..=24).
-#[must_use]
-pub fn severity_number(name: &str) -> Option<i32> {
-    crate::receivers::traffic_generator::semconv_model::severity_entry(name).map(|(n, _)| n)
-}
-
-/// Map a status name to its StatusCode value.
-#[must_use]
-pub fn status_code(name: &str) -> Option<i32> {
-    crate::receivers::traffic_generator::semconv_model::status_entry(name)
-}
-
 // ---------------------------------------------------------------------------
 // Signals
 // ---------------------------------------------------------------------------
@@ -185,7 +167,7 @@ fn spans<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R
     let mut spans = Vec::with_capacity(capacity(signal_count, model.spans.len()));
     for span in model.spans.iter().cycle().take(signal_count) {
         let start_time = current_time();
-        let end_time = start_time + span_duration_ns(span, rng);
+        let end_time = start_time.saturating_add(span_duration_ns(span, rng));
         let builder = Span::build()
             .trace_id(gen_trace_id())
             .span_id(gen_span_id())
@@ -213,28 +195,27 @@ fn spans<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R
     spans
 }
 
-/// generate each metric defined in the resolved registry
+/// Generate `signal_count` metrics, cycling over the metric templates.
+///
+/// Each metric carries a single data point, so a batch's payload item count
+/// (data points) equals its metric count.
 fn metrics<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R) -> Vec<Metric> {
     let mut metrics = Vec::with_capacity(capacity(signal_count, model.metrics.len()));
-    // Metric groups without an instrument occupy a slot and are skipped.
-    for metric in model.metrics.iter().cycle().take(signal_count).flatten() {
-        let point_count = data_point_count(metric, rng);
+    for metric in model.metrics.iter().cycle().take(signal_count) {
         let now = current_time();
         let builder = Metric::build()
             .name(metric.name.clone())
             .description(metric.description.clone())
             .unit(metric.unit.clone());
         let built = match metric.instrument {
-            InstrumentSpec::Histogram => {
-                let points = (0..point_count)
-                    .map(|_| histogram_point(metric, now, rng))
-                    .collect::<Vec<_>>();
-                builder
-                    .data_histogram(Histogram::new(AggregationTemporality::Delta, points))
-                    .finish()
-            }
+            InstrumentSpec::Histogram => builder
+                .data_histogram(Histogram::new(
+                    AggregationTemporality::Delta,
+                    vec![histogram_point(metric, now, rng)],
+                ))
+                .finish(),
             InstrumentSpec::Gauge => builder
-                .data_gauge(Gauge::new(number_points(metric, point_count, now, rng)))
+                .data_gauge(Gauge::new(vec![number_point(metric, now, rng)]))
                 .finish(),
             // Counters are per-interval increments with delta temporality, so
             // each sample is independent and replayed batches stay valid.
@@ -242,14 +223,14 @@ fn metrics<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut
                 .data_sum(Sum::new(
                     AggregationTemporality::Delta,
                     true,
-                    number_points(metric, point_count, now, rng),
+                    vec![number_point(metric, now, rng)],
                 ))
                 .finish(),
             InstrumentSpec::UpDownCounter => builder
                 .data_sum(Sum::new(
                     AggregationTemporality::Delta,
                     false,
-                    number_points(metric, point_count, now, rng),
+                    vec![number_point(metric, now, rng)],
                 ))
                 .finish(),
         };
@@ -258,26 +239,17 @@ fn metrics<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut
     metrics
 }
 
-fn number_points<R: Rng + ?Sized>(
+fn number_point<R: Rng + ?Sized>(
     metric: &MetricTemplate,
-    count: usize,
     now: u64,
     rng: &mut R,
-) -> Vec<NumberDataPoint> {
-    (0..count)
-        .map(|_| {
-            let attrs = attributes(&metric.attributes, rng);
-            let value = metric_value(metric, rng);
-            let b = NumberDataPoint::build()
-                .time_unix_nano(now)
-                .attributes(attrs);
-            if metric.int_value {
-                b.value_int(value.round() as i64).finish()
-            } else {
-                b.value_double(value).finish()
-            }
-        })
-        .collect()
+) -> NumberDataPoint {
+    let attrs = attributes(&metric.attributes, rng);
+    NumberDataPoint::build()
+        .time_unix_nano(now)
+        .value_double(metric_value(metric, rng))
+        .attributes(attrs)
+        .finish()
 }
 
 /// Index of the explicit bucket an observation falls into.
@@ -288,19 +260,6 @@ fn number_points<R: Rng + ?Sized>(
 #[must_use]
 pub fn bucket_index(bounds: &[f64], x: f64) -> usize {
     bounds.partition_point(|b| *b < x)
-}
-
-/// Aggregate sampled observations into explicit bucket counts.
-///
-/// Bucket `i` counts observations `x` with `bounds[i-1] < x <= bounds[i]`;
-/// the last bucket counts `x > bounds[last]` (OTLP explicit bucket semantics).
-#[must_use]
-pub fn bucketize(observations: &[f64], bounds: &[f64]) -> Vec<u64> {
-    let mut counts = vec![0u64; bounds.len() + 1];
-    for x in observations {
-        counts[bucket_index(bounds, *x)] += 1;
-    }
-    counts
 }
 
 fn histogram_point<R: Rng + ?Sized>(
