@@ -286,6 +286,29 @@ impl Namespace {
         .map_err(|e| io("publish initial checkpoint without replacement", e))
     }
 
+    /// Atomically replaces authority in the held directory. Even an error must
+    /// be treated as uncertain by the caller; only recovery chooses authority.
+    /// This operation supplies no durability barrier and has no fallback.
+    pub fn replace_database(&self, io_ops: &mut Io) -> Result<(), StoreError> {
+        self.verify_ancestry()?;
+        io_ops.step("before checkpoint replacement")?;
+        renameat_with(
+            &self.directory,
+            COMPACT,
+            &self.directory,
+            DB,
+            RenameFlags::empty(),
+        )
+        .map_err(|e| io("replace checkpoint", e))?;
+        io_ops.step("after checkpoint replacement")
+    }
+
+    pub fn remove_with_io(&self, name: &str, io_ops: &mut Io) -> Result<(), StoreError> {
+        io_ops.step("before temporary removal")?;
+        self.remove(name)?;
+        io_ops.step("after temporary removal")
+    }
+
     pub fn remove(&self, name: &str) -> Result<(), StoreError> {
         debug_assert!(matches!(name, CREATE | COMPACT));
         self.verify_ancestry()?;
@@ -389,12 +412,41 @@ pub(super) struct Io {
     #[cfg(any(test, feature = "test-utils"))]
     pub fail_write_after: Option<usize>,
     #[cfg(test)]
+    pub replace_write_with: Option<Vec<u8>>,
+    #[cfg(test)]
+    pub fail_step: Option<&'static str>,
+    #[cfg(test)]
     pub events: Vec<&'static str>,
+    #[cfg(test)]
+    pub before_compaction_verify: Option<Box<dyn FnOnce()>>,
     #[cfg(test)]
     pub sync_fds: Vec<std::os::fd::RawFd>,
 }
 
 impl Io {
+    // Deterministic publication/cleanup interruption points share the existing
+    // instance-local fault seam. No production fault controls or retries.
+    pub fn step(&mut self, _operation: &'static str) -> Result<(), StoreError> {
+        self.check_sync_health()?;
+        #[cfg(test)]
+        {
+            self.events.push(_operation);
+            if _operation == "verify compaction temporary"
+                && let Some(action) = self.before_compaction_verify.take()
+            {
+                action();
+            }
+            if self.fail_step == Some(_operation) {
+                self.fail_step = None;
+                return Err(io(
+                    _operation,
+                    std::io::Error::other("injected I/O failure"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn check_sync_health(&self) -> Result<(), StoreError> {
         match self.sync_failed {
             Some(operation) => Err(StoreError::SyncPoisoned { operation }),
@@ -427,6 +479,12 @@ impl Io {
     }
 
     pub fn write_all(&mut self, file: &mut File, bytes: &[u8]) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if let Some(replacement) = self.replace_write_with.take() {
+            return file
+                .write_all(&replacement)
+                .map_err(|e| io("write checkpoint", e));
+        }
         #[cfg(any(test, feature = "test-utils"))]
         if let Some(count) = self.fail_write_after.take() {
             file.write_all(&bytes[..count.min(bytes.len())])

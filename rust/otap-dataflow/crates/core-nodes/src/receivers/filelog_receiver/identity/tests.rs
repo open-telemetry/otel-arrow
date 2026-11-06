@@ -2361,3 +2361,84 @@ fn production_registry_is_shared() {
     let second = lease::LeaseRegistry::process();
     assert!(Arc::ptr_eq(&first, &second));
 }
+
+/// Scenario: Optional fingerprint growth hits a tight store snapshot limit after deferred progress.
+/// Guarantees: Required sync succeeds, growth stays queued, and the owner can retry after space is released.
+#[test]
+fn snapshot_capacity_defers_optional_growth() {
+    let f = Fixture::new();
+    let path = f.write("app", b"");
+    let inputs = f.inputs(|_| {});
+    let mut owner = f.owner(&inputs);
+    let seed = commit(&mut owner, &path, Context::Unrelated);
+    let record = owner.state().unwrap().get(&seed.file_id).unwrap().clone();
+    let exact = owner.state().unwrap().snapshot_bytes();
+    // Isolate error classification with a tight store bound. The integration
+    // test separately exercises exhaustion using unchanged receiver-derived bounds.
+    let bounded_state = Fixture::new();
+    let mut config = inputs.store_config().unwrap();
+    config.replay.max_snapshot_bytes = exact;
+    let _ = CheckpointStore::open(&bounded_state.root, inputs.checkpoint_id(), config).unwrap();
+    let database = bounded_state
+        ._state
+        .path()
+        .join("filelog/@v1")
+        .join(inputs.namespace_component())
+        .join("checkpoint.db");
+    fs::write(
+        &database,
+        cp::encode_checkpoint(1, inputs.checkpoint_id(), &[record]).unwrap(),
+    )
+    .unwrap();
+    owner.store =
+        CheckpointStore::open(&bounded_state.root, inputs.checkpoint_id(), config).unwrap();
+    assert!(owner.queue_fingerprint(&seed, b"abc").unwrap());
+    let _ = owner
+        .append_checkpoint(
+            vec![cp::Operation::UpdateProgress(cp::UpdateProgress {
+                file_id: seed.file_id,
+                expected_file_epoch: 1,
+                expected_committed_offset: 0,
+                new_committed_offset: 3,
+                new_committed_frontier_guard: cp::CommittedFrontierGuard::compute(3, b"abc")
+                    .unwrap(),
+                new_framing_resume: cp::FramingResume::Clean,
+                new_last_seen_time_unix_nano: 2,
+                finalize: false,
+            })],
+            Durability::Deferred,
+        )
+        .unwrap();
+    let before = fs::read(&database).unwrap();
+    let outcome = owner.sync_checkpoint().unwrap();
+    assert_eq!(outcome.synced_sequence, 1);
+    assert!(outcome.growth.unwrap().is_none());
+    assert!(!owner.is_stopped());
+    assert!(!owner.has_pending_write());
+    assert_eq!(owner.growth.len(), 1);
+    assert_eq!(owner.state().unwrap().snapshot_bytes(), exact);
+    assert_eq!(fs::read(&database).unwrap(), before);
+    let _ = owner
+        .append_checkpoint(
+            vec![cp::Operation::UpdateMetadata(cp::UpdateMetadata {
+                file_id: seed.file_id,
+                expected_prior_state: cp::LifecycleState::Active,
+                expected_file_epoch: 1,
+                last_seen_time_unix_nano: 3,
+                advisory_path: Some(cp::AdvisoryPath::from_unix_bytes(b"/x").unwrap()),
+            })],
+            Durability::Sync,
+        )
+        .unwrap();
+    assert!(owner.flush_fingerprints().unwrap().is_some());
+    assert!(owner.growth.is_empty());
+    assert_eq!(
+        owner
+            .state()
+            .unwrap()
+            .get(&seed.file_id)
+            .unwrap()
+            .fingerprint,
+        b"abc"
+    );
+}
