@@ -35,7 +35,6 @@ use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, form
 use otel_arrow_dfe_engine::local::capability::auth::sasl_credential_provider::SaslCredentialProvider;
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
-use otel_arrow_dfe_engine::pdata_context::ContextDeclarationProvider;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
@@ -155,7 +154,7 @@ pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
-    context_declarations: Some(ContextDeclarationProvider::arriving()),
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 

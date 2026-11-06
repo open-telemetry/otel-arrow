@@ -591,6 +591,8 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
+    /// Node kind.
+    kind: NodeKind,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
     /// Selected composite definitions in canonical order with their full presence gates.
@@ -602,6 +604,7 @@ struct PreparedNodeContextDeclarations {
 impl PreparedNodeContextDeclarations {
     /// Validates selections, canonicalizes composite definitions, and derives runtime requirements.
     fn new(
+        kind: NodeKind,
         declarations: NodeContextDeclarations,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<Self, Error> {
@@ -652,6 +655,7 @@ impl PreparedNodeContextDeclarations {
             },
         )?;
         Ok(Self {
+            kind,
             declarations,
             composites,
             requirements,
@@ -799,14 +803,13 @@ impl CompiledNodeState {
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
-        let mut arrival = false;
         let mut values = Vec::new();
         let mut headers = None;
         let mut edit = None;
         let mut merge = None;
         for declaration in declarations.iter() {
             match declaration {
-                ContextDeclaration::Arrival => arrival = true,
+                ContextDeclaration::Arrival => {}
                 ContextDeclaration::Consumes { selector } => match selector {
                     ContextConsumerSelector::Entries { entries } => {
                         for entry in entries {
@@ -858,7 +861,13 @@ impl CompiledNodeState {
             }
         }
 
-        let arrival = arrival.then_some(ArrivalBinding {
+        // TODO(4541): every receiver gets an arrival binding, declared or not, because
+        // receivers without context declarations still form contexts. Once all nodes
+        // have context declarations, compile it only from `ContextDeclaration::Arrival`.
+        let arrival = (prepared.kind == NodeKind::Receiver
+            || header_capture.is_some()
+            || authorized_identity_capture.is_some())
+        .then_some(ArrivalBinding {
             header_capture,
             authorized_identity_capture,
             materialization: materialization_plan.clone(),
@@ -1099,9 +1108,12 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     .into_iter()
                     .chain(wrapper_declarations)
                     .collect();
-                let declarations =
-                    PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
-                        .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
+                let declarations = PreparedNodeContextDeclarations::new(
+                    node_config.kind(),
+                    declarations,
+                    &pipeline.policies.context,
+                )
+                .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
             let _ = declarations.insert(pipeline_key, declarations_by_node);
@@ -1612,7 +1624,8 @@ groups:
             pipeline("group", "pipeline"),
             HashMap::from([(
                 ConfigNodeId::from("node"),
-                PreparedNodeContextDeclarations::new(effective, &[]).expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(NodeKind::Exporter, effective, &[])
+                    .expect("valid declarations"),
             )]),
         )])
     }
@@ -1703,20 +1716,17 @@ groups:
     fn live_update_rejects_different_declarations_with_equivalent_policies() {
         let compile = |wire_name| {
             compiled_bindings(
-                [
-                    ContextDeclaration::Arrival,
-                    ContextDeclaration::HeaderCapture {
-                        policy: HeaderCapturePolicy::new(
-                            CaptureDefaults::default(),
-                            vec![CaptureRule {
-                                match_names: vec![context_name(wire_name)],
-                                store_as: None,
-                                sensitive: false,
-                                value_kind: None,
-                            }],
-                        ),
-                    },
-                ]
+                [ContextDeclaration::HeaderCapture {
+                    policy: HeaderCapturePolicy::new(
+                        CaptureDefaults::default(),
+                        vec![CaptureRule {
+                            match_names: vec![context_name(wire_name)],
+                            store_as: None,
+                            sensitive: false,
+                            value_kind: None,
+                        }],
+                    ),
+                }]
                 .into_iter()
                 .collect(),
             )
@@ -1780,8 +1790,7 @@ groups:
     }
 
     /// Scenario: arrival adapters add pipeline materialization without changing legacy declarations or policies.
-    /// Guarantees: receivers without declarations compile no arrival binding, and live-update
-    /// comparison still ignores them and adapter-derived plans.
+    /// Guarantees: live-update comparison still ignores policy-free receivers and adapter-derived plans.
     #[test]
     fn arrival_adapters_preserve_live_update_inputs() {
         let compiled = test_pipeline_factory()
@@ -1799,7 +1808,7 @@ groups:
             .expect("pipeline")
             .remove(&receiver)
             .expect("receiver");
-        assert!(removed.bindings.arrival().is_none());
+        assert!(removed.bindings.arrival().is_some());
         assert!(
             compiled
                 .bindings
@@ -1846,7 +1855,7 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:produce"
-            config: {arrival: true}
+            config: {entry: generated}
           edit:
             type: "urn:test:processor:edit"
             config: {entry: partition}
@@ -1874,8 +1883,8 @@ groups:
         .resolve()
     }
 
-    /// Scenario: a pipeline contains arriving, editing, merging, and plain nodes.
-    /// Guarantees: the receiver gets an arrival binding because it declares one, the editing processor
+    /// Scenario: a pipeline contains producing, editing, merging, and plain nodes.
+    /// Guarantees: the receiver gets an arrival binding, the editing processor
     /// gets an edit for only its declared entries, and the merging processor
     /// gets a merge binding. Plain nodes get neither edit nor merge bindings.
     #[test]
@@ -2074,8 +2083,12 @@ groups:
                 .or_default()
                 .insert(
                     node.into(),
-                    PreparedNodeContextDeclarations::new(NodeContextDeclarations::default(), &[])
-                        .expect("empty declarations"),
+                    PreparedNodeContextDeclarations::new(
+                        NodeKind::Exporter,
+                        NodeContextDeclarations::default(),
+                        &[],
+                    )
+                    .expect("empty declarations"),
                 );
         }
         let requirements = ContextRuntimeRequirements::compile(&declarations);
@@ -2286,6 +2299,7 @@ groups:
     fn composite_member_requirements_preserve_source_domain_and_gate() {
         let context = [mixed_composite()];
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(
                 member_target("tenant", "header_id"),
                 ContextEntrySelectorForm::OriginalKeyValue,
@@ -2315,6 +2329,7 @@ groups:
             ContextEntrySelectorForm::StoredKeyValue,
         ] {
             let prepared = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
                 consumer(member_target("tenant", "identity_id"), form),
                 &context,
             )
@@ -2337,6 +2352,7 @@ groups:
             ]
         );
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(whole.clone(), ContextEntrySelectorForm::StoredKeyValue),
             &context,
         )
@@ -2350,6 +2366,7 @@ groups:
         let mut headers_only = mixed_composite();
         _ = headers_only.definition.0.remove(1);
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(whole, ContextEntrySelectorForm::OriginalKeyValue),
             &[headers_only],
         )
@@ -2385,6 +2402,7 @@ groups:
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(
                 member_target("route", "route_name"),
                 ContextEntrySelectorForm::Value,
@@ -2395,6 +2413,7 @@ groups:
         assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member_target("route", "route_name"), whole] {
             let error = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
                 &context,
             )
@@ -2418,6 +2437,7 @@ groups:
             HashMap::from([(
                 ConfigNodeId::from("node"),
                 PreparedNodeContextDeclarations::new(
+                    NodeKind::Exporter,
                     consumer(
                         member_target("route", "route_name"),
                         ContextEntrySelectorForm::Value,
@@ -2455,6 +2475,7 @@ groups:
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
+            NodeKind::Exporter,
             consumer(member.clone(), ContextEntrySelectorForm::Value),
             &context,
         )
@@ -2462,6 +2483,7 @@ groups:
         assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member, whole] {
             let error = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
                 &context,
             )
@@ -2513,8 +2535,12 @@ groups:
                 "original wire name requested for AuthorizedIdentity context entry `id`",
             ),
         ] {
-            let error = PreparedNodeContextDeclarations::new(consumer(target, form), &context)
-                .expect_err("invalid selection must fail");
+            let error = PreparedNodeContextDeclarations::new(
+                NodeKind::Exporter,
+                consumer(target, form),
+                &context,
+            )
+            .expect_err("invalid selection must fail");
             assert!(error.to_string().contains(expected), "{error}");
         }
     }
@@ -2688,7 +2714,6 @@ groups:
         );
         let bindings = compiled_bindings(
             [
-                ContextDeclaration::Arrival,
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries {
                         entries: ["x-first", "canonical"]
@@ -3274,26 +3299,21 @@ default:
         let policy: AuthorizedIdentityPolicy =
             serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "tenant"}]))
                 .expect("valid authorized identity policy");
-        let declarations: NodeContextDeclarations = [
-            ContextDeclaration::Arrival,
-            ContextDeclaration::AuthorizedIdentityCapture {
+        let declarations: NodeContextDeclarations =
+            [ContextDeclaration::AuthorizedIdentityCapture {
                 policy: policy.clone(),
-            },
-        ]
-        .into_iter()
-        .collect();
+            }]
+            .into_iter()
+            .collect();
         let compiled = compiled_bindings(declarations);
         let changed_policy: AuthorizedIdentityPolicy = serde_json::from_value(
             serde_json::json!([{"claim": "groups", "store_as": "access_groups"}]),
         )
         .expect("valid changed authorized identity policy");
         let changed = compiled_bindings(
-            [
-                ContextDeclaration::Arrival,
-                ContextDeclaration::AuthorizedIdentityCapture {
-                    policy: changed_policy,
-                },
-            ]
+            [ContextDeclaration::AuthorizedIdentityCapture {
+                policy: changed_policy,
+            }]
             .into_iter()
             .collect(),
         );
@@ -3334,7 +3354,7 @@ default:
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(declarations, &[])
+                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, &[])
                     .expect("valid declarations"),
             )]),
         )]);
