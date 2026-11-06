@@ -579,13 +579,21 @@ impl TargetScraper {
 
         // TODO(bwplotka): Delegate single-target HTTP fetch, compression negotiation, and scrape
         // headers to scrape.rs once https://github.com/prometheus/scrape.rs/issues/36 lands.
-        let response = match self
-            .client
-            .get(target_url.clone())
-            .header(ACCEPT, self.accept_header)
-            .send()
-            .await
+        let send_res = match poll_with_control(
+            self.client
+                .get(target_url.clone())
+                .header(ACCEPT, self.accept_header)
+                .send(),
+            ctrl_msg_recv,
+            effect_handler,
+            metrics,
+        )
+        .await
         {
+            ControlFlow::Continue(res) => res,
+            ControlFlow::Break(exit) => return ControlFlow::Break(exit),
+        };
+        let response = match send_res {
             Ok(resp) => resp,
             Err(err) => {
                 if let Some(metrics) = metrics.as_mut() {
@@ -623,7 +631,13 @@ impl TargetScraper {
                 .and_then(|val| val.to_str().ok()),
         );
 
-        let body = match response.bytes().await {
+        let body_res =
+            match poll_with_control(response.bytes(), ctrl_msg_recv, effect_handler, metrics).await
+            {
+                ControlFlow::Continue(res) => res,
+                ControlFlow::Break(exit) => return ControlFlow::Break(exit),
+            };
+        let body = match body_res {
             Ok(bytes) => bytes,
             Err(err) => {
                 if let Some(metrics) = metrics.as_mut() {
@@ -797,6 +811,33 @@ async fn handle_control_msg(
     }
 }
 
+async fn poll_with_control<F, T>(
+    fut: F,
+    ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+) -> ControlFlow<Result<TerminalState, Error>, T>
+where
+    F: Future<Output = T>,
+{
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        tokio::select! {
+            biased;
+
+            msg = ctrl_msg_recv.recv() => {
+                if let ControlFlow::Break(exit) =
+                    handle_control_msg(msg, effect_handler, metrics).await
+                {
+                    return ControlFlow::Break(exit);
+                }
+            }
+
+            output = &mut fut => return ControlFlow::Continue(output),
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for PrometheusReceiver {
     async fn start(
@@ -837,7 +878,17 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
                         next_due = now + config.scrape_interval;
                     }
 
-                    let targets = discovery.resolve_targets().await;
+                    let targets = match poll_with_control(
+                        discovery.resolve_targets(),
+                        &mut ctrl_msg_recv,
+                        &effect_handler,
+                        &mut metrics,
+                    )
+                    .await
+                    {
+                        ControlFlow::Continue(targets) => targets,
+                        ControlFlow::Break(exit) => return exit,
+                    };
                     for target_url in &targets {
                         if let ControlFlow::Break(exit) = scraper
                             .scrape_target(
@@ -1698,5 +1749,86 @@ mod tests {
                 other => panic!("unexpected metric data: {other:?}"),
             }
         }
+    }
+
+    /// Scenario: `CollectTelemetry` and `DrainIngress` arrive while an HTTP target scrape is
+    /// stalled waiting for headers with a long `scrape_timeout`.
+    /// Guarantees: `CollectTelemetry` is serviced without dropping the in-flight HTTP request, and
+    /// `DrainIngress` cancels the in-flight HTTP request immediately without waiting for
+    /// `scrape_timeout`.
+    #[test]
+    fn services_control_messages_during_slow_http_scrape() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local test listener");
+            let addr = listener.local_addr().expect("listener address");
+            let (conn_accepted_tx, conn_accepted_rx) = tokio::sync::oneshot::channel();
+            let (_hold_tx, hold_rx) = tokio::sync::oneshot::channel::<()>();
+
+            let server = tokio::task::spawn_local(async move {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = conn_accepted_tx.send(());
+                    let _ = hold_rx.await;
+                }
+            });
+
+            let receiver = PrometheusReceiver::new(Config {
+                scrape_interval: Duration::from_secs(60),
+                scrape_timeout: Duration::from_secs(30),
+                initial_delay: Duration::ZERO,
+                targets: vec![addr.to_string()],
+                ..Config::default()
+            })
+            .expect("valid receiver config");
+
+            let TestReceiverHarness {
+                ctrl_chan,
+                ctrl_tx,
+                effect_handler,
+                out_rx: _out_rx,
+                mut runtime_ctrl_rx,
+            } = build_test_harness(4);
+
+            let handle = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_chan, effect_handler).await
+            });
+
+            tokio::time::timeout(Duration::from_secs(2), conn_accepted_rx)
+                .await
+                .expect("HTTP request reaches server")
+                .expect("server signals connection accepted");
+
+            let (_telemetry_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(4);
+            ctrl_tx
+                .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+                .expect("send CollectTelemetry while HTTP scrape is in flight");
+
+            ctrl_tx
+                .send(NodeControlMsg::DrainIngress {
+                    deadline: StdInstant::now() + Duration::from_secs(1),
+                    reason: "drain during slow scrape".to_owned(),
+                })
+                .expect("send DrainIngress while HTTP scrape is in flight");
+
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .expect("receiver exits without waiting for 30s scrape_timeout")
+                .expect("receiver task joins")
+                .expect("receiver exits cleanly");
+
+            let ctrl_event = tokio::time::timeout(Duration::from_secs(1), runtime_ctrl_rx.recv())
+                .await
+                .expect("runtime control message arrives")
+                .expect("runtime control channel open");
+            assert!(matches!(
+                ctrl_event,
+                RuntimeControlMsg::ReceiverDrained { .. }
+            ));
+            server.abort();
+        }));
     }
 }
