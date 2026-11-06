@@ -70,7 +70,7 @@ the `GCE_METADATA_HOST` environment variable is set) with the
 | `endpoint` | string | `http://metadata.google.internal` (or `http://$GCE_METADATA_HOST`) | Base URL of the GCE/GKE metadata server. Must start with `http://` or `https://`. |
 | `service_account` | string | `"default"` | Service account email or alias under `/computeMetadata/v1/instance/service-accounts/{service_account}/token`. |
 | `scopes` | list of strings | `["https://www.googleapis.com/auth/cloud-platform"]` | OAuth 2.0 scopes passed in the `?scopes=` query parameter when non-empty. |
-| `expiry_buffer` | duration | `5m` | Duration ahead of token expiry at which background refresh runs. Must be greater than `30s`. |
+| `expiry_buffer` | duration | `4m` | Duration ahead of token expiry at which background refresh runs. Must be greater than `30s`. |
 | `default_token_lifetime` | duration | `1h` | Assumed lifetime when the metadata response omits `expires_in`. Must be greater than `expiry_buffer`. |
 | `timeout` | duration | `10s` | Per-request timeout on the metadata HTTP client. Must be non-zero. |
 | `connect_timeout` | duration | `5s` | Connection timeout on the metadata HTTP client. Must be non-zero. |

@@ -79,7 +79,7 @@ async fn start_metadata_server(
 }
 
 /// Scenario: An empty JSON object or `null` configuration is deserialized.
-/// Guarantees: Documented defaults (default service account, cloud-platform scope, 5m expiry
+/// Guarantees: Documented defaults (default service account, cloud-platform scope, 4m expiry
 /// buffer, 1h fallback token lifetime, finite request/connect/startup timeouts, and default
 /// metadata endpoint) are applied.
 #[test]
@@ -89,7 +89,7 @@ fn config_defaults_apply_on_empty_or_null_config() {
         assert!(cfg.endpoint.is_none());
         assert_eq!(cfg.service_account, DEFAULT_SERVICE_ACCOUNT);
         assert_eq!(cfg.scopes, vec![DEFAULT_SCOPE.to_string()]);
-        assert_eq!(cfg.expiry_buffer, Duration::from_secs(300));
+        assert_eq!(cfg.expiry_buffer, Duration::from_secs(240));
         assert_eq!(cfg.default_token_lifetime, Duration::from_secs(3600));
         assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert_eq!(cfg.connect_timeout, Duration::from_secs(5));

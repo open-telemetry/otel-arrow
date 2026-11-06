@@ -32,8 +32,12 @@ fn default_scopes() -> Vec<String> {
 }
 
 /// Default duration ahead of expiry at which a token is refreshed.
+///
+/// GCE caches access tokens until 5 minutes remain before expiry, so a 4-minute
+/// lead time (accounting for the refresh loop's early jitter) avoids fetching
+/// before the metadata server rotates the token.
 fn default_expiry_buffer() -> Duration {
-    Duration::from_secs(300)
+    Duration::from_secs(240)
 }
 
 /// Default assumed lifetime for a token whose response omits `expires_in`.
