@@ -375,6 +375,7 @@ impl<
             rollout.state = RolloutLifecycleState::RollingBack;
             rollout.failure_reason = Some(failure_reason.clone());
         });
+        let mut rollback_errors = Vec::new();
         for key in launched {
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -383,17 +384,25 @@ impl<
                 "rollback_starting",
                 None,
             );
-            if let Err(cleanup_error) =
-                self.cleanup_instance(key, plan.drain_timeout_secs, "candidate cleanup")
-            {
-                return Err(RolloutExecutionError::RollbackFailed(format!(
-                    "{failure_reason}; candidate cleanup failed for {}:{} core={} generation={}: \
-                     {cleanup_error}",
-                    key.pipeline_group_id.as_ref(),
-                    key.pipeline_id.as_ref(),
+        }
+        let cleanup_results =
+            self.cleanup_instances(launched, plan.drain_timeout_secs, "candidate cleanup");
+        for (key, cleanup_result) in launched.iter().zip(cleanup_results) {
+            if let Err(cleanup_error) = cleanup_result {
+                self.record_rollback_core_failure(
+                    plan,
                     key.core_id,
-                    key.deployment_generation,
-                )));
+                    format!(
+                        "candidate cleanup failed for {}:{} core={} generation={}: \
+                         {cleanup_error}",
+                        key.pipeline_group_id.as_ref(),
+                        key.pipeline_id.as_ref(),
+                        key.core_id,
+                        key.deployment_generation,
+                    ),
+                    &mut rollback_errors,
+                );
+                continue;
             }
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -403,7 +412,43 @@ impl<
                 None,
             );
         }
-        Err(RolloutExecutionError::Failed(failure_reason))
+        Self::rollback_outcome(failure_reason, rollback_errors)
+    }
+
+    /// Marks one core as failed during rollback and remembers the error so the
+    /// rollback can keep processing the remaining cores.
+    fn record_rollback_core_failure(
+        &self,
+        plan: &CandidateRolloutPlan,
+        core_id: usize,
+        detail: String,
+        rollback_errors: &mut Vec<String>,
+    ) {
+        self.update_rollout_core_state(
+            &plan.pipeline_key,
+            &plan.rollout.rollout_id,
+            core_id,
+            "rollback_failed",
+            Some(detail.clone()),
+        );
+        rollback_errors.push(detail);
+    }
+
+    /// Returns the terminal rollback result: the original failure when every
+    /// rollback step succeeded, otherwise `RollbackFailed` listing every step
+    /// that did not.
+    fn rollback_outcome(
+        failure_reason: String,
+        rollback_errors: Vec<String>,
+    ) -> Result<(), RolloutExecutionError> {
+        if rollback_errors.is_empty() {
+            Err(RolloutExecutionError::Failed(failure_reason))
+        } else {
+            Err(RolloutExecutionError::RollbackFailed(format!(
+                "{failure_reason}; {}",
+                rollback_errors.join("; ")
+            )))
+        }
     }
 
     /// Resizes a listener-free pipeline when only core allocation changed and common cores stay
@@ -778,6 +823,7 @@ impl<
             ));
         };
         let previous_generation = previous.baseline_generation;
+        let mut rollback_errors = Vec::new();
 
         for core_id in retired_cores.iter().rev() {
             self.update_rollout_core_state(
@@ -788,12 +834,12 @@ impl<
                 None,
             );
 
-            let old_key = self
-                .launch_regular_pipeline_instance(previous, *core_id, previous_generation)
-                .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
-            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
-            self.wait_for_pipeline_ready(&old_key, ready_deadline)
-                .map_err(RolloutExecutionError::RollbackFailed)?;
+            if let Err(error) =
+                self.relaunch_previous_instance(plan, previous, *core_id, previous_generation)
+            {
+                self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
+                continue;
+            }
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
@@ -803,27 +849,43 @@ impl<
             );
         }
 
-        for core_id in started_cores.iter().rev() {
+        // Started cores have no previous instance to restore, so they are all
+        // stopped together under one drain deadline.
+        let started_keys = started_cores
+            .iter()
+            .rev()
+            .map(|core_id| {
+                self.update_rollout_core_state(
+                    &plan.pipeline_key,
+                    &plan.rollout.rollout_id,
+                    *core_id,
+                    "rollback_starting",
+                    None,
+                );
+                DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: previous_generation,
+                }
+            })
+            .collect::<Vec<_>>();
+        let cleanup_results =
+            self.cleanup_instances(&started_keys, plan.drain_timeout_secs, "rollback cleanup");
+        for (new_key, cleanup_result) in started_keys.iter().zip(cleanup_results) {
+            if let Err(error) = cleanup_result {
+                self.record_rollback_core_failure(
+                    plan,
+                    new_key.core_id,
+                    error,
+                    &mut rollback_errors,
+                );
+                continue;
+            }
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
-                *core_id,
-                "rollback_starting",
-                None,
-            );
-
-            let new_key = DeployedPipelineKey {
-                pipeline_group_id: plan.pipeline_group_id.clone(),
-                pipeline_id: plan.pipeline_id.clone(),
-                core_id: *core_id,
-                deployment_generation: previous_generation,
-            };
-            self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
-                .map_err(RolloutExecutionError::RollbackFailed)?;
-            self.update_rollout_core_state(
-                &plan.pipeline_key,
-                &plan.rollout.rollout_id,
-                *core_id,
+                new_key.core_id,
                 "rolled_back",
                 None,
             );
@@ -836,7 +898,28 @@ impl<
                 .chain(plan.target_assigned_cores.iter())
                 .copied(),
         );
-        Err(RolloutExecutionError::Failed(failure_reason))
+        Self::rollback_outcome(failure_reason, rollback_errors)
+    }
+
+    /// Relaunches the pre-rollout instance for one core and waits for it to be ready.
+    fn relaunch_previous_instance(
+        self: &Arc<Self>,
+        plan: &CandidateRolloutPlan,
+        previous: &LogicalPipelineDeployment,
+        core_id: usize,
+        previous_generation: u64,
+    ) -> Result<(), String> {
+        // A relaunched instance would be stopped immediately by global shutdown.
+        if self.global_shutdown_requested() {
+            return Err(format!(
+                "previous instance on core {core_id} not restored: engine shutdown in progress"
+            ));
+        }
+        let old_key = self
+            .launch_regular_pipeline_instance(previous, core_id, previous_generation)
+            .map_err(|err| err.to_string())?;
+        let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+        self.wait_for_pipeline_ready(&old_key, ready_deadline)
     }
 
     /// Restores the per-core serving view captured before a replace rollout.
@@ -891,6 +974,14 @@ impl<
                 "internal error: replace rollback missing current deployment".to_owned(),
             ));
         };
+        let target_generation = plan.target_deployment.baseline_generation;
+        let mut rollback_errors = Vec::new();
+        // Switched cores whose previous instance could not be restored keep
+        // serving the candidate instead of being left with no instance at all.
+        let mut kept_candidate_cores = Vec::new();
+        // Set once a switched core may run both its candidate and a restored
+        // predecessor. Further restores would widen that overlap beyond one core.
+        let mut overlap_unresolved = false;
 
         // Rollback must restore the exact pre-rollout generation for each core.
         // previous.baseline_generation only identifies the committed deployment and can
@@ -904,21 +995,22 @@ impl<
                 None,
             );
 
-            let previous_generation = plan
-                .current_serving_generations
-                .get(core_id)
-                .copied()
-                .ok_or_else(|| {
-                    RolloutExecutionError::RollbackFailed(format!(
-                        "missing previous serving generation for retired core {core_id}"
-                    ))
-                })?;
-            let old_key = self
-                .launch_regular_pipeline_instance(previous, *core_id, previous_generation)
-                .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
-            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
-            self.wait_for_pipeline_ready(&old_key, ready_deadline)
-                .map_err(RolloutExecutionError::RollbackFailed)?;
+            let Some(previous_generation) = plan.current_serving_generations.get(core_id).copied()
+            else {
+                self.record_rollback_core_failure(
+                    plan,
+                    *core_id,
+                    format!("missing previous serving generation for retired core {core_id}"),
+                    &mut rollback_errors,
+                );
+                continue;
+            };
+            if let Err(error) =
+                self.relaunch_previous_instance(plan, previous, *core_id, previous_generation)
+            {
+                self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
+                continue;
+            }
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
@@ -942,30 +1034,53 @@ impl<
                 None,
             );
 
-            let previous_generation = plan
-                .current_serving_generations
-                .get(core_id)
-                .copied()
-                .ok_or_else(|| {
-                    RolloutExecutionError::RollbackFailed(format!(
-                        "missing previous serving generation for switched core {core_id}"
-                    ))
-                })?;
-            let old_key = self
-                .launch_regular_pipeline_instance(previous, *core_id, previous_generation)
-                .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
-            let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
-            self.wait_for_pipeline_ready(&old_key, ready_deadline)
-                .map_err(RolloutExecutionError::RollbackFailed)?;
+            let Some(previous_generation) = plan.current_serving_generations.get(core_id).copied()
+            else {
+                self.record_rollback_core_failure(
+                    plan,
+                    *core_id,
+                    format!("missing previous serving generation for switched core {core_id}"),
+                    &mut rollback_errors,
+                );
+                kept_candidate_cores.push(*core_id);
+                continue;
+            };
+            if overlap_unresolved {
+                self.record_rollback_core_failure(
+                    plan,
+                    *core_id,
+                    format!(
+                        "previous instance on core {core_id} not restored: an earlier core still overlaps"
+                    ),
+                    &mut rollback_errors,
+                );
+                kept_candidate_cores.push(*core_id);
+                continue;
+            }
+            if let Err(error) =
+                self.relaunch_previous_instance(plan, previous, *core_id, previous_generation)
+            {
+                // The relaunched predecessor may still be running without
+                // having become ready.
+                overlap_unresolved = true;
+                self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
+                kept_candidate_cores.push(*core_id);
+                continue;
+            }
 
             let new_key = DeployedPipelineKey {
                 pipeline_group_id: plan.pipeline_group_id.clone(),
                 pipeline_id: plan.pipeline_id.clone(),
                 core_id: *core_id,
-                deployment_generation: plan.target_deployment.baseline_generation,
+                deployment_generation: target_generation,
             };
-            self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
-                .map_err(RolloutExecutionError::RollbackFailed)?;
+            if let Err(error) =
+                self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
+            {
+                overlap_unresolved = true;
+                self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
+                continue;
+            }
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
@@ -981,36 +1096,59 @@ impl<
         }
 
         // This set includes both cores added by the rollout and allocation-common
-        // cores that had no live predecessor when execution began.
-        for core_id in activated_added_cores.iter().rev() {
-            self.update_rollout_core_state(
-                &plan.pipeline_key,
-                &plan.rollout.rollout_id,
-                *core_id,
-                "rollback_starting",
-                None,
-            );
-
-            let new_key = DeployedPipelineKey {
-                pipeline_group_id: plan.pipeline_group_id.clone(),
-                pipeline_id: plan.pipeline_id.clone(),
-                core_id: *core_id,
-                deployment_generation: plan.target_deployment.baseline_generation,
-            };
-            self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback cleanup")
-                .map_err(RolloutExecutionError::RollbackFailed)?;
+        // cores that had no live predecessor when execution began. With nothing
+        // to restore, they are all stopped together under one drain deadline.
+        let added_keys = activated_added_cores
+            .iter()
+            .rev()
+            .map(|core_id| {
+                self.update_rollout_core_state(
+                    &plan.pipeline_key,
+                    &plan.rollout.rollout_id,
+                    *core_id,
+                    "rollback_starting",
+                    None,
+                );
+                DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: target_generation,
+                }
+            })
+            .collect::<Vec<_>>();
+        let cleanup_results =
+            self.cleanup_instances(&added_keys, plan.drain_timeout_secs, "rollback cleanup");
+        for (new_key, cleanup_result) in added_keys.iter().zip(cleanup_results) {
+            if let Err(error) = cleanup_result {
+                self.record_rollback_core_failure(
+                    plan,
+                    new_key.core_id,
+                    error,
+                    &mut rollback_errors,
+                );
+                kept_candidate_cores.push(new_key.core_id);
+                continue;
+            }
             self.observed_state_store
-                .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
+                .clear_pipeline_serving_generation(plan.pipeline_key.clone(), new_key.core_id);
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
-                *core_id,
+                new_key.core_id,
                 "rolled_back",
                 None,
             );
         }
         self.restore_replace_rollback_serving_generations(plan, previous.baseline_generation);
-        Err(RolloutExecutionError::Failed(failure_reason))
+        for core_id in kept_candidate_cores {
+            self.observed_state_store.set_pipeline_serving_generation(
+                plan.pipeline_key.clone(),
+                core_id,
+                target_generation,
+            );
+        }
+        Self::rollback_outcome(failure_reason, rollback_errors)
     }
 
     /// Stops one undesired instance and succeeds once its runtime is confirmed terminal.
@@ -1029,5 +1167,48 @@ impl<
             Err(_) if self.instance_exit(key).is_some() => Ok(()),
             Err(error) => Err(error),
         }
+    }
+
+    /// Stops several undesired instances under one shared drain deadline.
+    ///
+    /// Shutdown is requested for every instance before waiting on any of them,
+    /// like pipeline shutdown, so the worst case is one drain timeout no matter
+    /// how many instances are stuck. Results are returned in input order with
+    /// the same success rule as [`Self::cleanup_instance`].
+    fn cleanup_instances(
+        &self,
+        keys: &[DeployedPipelineKey],
+        timeout_secs: u64,
+        reason: &str,
+    ) -> Vec<Result<(), String>> {
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        // Ok(true): shutdown was requested and the exit must still be awaited.
+        let requested = keys
+            .iter()
+            .map(|key| {
+                if self.instance_exit(key).is_some() {
+                    return Ok(false);
+                }
+                match self.request_instance_shutdown_until(key, drain_deadline, reason) {
+                    Ok(()) => Ok(true),
+                    Err(_) if self.instance_exit(key).is_some() => Ok(false),
+                    Err(error) => Err(error),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let completion_deadline = pipeline_shutdown_completion_deadline(drain_deadline);
+        keys.iter()
+            .zip(requested)
+            .map(|(key, requested)| match requested {
+                Ok(true) => match self.wait_for_instance_exit(key, completion_deadline) {
+                    Ok(()) => Ok(()),
+                    Err(_) if self.instance_exit(key).is_some() => Ok(()),
+                    Err(error) => Err(error),
+                },
+                Ok(false) => Ok(()),
+                Err(error) => Err(error),
+            })
+            .collect()
     }
 }

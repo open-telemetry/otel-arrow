@@ -160,19 +160,35 @@ impl ObservedStateStore {
     }
 
     /// Registers or updates the health policy for a specific pipeline.
+    ///
+    /// An already tracked pipeline switches to the new policy immediately.
     pub fn register_pipeline_health_policy(
         &self,
         pipeline_key: PipelineKey,
         health_policy: HealthPolicy,
     ) {
-        let mut policies = self.health_policies.lock().unwrap_or_else(|poisoned| {
+        {
+            let mut policies = self.health_policies.lock().unwrap_or_else(|poisoned| {
+                otel_error!(
+                    "state.mutex_poisoned",
+                    action = "continuing with stale health policy"
+                );
+                poisoned.into_inner()
+            });
+            _ = policies.insert(pipeline_key.clone(), health_policy.clone());
+        }
+        // Released before taking `pipelines`: other paths lock `pipelines`
+        // first and then `health_policies`.
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             otel_error!(
                 "state.mutex_poisoned",
-                action = "continuing with stale health policy"
+                action = "continuing with possibly inconsistent state"
             );
             poisoned.into_inner()
         });
-        _ = policies.insert(pipeline_key, health_policy);
+        if let Some(status) = pipelines.get_mut(&pipeline_key) {
+            status.set_health_policy(health_policy);
+        }
     }
 
     /// Returns the health policy currently configured for one logical pipeline.
@@ -660,6 +676,38 @@ mod tests {
         tracing::dispatcher::with_default(&dispatch, || {
             otel_info!("state.test.log", message = message);
         });
+    }
+
+    /// Scenario: a pipeline is already tracked with the default health policy when a
+    /// live deployment registers a different policy for it.
+    /// Guarantees: the tracked pipeline's readiness switches to the new policy
+    /// immediately instead of keeping the policy captured when it was first seen.
+    #[test]
+    fn registering_health_policy_updates_tracked_pipeline() {
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::new(),
+        );
+        let key = make_key(0);
+        let pipeline_key = PipelineKey::new(key.pipeline_group_id.clone(), key.pipeline_id.clone());
+        store.set_pipeline_active_generation(pipeline_key.clone(), 0);
+        _ = store
+            .report_engine(EngineEvent::admitted(key.clone(), None))
+            .expect("admitted should apply");
+        _ = store
+            .report_engine(EngineEvent::ready(key, None))
+            .expect("ready should apply");
+        assert!(store.handle().readiness(&pipeline_key));
+
+        store.register_pipeline_health_policy(
+            pipeline_key.clone(),
+            HealthPolicy {
+                ready_if: Vec::new(),
+                ..HealthPolicy::default()
+            },
+        );
+
+        assert!(!store.handle().readiness(&pipeline_key));
     }
 
     /// Scenario: a terminal pipeline error exceeds the bounded record budget.
