@@ -20,4 +20,6 @@
 
 mod extension;
 
-pub use extension::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
+#[cfg(any(feature = "azure-identity-auth", feature = "oauth2-client-auth"))]
+pub use extension::NON_EXPIRING_TOKEN_REFRESH_INTERVAL;
+pub use extension::TokenProviderExtension;
