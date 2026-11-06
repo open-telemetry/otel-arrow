@@ -230,7 +230,7 @@ tiberius = { version = "0.13.0", default-features = false, features = ["tds73", 
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.14.3"
-sysinfo = "0.39"
+sysinfo = "0.40"
 temp-env = "0.3.6"
 tempfile = "3"
 thiserror = "2.0.17"
