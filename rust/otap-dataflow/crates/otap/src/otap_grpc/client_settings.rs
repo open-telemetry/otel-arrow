@@ -6,6 +6,7 @@
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::proxy::ProxyConfig;
 use crate::tls_utils;
+use crate::tls_utils::LoadedClientTlsMaterial;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
 use otel_arrow_dfe_config::byte_units;
@@ -539,6 +540,17 @@ impl GrpcClientSettings {
         }
     }
 
+    /// Builds the configured [`Endpoint`] from one validated TLS material
+    /// snapshot without reopening configured files.
+    pub async fn build_endpoint_with_tls_material(
+        &self,
+        material: &LoadedClientTlsMaterial,
+    ) -> Result<Endpoint, GrpcEndpointError> {
+        let endpoint = self.build_endpoint()?;
+        let tls = tls_utils::build_tonic_client_tls(material).await?;
+        Ok(endpoint.tls_config(tls)?)
+    }
+
     /// Returns the effective proxy configuration.
     ///
     /// If explicit proxy config is provided, it's merged with environment variables
@@ -626,6 +638,19 @@ impl GrpcClientSettings {
         Ok((endpoint, proxy))
     }
 
+    async fn prepare_connection_with_tls_material(
+        &self,
+        timeout_override: Option<Duration>,
+        material: &LoadedClientTlsMaterial,
+    ) -> Result<(Endpoint, Arc<ProxyConfig>), GrpcEndpointError> {
+        let mut endpoint = self.build_endpoint_with_tls_material(material).await?;
+        if let Some(timeout) = timeout_override {
+            endpoint = endpoint.timeout(timeout);
+        }
+        let proxy = Arc::new(self.effective_proxy_config());
+        Ok((endpoint, proxy))
+    }
+
     /// Builds a gRPC channel, using proxy tunneling when configured.
     #[doc(hidden)]
     pub async fn connect_channel(
@@ -654,6 +679,55 @@ impl GrpcClientSettings {
         } else {
             Ok(endpoint.connect_lazy())
         }
+    }
+
+    /// Builds a lazy gRPC channel from validated TLS material, using proxy
+    /// tunneling when configured.
+    #[doc(hidden)]
+    pub async fn connect_channel_lazy_with_tls_material(
+        &self,
+        timeout_override: Option<Duration>,
+        material: &LoadedClientTlsMaterial,
+    ) -> Result<Channel, GrpcEndpointError> {
+        let (endpoint, proxy) = self
+            .prepare_connection_with_tls_material(timeout_override, material)
+            .await?;
+        if proxy.has_proxy() {
+            let connector = self.make_proxy_connector(proxy);
+            Ok(endpoint.connect_with_connector_lazy(connector))
+        } else {
+            Ok(endpoint.connect_lazy())
+        }
+    }
+
+    /// Builds multiple lazy gRPC channels from one validated TLS material
+    /// snapshot while parsing TLS and proxy settings only once.
+    #[doc(hidden)]
+    pub async fn connect_channels_lazy_with_tls_material(
+        &self,
+        timeout_override: Option<Duration>,
+        material: &LoadedClientTlsMaterial,
+        count: usize,
+    ) -> Result<Vec<Channel>, GrpcEndpointError> {
+        let (endpoint, proxy) = self
+            .prepare_connection_with_tls_material(timeout_override, material)
+            .await?;
+        let mut channels = Vec::with_capacity(count);
+        if proxy.has_proxy() {
+            let connector = self.make_proxy_connector(proxy);
+            for _ in 0..count {
+                channels.push(
+                    endpoint
+                        .clone()
+                        .connect_with_connector_lazy(connector.clone()),
+                );
+            }
+        } else {
+            for _ in 0..count {
+                channels.push(endpoint.clone().connect_lazy());
+            }
+        }
+        Ok(channels)
     }
 }
 
@@ -1062,6 +1136,71 @@ mod tests {
 
         let endpoint = settings.build_endpoint_with_tls().await.unwrap();
         let _ = endpoint;
+    }
+
+    /// Scenario: TLS source files disappear after a validated material snapshot
+    /// has been captured.
+    /// Guarantees: snapshot-based endpoint and channel builders do not reopen
+    /// those files, preserve the target URI, and return the requested channel count.
+    #[tokio::test]
+    async fn snapshot_builders_do_not_reopen_tls_sources() {
+        crate::crypto::ensure_crypto_provider();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let ca = tls_certs::generate_self_signed_cert("snapshot CA", None, true);
+        let ca_path = dir.path().join("ca.crt");
+        tokio::fs::write(&ca_path, &ca.cert_pem)
+            .await
+            .expect("write CA");
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".into(),
+            tls: Some(TlsClientConfig {
+                ca_file: Some(ca_path.clone()),
+                include_system_ca_certs_pool: Some(false),
+                ..TlsClientConfig::default()
+            }),
+            user_agent: Some("snapshot-test".into()),
+            timeout: Some(Duration::from_secs(3)),
+            ..GrpcClientSettings::default()
+        };
+        let material =
+            tls_utils::load_client_tls_material(settings.tls.as_ref(), &settings.grpc_endpoint)
+                .await
+                .expect("capture TLS material")
+                .expect("TLS enabled");
+        tokio::fs::remove_file(ca_path)
+            .await
+            .expect("remove CA source");
+
+        let endpoint = settings
+            .build_endpoint_with_tls_material(&material)
+            .await
+            .expect("endpoint from snapshot");
+        assert_eq!(
+            endpoint.uri(),
+            &settings
+                .grpc_endpoint
+                .parse::<http::Uri>()
+                .expect("target URI")
+        );
+        let _channel = settings
+            .connect_channel_lazy_with_tls_material(Some(Duration::from_secs(1)), &material)
+            .await
+            .expect("channel from snapshot");
+        for count in [0, 1, 3] {
+            let channels = settings
+                .connect_channels_lazy_with_tls_material(None, &material, count)
+                .await
+                .expect("channels from snapshot");
+            assert_eq!(channels.len(), count);
+        }
+        let error = settings
+            .build_endpoint_with_tls()
+            .await
+            .expect_err("the file-backed builder must still report the missing source");
+        match error {
+            GrpcEndpointError::Io(error) => assert_eq!(error.kind(), io::ErrorKind::NotFound),
+            error => panic!("expected missing TLS source, got: {error}"),
+        }
     }
 
     #[tokio::test]

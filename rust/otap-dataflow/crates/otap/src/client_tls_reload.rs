@@ -5,11 +5,11 @@
 //!
 //! Detects changes to file-backed client TLS material by periodically
 //! re-reading and re-validating the configured sources, then publishes each
-//! validated generation through an [`ArcSwap`] so exporters can rebuild their
+//! validated generation through an [`arc_swap::ArcSwap`] so exporters can rebuild their
 //! transports without a process restart.
 //!
 //! The loop is transport-agnostic: it produces validated
-//! [`LoadedClientTlsMaterial`], and callers build tonic channels or reqwest
+//! [`crate::tls_utils::LoadedClientTlsMaterial`], and callers build tonic channels or reqwest
 //! clients from it. Keeping it independent of `tonic`/`reqwest` is deliberate so
 //! the engine-owned TLS reload service can host it later without touching
 //! exporter code.
@@ -24,10 +24,6 @@
 //! Explicit `reload_interval: null` disables the loop, while zero is rejected
 //! for configurations that create a provider. Overlapping attempts are
 //! coalesced so generation numbers and notifications cannot regress.
-
-// Wired into the OTLP/gRPC and OTLP/HTTP exporters in the follow-up stages of
-// #4160; the reload machinery lands first so it can be reviewed on its own.
-#![allow(dead_code)]
 
 use std::future::Future;
 use std::io;
@@ -47,17 +43,31 @@ use crate::tls_utils::{
 ///
 /// Published atomically; readers always observe one consistent generation.
 #[derive(Debug)]
-pub(crate) struct ClientTlsGeneration {
+pub struct ClientTlsGeneration {
     /// Monotonic generation number; `0` is the initial load, incremented on each
     /// successful reload. Lets a consumer cheaply detect that it must rebuild.
-    pub(crate) number: u64,
+    number: u64,
     /// The validated material for this generation.
-    pub(crate) material: LoadedClientTlsMaterial,
+    material: LoadedClientTlsMaterial,
+}
+
+impl ClientTlsGeneration {
+    /// Returns this generation's monotonic number.
+    #[must_use]
+    pub const fn number(&self) -> u64 {
+        self.number
+    }
+
+    /// Returns the validated TLS material captured for this generation.
+    #[must_use]
+    pub const fn material(&self) -> &LoadedClientTlsMaterial {
+        &self.material
+    }
 }
 
 /// Outcome of a single reload attempt.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ReloadOutcome {
+enum ReloadOutcome {
     /// Another reload attempt is already in progress, so this request was
     /// coalesced with it.
     Busy,
@@ -70,7 +80,7 @@ pub(crate) enum ReloadOutcome {
 }
 
 /// Owns the current client TLS generation and reloads it on a bounded schedule.
-pub(crate) struct ClientTlsProvider {
+pub struct ClientTlsProvider {
     /// Owned copy of the exporter's TLS configuration (source of the paths).
     config: Option<TlsClientConfig>,
     /// Endpoint URI, used to reproduce the scheme-driven load decisions.
@@ -95,12 +105,12 @@ impl ClientTlsProvider {
     /// Loads the initial generation and returns a provider, or `Ok(None)` when
     /// the connection does not use a configured TLS block (plaintext `http://`
     /// or `insecure` with no custom CA) -- the same decision as
-    /// [`load_client_tls_material`].
+    /// `load_client_tls_material`.
     ///
     /// Fails if the initial material is missing or invalid, or if an active
     /// provider is configured with a zero reload interval. In particular, the
     /// shared loader rejects empty or malformed custom CA bundles.
-    pub(crate) async fn new(
+    pub async fn new(
         config: Option<&TlsClientConfig>,
         endpoint_uri: &str,
     ) -> Result<Option<Self>, io::Error> {
@@ -134,25 +144,25 @@ impl ClientTlsProvider {
     }
 
     /// Returns the current generation (lock-free).
-    pub(crate) fn current(&self) -> Arc<ClientTlsGeneration> {
+    pub fn current(&self) -> Arc<ClientTlsGeneration> {
         self.current.load_full()
     }
 
     /// Subscribes to published generation numbers. A consumer can await
-    /// `changed()` and then rebuild its transport from [`current`].
-    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+    /// `changed()` and then rebuild its transport from [`Self::current`].
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.notify.subscribe()
     }
 
     /// The configured reload interval, or `None` when periodic reload is
     /// disabled.
-    pub(crate) fn reload_interval(&self) -> Option<Duration> {
+    pub fn reload_interval(&self) -> Option<Duration> {
         self.reload_interval
     }
 
     /// Whether any configured source is file-backed. Inline-only PEM material
     /// never changes at runtime, so a caller can skip running the loop.
-    pub(crate) fn is_file_backed(&self) -> bool {
+    pub fn is_file_backed(&self) -> bool {
         self.config.as_ref().is_some_and(|c| {
             c.ca_file.is_some() || c.config.cert_file.is_some() || c.config.key_file.is_some()
         })
@@ -164,7 +174,7 @@ impl ClientTlsProvider {
     /// On validation/read failure, or if the configuration now resolves to
     /// no-TLS, the current generation is retained. If another attempt is in
     /// progress, this request returns [`ReloadOutcome::Busy`] without queueing.
-    pub(crate) async fn poll_once(&self) -> ReloadOutcome {
+    async fn poll_once(&self) -> ReloadOutcome {
         let Ok(_guard) = self.reload_guard.try_lock() else {
             return ReloadOutcome::Busy;
         };
@@ -173,6 +183,12 @@ impl ClientTlsProvider {
             Ok(Some(candidate)) if candidate.matches(&self.current.load().material) => {
                 ReloadOutcome::Unchanged
             }
+            // TODO(#4165): validate() is synchronous CPU work on the pipeline
+            // thread, once per changed generation. Its cost scales with the CA
+            // bundle size (bounded by the file size cap) and may be higher on
+            // slower hardware. The engine-owned reload service should move it
+            // off the pipeline thread. A failed candidate is not kept as
+            // current, so invalid material is retried on later polls.
             Ok(Some(candidate)) => match candidate.validate() {
                 Ok(material) => {
                     let number = self.next_number.fetch_add(1, Ordering::Relaxed);
@@ -212,11 +228,11 @@ impl ClientTlsProvider {
     /// Runs the bounded reload loop until `cancel` resolves.
     ///
     /// Returns immediately when periodic reload is disabled. Otherwise, each
-    /// tick performs at most one [`poll_once`]; cancellation is checked with
+    /// tick performs at most one reload attempt; cancellation is checked with
     /// priority so shutdown is prompt. The caller owns how this future is driven
     /// (for example, spawned local to the exporter's core), keeping the loop free
     /// of any engine-specific task machinery.
-    pub(crate) async fn run<C>(&self, cancel: C)
+    pub async fn run<C>(&self, cancel: C)
     where
         C: Future<Output = ()>,
     {
