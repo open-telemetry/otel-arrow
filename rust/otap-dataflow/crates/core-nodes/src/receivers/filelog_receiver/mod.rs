@@ -5,6 +5,7 @@
 //!
 //! This module does not register a receiver.
 
+pub mod batch;
 pub mod config;
 pub mod decoder;
 pub mod framer;
@@ -19,6 +20,11 @@ pub mod source;
 /// Bounded Linux scanning and reconciliation without receiver wiring.
 #[cfg(target_os = "linux")]
 pub mod discovery;
+
+// Scheduler composition remains separate from receiver registration.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod scheduler;
 
 /// Linux file identity and local ownership admission.
 #[cfg(target_os = "linux")]

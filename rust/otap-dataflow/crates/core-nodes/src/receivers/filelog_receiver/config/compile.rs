@@ -784,7 +784,6 @@ fn record_bound(c: &Config, multiline: bool) -> Result<u64, ConfigError> {
     } else {
         c.framing.max_line_bytes.min(c.framing.max_record_bytes)
     };
-    body.checked_add(attrs)
-        .and_then(|v| v.checked_add(128))
+    super::super::batch::logical_size(body, attrs)
         .ok_or_else(|| ConfigError::new("batch/framing", "logical record size overflows"))
 }
