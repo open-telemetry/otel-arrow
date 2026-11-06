@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793932456115,
+  "lastUpdate": 1793937628390,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -80817,6 +80817,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-text-size",
             "value": 77.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.65,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "148747a6d06fd30d32d2675fcf9169451e8cabed",
+          "message": "chore(context): Simplify context-based restrictions on engine restart (#4654)\n\n# Change summary\n\nDiscussed in\nhttps://github.com/open-telemetry/otel-arrow/issues/4541#issuecomment-6552076603.\n\nThis improves self-consistency. We currently have a conservative rule in\nplace to force restart when context declarations change. Our intention\nis to improve this see #4611, and until then the current logic is\nunnecessarily complex in addition to being conservative. This just\nsimplifies, leaves the conservative behavior.\n\n## Related issue\n\nPart of #4541, #4611.\n\n## Validation\n\n✅\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 045a2e8d-a251-416c-ad41-dcc4be0331c2\nCopilot-Session: 070b4453-cb7d-495c-8a4f-e4e499a57325\nCopilot-Session: 4cfc64ad-6013-4ef4-b876-7646e969d76f",
+          "timestamp": "2026-11-06T03:14:13Z",
+          "tree_id": "6845f752c9abbe38c0a6ed2a011964d2ce41312f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/148747a6d06fd30d32d2675fcf9169451e8cabed"
+        },
+        "date": 1793937612102,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.47,
             "unit": "MB"
           },
           {
