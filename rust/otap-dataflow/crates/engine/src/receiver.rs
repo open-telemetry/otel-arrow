@@ -31,7 +31,9 @@ use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -64,6 +66,24 @@ impl<PData> ReceiverContextMaterialization<PData> {
     pub(crate) fn apply(&self, data: &mut PData) {
         (self.materialize)(data, &self.plan);
     }
+}
+
+/// Returns bindings for the legacy policy setters, creating handler-local
+/// bindings that retain any installed materialization plan.
+///
+/// TODO(4541): This will be removed in migration step 5.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn legacy_bindings_mut<'a, PData>(
+    bindings: &'a mut Option<Arc<NodeBindings>>,
+    materialization: Option<&ReceiverContextMaterialization<PData>>,
+) -> &'a mut NodeBindings {
+    Arc::make_mut(bindings.get_or_insert_with(|| {
+        let mut bindings = NodeBindings::default();
+        if let Some(materialization) = materialization {
+            bindings.set_materialization_plan(materialization.plan.clone());
+        }
+        Arc::new(bindings)
+    }))
 }
 
 /// Engine-managed startup-readiness state carried by a receiver wrapper.
@@ -104,13 +124,10 @@ pub enum ReceiverWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
-        /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<CompiledHeaderCapturePolicy>,
-        /// Pre-resolved authorized identity claim projection policy.
-        authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
         /// Pipeline plan for materializing selected composites.
         context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
-        /// Shared compiler-owned runtime bindings, when constructed by the pipeline factory.
+        /// Runtime bindings: compiler-owned when constructed by the pipeline factory,
+        /// or wrapper-local when created by the legacy policy builders.
         node_bindings: Option<Arc<NodeBindings>>,
         /// Optional startup-readiness gate for runtime initialization.
         readiness: Option<ReceiverStartupReadiness>,
@@ -138,13 +155,10 @@ pub enum ReceiverWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
-        /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<CompiledHeaderCapturePolicy>,
-        /// Pre-resolved authorized identity claim projection policy.
-        authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
         /// Pipeline plan for materializing selected composites.
         context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
-        /// Shared compiler-owned runtime bindings, when constructed by the pipeline factory.
+        /// Runtime bindings: compiler-owned when constructed by the pipeline factory,
+        /// or wrapper-local when created by the legacy policy builders.
         node_bindings: Option<Arc<NodeBindings>>,
         /// Optional startup-readiness gate for runtime initialization.
         readiness: Option<ReceiverStartupReadiness>,
@@ -189,8 +203,6 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
-            capture_policy: None,
-            authorized_identity_policy: None,
             context_materialization_plan: None,
             node_bindings: None,
             readiness: None,
@@ -221,8 +233,6 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
-            capture_policy: None,
-            authorized_identity_policy: None,
             context_materialization_plan: None,
             node_bindings: None,
             readiness: None,
@@ -272,8 +282,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
                 node_bindings,
                 readiness,
@@ -289,8 +297,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
                 node_bindings,
                 readiness,
@@ -305,8 +311,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
                 node_bindings,
                 readiness,
@@ -322,8 +326,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
                 node_bindings,
                 readiness,
@@ -356,8 +358,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
                 node_bindings,
                 readiness,
@@ -385,8 +385,6 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
                     node_bindings,
                     readiness,
@@ -403,8 +401,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
                 node_bindings,
                 readiness,
@@ -432,8 +428,6 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
                     node_bindings,
                     readiness,
@@ -481,8 +475,6 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
                     node_bindings,
                     readiness,
@@ -512,8 +504,6 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.terminal_metrics_deadline = terminal_metrics_deadline;
                 effect_handler.set_source_tagging(source_tag);
-                effect_handler.set_capture_policy(capture_policy);
-                effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler.set_context_materialization(context_materialization_plan);
                 if let Some(bindings) = node_bindings {
                     effect_handler.set_node_bindings(bindings);
@@ -533,8 +523,6 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
                     node_bindings,
                     readiness,
@@ -563,8 +551,6 @@ impl<PData> ReceiverWrapper<PData> {
                     runtime_services,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                effect_handler.set_capture_policy(capture_policy);
-                effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler.set_context_materialization(context_materialization_plan);
                 if let Some(bindings) = node_bindings {
                     effect_handler.set_node_bindings(bindings);
@@ -669,160 +655,40 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 impl<PData> ReceiverWrapper<PData> {
     /// Returns the wrapper with the given pre-resolved capture engine for
     /// transport header extraction.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_capture_policy(
         mut self,
         policy: Option<CompiledHeaderCapturePolicy>,
     ) -> Self {
-        let (Self::Local { node_bindings, .. } | Self::Shared { node_bindings, .. }) = &mut self;
-        if let Some(bindings) = node_bindings {
-            Arc::make_mut(bindings).set_header_capture_policy(policy.clone());
-        }
-        match self {
-            ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                authorized_identity_policy,
-                context_materialization_plan,
-                node_bindings,
-                readiness,
-                ..
-            } => ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy: policy,
-                authorized_identity_policy,
-                context_materialization_plan,
-                node_bindings,
-                readiness,
-            },
-            ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                authorized_identity_policy,
-                context_materialization_plan,
-                node_bindings,
-                readiness,
-                ..
-            } => ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy: policy,
-                authorized_identity_policy,
-                context_materialization_plan,
-                node_bindings,
-                readiness,
-            },
-        }
+        self.legacy_bindings_mut().set_header_capture_policy(policy);
+        self
     }
 
     /// Returns the wrapper with the authorized identity claim projection policy.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_authorized_identity_policy(
         mut self,
         policy: Option<AuthorizedIdentityPolicy>,
     ) -> Self {
-        let (Self::Local { node_bindings, .. } | Self::Shared { node_bindings, .. }) = &mut self;
-        if let Some(bindings) = node_bindings {
-            Arc::make_mut(bindings).set_authorized_identity_policy(policy.clone());
-        }
+        self.legacy_bindings_mut()
+            .set_authorized_identity_policy(policy);
+        self
+    }
+
+    /// Returns bindings for the legacy policy builders.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn legacy_bindings_mut(&mut self) -> &mut NodeBindings {
         match self {
-            ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                context_materialization_plan,
+            Self::Local {
                 node_bindings,
-                readiness,
+                context_materialization_plan,
                 ..
-            } => ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy: policy,
-                context_materialization_plan,
+            }
+            | Self::Shared {
                 node_bindings,
-                readiness,
-            },
-            ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
                 context_materialization_plan,
-                node_bindings,
-                readiness,
                 ..
-            } => ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy: policy,
-                context_materialization_plan,
-                node_bindings,
-                readiness,
-            },
+            } => legacy_bindings_mut(node_bindings, context_materialization_plan.as_ref()),
         }
     }
 
@@ -1490,8 +1356,8 @@ connections:
         );
 
         match wrapper {
-            ReceiverWrapper::Local { capture_policy, .. } => {
-                assert!(capture_policy.is_none(), "should be None by default")
+            ReceiverWrapper::Local { node_bindings, .. } => {
+                assert!(node_bindings.is_none(), "should be None by default")
             }
             _ => panic!("expected Local variant"),
         }
@@ -1510,8 +1376,11 @@ connections:
         .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
-            ReceiverWrapper::Local { capture_policy, .. } => assert!(
-                capture_policy.is_some(),
+            ReceiverWrapper::Local { node_bindings, .. } => assert!(
+                node_bindings
+                    .as_deref()
+                    .and_then(NodeBindings::header_capture_policy)
+                    .is_some(),
                 "should be set after with_capture_policy"
             ),
             _ => panic!("expected Local variant"),
@@ -1531,8 +1400,11 @@ connections:
         .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
-            ReceiverWrapper::Shared { capture_policy, .. } => assert!(
-                capture_policy.is_some(),
+            ReceiverWrapper::Shared { node_bindings, .. } => assert!(
+                node_bindings
+                    .as_deref()
+                    .and_then(NodeBindings::header_capture_policy)
+                    .is_some(),
                 "should be set after with_capture_policy"
             ),
             _ => panic!("expected Shared variant"),

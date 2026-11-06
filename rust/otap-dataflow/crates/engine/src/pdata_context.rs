@@ -53,8 +53,10 @@ use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolic
 use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
 };
+#[cfg(test)]
+use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_config::context::transport_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
+    HeaderCapturePolicy, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
@@ -952,6 +954,7 @@ impl CompiledContextBindings {
     }
 
     /// Returns the node's compiled header capture policy.
+    #[cfg(test)]
     pub(crate) fn header_capture_policy(
         &self,
         pipeline: &PipelineKey,
@@ -961,6 +964,7 @@ impl CompiledContextBindings {
     }
 
     /// Returns the node's header propagation policy.
+    #[cfg(test)]
     pub(crate) fn header_propagation_policy(
         &self,
         pipeline: &PipelineKey,
@@ -971,6 +975,7 @@ impl CompiledContextBindings {
     }
 
     /// Returns the node's authorized identity claim projection policy.
+    #[cfg(test)]
     pub(crate) fn authorized_identity_policy(
         &self,
         pipeline: &PipelineKey,

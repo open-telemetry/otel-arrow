@@ -41,11 +41,13 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
-use crate::pdata_context::{
-    Arrival, ArrivalBinding, ContextError, ContextMaterializationPlan, Metadata, NodeBindings,
-};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::pdata_context::ContextMaterializationPlan;
+use crate::pdata_context::{Arrival, ContextError, Metadata, NodeBindings};
 use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::receiver::legacy_bindings_mut;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use async_trait::async_trait;
@@ -59,7 +61,6 @@ use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
@@ -145,11 +146,8 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Legacy capture policy for manually constructed handlers.
-    capture_policy: Option<Rc<CompiledHeaderCapturePolicy>>,
-    /// Legacy identity policy for manually constructed handlers.
-    authorized_identity_policy: Option<Rc<AuthorizedIdentityPolicy>>,
-    /// Compiler-owned immutable bindings, shared with the node's pipeline context.
+    /// Runtime bindings: compiler-owned and shared with the node's pipeline
+    /// context, or handler-local when created by the legacy policy setters.
     node_bindings: Option<Arc<NodeBindings>>,
     /// Data-type-specific context materialization shared by local handler clones.
     context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
@@ -177,8 +175,6 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            capture_policy: None,
-            authorized_identity_policy: None,
             node_bindings: None,
             context_materialization_plan: None,
             readiness: None,
@@ -221,37 +217,35 @@ impl<PData> EffectHandler<PData> {
     /// `None` disables capture.
     #[must_use]
     pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
-        match &self.node_bindings {
-            Some(bindings) => bindings.header_capture_policy(),
-            None => self.capture_policy.as_deref(),
-        }
+        self.node_bindings.as_deref()?.header_capture_policy()
     }
 
     /// Sets the capture policy for transport header extraction.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
-        if let Some(bindings) = &mut self.node_bindings {
-            Arc::make_mut(bindings).set_header_capture_policy(policy);
-        } else {
-            self.capture_policy = policy.map(Rc::new);
-        }
+        self.legacy_bindings_mut().set_header_capture_policy(policy);
     }
 
     /// Returns the authorized identity claim projection policy.
     #[must_use]
     pub fn authorized_identity_policy(&self) -> Option<&AuthorizedIdentityPolicy> {
-        match &self.node_bindings {
-            Some(bindings) => bindings.authorized_identity_policy(),
-            None => self.authorized_identity_policy.as_deref(),
-        }
+        self.node_bindings.as_deref()?.authorized_identity_policy()
     }
 
     /// Sets the authorized identity claim projection policy.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_authorized_identity_policy(&mut self, policy: Option<AuthorizedIdentityPolicy>) {
-        if let Some(bindings) = &mut self.node_bindings {
-            Arc::make_mut(bindings).set_authorized_identity_policy(policy);
-        } else {
-            self.authorized_identity_policy = policy.map(Rc::new);
-        }
+        self.legacy_bindings_mut()
+            .set_authorized_identity_policy(policy);
+    }
+
+    /// Returns bindings for the legacy policy setters.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn legacy_bindings_mut(&mut self) -> &mut NodeBindings {
+        legacy_bindings_mut(
+            &mut self.node_bindings,
+            self.context_materialization_plan.as_ref(),
+        )
     }
 
     /// Returns this receiver's immutable runtime bindings.
@@ -261,32 +255,22 @@ impl<PData> EffectHandler<PData> {
     }
 
     pub(crate) fn set_node_bindings(&mut self, bindings: Arc<NodeBindings>) {
-        self.capture_policy = None;
-        self.authorized_identity_policy = None;
         self.node_bindings = Some(bindings);
     }
 
     /// Forms complete request metadata from an Arrival. Callers should reject
     /// requests when this returns an error.
+    ///
+    /// Requires an installed arrival binding, even when no capture is configured.
     pub fn form_context(
         &self,
         arrival: &Arrival<'_>,
     ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
-        match self
-            .node_bindings
-            .as_ref()
-            .and_then(|bindings| bindings.arrival())
-        {
-            Some(binding) => binding.form(arrival),
-            None => ArrivalBinding::form_with(
-                self.capture_policy(),
-                self.authorized_identity_policy(),
-                self.context_materialization_plan
-                    .as_ref()
-                    .map(|plan| &plan.plan),
-                arrival,
-            ),
-        }
+        self.node_bindings
+            .as_deref()
+            .and_then(NodeBindings::arrival)
+            .ok_or(ContextError::MissingArrivalBinding)?
+            .form(arrival)
     }
 
     /// Materializes configured context entries before receiver output.
@@ -313,6 +297,7 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Installs a data-type-specific context materializer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_context_materializer(
         &mut self,
         plan: ContextMaterializationPlan,
