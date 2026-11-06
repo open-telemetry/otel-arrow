@@ -328,8 +328,18 @@ impl TelemetryRegistryHandle {
     /// scrapes. This gives a scraper time to observe the final values of
     /// components that shut down. `Duration::ZERO` (the default) removes metric
     /// sets as soon as any pending export completes.
+    ///
+    /// Set this before the internal collector starts: the collection loop reads
+    /// the grace once at startup to choose between a plain receive loop and the
+    /// loop that also sweeps expired grace deadlines.
     pub fn set_metric_unregister_grace(&self, grace: Duration) {
         self.registry.lock().metrics.set_unregister_grace(grace);
+    }
+
+    /// Returns the configured unregister grace period (`Duration::ZERO` when
+    /// grace retention is disabled).
+    pub(crate) fn metric_unregister_grace(&self) -> Duration {
+        self.registry.lock().metrics.unregister_grace()
     }
 
     /// Unregisters a metric set by key.

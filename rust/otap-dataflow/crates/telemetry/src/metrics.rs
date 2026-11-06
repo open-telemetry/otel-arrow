@@ -909,6 +909,12 @@ impl MetricSetRegistry {
         self.unregister_grace = grace;
     }
 
+    /// Returns the configured unregister grace period (`Duration::ZERO` when
+    /// grace retention is disabled).
+    pub(crate) fn unregister_grace(&self) -> Duration {
+        self.unregister_grace
+    }
+
     pub(crate) fn set_has_metric_exporter(&mut self) {
         self.has_metric_exporter = true;
     }
@@ -1151,6 +1157,11 @@ impl MetricSetRegistry {
         entities: &mut EntityRegistry,
         now: Instant,
     ) -> Option<Instant> {
+        if self.unregister_grace.is_zero() {
+            // Without a grace period nothing is ever queued for a timed sweep;
+            // the export path completes deferred unregisters instead.
+            return None;
+        }
         while let Some(&(deadline, metrics_key)) = self.pending_unregisters.front() {
             if deadline > now {
                 break;

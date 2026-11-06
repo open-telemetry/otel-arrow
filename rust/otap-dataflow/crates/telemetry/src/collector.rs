@@ -156,10 +156,32 @@ impl InternalCollector {
             .reap_expired_metric_unregisters(Instant::now());
     }
 
+    /// Aggregates snapshots until the channel closes.
+    ///
+    /// The grace period is read once at startup: without it there is nothing to
+    /// sweep, so the plain receive loop avoids the timer and notification
+    /// machinery entirely.
+    async fn collection_loop(&self) -> Result<(), Error> {
+        if self.registry.metric_unregister_grace().is_zero() {
+            self.receive_loop().await
+        } else {
+            self.receive_and_sweep_loop().await
+        }
+    }
+
+    /// Aggregates snapshots until the channel closes, with no grace-deadline
+    /// sweeping.
+    async fn receive_loop(&self) -> Result<(), Error> {
+        while let Ok(message) = self.metrics_receiver.recv_async().await {
+            self.collect_message(message);
+        }
+        Ok(())
+    }
+
     /// Aggregates snapshots until the channel closes, and also drives the removal
     /// of unregistered metric sets from the registry when their grace deadline
     /// passes.
-    async fn collection_loop(&self) -> Result<(), Error> {
+    async fn receive_and_sweep_loop(&self) -> Result<(), Error> {
         let unregister_notify = self.registry.unregister_notify();
         // Resume from deadlines queued before this loop started: a previous
         // loop may have consumed their notification before being cancelled.
