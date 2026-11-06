@@ -11,6 +11,9 @@
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ContextError {
+    /// The receiver has no installed arrival binding.
+    #[error("receiver has no arrival context binding installed")]
+    MissingArrivalBinding,
     /// A value supplied to a binding does not match the binding's compiled context.
     #[error("context value does not match this node's compiled context bindings")]
     ContextMismatch,
