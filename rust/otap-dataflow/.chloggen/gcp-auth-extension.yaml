@@ -1,0 +1,8 @@
+change_type: new_component
+component: pipeline
+note: "Add `urn:otel:extension:gcp_auth` extension providing `BearerTokenProvider` backed by the Google Cloud (GCE/GKE) compute metadata server."
+issues: [4650]
+subtext: |
+  Feature `gcp-auth`, URN `urn:otel:extension:gcp_auth`. Acquires and refreshes
+  OAuth 2.0 access tokens from `/computeMetadata/v1/instance/service-accounts/{service_account}/token`
+  with `Metadata-Flavor: Google` and exposes them via the `bearer_token_provider` capability.
