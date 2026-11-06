@@ -653,11 +653,10 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded from this comparison: they are
-        // validated separately via compiled context bindings, which already
-        // reject incompatible changes to pipelines that keep running. An
-        // absent group-level policy block is treated the same as one that
-        // only declares context entries, so moving context declarations
+        // Context declarations are excluded here: global context consistency is
+        // guarded using installed engine requirements and deployed pipelines'
+        // effective declarations. An absent group-level policy block is treated like
+        // one that only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
         fn normalized_group_policies(
             policies: Option<&otel_arrow_dfe_config::policy::Policies>,
@@ -815,7 +814,7 @@ impl<
         Ok(context.bindings)
     }
 
-    fn validate_deployed_pipeline_context_bindings_unchanged(
+    fn validate_deployed_pipeline_context_declarations_unchanged(
         &self,
         candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
@@ -823,7 +822,7 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+        Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
             &state,
             None,
             None,
@@ -831,16 +830,18 @@ impl<
         )
     }
 
-    fn validate_deployed_pipeline_context_bindings_unchanged_in_state(
+    fn validate_deployed_pipeline_context_declarations_unchanged_in_state(
         state: &ControllerRuntimeState,
         excluded_pipeline: Option<&PipelineKey>,
         included_pipelines: Option<&HashSet<PipelineKey>>,
         candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
-        // The policy is compiled engine-wide, but each running pipeline uses the
-        // bindings from the snapshot installed with its generation. A replacement
-        // rollout may keep the old generation alive while starting the new one,
-        // so even the rollout target cannot safely change bindings in place.
+        // The goal is global consistency with installed engine state, surviving
+        // pipeline generations, and their in-flight data. compile_context_bindings
+        // checks the known engine-wide capture requirements. For the remaining
+        // effects, declaration equality is a conservative proxy until the compiler
+        // can prove compatibility across topic boundaries (#4611). This includes
+        // the rollout target and may reject changes that would actually be safe.
         //
         // Compare against each pipeline's installed snapshot rather than the
         // controller's latest global snapshot, since prior rollouts may have
@@ -854,7 +855,7 @@ impl<
                     && excluded_pipeline != Some(*pipeline_key)
                     && !record
                         .context_bindings
-                        .pipeline_bindings_match(candidate_context_bindings, pipeline_key)
+                        .pipeline_context_compatible(candidate_context_bindings, pipeline_key)
             })
             .map(|(pipeline_key, _)| {
                 format!(
@@ -871,7 +872,7 @@ impl<
         } else {
             Err(ControlPlaneError::InvalidRequest {
                 message: format!(
-                    "live update changes compiled context bindings for deployed pipelines \
+                    "live update changes context declarations for deployed pipelines \
                      ({}); restart the engine to apply this configuration",
                     affected_pipelines.join(", ")
                 ),
@@ -961,7 +962,7 @@ impl<
             Some(policy) => policy,
             None => {
                 let policy = self.compile_context_bindings(&resolved_candidate_config)?;
-                self.validate_deployed_pipeline_context_bindings_unchanged(&policy)?;
+                self.validate_deployed_pipeline_context_declarations_unchanged(&policy)?;
                 policy
             }
         };
@@ -2158,7 +2159,7 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
                 &state,
                 Some(&pipeline_key),
                 None,
@@ -2411,7 +2412,7 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
                 &state,
                 None,
                 Some(&retained_pipeline_keys),

@@ -217,10 +217,6 @@ impl NodeBindings {
         self.arrival.as_ref()?.authorized_identity_capture.as_ref()
     }
 
-    pub(crate) fn header_propagation_policy(&self) -> Option<&CompiledHeaderPropagationPolicy> {
-        Some(&self.sink.as_ref()?.policy)
-    }
-
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn set_header_capture_policy(
         &mut self,
@@ -253,12 +249,6 @@ impl NodeBindings {
         policy: Option<CompiledHeaderPropagationPolicy>,
     ) {
         self.sink = policy.map(SinkBinding::new);
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.header_capture_policy().is_none()
-            && self.authorized_identity_policy().is_none()
-            && self.header_propagation_policy().is_none()
     }
 }
 
@@ -684,9 +674,7 @@ mod tests {
                 ));
                 assert!(std::ptr::eq(
                     handler.propagation_policy().expect("policy"),
-                    bindings
-                        .header_propagation_policy()
-                        .expect("compiled policy")
+                    bindings.sink().expect("compiled sink").policy()
                 ));
                 handler.set_propagation_policy(None);
                 assert!(handler.sink().is_none());
