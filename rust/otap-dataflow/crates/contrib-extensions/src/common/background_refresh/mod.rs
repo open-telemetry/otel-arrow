@@ -11,5 +11,6 @@ mod tests;
 
 pub use metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
 pub use provider::{
-    BackgroundProviderExtension, BackgroundProviderRefreshPolicy, BackgroundProviderSource,
+    BackgroundFetchOutcome, BackgroundProviderExtension, BackgroundProviderRefreshPolicy,
+    BackgroundProviderSource,
 };
