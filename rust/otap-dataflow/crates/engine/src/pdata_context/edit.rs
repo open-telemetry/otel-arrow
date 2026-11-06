@@ -94,22 +94,24 @@ impl EditBinding {
         })
     }
 
-    /// Consumes the input and returns it with each value appended as a transport header, in order.
+    /// Returns a new output context: the input with each value appended as a
+    /// transport header, in order.
     pub fn form(
         &self,
-        mut input: Metadata,
+        input: &Metadata,
         values: &[EditValue<'_>],
     ) -> Result<Metadata, ContextError> {
+        let mut output = input.clone();
         if values.is_empty() {
-            return Ok(input);
+            return Ok(output);
         }
-        let mut headers = input.take_transport_headers().unwrap_or_default();
+        let mut headers = output.take_transport_headers().unwrap_or_default();
         for value in values {
             let name = self.name_of(value.entry)?;
             headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
-        input.set_transport_headers(headers);
-        Ok(input)
+        output.set_transport_headers(headers);
+        Ok(output)
     }
 
     /// Returns the entry name for a handle, failing when another binding issued it.
@@ -234,7 +236,7 @@ mod tests {
         ] {
             let actual = binding
                 .form(
-                    input.clone(),
+                    &input,
                     &[EditValue {
                         entry: &partition_entry,
                         kind: ValueKind::Text,
@@ -256,7 +258,7 @@ mod tests {
 
             let actual = binding
                 .form(
-                    input.clone(),
+                    &input,
                     &[
                         EditValue {
                             entry: &partition_entry,
@@ -295,7 +297,7 @@ mod tests {
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            assert_eq!(binding.form(input.clone(), &[]), Ok(input));
+            assert_eq!(binding.form(&input, &[]), Ok(input));
         }
     }
 
@@ -341,7 +343,7 @@ mod tests {
                 .entry(ContextDomain::TransportHeader, &other.added[0])
                 .expect("other handle");
             assert_eq!(
-                binding.form(Metadata::default(), &[value(&mismatched)]),
+                binding.form(&Metadata::default(), &[value(&mismatched)]),
                 Err(ContextError::ContextMismatch)
             );
         }
@@ -352,10 +354,10 @@ mod tests {
         let clone = binding.clone();
         assert_eq!(clone, binding);
         assert_eq!(
-            clone.form(Metadata::default(), &[value(&own)]),
-            binding.form(Metadata::default(), &[value(&own)])
+            clone.form(&Metadata::default(), &[value(&own)]),
+            binding.form(&Metadata::default(), &[value(&own)])
         );
-        assert!(binding.form(Metadata::default(), &[value(&own)]).is_ok());
+        assert!(binding.form(&Metadata::default(), &[value(&own)]).is_ok());
     }
 
     /// Scenario: an edit declares the same Add entry twice.
