@@ -4,9 +4,9 @@
 //! Prometheus scrape receiver backed by `expfmt::arrow::ArrowDecoder`.
 //!
 //! Scrapes configured HTTP `/metrics` endpoints (static URLs and optional headless DNS service
-//! endpoints) and decodes Prometheus text (`0.0.4` / `1.0.0`) and OpenMetrics (`1.0.0`) payloads
-//! directly into OTAP Arrow record batches on each core's local runtime without intermediate
-//! protobuf materialization.
+//! endpoints) in a one-core source pipeline and decodes Prometheus text (`0.0.4` / `1.0.0`) and
+//! OpenMetrics (`1.0.0`) payloads directly into OTAP Arrow record batches on the core's local
+//! runtime without intermediate protobuf materialization.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = PROMETHEUS_RECEIVER_URN,
@@ -78,12 +78,66 @@ pub struct PrometheusReceiverMetrics {
     pub scrape_duration_ns: Mmsc,
 }
 
+/// Discovers and resolves configured static and DNS scrape target URLs.
+///
+/// Kept separate from [`TargetScraper`] so future shared work coordination can supply per-core
+/// receiver instances with assigned targets while reusing the local scrape and decode path.
+struct TargetDiscovery {
+    static_urls: Vec<Url>,
+    dns_sd_targets: Vec<String>,
+    metrics_path: String,
+}
+
+impl TargetDiscovery {
+    fn from_config(config: &Config) -> Result<Self, otel_arrow_dfe_config::error::Error> {
+        let mut static_urls = Vec::with_capacity(config.targets.len());
+        for target in &config.targets {
+            static_urls.push(normalize_target_url(target, &config.metrics_path)?);
+        }
+        Ok(Self {
+            static_urls,
+            dns_sd_targets: config.dns_sd_targets.clone(),
+            metrics_path: config.metrics_path.clone(),
+        })
+    }
+
+    async fn resolve_targets(&self) -> Vec<Url> {
+        let mut all_urls =
+            Vec::with_capacity(self.static_urls.len() + self.dns_sd_targets.len() * 4);
+        all_urls.extend(self.static_urls.iter().cloned());
+
+        for dns_target in &self.dns_sd_targets {
+            match lookup_host(dns_target.as_str()).await {
+                Ok(addrs) => {
+                    let mut sorted_addrs: Vec<_> = addrs.collect();
+                    sorted_addrs.sort_unstable();
+                    sorted_addrs.dedup();
+                    for addr in sorted_addrs {
+                        if let Ok(url) = Url::parse(&format!("http://{addr}{}", self.metrics_path))
+                        {
+                            all_urls.push(url);
+                        }
+                    }
+                }
+                Err(err) => {
+                    otel_warn!(
+                        "prometheus_receiver.dns_lookup_failed",
+                        target = dns_target.as_str(),
+                        error = err.to_string(),
+                        message = "failed to resolve dns_sd_targets entry"
+                    );
+                }
+            }
+        }
+
+        all_urls
+    }
+}
+
 /// Prometheus scrape receiver.
 pub struct PrometheusReceiver {
     config: Config,
-    static_urls: Vec<Url>,
-    core_id: usize,
-    num_cores: usize,
+    discovery: TargetDiscovery,
     metrics: Option<MetricSet<PrometheusReceiverMetrics>>,
 }
 
@@ -99,23 +153,35 @@ pub static PROMETHEUS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
          node_config: Arc<NodeUserConfig>,
          receiver_config: &ReceiverConfig,
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
-            let mut receiver = PrometheusReceiver::from_config(
-                &node_config.config,
-                pipeline.core_id(),
-                pipeline.num_cores().max(1),
-            )?;
-            receiver.metrics = Some(PrometheusReceiverMetrics::register(&pipeline));
-            Ok(ReceiverWrapper::local(
-                receiver,
-                node,
-                node_config,
-                receiver_config,
-            ))
+            create_prometheus_receiver(pipeline, node, node_config, receiver_config)
         },
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_prometheus_config,
 };
+
+fn create_prometheus_receiver(
+    pipeline: PipelineContext,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
+    if pipeline.num_cores() > 1 {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: "prometheus receiver must run in a one-core source pipeline; use \
+                receiver:prometheus -> exporter:topic and fan out downstream"
+                .to_owned(),
+        });
+    }
+    let mut receiver = PrometheusReceiver::from_config(&node_config.config)?;
+    receiver.metrics = Some(PrometheusReceiverMetrics::register(&pipeline));
+    Ok(ReceiverWrapper::local(
+        receiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
 
 fn validate_prometheus_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     let parsed: Config = serde_json::from_value(config.clone()).map_err(|err| {
@@ -127,38 +193,25 @@ fn validate_prometheus_config(config: &Value) -> Result<(), otel_arrow_dfe_confi
 }
 
 impl PrometheusReceiver {
-    /// Creates a new `PrometheusReceiver` for the given core shard.
-    pub fn new(
-        config: Config,
-        core_id: usize,
-        num_cores: usize,
-    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
+    /// Creates a new `PrometheusReceiver`.
+    pub fn new(config: Config) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         validate_config(&config)?;
-        let mut static_urls = Vec::with_capacity(config.targets.len());
-        for target in &config.targets {
-            static_urls.push(normalize_target_url(target, &config.metrics_path)?);
-        }
+        let discovery = TargetDiscovery::from_config(&config)?;
         Ok(Self {
             config,
-            static_urls,
-            core_id,
-            num_cores: num_cores.max(1),
+            discovery,
             metrics: None,
         })
     }
 
     /// Creates a `PrometheusReceiver` from a raw JSON configuration value.
-    pub fn from_config(
-        config: &Value,
-        core_id: usize,
-        num_cores: usize,
-    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
+    pub fn from_config(config: &Value) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let parsed: Config = serde_json::from_value(config.clone()).map_err(|err| {
             otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: err.to_string(),
             }
         })?;
-        Self::new(parsed, core_id, num_cores)
+        Self::new(parsed)
     }
 }
 
@@ -227,44 +280,172 @@ pub(crate) fn records_to_otap(
     Ok(OtapArrowRecords::Metrics(store))
 }
 
-async fn resolve_core_targets(
-    static_urls: &[Url],
-    dns_sd_targets: &[String],
-    metrics_path: &str,
-    core_id: usize,
-    num_cores: usize,
-) -> Vec<Url> {
-    let mut all_urls = Vec::with_capacity(static_urls.len() + dns_sd_targets.len() * 4);
-    all_urls.extend(static_urls.iter().cloned());
+/// Local HTTP scraper and `ArrowDecoder` state for assigned targets.
+struct TargetScraper {
+    client: reqwest::Client,
+    accept_header: &'static str,
+    max_data_points_per_batch: usize,
+    decoder: ArrowDecoder,
+}
 
-    for dns_target in dns_sd_targets {
-        match lookup_host(dns_target.as_str()).await {
-            Ok(addrs) => {
-                let mut sorted_addrs: Vec<_> = addrs.collect();
-                sorted_addrs.sort_unstable();
-                sorted_addrs.dedup();
-                for addr in sorted_addrs {
-                    if let Ok(url) = Url::parse(&format!("http://{addr}{metrics_path}")) {
-                        all_urls.push(url);
+impl TargetScraper {
+    fn new(config: &Config, receiver_id: NodeId) -> Result<Self, Error> {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let client = reqwest::Client::builder()
+            .timeout(config.scrape_timeout)
+            .build()
+            .map_err(|err| Error::ReceiverError {
+                receiver: receiver_id,
+                kind: ReceiverErrorKind::Configuration,
+                error: format!("failed to build HTTP scrape client: {err}"),
+                source_detail: String::new(),
+            })?;
+        Ok(Self {
+            client,
+            accept_header: build_accept_header(config.enable_open_metrics),
+            max_data_points_per_batch: config.max_data_points_per_batch,
+            decoder: ArrowDecoder::new(),
+        })
+    }
+
+    async fn scrape_target(
+        &mut self,
+        target_url: &Url,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+    ) {
+        let started = StdInstant::now();
+        if let Some(metrics) = metrics.as_mut() {
+            metrics.scrapes_started.add(1);
+        }
+
+        let response = match self
+            .client
+            .get(target_url.clone())
+            .header(ACCEPT, self.accept_header)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                if let Some(metrics) = metrics.as_mut() {
+                    metrics.scrapes_failed.add(1);
+                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                }
+                otel_warn!(
+                    "prometheus_receiver.http_error",
+                    target = target_url.as_str(),
+                    error = err.to_string(),
+                    message = "HTTP scrape request failed"
+                );
+                return;
+            }
+        };
+
+        if !response.status().is_success() {
+            if let Some(metrics) = metrics.as_mut() {
+                metrics.scrapes_failed.add(1);
+                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+            }
+            otel_warn!(
+                "prometheus_receiver.bad_status",
+                target = target_url.as_str(),
+                status = response.status().as_u16(),
+                message = "target returned non-2xx HTTP status"
+            );
+            return;
+        }
+
+        let format = resolve_response_format(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|val| val.to_str().ok()),
+        );
+
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if let Some(metrics) = metrics.as_mut() {
+                    metrics.scrapes_failed.add(1);
+                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                }
+                otel_warn!(
+                    "prometheus_receiver.body_error",
+                    target = target_url.as_str(),
+                    error = err.to_string(),
+                    message = "failed to read scrape response body"
+                );
+                return;
+            }
+        };
+
+        let decode_opts = DecodeOptions::new()
+            .with_timestamp_ms(current_timestamp_ms())
+            .with_max_data_points_per_batch(self.max_data_points_per_batch);
+
+        let mut scrape_ok = true;
+        let mut decoded_points = 0u64;
+
+        if self.max_data_points_per_batch == 0 {
+            match self.decoder.decode(body.as_ref(), &format, &decode_opts) {
+                Ok(records) => {
+                    decoded_points += records.num_data_points() as u64;
+                    if !records.is_empty()
+                        && !send_decoded_records(&records, effect_handler, metrics)
+                    {
+                        scrape_ok = false;
+                    }
+                }
+                Err(err) => {
+                    scrape_ok = false;
+                    otel_warn!(
+                        "prometheus_receiver.decode_error",
+                        target = target_url.as_str(),
+                        error = err.to_string(),
+                        message = "failed to decode exposition payload"
+                    );
+                }
+            }
+        } else {
+            for chunk_res in self
+                .decoder
+                .decode_stream(body.as_ref(), &format, &decode_opts)
+            {
+                match chunk_res {
+                    Ok(records) => {
+                        decoded_points += records.num_data_points() as u64;
+                        if !records.is_empty()
+                            && !send_decoded_records(&records, effect_handler, metrics)
+                        {
+                            scrape_ok = false;
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        scrape_ok = false;
+                        otel_warn!(
+                            "prometheus_receiver.decode_error",
+                            target = target_url.as_str(),
+                            error = err.to_string(),
+                            message = "failed to decode streaming exposition chunk"
+                        );
+                        break;
                     }
                 }
             }
-            Err(err) => {
-                otel_warn!(
-                    "prometheus_receiver.dns_lookup_failed",
-                    target = dns_target.as_str(),
-                    error = err.to_string(),
-                    message = "failed to resolve dns_sd_targets entry"
-                );
+        }
+
+        if let Some(metrics) = metrics.as_mut() {
+            metrics.data_points_decoded.add(decoded_points);
+            if scrape_ok {
+                metrics.scrapes_completed.add(1);
+            } else {
+                metrics.scrapes_failed.add(1);
             }
+            metrics.scrape_duration_ns.record(elapsed_nanos(started));
         }
     }
-
-    all_urls
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, url)| (idx % num_cores == core_id).then_some(url))
-        .collect()
 }
 
 #[async_trait(?Send)]
@@ -276,25 +457,11 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
     ) -> Result<TerminalState, Error> {
         let PrometheusReceiver {
             config,
-            static_urls,
-            core_id,
-            num_cores,
+            discovery,
             mut metrics,
         } = *self;
 
-        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-        let client = reqwest::Client::builder()
-            .timeout(config.scrape_timeout)
-            .build()
-            .map_err(|err| Error::ReceiverError {
-                receiver: effect_handler.receiver_id(),
-                kind: ReceiverErrorKind::Configuration,
-                error: format!("failed to build HTTP scrape client: {err}"),
-                source_detail: String::new(),
-            })?;
-
-        let accept_header = build_accept_header(config.enable_open_metrics);
-        let mut decoder = ArrowDecoder::new();
+        let mut scraper = TargetScraper::new(&config, effect_handler.receiver_id())?;
         let mut next_due = Instant::now() + config.initial_delay;
 
         loop {
@@ -334,154 +501,11 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
                         next_due = now + config.scrape_interval;
                     }
 
-                    let targets = resolve_core_targets(
-                        &static_urls,
-                        &config.dns_sd_targets,
-                        &config.metrics_path,
-                        core_id,
-                        num_cores,
-                    )
-                    .await;
-
-                    for target_url in targets {
-                        let started = StdInstant::now();
-                        if let Some(metrics) = metrics.as_mut() {
-                            metrics.scrapes_started.add(1);
-                        }
-
-                        let response = match client
-                            .get(target_url.clone())
-                            .header(ACCEPT, accept_header)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => resp,
-                            Err(err) => {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    metrics.scrapes_failed.add(1);
-                                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                                }
-                                otel_warn!(
-                                    "prometheus_receiver.http_error",
-                                    target = target_url.as_str(),
-                                    error = err.to_string(),
-                                    message = "HTTP scrape request failed"
-                                );
-                                continue;
-                            }
-                        };
-
-                        if !response.status().is_success() {
-                            if let Some(metrics) = metrics.as_mut() {
-                                metrics.scrapes_failed.add(1);
-                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                            }
-                            otel_warn!(
-                                "prometheus_receiver.bad_status",
-                                target = target_url.as_str(),
-                                status = response.status().as_u16(),
-                                message = "target returned non-2xx HTTP status"
-                            );
-                            continue;
-                        }
-
-                        let format = resolve_response_format(
-                            response
-                                .headers()
-                                .get(CONTENT_TYPE)
-                                .and_then(|val| val.to_str().ok()),
-                        );
-
-                        let body = match response.bytes().await {
-                            Ok(bytes) => bytes,
-                            Err(err) => {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    metrics.scrapes_failed.add(1);
-                                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                                }
-                                otel_warn!(
-                                    "prometheus_receiver.body_error",
-                                    target = target_url.as_str(),
-                                    error = err.to_string(),
-                                    message = "failed to read scrape response body"
-                                );
-                                continue;
-                            }
-                        };
-
-                        let decode_opts = DecodeOptions::new()
-                            .with_timestamp_ms(current_timestamp_ms())
-                            .with_max_data_points_per_batch(config.max_data_points_per_batch);
-
-                        let mut scrape_ok = true;
-                        let mut decoded_points = 0u64;
-
-                        if config.max_data_points_per_batch == 0 {
-                            match decoder.decode(body.as_ref(), &format, &decode_opts) {
-                                Ok(records) => {
-                                    decoded_points += records.num_data_points() as u64;
-                                    if !records.is_empty()
-                                        && !send_decoded_records(
-                                            &records,
-                                            &effect_handler,
-                                            &mut metrics,
-                                        )
-                                    {
-                                        scrape_ok = false;
-                                    }
-                                }
-                                Err(err) => {
-                                    scrape_ok = false;
-                                    otel_warn!(
-                                        "prometheus_receiver.decode_error",
-                                        target = target_url.as_str(),
-                                        error = err.to_string(),
-                                        message = "failed to decode exposition payload"
-                                    );
-                                }
-                            }
-                        } else {
-                            for chunk_res in
-                                decoder.decode_stream(body.as_ref(), &format, &decode_opts)
-                            {
-                                match chunk_res {
-                                    Ok(records) => {
-                                        decoded_points += records.num_data_points() as u64;
-                                        if !records.is_empty()
-                                            && !send_decoded_records(
-                                                &records,
-                                                &effect_handler,
-                                                &mut metrics,
-                                            )
-                                        {
-                                            scrape_ok = false;
-                                            break;
-                                        }
-                                    }
-                                    Err(err) => {
-                                        scrape_ok = false;
-                                        otel_warn!(
-                                            "prometheus_receiver.decode_error",
-                                            target = target_url.as_str(),
-                                            error = err.to_string(),
-                                            message = "failed to decode streaming exposition chunk"
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(metrics) = metrics.as_mut() {
-                            metrics.data_points_decoded.add(decoded_points);
-                            if scrape_ok {
-                                metrics.scrapes_completed.add(1);
-                            } else {
-                                metrics.scrapes_failed.add(1);
-                            }
-                            metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                        }
-
+                    let targets = discovery.resolve_targets().await;
+                    for target_url in &targets {
+                        scraper
+                            .scrape_target(target_url, &effect_handler, &mut metrics)
+                            .await;
                         tokio::task::consume_budget().await;
                     }
                 }
@@ -602,6 +626,86 @@ mod tests {
         let full = normalize_target_url("http://localhost:9090/custom", "/metrics")
             .expect("valid full url");
         assert_eq!(full.as_str(), "http://localhost:9090/custom");
+    }
+
+    /// Scenario: the receiver factory is invoked on a pipeline with more than one core allocated.
+    /// Guarantees: `create_prometheus_receiver` rejects multi-core source pipelines with
+    /// `InvalidUserConfig` so targets cannot be scraped multiple times without coordination.
+    #[test]
+    fn factory_rejects_multi_core_pipeline() {
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 2, 0);
+        let mut node_config = NodeUserConfig::new_receiver_config(PROMETHEUS_RECEIVER_URN);
+        node_config.config = serde_json::json!({
+            "targets": ["127.0.0.1:9001"],
+        });
+        let receiver_config = ReceiverConfig::new("prometheus");
+
+        let result = create_prometheus_receiver(
+            pipeline,
+            NodeId {
+                index: 0,
+                name: "prometheus".into(),
+            },
+            Arc::new(node_config),
+            &receiver_config,
+        );
+
+        let Err(err) = result else {
+            panic!("prometheus receiver must reject multi-core source pipelines");
+        };
+        assert!(
+            err.to_string().contains("one-core source pipeline"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Scenario: a one-core source pipeline is placed on a non-zero physical CPU ID (e.g. CPU 4).
+    /// Guarantees: factory construction succeeds and `TargetDiscovery` retains every configured
+    /// static and DNS target without filtering targets by OS CPU ID.
+    #[tokio::test]
+    async fn single_core_on_non_zero_cpu_id_retains_all_targets() {
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 4, 1, 0);
+        let raw_config = serde_json::json!({
+            "targets": ["127.0.0.1:9001", "127.0.0.1:9002"],
+            "dns_sd_targets": ["127.0.0.1:9003"],
+        });
+        let mut node_config = NodeUserConfig::new_receiver_config(PROMETHEUS_RECEIVER_URN);
+        node_config.config = raw_config.clone();
+        let receiver_config = ReceiverConfig::new("prometheus");
+
+        let _ = create_prometheus_receiver(
+            pipeline,
+            NodeId {
+                index: 0,
+                name: "prometheus".into(),
+            },
+            Arc::new(node_config),
+            &receiver_config,
+        )
+        .expect("single-core pipeline on CPU 4 must be accepted");
+
+        let receiver = PrometheusReceiver::from_config(&raw_config).expect("valid config");
+        let resolved: Vec<String> = receiver
+            .discovery
+            .resolve_targets()
+            .await
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect();
+        assert_eq!(
+            resolved,
+            vec![
+                "http://127.0.0.1:9001/metrics",
+                "http://127.0.0.1:9002/metrics",
+                "http://127.0.0.1:9003/metrics",
+            ]
+        );
     }
 
     /// Scenario: an HTTP target serves an `avalanche`-style payload with counters, gauges,

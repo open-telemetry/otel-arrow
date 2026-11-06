@@ -4,5 +4,5 @@ note: "Add experimental `urn:otel:receiver:prometheus` receiver powered by `prom
 issues: [3277]
 subtext: |
   Scrapes Prometheus text (`0.0.4` / `1.0.0`) and OpenMetrics (`1.0.0`) endpoints
-  and decodes counters, gauges, classic histograms, summaries, and exemplars
-  directly into OTAP Arrow record batches with per-core decoder reuse.
+  in a one-core source pipeline and decodes counters, gauges, classic histograms,
+  summaries, and exemplars directly into OTAP Arrow record batches with decoder reuse.
