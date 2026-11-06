@@ -106,6 +106,7 @@ pub mod testing;
 pub mod topic;
 pub mod topology;
 pub mod wiring_contract;
+pub mod work_coordinator;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 pub use route_admission::RouteAdmission;
@@ -162,6 +163,8 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otel_arrow_dfe_config::error::Error>,
     /// Optional context declarations derived from the node configuration.
     pub context_declarations: Option<pdata_context::ContextDeclarationProvider>,
+    /// Optional node-declared coordinators hosted once per logical pipeline.
+    pub work_coordinators: Option<work_coordinator::CoordinatorDeclarationsFn>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -180,6 +183,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             context_declarations: self.context_declarations,
+            work_coordinators: self.work_coordinators,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -210,6 +214,8 @@ pub struct ProcessorFactory<PData> {
     ) -> Result<ProcessorWrapper<PData>, otel_arrow_dfe_config::error::Error>,
     /// Optional context declarations derived from the node configuration.
     pub context_declarations: Option<pdata_context::ContextDeclarationProvider>,
+    /// Optional node-declared coordinators hosted once per logical pipeline.
+    pub work_coordinators: Option<work_coordinator::CoordinatorDeclarationsFn>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -228,6 +234,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
             name: self.name,
             create: self.create,
             context_declarations: self.context_declarations,
+            work_coordinators: self.work_coordinators,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -258,6 +265,8 @@ pub struct ExporterFactory<PData> {
     ) -> Result<ExporterWrapper<PData>, otel_arrow_dfe_config::error::Error>,
     /// Optional context declarations derived from the node configuration.
     pub context_declarations: Option<pdata_context::ContextDeclarationProvider>,
+    /// Optional node-declared coordinators hosted once per logical pipeline.
+    pub work_coordinators: Option<work_coordinator::CoordinatorDeclarationsFn>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -276,6 +285,7 @@ impl<PData> Clone for ExporterFactory<PData> {
             name: self.name,
             create: self.create,
             context_declarations: self.context_declarations,
+            work_coordinators: self.work_coordinators,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -740,6 +750,57 @@ fn validate_context_materialization_support<PData>(
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
+    /// Collect and validate node-declared coordinators without constructing hosts.
+    /// Unconnected nodes are excluded, just as in `build`.
+    pub fn work_coordinator_declarations(
+        &self,
+        config: &PipelineConfig,
+    ) -> Result<
+        Vec<(
+            otel_arrow_dfe_config::NodeId,
+            work_coordinator::CoordinatorDeclaration,
+        )>,
+        work_coordinator::CoordinatorError,
+    > {
+        use otel_arrow_dfe_config::node::NodeKind;
+        use work_coordinator::CoordinatorError;
+        let mut config = config.clone();
+        let _ = config.remove_unconnected_nodes();
+        let mut declarations = Vec::new();
+        for (node, settings) in config.node_iter() {
+            let provider = match settings.kind() {
+                NodeKind::Receiver => self
+                    .get_receiver_factory_map()
+                    .get(settings.r#type.as_str())
+                    .and_then(|f| f.work_coordinators),
+                NodeKind::Processor => self
+                    .get_processor_factory_map()
+                    .get(settings.r#type.as_str())
+                    .and_then(|f| f.work_coordinators),
+                NodeKind::Exporter => self
+                    .get_exporter_factory_map()
+                    .get(settings.r#type.as_str())
+                    .and_then(|f| f.work_coordinators),
+            };
+            if let Some(provider) = provider {
+                let mut roles = HashSet::new();
+                for declaration in
+                    provider(settings).map_err(|e| CoordinatorError::Failed(e.to_string()))?
+                {
+                    declaration.validate()?;
+                    if !roles.insert(declaration.role.clone()) {
+                        return Err(CoordinatorError::Invalid("duplicate coordinator role"));
+                    }
+                    declarations.push((node.clone(), declaration));
+                    if declarations.len() > 32 {
+                        return Err(CoordinatorError::Capacity);
+                    }
+                }
+            }
+        }
+        Ok(declarations)
+    }
+
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(

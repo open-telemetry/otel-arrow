@@ -1043,6 +1043,7 @@ mod tests {
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
@@ -1052,6 +1053,7 @@ mod tests {
         ReceiverFactory {
             name: SHARED_WIRING_RECEIVER_URN,
             create: create_shared_wiring_receiver,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
@@ -1063,6 +1065,7 @@ mod tests {
     static WIRING_EXPORTER_FACTORIES: [ExporterFactory<TestMsg>; 1] = [ExporterFactory {
         name: WIRING_EXPORTER_URN,
         create: unused_wiring_exporter,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::no_config,

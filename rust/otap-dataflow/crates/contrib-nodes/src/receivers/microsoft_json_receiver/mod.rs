@@ -112,6 +112,7 @@ pub static MICROSOFT_JSON_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory
         let config = deserialize_config(raw)?;
         config.validate().map_err(invalid_config)
     },
+    work_coordinators: None,
     context_declarations: None,
 };
 

@@ -164,6 +164,8 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
         }
     }
 
+    let _ = factory.work_coordinator_declarations(pipeline_cfg)?;
+
     // Mirror the per-node validation pass for extensions. Extensions are no
     // longer `NodeKind::Extension` (they live in `pipeline_cfg.extensions`,
     // not `pipeline_cfg.nodes`), so they would otherwise slip past static
@@ -507,6 +509,7 @@ mod tests {
             ReceiverFactory {
                 name: "urn:test:receiver:example",
                 create: test_receiver_create,
+                work_coordinators: None,
                 context_declarations: None,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -514,6 +517,7 @@ mod tests {
             ReceiverFactory {
                 name: "urn:otel:receiver:internal_telemetry",
                 create: test_receiver_create,
+                work_coordinators: None,
                 context_declarations: None,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -522,6 +526,7 @@ mod tests {
         let processor_factories = Box::leak(Box::new([ProcessorFactory {
             name: "urn:otel:processor:type_router",
             create: test_processor_create,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -530,6 +535,7 @@ mod tests {
             ExporterFactory {
                 name: "urn:test:exporter:example",
                 create: test_exporter_create,
+                work_coordinators: None,
                 context_declarations: None,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -537,6 +543,7 @@ mod tests {
             ExporterFactory {
                 name: "urn:otel:exporter:console",
                 create: test_exporter_create,
+                work_coordinators: None,
                 context_declarations: None,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -544,6 +551,7 @@ mod tests {
             ExporterFactory {
                 name: "urn:otel:exporter:noop",
                 create: test_exporter_create,
+                work_coordinators: None,
                 context_declarations: None,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,

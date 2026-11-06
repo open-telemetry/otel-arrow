@@ -113,6 +113,7 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
     state_changed: Condvar,
+    work_coordinator_budget: Arc<tokio::sync::Semaphore>,
 }
 
 /// Keeps observability alive until controller-owned telemetry has been handed off.
@@ -243,6 +244,7 @@ impl<
                 controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
+            work_coordinator_budget: Arc::new(tokio::sync::Semaphore::new(128)),
         }
     }
 

@@ -111,6 +111,7 @@ pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_journald_receiver(pipeline, node, node_config, receiver_config)
         },
+    work_coordinators: None,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_journald_config,

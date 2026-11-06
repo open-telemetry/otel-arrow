@@ -94,6 +94,7 @@ pub static AZURE_DATA_EXPLORER_EXPORTER: ExporterFactory<OtapPdata> = ExporterFa
                 error: error.to_string(),
             })
     },
+    work_coordinators: None,
     context_declarations: None,
 };
 

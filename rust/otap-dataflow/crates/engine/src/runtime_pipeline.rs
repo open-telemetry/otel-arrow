@@ -1398,6 +1398,7 @@ mod tests {
     static STARTUP_FAILURE_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[ReceiverFactory {
         name: "urn:test:receiver:startup-failure",
         create: create_startup_failing_receiver,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1406,6 +1407,7 @@ mod tests {
     static PENDING_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[ExporterFactory {
         name: "urn:test:exporter:pending",
         create: create_pending_exporter,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::no_config,

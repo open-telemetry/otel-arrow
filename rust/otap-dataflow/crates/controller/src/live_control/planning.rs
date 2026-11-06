@@ -967,9 +967,40 @@ impl<
             .iter()
             .map(|core| core.core_id.id)
             .collect::<Vec<_>>();
-        self.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
         let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
+        // Basic has no recovery workers to cancel. Reject unsupported changes
+        // first; preserve cancellation-before-classification for ordinary pipelines.
+        if let Some(current) = &current_deployment {
+            let coordinated = !self
+                .pipeline_factory
+                .work_coordinator_declarations(&current.resolved.pipeline)
+                .map_err(|e| ControlPlaneError::InvalidRequest {
+                    message: e.to_string(),
+                })?
+                .is_empty()
+                || !self
+                    .pipeline_factory
+                    .work_coordinator_declarations(&resolved_pipeline.pipeline)
+                    .map_err(|e| ControlPlaneError::InvalidRequest {
+                        message: e.to_string(),
+                    })?
+                    .is_empty();
+            if coordinated {
+                let active =
+                    self.active_runtime_core_state(&pipeline_key, current.baseline_generation);
+                let active_cores: HashSet<_> =
+                    active.current_generation_cores.into_iter().collect();
+                if current_core_set != target_core_set
+                    || active_cores != target_core_set
+                    || active.has_foreign_active_generations
+                    || !current.resolved.runtime_matches(&resolved_pipeline)
+                {
+                    return Err(ControlPlaneError::InvalidRequest { message: "Basic work coordination requires stop/delete and create for configuration or fleet changes".into() });
+                }
+            }
+        }
+        self.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
         let active_runtime_state = current_deployment
             .as_ref()
             .map(|record| self.active_runtime_core_state(&pipeline_key, record.baseline_generation))
@@ -1116,13 +1147,22 @@ impl<
         } else {
             context_bindings
         };
-        let target_deployment = LogicalPipelineDeployment::new(
+        let mut target_deployment = LogicalPipelineDeployment::new(
             resolved_pipeline,
             target_context_bindings,
             target_generation,
             target_pipeline_placement,
             target_listener_group_snapshot,
         );
+
+        if matches!(action, RolloutAction::NoOp) {
+            target_deployment.work_coordinators = Arc::clone(
+                &current_deployment
+                    .as_ref()
+                    .expect("no-op deployment")
+                    .work_coordinators,
+            );
+        }
 
         let rollout_core_ids = match action {
             RolloutAction::NoOp => Vec::new(),
@@ -1823,6 +1863,33 @@ impl<
         expected_config_revision: u64,
         candidate_context_bindings: Arc<CompiledContextBindings>,
     ) -> Result<(), ControlPlaneError> {
+        // Join support hosts outside the controller state lock. Failed provider
+        // cleanup retains the stopped deployment rather than permitting reuse.
+        let hosts = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let active = state.runtime_instances.iter().any(|(key, instance)| {
+                key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                    && key.pipeline_id == *pipeline_key.pipeline_id()
+                    && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+            });
+            if active {
+                None
+            } else {
+                state
+                    .logical_pipelines
+                    .get(pipeline_key)
+                    .and_then(|deployment| deployment.work_coordinators.get())
+                    .and_then(|result| result.as_ref().ok())
+                    .cloned()
+            }
+        };
+        if let Some(hosts) = hosts {
+            hosts
+                .shutdown()
+                .map_err(|error| ControlPlaneError::Internal {
+                    message: error.to_string(),
+                })?;
+        }
         {
             let mut state = self
                 .state
