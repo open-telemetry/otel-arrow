@@ -270,22 +270,78 @@ pub(crate) fn resolve_response_format(content_type: Option<&str>) -> Format {
 }
 
 /// Converts a decoded [`OtapMetricRecords`] batch into [`OtapArrowRecords::Metrics`].
+///
+/// When `honor_timestamps` is `false`, sample timestamps on metric data point tables are
+/// overwritten with `scrape_timestamp_ms` so endpoint-provided timestamps are ignored.
 pub(crate) fn records_to_otap(
     records: &OtapMetricRecords,
+    honor_timestamps: bool,
+    scrape_timestamp_ms: i64,
 ) -> Result<OtapArrowRecords, otel_arrow_dfe_pdata::error::Error> {
     let mut store = Metrics::new();
+    let scrape_timestamp_ns = scrape_timestamp_ms.saturating_mul(1_000_000);
     for (payload_type, batch) in records.iter() {
         if let Ok(wire_type) = ArrowPayloadType::try_from(payload_type.as_i32()) {
-            store.set(wire_type, batch.clone())?;
+            let batch = if !honor_timestamps && is_metric_data_point_table(wire_type) {
+                // NOTE: `DecodeOptions::with_timestamp_ms` only populates untimestamped samples,
+                // so `honor_timestamps: false` must replace the `time_unix_nano` column while
+                // keeping `honor_timestamps: true` zero-allocation via `RecordBatch::clone`.
+                override_time_unix_nano(batch, scrape_timestamp_ns)?
+            } else {
+                batch.clone()
+            };
+            store.set(wire_type, batch)?;
         }
     }
     Ok(OtapArrowRecords::Metrics(store))
+}
+
+const fn is_metric_data_point_table(payload_type: ArrowPayloadType) -> bool {
+    matches!(
+        payload_type,
+        ArrowPayloadType::NumberDataPoints
+            | ArrowPayloadType::SummaryDataPoints
+            | ArrowPayloadType::HistogramDataPoints
+            | ArrowPayloadType::ExpHistogramDataPoints
+    )
+}
+
+fn override_time_unix_nano(
+    batch: &arrow::record_batch::RecordBatch,
+    scrape_timestamp_ns: i64,
+) -> Result<arrow::record_batch::RecordBatch, otel_arrow_dfe_pdata::error::Error> {
+    if batch.num_rows() == 0 {
+        return Ok(batch.clone());
+    }
+    let schema = batch.schema();
+    let Ok(col_idx) = schema.index_of(otel_arrow_dfe_pdata::schema::consts::TIME_UNIX_NANO) else {
+        return Ok(batch.clone());
+    };
+    let tz = match schema.field(col_idx).data_type() {
+        arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, tz) => {
+            tz.clone()
+        }
+        _ => None,
+    };
+    let mut ts_col =
+        arrow::array::TimestampNanosecondArray::from_value(scrape_timestamp_ns, batch.num_rows());
+    if let Some(tz) = tz {
+        ts_col = ts_col.with_timezone(tz);
+    }
+    let mut columns = batch.columns().to_vec();
+    columns[col_idx] = Arc::new(ts_col);
+    arrow::record_batch::RecordBatch::try_new(schema, columns).map_err(|err| {
+        otel_arrow_dfe_pdata::error::Error::UnexpectedRecordBatchState {
+            reason: err.to_string(),
+        }
+    })
 }
 
 /// Local HTTP scraper and `ArrowDecoder` state for assigned targets.
 struct TargetScraper {
     client: reqwest::Client,
     accept_header: &'static str,
+    honor_timestamps: bool,
     max_data_points_per_batch: usize,
     decoder: ArrowDecoder,
 }
@@ -305,6 +361,7 @@ impl TargetScraper {
         Ok(Self {
             client,
             accept_header: build_accept_header(config.enable_open_metrics),
+            honor_timestamps: config.honor_timestamps,
             max_data_points_per_batch: config.max_data_points_per_batch,
             decoder: ArrowDecoder::new(),
         })
@@ -383,8 +440,9 @@ impl TargetScraper {
             }
         };
 
+        let scrape_timestamp_ms = current_timestamp_ms();
         let decode_opts = DecodeOptions::new()
-            .with_timestamp_ms(current_timestamp_ms())
+            .with_timestamp_ms(scrape_timestamp_ms)
             .with_max_data_points_per_batch(self.max_data_points_per_batch);
 
         let mut scrape_ok = true;
@@ -398,8 +456,15 @@ impl TargetScraper {
                             .add(records.num_data_points() as u64);
                     }
                     if !records.is_empty() {
-                        match send_decoded_records(&records, ctrl_msg_recv, effect_handler, metrics)
-                            .await
+                        match send_decoded_records(
+                            &records,
+                            self.honor_timestamps,
+                            scrape_timestamp_ms,
+                            ctrl_msg_recv,
+                            effect_handler,
+                            metrics,
+                        )
+                        .await
                         {
                             SendOutcome::Sent => {}
                             SendOutcome::Failed => {
@@ -434,6 +499,8 @@ impl TargetScraper {
                         if !records.is_empty() {
                             match send_decoded_records(
                                 &records,
+                                self.honor_timestamps,
+                                scrape_timestamp_ms,
                                 ctrl_msg_recv,
                                 effect_handler,
                                 metrics,
@@ -574,11 +641,13 @@ enum SendOutcome {
 
 async fn send_decoded_records(
     records: &OtapMetricRecords,
+    honor_timestamps: bool,
+    scrape_timestamp_ms: i64,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
 ) -> SendOutcome {
-    let otap = match records_to_otap(records) {
+    let otap = match records_to_otap(records, honor_timestamps, scrape_timestamp_ms) {
         Ok(otap) => otap,
         Err(err) => {
             if let Some(metrics) = metrics.as_mut() {
@@ -902,7 +971,8 @@ mod tests {
         assert_eq!(decoded.num_metrics(), 4);
         assert_eq!(decoded.num_data_points(), 4);
 
-        let otap = records_to_otap(&decoded).expect("records_to_otap succeeds");
+        let otap =
+            records_to_otap(&decoded, true, 1_700_000_000_000).expect("records_to_otap succeeds");
         let otlp = otap_to_otlp(&otap);
         let OtlpProtoMessage::Metrics(metrics_data) = otlp else {
             panic!("expected OtlpProtoMessage::Metrics");
@@ -1079,6 +1149,172 @@ mod tests {
                 .expect("runtime control message arrives")
                 .expect("runtime control channel open");
             assert!(matches!(ctrl_event, RuntimeControlMsg::ReceiverDrained { .. }));
+            let _ = server.await;
+        }));
+    }
+
+    /// Scenario: an exposition payload supplies explicit per-sample timestamps across counter,
+    /// gauge, classic histogram, and summary metrics while `honor_timestamps` is toggled between
+    /// `true` and `false` (including through `PrometheusReceiver`).
+    /// Guarantees: `honor_timestamps = true` preserves the endpoint's wire timestamps, whereas
+    /// `honor_timestamps = false` overwrites every metric data point timestamp with the scrape
+    /// timestamp.
+    #[test]
+    fn applies_honor_timestamps_setting_across_metric_types() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+
+        let wire_ts_ms = 1_600_000_123_456_i64;
+        let scrape_ts_ms = 1_700_000_999_000_i64;
+        let payload = format!(
+            concat!(
+                "# TYPE ts_counter_total counter\n",
+                "ts_counter_total{{job=\"app\"}} 7 {ts}\n",
+                "# TYPE ts_gauge gauge\n",
+                "ts_gauge{{job=\"app\"}} 3.5 {ts}\n",
+                "# TYPE ts_hist histogram\n",
+                "ts_hist_bucket{{le=\"1\"}} 2 {ts}\n",
+                "ts_hist_bucket{{le=\"+Inf\"}} 4 {ts}\n",
+                "ts_hist_sum 5.0 {ts}\n",
+                "ts_hist_count 4 {ts}\n",
+                "# TYPE ts_summary summary\n",
+                "ts_summary{{quantile=\"0.5\"}} 1.1 {ts}\n",
+                "ts_summary_sum 2.2 {ts}\n",
+                "ts_summary_count 2 {ts}\n",
+            ),
+            ts = wire_ts_ms,
+        );
+
+        let mut decoder = ArrowDecoder::new();
+        let opts = DecodeOptions::new().with_timestamp_ms(scrape_ts_ms);
+        let decoded = decoder
+            .decode(payload.as_bytes(), &Format::TEXT, &opts)
+            .expect("decode succeeds");
+
+        for (honor_timestamps, expected_ts_ns) in [
+            (true, (wire_ts_ms as u64) * 1_000_000),
+            (false, (scrape_ts_ms as u64) * 1_000_000),
+        ] {
+            let otap = records_to_otap(&decoded, honor_timestamps, scrape_ts_ms)
+                .expect("records_to_otap succeeds");
+            let OtlpProtoMessage::Metrics(metrics_data) = otap_to_otlp(&otap) else {
+                panic!("expected OtlpProtoMessage::Metrics");
+            };
+            let mut observed = Vec::new();
+            for metric in metrics_data
+                .resource_metrics
+                .iter()
+                .flat_map(|rm| &rm.scope_metrics)
+                .flat_map(|sm| &sm.metrics)
+            {
+                match metric.data.as_ref().expect("metric data") {
+                    Data::Sum(sum) => {
+                        observed.extend(sum.data_points.iter().map(|dp| dp.time_unix_nano))
+                    }
+                    Data::Gauge(gauge) => {
+                        observed.extend(gauge.data_points.iter().map(|dp| dp.time_unix_nano))
+                    }
+                    Data::Histogram(hist) => {
+                        observed.extend(hist.data_points.iter().map(|dp| dp.time_unix_nano))
+                    }
+                    Data::Summary(summary) => {
+                        observed.extend(summary.data_points.iter().map(|dp| dp.time_unix_nano))
+                    }
+                    other => panic!("unexpected metric data variant: {other:?}"),
+                }
+            }
+            assert_eq!(observed.len(), 4, "honor_timestamps={honor_timestamps}");
+            for ts_ns in observed {
+                assert_eq!(
+                    ts_ns, expected_ts_ns,
+                    "honor_timestamps={honor_timestamps} produced unexpected timestamp"
+                );
+            }
+        }
+
+        // Also exercise the live receiver loop with `honor_timestamps: false` to verify config
+        // plumbing into `TargetScraper`.
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local test listener");
+            let addr = listener.local_addr().expect("listener address");
+
+            let server = tokio::task::spawn_local(async move {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            });
+
+            let before_scrape_ns = (current_timestamp_ms() as u64) * 1_000_000;
+            let receiver = PrometheusReceiver::new(Config {
+                scrape_interval: Duration::from_secs(60),
+                scrape_timeout: Duration::from_secs(5),
+                initial_delay: Duration::ZERO,
+                honor_timestamps: false,
+                targets: vec![addr.to_string()],
+                ..Config::default()
+            })
+            .expect("valid receiver config");
+
+            let TestReceiverHarness {
+                ctrl_chan,
+                ctrl_tx,
+                effect_handler,
+                out_rx,
+                runtime_ctrl_rx: _runtime_ctrl_rx,
+            } = build_test_harness(4);
+
+            let handle = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_chan, effect_handler).await
+            });
+
+            let pdata = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                .await
+                .expect("batch arrives before timeout")
+                .expect("downstream channel open");
+            let otap = pdata
+                .payload_ref()
+                .otap_ref()
+                .expect("OTAP arrow records");
+            let OtlpProtoMessage::Metrics(metrics_data) = otap_to_otlp(otap) else {
+                panic!("expected OtlpProtoMessage::Metrics");
+            };
+            for metric in metrics_data
+                .resource_metrics
+                .iter()
+                .flat_map(|rm| &rm.scope_metrics)
+                .flat_map(|sm| &sm.metrics)
+            {
+                if let Some(Data::Sum(sum)) = &metric.data {
+                    for dp in &sum.data_points {
+                        assert!(
+                            dp.time_unix_nano >= before_scrape_ns,
+                            "expected scrape timestamp >= {before_scrape_ns}, got {}",
+                            dp.time_unix_nano
+                        );
+                    }
+                }
+            }
+
+            ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: StdInstant::now() + Duration::from_secs(1),
+                    reason: "done".to_owned(),
+                })
+                .expect("send shutdown");
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle)
+                .await
+                .expect("receiver stops")
+                .expect("task joins")
+                .expect("clean exit");
             let _ = server.await;
         }));
     }
