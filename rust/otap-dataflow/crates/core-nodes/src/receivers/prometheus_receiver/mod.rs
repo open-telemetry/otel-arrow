@@ -31,6 +31,9 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::otap::transform::{
+    AttributesTransform, LiteralValue, UpsertTransform, apply_attribute_transform,
+};
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
@@ -39,6 +42,7 @@ use otel_arrow_dfe_telemetry_macros::metric_set;
 use reqwest::Url;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
@@ -281,16 +285,30 @@ pub(crate) fn resolve_response_format(content_type: Option<&str>) -> Format {
 ///
 /// When `honor_timestamps` is `false`, sample timestamps on metric data point tables are
 /// overwritten with `scrape_timestamp_ms` so endpoint-provided timestamps are ignored.
+#[cfg(test)]
 pub(crate) fn records_to_otap(
     records: &OtapMetricRecords,
     honor_timestamps: bool,
     scrape_timestamp_ms: i64,
 ) -> Result<OtapArrowRecords, otel_arrow_dfe_pdata::error::Error> {
+    records_to_otap_with_resource(records, honor_timestamps, scrape_timestamp_ms, None, None)
+}
+
+/// Converts a decoded [`OtapMetricRecords`] batch into [`OtapArrowRecords::Metrics`], optionally
+/// populating missing cumulative `start_time_unix_nano` columns and target `ResourceAttrs`.
+pub(crate) fn records_to_otap_with_resource(
+    records: &OtapMetricRecords,
+    honor_timestamps: bool,
+    scrape_timestamp_ms: i64,
+    default_start_timestamp_ns: Option<i64>,
+    resource_transform: Option<&AttributesTransform>,
+) -> Result<OtapArrowRecords, otel_arrow_dfe_pdata::error::Error> {
     let mut store = Metrics::new();
     let scrape_timestamp_ns = scrape_timestamp_ms.saturating_mul(1_000_000);
+    let univariate_batch = records.get(expfmt::arrow::MetricPayloadType::UnivariateMetrics);
     for (payload_type, batch) in records.iter() {
         if let Ok(wire_type) = ArrowPayloadType::try_from(payload_type.as_i32()) {
-            let batch = if !honor_timestamps && is_metric_data_point_table(wire_type) {
+            let mut batch = if !honor_timestamps && is_metric_data_point_table(wire_type) {
                 // NOTE: `DecodeOptions::with_timestamp_ms` only populates untimestamped samples,
                 // so `honor_timestamps: false` must replace the `time_unix_nano` column while
                 // keeping `honor_timestamps: true` zero-allocation via `RecordBatch::clone`.
@@ -298,10 +316,58 @@ pub(crate) fn records_to_otap(
             } else {
                 batch.clone()
             };
+            if let Some(start_ts_ns) = default_start_timestamp_ns
+                && is_metric_data_point_table(wire_type)
+            {
+                let clamped_start_ns =
+                    start_ts_ns.min(scrape_timestamp_ns.saturating_sub(1_000_000));
+                batch = ensure_cumulative_start_time_unix_nano(
+                    wire_type,
+                    &batch,
+                    univariate_batch,
+                    clamped_start_ns,
+                )?;
+            }
             store.set(wire_type, batch)?;
         }
     }
-    Ok(OtapArrowRecords::Metrics(store))
+    let mut otap = OtapArrowRecords::Metrics(store);
+    if let Some(transform) = resource_transform {
+        let _ = apply_attribute_transform(
+            &mut otap,
+            ArrowPayloadType::ResourceAttrs,
+            transform,
+            false,
+        )?;
+    }
+    Ok(otap)
+}
+
+/// Extracts `<host>:<port>` (or `<host>`) from a scrape target URL for `service.instance.id`.
+pub(crate) fn target_instance_id(target_url: &Url) -> String {
+    match (target_url.host_str(), target_url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_owned(),
+        _ => target_url.as_str().to_owned(),
+    }
+}
+
+/// Builds an [`AttributesTransform`] that upserts `service.name` and `service.instance.id` on
+/// scraped target batches.
+pub(crate) fn build_target_resource_transform(
+    job_name: &str,
+    target_url: &Url,
+) -> AttributesTransform {
+    AttributesTransform::default().with_upsert(UpsertTransform::new(BTreeMap::from([
+        (
+            "service.name".into(),
+            LiteralValue::Str(job_name.to_owned()),
+        ),
+        (
+            "service.instance.id".into(),
+            LiteralValue::Str(target_instance_id(target_url)),
+        ),
+    ])))
 }
 
 const fn is_metric_data_point_table(payload_type: ArrowPayloadType) -> bool {
@@ -312,6 +378,119 @@ const fn is_metric_data_point_table(payload_type: ArrowPayloadType) -> bool {
             | ArrowPayloadType::HistogramDataPoints
             | ArrowPayloadType::ExpHistogramDataPoints
     )
+}
+
+/// Populates `start_time_unix_nano` on cumulative metric data points when the exposition payload
+/// omits `_created` timestamps (such as Prometheus text `0.0.4`).
+fn ensure_cumulative_start_time_unix_nano(
+    payload_type: ArrowPayloadType,
+    batch: &arrow::record_batch::RecordBatch,
+    univariate_batch: Option<&arrow::record_batch::RecordBatch>,
+    start_timestamp_ns: i64,
+) -> Result<arrow::record_batch::RecordBatch, otel_arrow_dfe_pdata::error::Error> {
+    if batch.num_rows() == 0 {
+        return Ok(batch.clone());
+    }
+    let schema = batch.schema();
+    if schema
+        .index_of(otel_arrow_dfe_pdata::schema::consts::START_TIME_UNIX_NANO)
+        .is_ok()
+    {
+        return Ok(batch.clone());
+    }
+    let Ok(parent_idx) = schema.index_of(otel_arrow_dfe_pdata::schema::consts::PARENT_ID) else {
+        return Ok(batch.clone());
+    };
+    let tz: Option<Arc<str>> = schema
+        .index_of(otel_arrow_dfe_pdata::schema::consts::TIME_UNIX_NANO)
+        .ok()
+        .and_then(|idx| match schema.field(idx).data_type() {
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, tz) => {
+                tz.clone()
+            }
+            _ => None,
+        })
+        .or_else(|| Some("UTC".into()));
+
+    let (start_col, nullable): (arrow::array::ArrayRef, bool) =
+        if payload_type == ArrowPayloadType::NumberDataPoints {
+            // MetricType::Sum == 2; Gauge == 1. Only cumulative Sum rows receive a start timestamp.
+            let metric_types = univariate_batch
+                .and_then(|ub| ub.column_by_name(otel_arrow_dfe_pdata::schema::consts::METRIC_TYPE))
+                .and_then(|col| col.as_any().downcast_ref::<arrow::array::UInt8Array>());
+            let parent_ids = batch
+                .column(parent_idx)
+                .as_any()
+                .downcast_ref::<arrow::array::UInt16Array>();
+            if let (Some(metric_types), Some(parent_ids)) = (metric_types, parent_ids) {
+                let mut any_sum = false;
+                let mut all_sum = true;
+                for i in 0..parent_ids.len() {
+                    let pid = parent_ids.value(i) as usize;
+                    let is_sum = pid < metric_types.len() && metric_types.value(pid) == 2;
+                    any_sum |= is_sum;
+                    all_sum &= is_sum;
+                }
+                if !any_sum {
+                    return Ok(batch.clone());
+                }
+                if all_sum {
+                    let mut arr = arrow::array::TimestampNanosecondArray::from_value(
+                        start_timestamp_ns,
+                        batch.num_rows(),
+                    );
+                    if let Some(ref tz) = tz {
+                        arr = arr.with_timezone(Arc::clone(tz));
+                    }
+                    (Arc::new(arr), false)
+                } else {
+                    let mut arr: arrow::array::TimestampNanosecondArray = (0..parent_ids.len())
+                        .map(|i| {
+                            let pid = parent_ids.value(i) as usize;
+                            (pid < metric_types.len() && metric_types.value(pid) == 2)
+                                .then_some(start_timestamp_ns)
+                        })
+                        .collect();
+                    if let Some(ref tz) = tz {
+                        arr = arr.with_timezone(Arc::clone(tz));
+                    }
+                    (Arc::new(arr), true)
+                }
+            } else {
+                return Ok(batch.clone());
+            }
+        } else {
+            let mut arr = arrow::array::TimestampNanosecondArray::from_value(
+                start_timestamp_ns,
+                batch.num_rows(),
+            );
+            if let Some(ref tz) = tz {
+                arr = arr.with_timezone(Arc::clone(tz));
+            }
+            (Arc::new(arr), false)
+        };
+
+    let insert_idx = parent_idx + 1;
+    let mut fields: Vec<arrow::datatypes::FieldRef> = schema.fields().iter().cloned().collect();
+    fields.insert(
+        insert_idx,
+        Arc::new(arrow::datatypes::Field::new(
+            otel_arrow_dfe_pdata::schema::consts::START_TIME_UNIX_NANO,
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, tz),
+            nullable,
+        )),
+    );
+    let mut columns = batch.columns().to_vec();
+    columns.insert(insert_idx, start_col);
+    let new_schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ));
+    arrow::record_batch::RecordBatch::try_new(new_schema, columns).map_err(|err| {
+        otel_arrow_dfe_pdata::error::Error::UnexpectedRecordBatchState {
+            reason: err.to_string(),
+        }
+    })
 }
 
 // TODO(bwplotka): Remove post-decode timestamp column replacement once
@@ -350,9 +529,11 @@ fn override_time_unix_nano(
 /// Local HTTP scraper and `ArrowDecoder` state for assigned targets.
 struct TargetScraper {
     client: reqwest::Client,
+    job_name: String,
     accept_header: &'static str,
     honor_timestamps: bool,
     max_data_points_per_batch: usize,
+    start_timestamp_ns: i64,
     decoder: ArrowDecoder,
 }
 
@@ -368,11 +549,18 @@ impl TargetScraper {
                 error: format!("failed to build HTTP scrape client: {err}"),
                 source_detail: String::new(),
             })?;
+        // Subtract 1s from scraper creation time so the first scrape at `initial_delay = 0s`
+        // strictly satisfies `start_time_unix_nano < time_unix_nano` on cumulative metrics.
+        let start_timestamp_ns = current_timestamp_ms()
+            .saturating_sub(1_000)
+            .saturating_mul(1_000_000);
         Ok(Self {
             client,
+            job_name: config.job_name.clone(),
             accept_header: build_accept_header(config.enable_open_metrics),
             honor_timestamps: config.honor_timestamps,
             max_data_points_per_batch: config.max_data_points_per_batch,
+            start_timestamp_ns,
             decoder: ArrowDecoder::new(),
         })
     }
@@ -456,6 +644,7 @@ impl TargetScraper {
         let decode_opts = DecodeOptions::new()
             .with_timestamp_ms(scrape_timestamp_ms)
             .with_max_data_points_per_batch(self.max_data_points_per_batch);
+        let resource_transform = build_target_resource_transform(&self.job_name, target_url);
 
         let mut scrape_ok = true;
 
@@ -474,6 +663,8 @@ impl TargetScraper {
                             &records,
                             self.honor_timestamps,
                             scrape_timestamp_ms,
+                            Some(self.start_timestamp_ns),
+                            Some(&resource_transform),
                             ctrl_msg_recv,
                             effect_handler,
                             metrics,
@@ -515,6 +706,8 @@ impl TargetScraper {
                                 &records,
                                 self.honor_timestamps,
                                 scrape_timestamp_ms,
+                                Some(self.start_timestamp_ns),
+                                Some(&resource_transform),
                                 ctrl_msg_recv,
                                 effect_handler,
                                 metrics,
@@ -653,15 +846,24 @@ enum SendOutcome {
     Exit(Result<TerminalState, Error>),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_decoded_records(
     records: &OtapMetricRecords,
     honor_timestamps: bool,
     scrape_timestamp_ms: i64,
+    default_start_timestamp_ns: Option<i64>,
+    resource_transform: Option<&AttributesTransform>,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
 ) -> SendOutcome {
-    let otap = match records_to_otap(records, honor_timestamps, scrape_timestamp_ms) {
+    let otap = match records_to_otap_with_resource(
+        records,
+        honor_timestamps,
+        scrape_timestamp_ms,
+        default_start_timestamp_ns,
+        resource_transform,
+    ) {
         Ok(otap) => otap,
         Err(err) => {
             if let Some(metrics) = metrics.as_mut() {
@@ -1331,5 +1533,110 @@ mod tests {
                 .expect("clean exit");
             let _ = server.await;
         }));
+    }
+
+    /// Scenario: `PrometheusReceiver` scrapes a target with `job_name = "avalanche"` and
+    /// downstream pipeline processors upsert cluster and GCP resource attributes.
+    /// Guarantees: `service.name`, `service.instance.id`, and downstream resource attributes are
+    /// attached to the decoded `ResourceMetrics` batch, and cumulative metrics receive a valid
+    /// `start_time_unix_nano < time_unix_nano`.
+    #[test]
+    fn attaches_target_resource_attributes_and_supports_downstream_resource_upserts() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyVal;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+
+        let payload = concat!(
+            "# TYPE avalanche_counter_total counter\n",
+            "avalanche_counter_total{series_id=\"0\"} 10\n",
+            "# TYPE avalanche_gauge gauge\n",
+            "avalanche_gauge{series_id=\"0\"} 3.5\n",
+        );
+
+        let mut decoder = ArrowDecoder::new();
+        let scrape_ts_ms = 1_700_000_005_000_i64;
+        let start_ts_ns = 1_700_000_000_000_000_000_i64;
+        let opts = DecodeOptions::new().with_timestamp_ms(scrape_ts_ms);
+        let decoded = decoder
+            .decode(payload.as_bytes(), &Format::TEXT, &opts)
+            .expect("decode succeeds");
+
+        let target_url = Url::parse("http://10.52.2.15:9001/metrics").expect("valid url");
+        let target_transform = build_target_resource_transform("avalanche", &target_url);
+        let mut otap = records_to_otap_with_resource(
+            &decoded,
+            true,
+            scrape_ts_ms,
+            Some(start_ts_ns),
+            Some(&target_transform),
+        )
+        .expect("records_to_otap_with_resource succeeds");
+
+        let downstream_transform =
+            AttributesTransform::default().with_upsert(UpsertTransform::new(BTreeMap::from([
+                (
+                    "gcp.project_id".into(),
+                    LiteralValue::Str("gpe-test-1".into()),
+                ),
+                (
+                    "k8s.namespace.name".into(),
+                    LiteralValue::Str("otap-rust".into()),
+                ),
+            ])));
+        let _ = apply_attribute_transform(
+            &mut otap,
+            ArrowPayloadType::ResourceAttrs,
+            &downstream_transform,
+            false,
+        )
+        .expect("downstream resource attribute upsert succeeds");
+
+        let OtlpProtoMessage::Metrics(metrics_data) = otap_to_otlp(&otap) else {
+            panic!("expected OtlpProtoMessage::Metrics");
+        };
+        assert_eq!(metrics_data.resource_metrics.len(), 1);
+        let res = metrics_data.resource_metrics[0]
+            .resource
+            .as_ref()
+            .expect("resource present");
+        let attrs: BTreeMap<String, String> = res
+            .attributes
+            .iter()
+            .filter_map(|kv| match kv.value.as_ref()?.value.as_ref()? {
+                AnyVal::StringValue(s) => Some((kv.key.clone(), s.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            attrs.get("service.name").map(String::as_str),
+            Some("avalanche")
+        );
+        assert_eq!(
+            attrs.get("service.instance.id").map(String::as_str),
+            Some("10.52.2.15:9001")
+        );
+        assert_eq!(
+            attrs.get("gcp.project_id").map(String::as_str),
+            Some("gpe-test-1")
+        );
+        assert_eq!(
+            attrs.get("k8s.namespace.name").map(String::as_str),
+            Some("otap-rust")
+        );
+
+        for metric in metrics_data.resource_metrics[0]
+            .scope_metrics
+            .iter()
+            .flat_map(|sm| &sm.metrics)
+        {
+            match metric.data.as_ref().expect("metric data") {
+                Data::Sum(sum) => {
+                    assert_eq!(sum.data_points[0].start_time_unix_nano, start_ts_ns as u64);
+                }
+                Data::Gauge(gauge) => {
+                    assert_eq!(gauge.data_points[0].start_time_unix_nano, 0);
+                }
+                other => panic!("unexpected metric data: {other:?}"),
+            }
+        }
     }
 }
