@@ -10,6 +10,8 @@ use crate::*;
 impl<'a> Dictionary<'a> {
     /// Transforms values, reusing keys and validity buffers when indexes and null keys are unchanged.
     /// Empty value sets and non-null single-value outputs are normalized to null or scalar dictionaries.
+    /// Unconvertible inputs are transformed as null; unrepresentable materialized keys remain null.
+    /// Each failure category emits at most one warning per transformation.
     pub(crate) fn transform_into_any<
         TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
         FTransform,
@@ -646,6 +648,8 @@ fn dictionary_with_unchanged_keys<'a>(
 mod tests {
     use chrono::{TimeZone, Utc};
     use half::f16;
+    use otel_arrow_contrib_data_engine_expressions::{NullScalarExpression, QueryLocation};
+    use std::cell::RefCell;
 
     use super::*;
 
@@ -714,6 +718,25 @@ mod tests {
         }
     }
 
+    fn assert_warning(
+        diagnostics: &RefCell<Vec<ColumnarEngineDiagnostic<'_>>>,
+        expression: &dyn otel_arrow_contrib_data_engine_expressions::Expression,
+        message: &str,
+    ) {
+        let diagnostics = diagnostics.borrow();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].get_diagnostic_level(),
+            ColumnarEngineDiagnosticLevel::Warn
+        );
+        assert_eq!(diagnostics[0].get_message(), message);
+        assert!(std::ptr::addr_eq(
+            diagnostics[0].get_expression(),
+            expression
+        ));
+        assert!(diagnostics[0].get_nested_diagnostics().is_none());
+    }
+
     fn assert_key_buffers_reused(original: &DictionaryKeyArray, actual: &DictionaryKeyArray) {
         let array_data = |keys: &DictionaryKeyArray| match keys {
             DictionaryKeyArray::KeyArray(keys) => keys.as_array().to_data(),
@@ -749,6 +772,13 @@ mod tests {
     /// Guarantees: Every key type reuses its key and validity buffers, and the callback runs once per value and at most once for null keys.
     #[test]
     fn transform_into_any_reuses_unchanged_key_buffers() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for length in [3, 5] {
             for keys in primitive_keys(length) {
                 let data_type = keys.data_type();
@@ -762,17 +792,15 @@ mod tests {
                 ] {
                     let original_keys = dictionary.keys().clone();
                     let mut calls = Vec::new();
-                    let transformed = dictionary
-                        .transform_into_any(|value| {
-                            calls.push(value.clone());
-                            match value {
-                                ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
-                                ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
-                                ValueOrRef::Null => ValueOrRef::Null,
-                                other => panic!("unexpected value: {other:?}"),
-                            }
-                        })
-                        .expect("transform succeeds");
+                    let transformed = dictionary.transform_into_any(&receiver, |value| {
+                        calls.push(value.clone());
+                        match value {
+                            ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
+                            ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
+                            ValueOrRef::Null => ValueOrRef::Null,
+                            other => panic!("unexpected value: {other:?}"),
+                        }
+                    });
                     assert_key_buffers_reused(&original_keys, transformed.keys());
                     let expected = [
                         ValueOrRef::Integer(10),
@@ -791,16 +819,23 @@ mod tests {
                 }
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Primitive keys need no remapping and reference either no values or one non-null value.
     /// Guarantees: The buffer-reuse fast path retains null and scalar normalization instead of returning redundant key arrays.
     #[test]
     fn transform_into_any_normalizes_unchanged_key_outputs() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let null = Dictionary::new(UInt8Array::from(vec![None, None]).into(), vec![].into())
             .expect("valid null keys")
-            .transform_into_any(Clone::clone)
-            .expect("transform succeeds");
+            .transform_into_any(&receiver, Clone::clone);
         assert_eq!(null, Dictionary::new_null(DictionaryKeyType::UInt8, 2));
 
         let scalar = Dictionary::new(
@@ -808,29 +843,34 @@ mod tests {
             vec![ValueOrRef::Integer(10)].into(),
         )
         .expect("valid scalar keys")
-        .transform_into_any(Clone::clone)
-        .expect("transform succeeds");
+        .transform_into_any(&receiver, Clone::clone);
         assert_eq!(
             scalar,
             Dictionary::new_scalar(DictionaryKeyType::UInt8, 2, ValueOrRef::Integer(10))
         );
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Every integer key type uses primitive, Boolean, or unique-value keys with repeated and null rows.
     /// Guarantees: Heterogeneous transformed values retain row order, key type, nulls, and shared value indexes.
     #[test]
     fn transform_into_any_preserves_rows_and_key_types() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let text = ValueOrRef::String(StringValueOrRef::new_ref("true"));
         for dictionary in dictionaries() {
             let data_type = dictionary.keys().data_type();
-            let transformed = dictionary
-                .transform_into_any(|value| match value {
-                    ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
-                    ValueOrRef::Boolean(true) => text.clone(),
-                    ValueOrRef::Null => ValueOrRef::Null,
-                    other => panic!("unexpected value: {other:?}"),
-                })
-                .expect("transform succeeds");
+            let transformed = dictionary.transform_into_any(&receiver, |value| match value {
+                ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
+                ValueOrRef::Boolean(true) => text.clone(),
+                ValueOrRef::Null => ValueOrRef::Null,
+                other => panic!("unexpected value: {other:?}"),
+            });
 
             assert_eq!(transformed.keys().data_type(), data_type);
             assert_rows(
@@ -850,23 +890,29 @@ mod tests {
             assert_eq!(transformed.get_value_index(3), None);
             assert_eq!(transformed.get_value_index(4), None);
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Null rows transform into either a new value or one already produced by a non-null value.
     /// Guarantees: Nulls become valid keys and replacement values are inserted once or reuse an existing index.
     #[test]
     fn transform_into_any_replaces_nulls_and_deduplicates_replacements() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for replacement in [10, 30] {
             for dictionary in dictionaries() {
                 let data_type = dictionary.keys().data_type();
-                let transformed = dictionary
-                    .transform_into_any(|value| match value {
-                        ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
-                        ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
-                        ValueOrRef::Null => ValueOrRef::Integer(replacement),
-                        other => panic!("unexpected value: {other:?}"),
-                    })
-                    .expect("transform succeeds");
+                let transformed = dictionary.transform_into_any(&receiver, |value| match value {
+                    ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
+                    ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
+                    ValueOrRef::Null => ValueOrRef::Integer(replacement),
+                    other => panic!("unexpected value: {other:?}"),
+                });
 
                 assert_eq!(transformed.keys().data_type(), data_type);
                 assert_rows(
@@ -888,6 +934,7 @@ mod tests {
                     );
                 }
             }
+            assert!(diagnostics.borrow().is_empty());
         }
     }
 
@@ -895,16 +942,21 @@ mod tests {
     /// Guarantees: Produced nulls stay null while only original nulls receive the replacement value.
     #[test]
     fn transform_into_any_preserves_produced_nulls_and_replaces_original_nulls() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for dictionary in dictionaries() {
             let data_type = dictionary.keys().data_type();
-            let transformed = dictionary
-                .transform_into_any(|value| match value {
-                    ValueOrRef::Boolean(false) => ValueOrRef::Null,
-                    ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
-                    ValueOrRef::Null => ValueOrRef::Integer(99),
-                    other => panic!("unexpected value: {other:?}"),
-                })
-                .expect("transform succeeds");
+            let transformed = dictionary.transform_into_any(&receiver, |value| match value {
+                ValueOrRef::Boolean(false) => ValueOrRef::Null,
+                ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
+                ValueOrRef::Null => ValueOrRef::Integer(99),
+                other => panic!("unexpected value: {other:?}"),
+            });
 
             assert_eq!(transformed.keys().data_type(), data_type);
             assert_rows(
@@ -925,13 +977,21 @@ mod tests {
                 assert_eq!(transformed.get_value_index(index), Some(1));
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Equivalent scalar, primitive, Boolean, and unique-value rows transform false to Null and Null to 99.
     /// Guarantees: Every representation agrees and produced nulls never cause an extra callback invocation.
     #[test]
     fn transform_into_any_matches_scalar_null_semantics() {
-        fn transform(value: &ValueOrRef<'static>) -> ValueOrRef<'static> {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
+        fn transform<'a>(value: &ValueOrRef<'a>) -> ValueOrRef<'a> {
             match value {
                 ValueOrRef::Boolean(false) => ValueOrRef::Null,
                 ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
@@ -945,8 +1005,7 @@ mod tests {
             for input in [Some(false), Some(true), None] {
                 let value = input.map_or(ValueOrRef::Null, ValueOrRef::Boolean);
                 let scalar = Dictionary::new_scalar(data_type.clone(), 3, value.clone())
-                    .transform_into_any(transform)
-                    .expect("transform succeeds");
+                    .transform_into_any(&receiver, transform);
                 assert_rows(&scalar, &vec![transform(&value); 3]);
 
                 for dictionary in [
@@ -963,14 +1022,12 @@ mod tests {
                         0
                     };
                     let mut null_calls = 0;
-                    let transformed = dictionary
-                        .transform_into_any(|value| {
-                            if matches!(value, ValueOrRef::Null) {
-                                null_calls += 1;
-                            }
-                            transform(value)
-                        })
-                        .expect("transform succeeds");
+                    let transformed = dictionary.transform_into_any(&receiver, |value| {
+                        if matches!(value, ValueOrRef::Null) {
+                            null_calls += 1;
+                        }
+                        transform(value)
+                    });
                     assert_eq!(transformed.keys().data_type(), data_type);
                     assert_rows(&transformed, &vec![transform(&value); 3]);
                     for index in 0..3 {
@@ -979,6 +1036,7 @@ mod tests {
                     assert_eq!(null_calls, expected_null_calls);
                 }
             }
+            assert!(diagnostics.borrow().is_empty());
         }
     }
 
@@ -986,6 +1044,13 @@ mod tests {
     /// Guarantees: Transformation preserves sliced values and reuses key and validity buffers across multiple bitmap byte boundaries.
     #[test]
     fn transform_into_any_preserves_sliced_key_values_and_validity() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let input = vec![
             Some(true),
             None,
@@ -1062,14 +1127,12 @@ mod tests {
                 ),
             ] {
                 let original_keys = dictionary.keys().clone();
-                let transformed = dictionary
-                    .transform_into_any(|value| match value {
-                        ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
-                        ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
-                        ValueOrRef::Null => ValueOrRef::Null,
-                        other => panic!("unexpected value: {other:?}"),
-                    })
-                    .expect("transform succeeds");
+                let transformed = dictionary.transform_into_any(&receiver, |value| match value {
+                    ValueOrRef::Boolean(false) => ValueOrRef::Integer(10),
+                    ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
+                    ValueOrRef::Null => ValueOrRef::Null,
+                    other => panic!("unexpected value: {other:?}"),
+                });
 
                 assert_eq!(transformed.keys().data_type(), data_type);
                 assert_key_buffers_reused(&original_keys, transformed.keys());
@@ -1077,21 +1140,28 @@ mod tests {
                 assert_eq!(transformed.values().len(), 2);
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Multiple values merge, a value is removed, or every row becomes null or the same scalar.
     /// Guarantees: Remapped keys preserve nullable rows and only all-valid single-valued output becomes a scalar.
     #[test]
     fn transform_into_any_normalizes_null_and_scalar_outputs() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for dictionary in dictionaries() {
             let data_type = dictionary.keys().data_type();
             let nullable = dictionary
                 .clone()
-                .transform_into_any(|value| match value {
+                .transform_into_any(&receiver, |value| match value {
                     ValueOrRef::Null => ValueOrRef::Null,
                     _ => ValueOrRef::Integer(7),
-                })
-                .expect("transform succeeds");
+                });
             assert_rows(
                 &nullable,
                 &[
@@ -1107,11 +1177,10 @@ mod tests {
 
             let removed = dictionary
                 .clone()
-                .transform_into_any(|value| match value {
+                .transform_into_any(&receiver, |value| match value {
                     ValueOrRef::Boolean(true) => ValueOrRef::Integer(20),
                     _ => ValueOrRef::Null,
-                })
-                .expect("transform succeeds");
+                });
             assert_rows(
                 &removed,
                 &[
@@ -1126,24 +1195,29 @@ mod tests {
 
             let scalar = dictionary
                 .clone()
-                .transform_into_any(|_| ValueOrRef::Integer(7))
-                .expect("transform succeeds");
+                .transform_into_any(&receiver, |_| ValueOrRef::Integer(7));
             assert_eq!(
                 scalar,
                 Dictionary::new_scalar(data_type.clone(), 5, ValueOrRef::Integer(7))
             );
 
-            let null = dictionary
-                .transform_into_any(|_| ValueOrRef::Null)
-                .expect("transform succeeds");
+            let null = dictionary.transform_into_any(&receiver, |_| ValueOrRef::Null);
             assert_eq!(null, Dictionary::new_null(data_type, 5));
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Primitive keys reference Arrow, Vec, and Set values containing duplicates or an intrinsic null.
     /// Guarantees: Each value storage variant remaps duplicate indexes and preserves value-level and key-level nulls.
     #[test]
     fn transform_into_any_supports_value_storage_variants() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let values = vec![
             ValueOrRef::Integer(10),
             ValueOrRef::Integer(20),
@@ -1169,9 +1243,7 @@ mod tests {
                 values,
             )
             .expect("valid");
-            let transformed = dictionary
-                .transform_into_any(Clone::clone)
-                .expect("transform succeeds");
+            let transformed = dictionary.transform_into_any(&receiver, Clone::clone);
             assert_rows(
                 &transformed,
                 &[
@@ -1186,22 +1258,28 @@ mod tests {
             assert_eq!(transformed.get_value_index(0), Some(1));
             assert_eq!(transformed.get_value_index(1), Some(0));
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Repeated primitive and Boolean keys contain multiple null keys and a stateful transform.
     /// Guarantees: The callback runs once per dictionary value and once for null keys, not once per row.
     #[test]
     fn transform_into_any_caches_null_key_transformation() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for dictionary in dictionaries().into_iter().filter(|dictionary| {
             !matches!(dictionary.keys(), DictionaryKeyArray::UniqueValues { .. })
         }) {
             let mut calls = Vec::new();
-            let transformed = dictionary
-                .transform_into_any(|value| {
-                    calls.push(value.clone());
-                    ValueOrRef::Integer(calls.len() as i64)
-                })
-                .expect("transform succeeds");
+            let transformed = dictionary.transform_into_any(&receiver, |value| {
+                calls.push(value.clone());
+                ValueOrRef::Integer(calls.len() as i64)
+            });
             assert_eq!(
                 calls,
                 vec![
@@ -1212,12 +1290,20 @@ mod tests {
             );
             assert_rows(&transformed, &[1, 2, 1, 3, 3].map(ValueOrRef::Integer));
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Scalar and null dictionaries of every key type transform to either a scalar or null.
     /// Guarantees: The callback receives the logical scalar once and output preserves the key type and row count.
     #[test]
     fn transform_into_any_transforms_single_values() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for keys in primitive_keys(5) {
             let data_type = keys.data_type();
             for value in [ValueOrRef::Integer(42), ValueOrRef::Null] {
@@ -1228,14 +1314,11 @@ mod tests {
                 };
                 for replacement in [ValueOrRef::Boolean(true), ValueOrRef::Null] {
                     let mut calls = 0;
-                    let transformed = dictionary
-                        .clone()
-                        .transform_into_any(|input| {
-                            calls += 1;
-                            assert_eq!(input, &value);
-                            replacement.clone()
-                        })
-                        .expect("transform succeeds");
+                    let transformed = dictionary.clone().transform_into_any(&receiver, |input| {
+                        calls += 1;
+                        assert_eq!(input, &value);
+                        replacement.clone()
+                    });
                     assert_eq!(calls, 1);
                     let expected = if matches!(replacement, ValueOrRef::Null) {
                         Dictionary::new_null(data_type.clone(), 4)
@@ -1245,6 +1328,7 @@ mod tests {
                     assert_eq!(transformed, expected);
                 }
             }
+            assert!(diagnostics.borrow().is_empty());
         }
     }
 
@@ -1252,6 +1336,13 @@ mod tests {
     /// Guarantees: Transformation preserves empty length and key type without introducing rows.
     #[test]
     fn transform_into_any_preserves_empty_dictionaries() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for keys in primitive_keys(0) {
             let data_type = keys.data_type();
             for dictionary in [
@@ -1261,17 +1352,16 @@ mod tests {
                 Dictionary::new_scalar(data_type.clone(), 0, ValueOrRef::Integer(7)),
                 Dictionary::new_null(data_type.clone(), 0),
             ] {
-                let transformed = dictionary
-                    .transform_into_any(Clone::clone)
-                    .expect("transform succeeds");
+                let transformed = dictionary.transform_into_any(&receiver, Clone::clone);
                 assert!(transformed.is_empty());
                 assert_eq!(transformed.keys().data_type(), data_type);
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Null replacement adds or reuses a value at the capacity of signed and unsigned integer keys.
-    /// Guarantees: The largest index succeeds, existing values and nulls remain usable at capacity, and overflow returns an error.
+    /// Guarantees: The largest index succeeds; overflowing replacements leave only affected rows null and emit one warning for the cached replacement.
     #[test]
     fn transform_into_any_checks_null_replacement_key_capacity() {
         fn check<K: ArrowDictionaryKeyType>(capacity: usize)
@@ -1279,6 +1369,13 @@ mod tests {
             DictionaryKeyArray: From<PrimitiveArray<K>>,
         {
             for value_count in [capacity - 1, capacity] {
+                let expression = NullScalarExpression::new(QueryLocation::new_fake());
+                let diagnostics = RefCell::new(Vec::new());
+                let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+                    ColumnarEngineDiagnosticLevel::Warn,
+                    &diagnostics,
+                );
+                let receiver = receiver.bind(&expression);
                 let keys = PrimitiveArray::<K>::from_iter([
                     Some(K::Native::from_usize(value_count - 1).expect("index fits")),
                     None,
@@ -1292,8 +1389,7 @@ mod tests {
 
                 let unchanged = dictionary
                     .clone()
-                    .transform_into_any(Clone::clone)
-                    .expect("nulls do not need another value");
+                    .transform_into_any(&receiver, Clone::clone);
                 assert_rows(
                     &unchanged,
                     &[
@@ -1304,13 +1400,13 @@ mod tests {
                 );
                 assert_eq!(unchanged.keys().data_type(), data_type);
 
-                let reused = dictionary
-                    .clone()
-                    .transform_into_any(|value| match value {
-                        ValueOrRef::Null => ValueOrRef::Integer(0),
-                        value => value.clone(),
-                    })
-                    .expect("existing replacement fits");
+                let reused =
+                    dictionary
+                        .clone()
+                        .transform_into_any(&receiver, |value| match value {
+                            ValueOrRef::Null => ValueOrRef::Integer(0),
+                            value => value.clone(),
+                        });
                 assert_rows(
                     &reused,
                     &[(value_count - 1) as i64, 0, 0].map(ValueOrRef::Integer),
@@ -1318,21 +1414,36 @@ mod tests {
                 assert_eq!(reused.values().len(), value_count);
                 assert_eq!(reused.get_value_index(1), Some(0));
                 assert_eq!(reused.get_value_index(2), Some(0));
+                assert!(diagnostics.borrow().is_empty());
 
-                let added = dictionary.transform_into_any(|value| match value {
-                    ValueOrRef::Null => ValueOrRef::Integer(-1),
+                let mut null_calls = 0;
+                let added = dictionary.transform_into_any(&receiver, |value| match value {
+                    ValueOrRef::Null => {
+                        null_calls += 1;
+                        ValueOrRef::Integer(-1)
+                    }
                     value => value.clone(),
                 });
+                assert_eq!(null_calls, 1);
+                assert_eq!(added.keys().data_type(), data_type);
                 if value_count == capacity {
-                    assert_eq!(
-                        added,
-                        Err(DictionaryValueError::KeyOverflow {
-                            value_index: capacity,
-                            key_data_type: K::DATA_TYPE,
-                        })
+                    assert_rows(
+                        &added,
+                        &[
+                            ValueOrRef::Integer((capacity - 1) as i64),
+                            ValueOrRef::Null,
+                            ValueOrRef::Null,
+                        ],
+                    );
+                    assert_eq!(added.get_value_index(0), Some(capacity - 1));
+                    assert_eq!(added.get_value_index(1), None);
+                    assert_eq!(added.get_value_index(2), None);
+                    assert_warning(
+                        &diagnostics,
+                        &expression,
+                        "Encountered 1 value(s) which could not be stored due to key overflow",
                     );
                 } else {
-                    let added = added.expect("last representable index fits");
                     assert_rows(
                         &added,
                         &[(value_count - 1) as i64, -1, -1].map(ValueOrRef::Integer),
@@ -1341,6 +1452,7 @@ mod tests {
                     assert_eq!(added.values().len(), capacity);
                     assert_eq!(added.get_value_index(1), Some(capacity - 1));
                     assert_eq!(added.get_value_index(2), Some(capacity - 1));
+                    assert!(diagnostics.borrow().is_empty());
                 }
             }
         }
@@ -1355,6 +1467,13 @@ mod tests {
     /// Guarantees: Identity and injective transforms preserve all rows and implicit keys even beyond the tagged key width.
     #[test]
     fn transform_into_any_preserves_implicit_unique_value_keys() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         for data_type in [
             DictionaryKeyType::Int8,
             DictionaryKeyType::UInt8,
@@ -1368,11 +1487,10 @@ mod tests {
             for offset in [0, 1000] {
                 let values = (0..300).map(ValueOrRef::Integer).collect::<Vec<_>>();
                 let transformed = Dictionary::new_unique_values(data_type.clone(), values.into())
-                    .transform_into_any(|value| match value {
+                    .transform_into_any(&receiver, |value| match value {
                         ValueOrRef::Integer(value) => ValueOrRef::Integer(value + offset),
                         other => panic!("unexpected value: {other:?}"),
-                    })
-                    .expect("implicit indexes are not limited by the key type");
+                    });
 
                 assert_eq!(
                     transformed.keys(),
@@ -1387,12 +1505,20 @@ mod tests {
                 assert_rows(&transformed, &expected);
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Unique-value keys address only a prefix of a larger value array without needing remapping.
     /// Guarantees: Preserving implicit indexes retains the original row count rather than the value count.
     #[test]
     fn transform_into_any_preserves_implicit_unique_value_key_length() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let keys = DictionaryKeyArray::UniqueValues {
             data_type: DictionaryKeyType::UInt8,
             length: 2,
@@ -1403,26 +1529,33 @@ mod tests {
             .collect::<Vec<_>>();
         let transformed = Dictionary::new(keys.clone(), values.into())
             .expect("valid prefix")
-            .transform_into_any(Clone::clone)
-            .expect("implicit indexes are preserved");
+            .transform_into_any(&receiver, Clone::clone);
 
         assert_eq!(transformed.keys(), &keys);
         assert_rows(
             &transformed,
             &[ValueOrRef::Integer(1), ValueOrRef::Integer(2)],
         );
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Unique-value rows exceed the tagged key capacity with implicit indexes, duplicates, or nulls.
-    /// Guarantees: Implicit indexes remain unrestricted; remapped indexes must fit, and produced nulls use no capacity.
+    /// Guarantees: Implicit indexes remain unrestricted; overflowing remapped rows alone become null with one counted warning, and later valid rows still succeed.
     #[test]
     fn transform_into_any_checks_unique_value_key_capacity() {
-        for (data_type, arrow_data_type, capacity) in [
-            (DictionaryKeyType::Int8, DataType::Int8, 128),
-            (DictionaryKeyType::UInt8, DataType::UInt8, 256),
-            (DictionaryKeyType::Int16, DataType::Int16, 32_768),
-            (DictionaryKeyType::UInt16, DataType::UInt16, 65_536),
+        for (data_type, capacity) in [
+            (DictionaryKeyType::Int8, 128),
+            (DictionaryKeyType::UInt8, 256),
+            (DictionaryKeyType::Int16, 32_768),
+            (DictionaryKeyType::UInt16, 65_536),
         ] {
+            let expression = NullScalarExpression::new(QueryLocation::new_fake());
+            let diagnostics = RefCell::new(Vec::new());
+            let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+                ColumnarEngineDiagnosticLevel::Warn,
+                &diagnostics,
+            );
+            let receiver = receiver.bind(&expression);
             let values = (0..=capacity)
                 .map(|index| ValueOrRef::Integer(index as i64))
                 .collect::<Vec<_>>();
@@ -1431,8 +1564,7 @@ mod tests {
                     data_type.clone(),
                     values[..length].to_vec().into(),
                 )
-                .transform_into_any(Clone::clone)
-                .expect("implicit indexes are not limited by the key type");
+                .transform_into_any(&receiver, Clone::clone);
                 assert_eq!(
                     transformed.keys(),
                     &DictionaryKeyArray::UniqueValues {
@@ -1444,11 +1576,10 @@ mod tests {
             }
 
             let collapsed = Dictionary::new_unique_values(data_type.clone(), values.clone().into())
-                .transform_into_any(|value| match value {
+                .transform_into_any(&receiver, |value| match value {
                     ValueOrRef::Integer(value) => ValueOrRef::Integer(value % 2),
                     other => panic!("unexpected value: {other:?}"),
-                })
-                .expect("remapped indexes fit even when the row count exceeds capacity");
+                });
             let expected = (0..=capacity)
                 .map(|index| ValueOrRef::Integer((index % 2) as i64))
                 .collect::<Vec<_>>();
@@ -1458,6 +1589,8 @@ mod tests {
 
             let mut duplicates = vec![ValueOrRef::Integer(0)];
             duplicates.extend(values.iter().cloned());
+            duplicates.extend(vec![ValueOrRef::Integer(capacity as i64); 3]);
+            duplicates.push(ValueOrRef::Integer(7));
             let mut produced_null = values[..capacity].to_vec();
             produced_null.push(ValueOrRef::Boolean(false));
 
@@ -1465,11 +1598,10 @@ mod tests {
             original_null.push(ValueOrRef::Null);
 
             let replaced = Dictionary::new_unique_values(data_type.clone(), original_null.into())
-                .transform_into_any(|value| match value {
+                .transform_into_any(&receiver, |value| match value {
                     ValueOrRef::Null => ValueOrRef::Integer(-1),
                     value => value.clone(),
-                })
-                .expect("distinct null replacement preserves implicit indexes");
+                });
             let mut expected = values[..capacity].to_vec();
             expected.push(ValueOrRef::Integer(-1));
             assert_rows(&replaced, &expected);
@@ -1480,24 +1612,33 @@ mod tests {
                     length: capacity + 1,
                 }
             );
+            assert!(diagnostics.borrow().is_empty());
 
+            let mut expected = duplicates.clone();
+            expected[capacity + 1..capacity + 5].fill(ValueOrRef::Null);
             let dictionary = Dictionary::new_unique_values(data_type.clone(), duplicates.into());
-            assert_eq!(
-                dictionary.transform_into_any(Clone::clone),
-                Err(DictionaryValueError::KeyOverflow {
-                    value_index: capacity,
-                    key_data_type: arrow_data_type.clone(),
-                })
+            let transformed = dictionary.transform_into_any(&receiver, Clone::clone);
+            assert_rows(&transformed, &expected);
+            assert_eq!(transformed.keys().data_type(), data_type);
+            assert_eq!(transformed.get_value_index(capacity), Some(capacity - 1));
+            for row in capacity + 1..capacity + 5 {
+                assert_eq!(transformed.get_value_index(row), None);
+            }
+            assert_eq!(transformed.get_value_index(capacity + 5), Some(7));
+            assert_warning(
+                &diagnostics,
+                &expression,
+                "Encountered 4 value(s) which could not be stored due to key overflow",
             );
+            diagnostics.borrow_mut().clear();
 
             let transformed =
                 Dictionary::new_unique_values(data_type.clone(), produced_null.into())
-                    .transform_into_any(|value| match value {
+                    .transform_into_any(&receiver, |value| match value {
                         ValueOrRef::Boolean(false) => ValueOrRef::Null,
                         ValueOrRef::Null => panic!("produced null must not be transformed"),
                         value => value.clone(),
-                    })
-                    .expect("produced null does not need another value index");
+                    });
             assert_eq!(transformed.len(), capacity + 1);
             for index in 0..capacity {
                 assert_eq!(
@@ -1511,6 +1652,7 @@ mod tests {
             assert!(nulls.is_null(capacity));
             assert_eq!(transformed.keys().data_type(), data_type);
             assert_eq!(transformed.values().len(), capacity);
+            assert!(diagnostics.borrow().is_empty());
         }
     }
 
@@ -1518,6 +1660,13 @@ mod tests {
     /// Guarantees: Callbacks receive exact converted values, duplicates share indexes, and remapped rows preserve values and validity.
     #[test]
     fn transform_into_any_supports_all_arrow_value_types() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let mut cases = Vec::new();
         macro_rules! case {
             ($array:ty, $first:expr, $second:expr, $expected_first:expr, $expected_second:expr) => {{
@@ -1649,21 +1798,18 @@ mod tests {
                 .expect("valid keys");
             for merge in [false, true] {
                 let mut inputs = Vec::new();
-                let transformed = dictionary
-                    .clone()
-                    .transform_into_any(|value| {
-                        inputs.push(value.clone());
-                        if merge {
-                            ValueOrRef::Integer(if matches!(value, ValueOrRef::Null) {
-                                99
-                            } else {
-                                42
-                            })
+                let transformed = dictionary.clone().transform_into_any(&receiver, |value| {
+                    inputs.push(value.clone());
+                    if merge {
+                        ValueOrRef::Integer(if matches!(value, ValueOrRef::Null) {
+                            99
                         } else {
-                            value.clone()
-                        }
-                    })
-                    .expect("transform succeeds");
+                            42
+                        })
+                    } else {
+                        value.clone()
+                    }
+                });
                 assert_eq!(inputs, expected_inputs);
                 assert_eq!(transformed.keys().data_type(), DictionaryKeyType::UInt32);
                 let expected_rows = if merge {
@@ -1689,14 +1835,15 @@ mod tests {
                 }
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
-    /// Scenario: Timestamp arrays in second, millisecond, and microsecond units fail conversion after a valid value.
-    /// Guarantees: Primitive, unique-value, and scalar transforms return the exact error without calling back for invalid or later values.
+    /// Scenario: Timestamp arrays in second, millisecond, and microsecond units mix valid, null, and repeatedly invalid values.
+    /// Guarantees: All key representations transform invalid inputs as null, preserve later valid values, and aggregate or filter attributed warnings.
     #[test]
-    fn transform_into_any_propagates_timestamp_conversion_errors() {
+    fn transform_into_any_recovers_timestamp_conversion_errors() {
         for invalid in [i64::MIN, i64::MAX] {
-            let input = vec![0, invalid, 1];
+            let input = vec![Some(0), Some(invalid), None, Some(invalid), Some(1)];
             for (values, time_unit) in [
                 (
                     DictionaryValueArray::from(&TimestampSecondArray::from(input.clone())),
@@ -1711,71 +1858,283 @@ mod tests {
                     TimeUnit::Microsecond,
                 ),
             ] {
-                for keys in [
-                    DictionaryKeyArray::from(Int8Array::from(vec![0, 1, 2])),
-                    DictionaryKeyArray::UniqueValues {
-                        data_type: DictionaryKeyType::Int8,
-                        length: 3,
-                    },
-                    DictionaryKeyArray::SingleValue {
-                        data_type: DictionaryKeyType::Int8,
-                        length: 3,
-                        value_index: Some(1),
-                    },
+                let epoch =
+                    ValueOrRef::DateTime(Utc.timestamp_opt(0, 0).single().expect("epoch").into());
+                let (seconds, nanos) = match time_unit {
+                    TimeUnit::Second => (1, 0),
+                    TimeUnit::Millisecond => (0, 1_000_000),
+                    TimeUnit::Microsecond => (0, 1_000),
+                    _ => unreachable!("only fallible timestamp units"),
+                };
+                let later = ValueOrRef::DateTime(
+                    Utc.timestamp_opt(seconds, nanos)
+                        .single()
+                        .expect("later timestamp")
+                        .into(),
+                );
+                for level in [
+                    ColumnarEngineDiagnosticLevel::Warn,
+                    ColumnarEngineDiagnosticLevel::Error,
                 ] {
-                    let scalar = matches!(keys, DictionaryKeyArray::SingleValue { .. });
-                    let dictionary = Dictionary::new(keys, values.clone()).expect("valid keys");
-                    let mut inputs = Vec::new();
-                    assert_eq!(
-                        dictionary.transform_into_any(|value| {
-                            inputs.push(value.clone());
-                            value.clone()
-                        }),
-                        Err(DictionaryValueError::TimestampConversionFailure {
-                            original_value: invalid,
-                            time_unit,
-                        })
-                    );
-                    let expected_inputs = if scalar {
-                        vec![]
-                    } else {
-                        vec![ValueOrRef::DateTime(
-                            Utc.timestamp_opt(0, 0)
-                                .single()
-                                .expect("valid timestamp")
-                                .into(),
-                        )]
-                    };
-                    assert_eq!(inputs, expected_inputs);
+                    for replacement in [ValueOrRef::Null, ValueOrRef::Integer(99)] {
+                        for keys in [
+                            DictionaryKeyArray::from(Int8Array::from(vec![
+                                Some(0),
+                                Some(1),
+                                Some(2),
+                                Some(3),
+                                Some(4),
+                                Some(1),
+                                None,
+                            ])),
+                            DictionaryKeyArray::UniqueValues {
+                                data_type: DictionaryKeyType::Int8,
+                                length: 5,
+                            },
+                            DictionaryKeyArray::SingleValue {
+                                data_type: DictionaryKeyType::Int8,
+                                length: 3,
+                                value_index: Some(1),
+                            },
+                        ] {
+                            let expression = NullScalarExpression::new(QueryLocation::new_fake());
+                            let diagnostics = RefCell::new(Vec::new());
+                            let receiver =
+                                ColumnarEngineDiagnosticReceiverImpl::new(level, &diagnostics);
+                            let receiver = receiver.bind(&expression);
+                            let converted = vec![
+                                epoch.clone(),
+                                ValueOrRef::Null,
+                                ValueOrRef::Null,
+                                ValueOrRef::Null,
+                                later.clone(),
+                            ];
+                            let scalar = matches!(keys, DictionaryKeyArray::SingleValue { .. });
+                            let primitive = matches!(keys, DictionaryKeyArray::KeyArray(_));
+                            let expected_rows = match &keys {
+                                DictionaryKeyArray::KeyArray(_) => vec![
+                                    epoch.clone(),
+                                    replacement.clone(),
+                                    replacement.clone(),
+                                    replacement.clone(),
+                                    later.clone(),
+                                    replacement.clone(),
+                                    replacement.clone(),
+                                ],
+                                DictionaryKeyArray::UniqueValues { .. } => converted
+                                    .iter()
+                                    .map(|v| match v {
+                                        ValueOrRef::Null => replacement.clone(),
+                                        v => v.clone(),
+                                    })
+                                    .collect(),
+                                _ => vec![replacement.clone(); 3],
+                            };
+                            let dictionary =
+                                Dictionary::new(keys, values.clone()).expect("valid keys");
+                            let mut inputs = Vec::new();
+                            let transformed = dictionary.transform_into_any(&receiver, |value| {
+                                inputs.push(value.clone());
+                                match value {
+                                    ValueOrRef::Null => replacement.clone(),
+                                    value => value.clone(),
+                                }
+                            });
+                            assert_rows(&transformed, &expected_rows);
+                            assert_eq!(transformed.keys().data_type(), DictionaryKeyType::Int8);
+                            let mut expected_inputs = if scalar {
+                                vec![ValueOrRef::Null]
+                            } else {
+                                converted
+                            };
+                            if primitive {
+                                expected_inputs.push(ValueOrRef::Null);
+                            }
+                            assert_eq!(inputs, expected_inputs);
+                            if level == ColumnarEngineDiagnosticLevel::Warn {
+                                let message = if scalar {
+                                    DictionaryValueError::TimestampConversionFailure {
+                                        original_value: invalid,
+                                        time_unit,
+                                    }
+                                    .to_string()
+                                } else {
+                                    "Encountered 2 Timestamp value(s) which could not be converted into 'DateTime'".into()
+                                };
+                                assert_warning(&diagnostics, &expression, &message);
+                            } else {
+                                assert!(diagnostics.borrow().is_empty());
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    /// Scenario: Primitive, unique-value, and scalar keys reference an Arrow integer that cannot fit in i64.
-    /// Guarantees: Value conversion failures propagate unchanged without invoking the callback.
+    /// Scenario: Primitive, unique-value, and scalar keys reference UInt64 arrays with valid boundaries, nulls, and multiple values above i64::MAX.
+    /// Guarantees: Good values survive, invalid inputs follow null replacement semantics, and warnings count invalid entries rather than referencing rows.
     #[test]
-    fn transform_into_any_propagates_conversion_errors() {
-        let values = DictionaryValueArray::from(&UInt64Array::from(vec![u64::MAX]));
-        for keys in [
-            DictionaryKeyArray::from(Int8Array::from(vec![0])),
-            DictionaryKeyArray::UniqueValues {
-                data_type: DictionaryKeyType::Int8,
-                length: 1,
-            },
-            DictionaryKeyArray::SingleValue {
-                data_type: DictionaryKeyType::Int8,
-                length: 3,
-                value_index: Some(0),
-            },
+    fn transform_into_any_recovers_integer_conversion_errors() {
+        let values = DictionaryValueArray::from(&UInt64Array::from(vec![
+            Some(0),
+            Some(i64::MAX as u64),
+            Some(u64::MAX),
+            None,
+            Some(i64::MAX as u64 + 1),
+            Some(1),
+        ]));
+        for level in [
+            ColumnarEngineDiagnosticLevel::Warn,
+            ColumnarEngineDiagnosticLevel::Error,
         ] {
-            let dictionary = Dictionary::new(keys, values.clone()).expect("valid keys");
-            assert_eq!(
-                dictionary.transform_into_any(|_| panic!("unconvertible value")),
-                Err(DictionaryValueError::IntegerConversionFailure {
-                    original_value: u64::MAX
-                })
-            );
+            for replacement in [ValueOrRef::Null, ValueOrRef::Integer(99)] {
+                for keys in [
+                    DictionaryKeyArray::from(Int8Array::from(vec![
+                        Some(0),
+                        Some(1),
+                        Some(2),
+                        Some(3),
+                        Some(4),
+                        Some(5),
+                        Some(2),
+                        None,
+                    ])),
+                    DictionaryKeyArray::UniqueValues {
+                        data_type: DictionaryKeyType::Int8,
+                        length: 6,
+                    },
+                    DictionaryKeyArray::SingleValue {
+                        data_type: DictionaryKeyType::Int8,
+                        length: 3,
+                        value_index: Some(2),
+                    },
+                ] {
+                    let expression = NullScalarExpression::new(QueryLocation::new_fake());
+                    let diagnostics = RefCell::new(Vec::new());
+                    let receiver = ColumnarEngineDiagnosticReceiverImpl::new(level, &diagnostics);
+                    let receiver = receiver.bind(&expression);
+                    let scalar = matches!(keys, DictionaryKeyArray::SingleValue { .. });
+                    let primitive = matches!(keys, DictionaryKeyArray::KeyArray(_));
+                    let converted = vec![
+                        ValueOrRef::Integer(0),
+                        ValueOrRef::Integer(i64::MAX),
+                        ValueOrRef::Null,
+                        ValueOrRef::Null,
+                        ValueOrRef::Null,
+                        ValueOrRef::Integer(1),
+                    ];
+                    let mut expected_rows = if scalar {
+                        vec![replacement.clone(); 3]
+                    } else {
+                        converted
+                            .iter()
+                            .map(|v| match v {
+                                ValueOrRef::Null => replacement.clone(),
+                                v => v.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    if primitive {
+                        expected_rows.extend([replacement.clone(), replacement.clone()]);
+                    }
+                    let dictionary = Dictionary::new(keys, values.clone()).expect("valid keys");
+                    let mut inputs = Vec::new();
+                    let transformed = dictionary.transform_into_any(&receiver, |value| {
+                        inputs.push(value.clone());
+                        match value {
+                            ValueOrRef::Null => replacement.clone(),
+                            value => value.clone(),
+                        }
+                    });
+                    assert_rows(&transformed, &expected_rows);
+                    assert_eq!(transformed.keys().data_type(), DictionaryKeyType::Int8);
+                    let mut expected_inputs = if scalar {
+                        vec![ValueOrRef::Null]
+                    } else {
+                        converted
+                    };
+                    if primitive {
+                        expected_inputs.push(ValueOrRef::Null);
+                    }
+                    assert_eq!(inputs, expected_inputs);
+                    if level == ColumnarEngineDiagnosticLevel::Warn {
+                        let message = if scalar {
+                            DictionaryValueError::IntegerConversionFailure {
+                                original_value: u64::MAX,
+                            }
+                            .to_string()
+                        } else {
+                            "Encountered 2 UInt64 value(s) which could not be converted into 'Integer'".into()
+                        };
+                        assert_warning(&diagnostics, &expression, &message);
+                    } else {
+                        assert!(diagnostics.borrow().is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scenario: A unique-value UInt64 column has duplicates, three invalid inputs whose replacements overflow Int8 keys, and a later valid row.
+    /// Guarantees: Conversion and key-overflow warnings are each emitted once with exact counts, filtering changes no results, and valid rows remain readable.
+    #[test]
+    fn transform_into_any_aggregates_multiple_failure_categories() {
+        for level in [
+            ColumnarEngineDiagnosticLevel::Warn,
+            ColumnarEngineDiagnosticLevel::Error,
+        ] {
+            let expression = NullScalarExpression::new(QueryLocation::new_fake());
+            let diagnostics = RefCell::new(Vec::new());
+            let receiver = ColumnarEngineDiagnosticReceiverImpl::new(level, &diagnostics);
+            let receiver = receiver.bind(&expression);
+            let mut values = (0..128).collect::<Vec<u64>>();
+            values.extend([0, u64::MAX, u64::MAX, u64::MAX, 7]);
+            let values = DictionaryValueArray::from(&UInt64Array::from(values));
+            let dictionary = Dictionary::new_unique_values(DictionaryKeyType::Int8, values);
+            let mut null_calls = 0;
+            let transformed = dictionary.transform_into_any(&receiver, |value| match value {
+                ValueOrRef::Null => {
+                    null_calls += 1;
+                    ValueOrRef::Integer(999)
+                }
+                value => value.clone(),
+            });
+            assert_eq!(null_calls, 3);
+            let mut expected = (0..128).map(ValueOrRef::Integer).collect::<Vec<_>>();
+            expected.extend([
+                ValueOrRef::Integer(0),
+                ValueOrRef::Null,
+                ValueOrRef::Null,
+                ValueOrRef::Null,
+                ValueOrRef::Integer(7),
+            ]);
+            assert_rows(&transformed, &expected);
+            assert_eq!(transformed.keys().data_type(), DictionaryKeyType::Int8);
+            let diagnostics = diagnostics.borrow();
+            if level == ColumnarEngineDiagnosticLevel::Warn {
+                assert_eq!(diagnostics.len(), 2);
+                assert_eq!(
+                    diagnostics[0].get_message(),
+                    "Encountered 3 UInt64 value(s) which could not be converted into 'Integer'"
+                );
+                assert_eq!(
+                    diagnostics[1].get_message(),
+                    "Encountered 3 value(s) which could not be stored due to key overflow"
+                );
+                for diagnostic in diagnostics.iter() {
+                    assert_eq!(
+                        diagnostic.get_diagnostic_level(),
+                        ColumnarEngineDiagnosticLevel::Warn
+                    );
+                    assert!(std::ptr::addr_eq(
+                        diagnostic.get_expression(),
+                        &expression as &dyn otel_arrow_contrib_data_engine_expressions::Expression,
+                    ));
+                }
+            } else {
+                assert!(diagnostics.is_empty());
+            }
         }
     }
 }

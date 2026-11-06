@@ -127,11 +127,8 @@ pub trait ColumnarEngineDiagnosticReceiver<'a> {
     }
 }
 
-pub(crate) struct ColumnarEngineBoundDiagnosticReceiver<
-    'a,
-    'b,
-    R: ColumnarEngineDiagnosticReceiver<'a>,
-> {
+/// A diagnostic receiver that attributes messages to a single expression.
+pub struct ColumnarEngineBoundDiagnosticReceiver<'a, 'b, R: ColumnarEngineDiagnosticReceiver<'a>> {
     receiver: &'b R,
     expression: &'a dyn Expression,
 }
@@ -204,5 +201,51 @@ impl<'a> ColumnarEngineDiagnosticReceiver<'a> for ColumnarEngineDiagnosticReceiv
 
     fn add_diagnostic(&self, diagnostic: ColumnarEngineDiagnostic<'a>) {
         self.diagnostics.borrow_mut().push(diagnostic);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use otel_arrow_contrib_data_engine_expressions::{NullScalarExpression, QueryLocation};
+
+    use super::*;
+
+    /// Scenario: An expression-bound receiver filters warnings at each configured diagnostic level.
+    /// Guarantees: Disabled messages are never generated, and enabled warnings retain their level, message, and exact expression.
+    #[test]
+    fn bound_receiver_filters_and_attributes_warnings() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        for level in [
+            ColumnarEngineDiagnosticLevel::Verbose,
+            ColumnarEngineDiagnosticLevel::Info,
+            ColumnarEngineDiagnosticLevel::Warn,
+            ColumnarEngineDiagnosticLevel::Error,
+        ] {
+            let diagnostics = RefCell::new(Vec::new());
+            let receiver = ColumnarEngineDiagnosticReceiverImpl::new(level, &diagnostics);
+            let bound = receiver.bind(&expression);
+            let enabled = level <= ColumnarEngineDiagnosticLevel::Warn;
+            assert_eq!(
+                bound.is_diagnostic_level_enabled(ColumnarEngineDiagnosticLevel::Warn),
+                enabled
+            );
+            bound.add_diagnostic_if_enabled(ColumnarEngineDiagnosticLevel::Warn, || {
+                assert!(enabled, "disabled diagnostic must not generate a message");
+                "warning".into()
+            });
+            let diagnostics = diagnostics.borrow();
+            assert_eq!(diagnostics.len(), usize::from(enabled));
+            if enabled {
+                assert_eq!(
+                    diagnostics[0].get_diagnostic_level(),
+                    ColumnarEngineDiagnosticLevel::Warn
+                );
+                assert_eq!(diagnostics[0].get_message(), "warning");
+                assert!(std::ptr::addr_eq(
+                    diagnostics[0].get_expression(),
+                    &expression as &dyn Expression
+                ));
+            }
+        }
     }
 }

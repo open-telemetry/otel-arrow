@@ -82,6 +82,8 @@ impl<'a> DictionaryValueArray<'a> {
         }
     }
 
+    /// Transforms each stored value, treating conversion failures as null inputs.
+    /// Conversion warnings are aggregated by category and count stored entries, not referencing rows.
     pub fn transform_into_set<TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>, FTransform>(
         self,
         diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
@@ -790,6 +792,8 @@ mod tests {
     };
     use chrono::DateTime;
     use half::f16;
+    use otel_arrow_contrib_data_engine_expressions::{NullScalarExpression, QueryLocation};
+    use std::cell::RefCell;
 
     use super::*;
 
@@ -915,6 +919,13 @@ mod tests {
     /// Guarantees: Lookup maps are absent when unnecessary and otherwise contain every original index with exact compacted indexes.
     #[test]
     fn transform_into_set_builds_complete_lookup_only_when_needed() {
+        let expression = NullScalarExpression::new(QueryLocation::new_fake());
+        let diagnostics = RefCell::new(Vec::new());
+        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
+            ColumnarEngineDiagnosticLevel::Warn,
+            &diagnostics,
+        );
+        let receiver = receiver.bind(&expression);
         let cases = [
             (vec![], vec![], None),
             (vec![Some(10), Some(20), Some(30)], vec![10, 20, 30], None),
@@ -954,13 +965,12 @@ mod tests {
                     .collect::<Vec<_>>()
                     .into(),
             ] {
-                let (values, lookup) = values
-                    .transform_into_set(Clone::clone)
-                    .expect("transform succeeds");
+                let (values, lookup) = values.transform_into_set(&receiver, Clone::clone);
                 assert_eq!(values.into_iter().collect::<Vec<_>>(), expected_values);
                 assert_eq!(lookup, expected_lookup);
             }
         }
+        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Arrow numeric and string arrays contain ordinary values, nulls, and boundary indexes.
