@@ -26,14 +26,6 @@ groups:
           conditionally_required: If and only if it's different than `rpc.method`.
 
   - id: span.rpc.call.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     type: span
     stability: release_candidate
     brief: This span represents an outgoing Remote Procedure Call (RPC).
@@ -62,14 +54,6 @@ groups:
         sampling_relevant: true
 
   - id: span.rpc.call.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     type: span
     stability: release_candidate
     extends: rpc
@@ -95,14 +79,6 @@ groups:
         sampling_relevant: true
 
   - id: span.rpc.connect_rpc.call.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     type: span
     stability: development
     brief: This span represents an outgoing Remote Procedure Call (RPC).
@@ -140,14 +116,6 @@ groups:
           conditionally_required: if available.
 
   - id: span.rpc.connect_rpc.call.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     type: span
     stability: development
     extends: rpc
@@ -182,14 +150,6 @@ groups:
         requirement_level: opt_in
 
   - id: span.rpc.grpc.call.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     type: span
     stability: release_candidate
     brief: This span represents an outgoing Remote Procedure Call (RPC).
@@ -265,14 +225,6 @@ groups:
           conditionally_required: If and only if the port is available and `server.address` is set.
         examples: [50051]
   - id: span.rpc.grpc.call.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     type: span
     stability: release_candidate
     extends: rpc
@@ -310,14 +262,6 @@ groups:
         requirement_level: opt_in
 
   - id: span.rpc.jsonrpc.call.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     type: span
     stability: development
     brief: This span represents an outgoing Remote Procedure Call (RPC).
@@ -370,14 +314,6 @@ groups:
         note: ""
 
   - id: span.rpc.jsonrpc.call.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     type: span
     stability: development
     extends: rpc
@@ -423,14 +359,6 @@ groups:
           conditionally_required: when available
 
   - id: span.rpc.dubbo.call.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     type: span
     stability: release_candidate
     brief: This span represents an outgoing Remote Procedure Call (RPC).
@@ -539,14 +467,6 @@ groups:
         requirement_level: opt_in
 
   - id: span.rpc.dubbo.call.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.5, max: 30000.0 }
-          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     type: span
     stability: release_candidate
     extends: rpc

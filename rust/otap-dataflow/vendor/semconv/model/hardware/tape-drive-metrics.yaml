@@ -18,13 +18,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Operations performed by the tape drive."
     instrument: counter

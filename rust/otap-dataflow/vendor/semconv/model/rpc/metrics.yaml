@@ -36,16 +36,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: Measures the duration of an incoming Remote Procedure Call (RPC).
     instrument: histogram
@@ -63,16 +53,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: Measures the duration of an outgoing Remote Procedure Call (RPC).
     instrument: histogram

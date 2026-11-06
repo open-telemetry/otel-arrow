@@ -44,16 +44,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 60.0 }
-          distribution: { type: lognormal, mean: 0.1, stddev: 0.2 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Duration of HTTP server requests."
     instrument: histogram
     unit: "s"
@@ -66,13 +56,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Number of active HTTP server requests."
     instrument: updowncounter
@@ -110,16 +93,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Size of HTTP server request bodies."
     instrument: histogram
@@ -136,16 +109,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Size of HTTP server response bodies."
     instrument: histogram
@@ -162,16 +125,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 60.0 }
-          distribution: { type: lognormal, mean: 0.1, stddev: 0.2 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Duration of HTTP client requests."
     instrument: histogram
     unit: "s"
@@ -184,16 +137,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Size of HTTP client request bodies."
     instrument: histogram
@@ -210,16 +153,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Size of HTTP client response bodies."
     instrument: histogram
@@ -236,13 +169,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Number of outbound HTTP connections that are currently active or idle on the client."
     instrument: updowncounter
@@ -268,16 +194,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 3600.0 }
-          distribution: { type: lognormal, mean: 30.0, stddev: 60.0 }
-        bounds: [0.01, 0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The duration of the successfully established outbound HTTP connections."
     instrument: histogram
@@ -301,13 +217,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Number of active HTTP requests."
     instrument: updowncounter

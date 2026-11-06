@@ -41,8 +41,8 @@ config:
   data_source: synthetic
 
   # Semantic convention registry path when data_source is semantic_conventions
-  # (default: the vendored, annotated registry in vendor/semconv/model).
-  # See "Annotations" below.
+  # (default: the upstream semantic-conventions git repository at the pinned
+  # tag, cloned at startup). See "Annotations" below.
   registry_path: ./semantic-conventions
 
   # Batch generation strategy: "fresh" or "pre_generated" (default: fresh).
@@ -93,15 +93,36 @@ semantic conventions registry, cloning
 crypto provider, and the upstream registry carries no `traffic-generator`
 annotations, so values fall back to enum members, examples, and type defaults.
 
-To use the annotated value ranges, set `registry_path` to the vendored registry
-in [`vendor/semconv/model`](../../../../../vendor/semconv/README.md), which is
-annotated for every metric, span, and event and every int, double, boolean, and
-int[] attribute. The vendored path is resolved from the source tree, so point
-`registry_path` at its location (a local folder) when running the binary; the
-directory is not shipped inside deployed binaries. Any registry set through
-`registry_path` (a local folder, an archive, or a git repository) is used as is;
-registries without annotations fall back to enum members, examples, and type
-defaults.
+The vendored registry in
+[`vendor/semconv/model`](../../../../../vendor/semconv/README.md) carries one
+representative annotation for each supported annotation kind, so the feature
+can be exercised and tested without annotating the whole registry. Every other
+group and attribute falls back as described above.
+
+| Kind | Annotated element | File |
+| --- | --- | --- |
+| span `duration`, `status` | `span.azure.cosmosdb.client` | `db/spans.yaml` |
+| histogram `value`, `bounds`, `observations`, `data_points` | `metric.jvm.gc.duration` | `jvm/metrics.yaml` |
+| counter `value` (exponential) | `metric.jvm.class.loaded` | `jvm/metrics.yaml` |
+| updowncounter `value` (uniform) | `metric.jvm.thread.count` | `jvm/metrics.yaml` |
+| gauge `value` (discrete double) | `metric.jvm.cpu.recent_utilization` | `jvm/metrics.yaml` |
+| event `severity` | `event.feature_flag.evaluation` | `feature-flags/events.yaml` |
+| int, lognormal | `azure.cosmosdb.request.body.size` | `azure/registry.yaml` |
+| double, normal | `azure.cosmosdb.operation.request_charge` | `azure/registry.yaml` |
+| enum, weighted subset | `azure.cosmosdb.connection.mode` | `azure/registry.yaml` |
+| `string[]`, `length` and `items` | `azure.cosmosdb.operation.contacted_regions` | `azure/registry.yaml` |
+| string, unweighted values | `db.operation.name` | `db/registry.yaml` |
+| int, zipf | `db.response.returned_rows` | `db/registry.yaml` |
+| `template[string]`, `keys` and `value` | `db.query.parameter` | `db/registry.yaml` |
+| boolean, weighted | `jvm.thread.daemon` | `jvm/registry.yaml` |
+| `any`, mixed scalars | `feature_flag.result.value` | `feature-flags/registry.yaml` |
+
+The span, metrics, and event above reference the annotated attributes, so
+generating from them exercises every annotation together. To use the vendored
+registry, set `registry_path` to its location (a local folder); the directory
+is resolved from the source tree and is not shipped inside deployed binaries.
+Any registry set through `registry_path` (a local folder, an archive, or a git
+repository) is used as is.
 
 ### Placement
 
@@ -372,8 +393,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - This receiver is available only with the `dev-tools` feature.
 - `semantic_conventions` data source requires access to the configured registry
-  path at startup. The default (the vendored registry) is resolved from the
-  source tree at build time; set `registry_path` when running elsewhere.
+  path at startup. The default (the upstream git repository) requires network
+  access; the vendored registry is only available from the source tree.
 - Invalid `traffic-generator` annotations in the registry fail receiver
   startup.
 - `pre_generated` mode repeats timestamps and IDs from pregenerated batches.

@@ -3,8 +3,8 @@ groups:
     annotations:
       traffic-generator:
         severity:
-          values: [INFO, DEBUG]
-          weights: [90, 10]
+          values: [INFO, DEBUG, WARN]
+          weights: [7, 2, 1]
     type: event
     name: feature_flag.evaluation
     stability: release_candidate

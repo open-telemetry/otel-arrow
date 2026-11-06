@@ -22,13 +22,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Endurance remaining for this SSD disk."
     instrument: gauge
@@ -44,13 +37,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Size of the disk."
     instrument: updowncounter
@@ -63,13 +49,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: normal, mean: 90, stddev: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Value of the corresponding [S.M.A.R.T.](https://wikipedia.org/wiki/S.M.A.R.T.) (Self-Monitoring, Analysis, and Reporting Technology) attribute."
     instrument: gauge

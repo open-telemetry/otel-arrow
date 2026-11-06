@@ -5,16 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: lognormal, mean: 0.005, stddev: 0.01 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Garbage collection duration."
     instrument: histogram
     unit: "s"
@@ -31,13 +21,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Heap space available size."
     instrument: updowncounter
     unit: "By"
@@ -54,13 +37,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Committed size of a heap space."
     instrument: updowncounter
     unit: "By"
@@ -77,13 +53,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Total heap memory size pre-allocated for a heap space."
     instrument: updowncounter
     unit: "By"
@@ -101,13 +70,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Heap Memory size allocated."
     instrument: updowncounter
     unit: "By"
@@ -125,13 +87,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: lognormal, mean: 20, stddev: 40 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Gauge of the active resources that are currently keeping the event loop alive."
     instrument: gauge
     unit: "{resource}"

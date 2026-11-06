@@ -28,10 +28,6 @@ groups:
           Type of host. For Cloud, this must be the machine type.
         examples: ['n1-standard-1']
       - id: host.arch
-        annotations:
-          traffic-generator:
-            values: [amd64, arm64, x86, arm32]
-            weights: [65, 30, 3, 2]
         type:
           members:
             - id: amd64
@@ -143,10 +139,6 @@ groups:
           Stepping or core revisions.
         examples: ["1", "r1p1"]
       - id: host.cpu.cache.l2.size
-        annotations:
-          traffic-generator:
-            values: [262144, 524288, 1048576, 2097152, 12288000]
-            weights: [10, 30, 30, 20, 10]
         stability: development
         type: int
         brief: >

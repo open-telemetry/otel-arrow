@@ -205,10 +205,6 @@ groups:
           name (`container.name`).
         examples: ['redis']
       - id: k8s.container.restart_count
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 100 }
-            distribution: { type: exponential, mean: 1 }
         type: int
         stability: stable
         brief: >
@@ -914,10 +910,6 @@ groups:
             the `k8s.service.annotation.data` attribute with value `""`.
         examples: ['true', '']
       - id: k8s.service.publish_not_ready_addresses
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [10, 90]
         type: boolean
         stability: development
         brief: >

@@ -17,13 +17,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: Number of connections that are currently active on the server.
     instrument: updowncounter
@@ -42,16 +35,6 @@ groups:
         # TODO https://github.com/open-telemetry/semantic-conventions/issues/1514
         policy_exceptions:
           - metric_lower_stability_attribute
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 3600.0 }
-          distribution: { type: lognormal, mean: 60.0, stddev: 120.0 }
-        bounds: [0.01, 0.1, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: The duration of connections on the server.
     instrument: histogram
@@ -131,13 +114,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: Number of connections rejected by the server.
     instrument: counter
@@ -153,13 +129,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: Number of connections that are currently queued and are waiting to start.
     instrument: updowncounter
@@ -174,13 +143,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: Number of HTTP requests on multiplexed connections (HTTP/2 and HTTP/3) that are currently queued and are waiting to start.
     instrument: updowncounter
@@ -200,13 +162,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: Number of connections that are currently upgraded (WebSockets). .
     instrument: updowncounter
@@ -227,16 +182,6 @@ groups:
         # TODO https://github.com/open-telemetry/semantic-conventions/issues/1514
         policy_exceptions:
           - metric_lower_stability_attribute
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 5.0 }
-          distribution: { type: lognormal, mean: 0.03, stddev: 0.03 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: The duration of TLS handshakes on the server.
     instrument: histogram
@@ -259,13 +204,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: stable
     brief: Number of TLS handshakes that are currently in progress on the server.
     instrument: updowncounter

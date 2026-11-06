@@ -102,10 +102,6 @@ groups:
         note: >
           Sensitive content provided in `url.path` SHOULD be scrubbed when instrumentations can identify it.
       - id: url.port
-        annotations:
-          traffic-generator:
-            values: [443, 80, 8080, 8443, 3000, 5432, 6379, 9092]
-            weights: [40, 20, 15, 5, 5, 5, 5, 5]
         type: int
         stability: development
         brief: >
@@ -153,10 +149,6 @@ groups:
           For example, the registered domain for `foo.example.com` is `example.com`.
           Trying to approximate this by simply taking the last two labels will not work well for TLDs such as `co.uk`.
       - id: url.scheme
-        annotations:
-          traffic-generator:
-            values: [https, http]
-            weights: [85, 15]
         stability: stable
         type: string
         brief: >

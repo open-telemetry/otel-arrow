@@ -5,10 +5,6 @@ groups:
     brief: Attributes used by the OpenTracing Shim layer.
     attributes:
       - id: opentracing.ref_type
-        annotations:
-          traffic-generator:
-            values: [child_of, follows_from]
-            weights: [90, 10]
         brief: 'Parent-child Reference type'
         stability: development
         note: >

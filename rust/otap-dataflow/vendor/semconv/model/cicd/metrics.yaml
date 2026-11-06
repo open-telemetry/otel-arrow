@@ -5,16 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 14400.0 }
-          distribution: { type: lognormal, mean: 600.0, stddev: 900.0 }
-        bounds: [10, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 14400]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: 'Duration of a pipeline run grouped by pipeline, state and result.'
     instrument: histogram
     unit: "s"
@@ -38,13 +28,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 200 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: 'The number of pipeline runs currently active in the system by state.'
     instrument: updowncounter
     unit: "{run}"
@@ -62,13 +45,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 200 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: 'The number of workers on the CI/CD system by state.'
     instrument: updowncounter
     unit: "{worker}"
@@ -82,13 +58,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: exponential, mean: 1 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: 'The number of errors encountered in pipeline runs (eg. compile, test failures).'
     note: |
       There might be errors in a pipeline run that are non fatal (eg. they are suppressed) or in a parallel stage multiple stages could have a fatal error.
@@ -109,13 +78,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: exponential, mean: 1 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: 'The number of errors in a component of the CI/CD system (eg. controller, scheduler, agent).'
     note: 'Errors in pipeline run execution are explicitly excluded. Ie a test failure is not counted in this metric.'
     instrument: counter

@@ -37,6 +37,9 @@ groups:
           It is RECOMMENDED to capture the value as provided by the application without attempting to do any case normalization.
         examples: ["customers", "test.users"]
       - id: db.operation.name
+        annotations:
+          traffic-generator:
+            values: [ReadItem, CreateItem, QueryItems]
         type: string
         stability: stable
         brief: >
@@ -79,6 +82,10 @@ groups:
             'SET mykey ?',
           ]
       - id: db.query.parameter
+        annotations:
+          traffic-generator:
+            keys: { values: [id, name, limit], weights: [5, 3, 2] }
+            value: { values: ["42", alice, "100"] }
         type: template[string]
         stability: development
         brief: >
@@ -161,10 +168,6 @@ groups:
           instead of `db.operation.parameter.<key>`.
         examples: ["someval", "55"]
       - id: db.operation.batch.size
-        annotations:
-          traffic-generator:
-            range: { min: 2, max: 1000 }
-            distribution: { type: exponential, mean: 10 }
         type: int
         stability: stable
         brief: The number of database operations included in a batch operation.
@@ -207,17 +210,13 @@ groups:
       - id: db.response.returned_rows
         annotations:
           traffic-generator:
-            range: { min: 0, max: 100000 }
-            distribution: { type: lognormal, mean: 50, stddev: 200 }
+            range: { min: 1, max: 1000 }
+            distribution: { type: zipf, exponent: 1.2 }
         type: int
         stability: development
         brief: Number of rows returned by the operation.
         examples: [10, 30, 1000]
       - id: db.system.name
-        annotations:
-          traffic-generator:
-            values: [postgresql, mysql, redis, mongodb, microsoft.sql_server, oracle.db, elasticsearch, cassandra, aws.dynamodb, sqlite]
-            weights: [25, 20, 15, 10, 8, 5, 5, 4, 4, 4]
         brief: The database management system (DBMS) product as identified by the client instrumentation.
         note: >
           The actual DBMS may differ from the one identified by the client.

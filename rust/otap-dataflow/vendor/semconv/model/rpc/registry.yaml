@@ -81,10 +81,6 @@ groups:
           - "com.myservice.EchoService/unknownMethod"
           - "InvalidMethod"
       - id: rpc.system.name
-        annotations:
-          traffic-generator:
-            values: [grpc, connectrpc, jsonrpc, dubbo]
-            weights: [70, 10, 15, 5]
         brief: 'The Remote Procedure Call (RPC) system.'
         note: >
           The client and server RPC systems may differ for the same RPC interaction.

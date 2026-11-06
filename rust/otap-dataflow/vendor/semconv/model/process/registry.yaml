@@ -6,30 +6,18 @@ groups:
         An operating system process.
     attributes:
       - id: process.pid
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 4194304 }
-            distribution: { type: lognormal, mean: 20000, stddev: 40000 }
         type: int
         stability: release_candidate
         brief: >
           Process identifier (PID).
         examples: [1234]
       - id: process.parent_pid
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 4194304 }
-            distribution: { type: lognormal, mean: 5000, stddev: 20000 }
         type: int
         stability: release_candidate
         brief: >
           Parent Process identifier (PPID).
         examples: [111]
       - id: process.vpid
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 4194304 }
-            distribution: { type: lognormal, mean: 100, stddev: 1000 }
         type: int
         stability: release_candidate
         brief: >
@@ -40,10 +28,6 @@ groups:
           namespace that the process exists within.
         examples: [12]
       - id: process.session_leader.pid
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 4194304 }
-            distribution: { type: lognormal, mean: 5000, stddev: 20000 }
         type: int
         stability: release_candidate
         brief: >
@@ -51,10 +35,6 @@ groups:
           (SID) of the process.
         examples: [14]
       - id: process.group_leader.pid
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 4194304 }
-            distribution: { type: lognormal, mean: 5000, stddev: 20000 }
         type: int
         stability: release_candidate
         brief: >
@@ -140,10 +120,6 @@ groups:
         examples:
           - ['cmd/otecol', '--config=config.yaml']
       - id: process.args_count
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 64 }
-            distribution: { type: exponential, mean: 3 }
         type: int
         stability: release_candidate
         brief: >
@@ -160,10 +136,6 @@ groups:
           The username of the user that owns the process.
         examples: ['root']
       - id: process.user.id
-        annotations:
-          traffic-generator:
-            values: [0, 1000, 1001, 65534]
-            weights: [30, 40, 20, 10]
         type: int
         stability: release_candidate
         brief: >
@@ -176,10 +148,6 @@ groups:
           The username of the effective user of the process.
         examples: ['root']
       - id: process.real_user.id
-        annotations:
-          traffic-generator:
-            values: [0, 1000, 1001, 65534]
-            weights: [30, 40, 20, 10]
         type: int
         stability: release_candidate
         brief: >
@@ -192,10 +160,6 @@ groups:
           The username of the real user of the process.
         examples: ['operator']
       - id: process.saved_user.id
-        annotations:
-          traffic-generator:
-            values: [0, 1000, 1001, 65534]
-            weights: [30, 40, 20, 10]
         type: int
         stability: release_candidate
         brief: >
@@ -250,20 +214,12 @@ groups:
           The date and time the process exited, in ISO 8601 format.
         examples: ['2023-11-21T09:26:12.315Z']
       - id: process.exit.code
-        annotations:
-          traffic-generator:
-            values: [0, 1, 2, 126, 127, 137, 143]
-            weights: [80, 8, 2, 1, 2, 4, 3]
         type: int
         stability: release_candidate
         brief: >
           The exit code of the process.
         examples: [127]
       - id: process.interactive
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [10, 90]
         type: boolean
         stability: release_candidate
         brief: >
@@ -275,10 +231,6 @@ groups:
           The working directory of the process.
         examples: ["/root"]
       - id: process.context_switch.type
-        annotations:
-          traffic-generator:
-            values: [voluntary, involuntary]
-            weights: [80, 20]
         brief: "Specifies whether the context switches for this data point were voluntary or involuntary."
         type:
           members:

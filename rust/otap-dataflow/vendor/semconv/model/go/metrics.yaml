@@ -5,13 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Memory used by the Go runtime."
     note: >
       Computed from `(/memory/classes/total:bytes - /memory/classes/heap/released:bytes)`.
@@ -30,13 +23,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Go runtime memory limit configured by the user, if a limit exists."
     note: >
       Computed from `/gc/gomemlimit:bytes`.
@@ -51,13 +37,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1073741824 }
-          distribution: { type: exponential, mean: 1048576 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Memory allocated to the heap by the application."
     note: >
       Computed from `/gc/heap/allocs:bytes`.
@@ -71,13 +50,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Count of allocations to the heap by the application."
     note: >
       Computed from `/gc/heap/allocs:objects`.
@@ -91,13 +63,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Heap size target for the end of the GC cycle."
     note: >
       Computed from `/gc/heap/goal:bytes`.
@@ -111,13 +76,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Number of completed GC cycles."
     note: >
       Computed from `/gc/cycles/total:gc-cycles`.
@@ -131,16 +89,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: lognormal, mean: 0.005, stddev: 0.01 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Distribution of individual GC-related stop-the-world pause latencies. This is the time from deciding to stop the world until the world is started again."
     note: >
       Computed from `/sched/pauses/total/gc:seconds`.
@@ -155,13 +103,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Count of live goroutines."
     note: >
       Computed from `/sched/goroutines:goroutines`.
@@ -175,13 +116,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "The number of OS threads that can execute user-level Go code simultaneously."
     note: >
       Computed from `/sched/gomaxprocs:threads`.
@@ -195,16 +129,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: lognormal, mean: 0.005, stddev: 0.01 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "The time goroutines have spent in the scheduler in a runnable state before actually running."
     note: >
       Computed from `/sched/latencies:seconds`.
@@ -219,13 +143,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 100.0 }
-          distribution: { type: normal, mean: 40.0, stddev: 20.0 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Heap size target percentage configured by the user, otherwise 100."
     note: >
       The value range is [0.0,100.0].
@@ -240,13 +157,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 60.0 }
-          distribution: { type: exponential, mean: 0.5 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Estimated CPU time spent by the Go runtime."
     note: >
       Computed from `/cpu/classes/...` metrics.

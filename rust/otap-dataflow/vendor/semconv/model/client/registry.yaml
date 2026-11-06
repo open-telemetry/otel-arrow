@@ -10,9 +10,6 @@ attributes:
       the client address behind any intermediaries,  for example proxies, if it's available.
     examples: ['client.example.com', '10.1.2.80', '/tmp/my.sock']
   - key: client.port
-    annotations:
-      traffic-generator:
-        range: { min: 1024, max: 65535 }
     stability: stable
     type: int
     brief: Client port number.

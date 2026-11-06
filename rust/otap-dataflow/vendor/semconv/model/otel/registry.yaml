@@ -5,10 +5,6 @@ groups:
     brief: Attributes reserved for OpenTelemetry
     attributes:
       - id: otel.status_code
-        annotations:
-          traffic-generator:
-            values: [OK, ERROR]
-            weights: [90, 10]
         type:
           members:
             - id: ok
@@ -27,10 +23,6 @@ groups:
         examples: ['resource not found']
         stability: stable
       - id: otel.span.sampling_result
-        annotations:
-          traffic-generator:
-            values: [RECORD_AND_SAMPLE, DROP, RECORD_ONLY]
-            weights: [70, 25, 5]
         type:
           members:
             - id: drop
@@ -48,10 +40,6 @@ groups:
         brief: "The result value of the sampler for this span"
         stability: development
       - id: otel.span.parent.origin
-        annotations:
-          traffic-generator:
-            values: [local, remote, none]
-            weights: [60, 30, 10]
         type:
           members:
             - id: none

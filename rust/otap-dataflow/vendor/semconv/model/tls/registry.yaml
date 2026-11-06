@@ -91,10 +91,6 @@ groups:
         stability: development
         examples: ["secp256r1"]
       - id: tls.established
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [98, 2]
         brief: "Boolean flag indicating if the TLS negotiation was successful and transitioned to an encrypted tunnel."
         type: boolean
         stability: development
@@ -108,10 +104,6 @@ groups:
         stability: development
         examples: ["http/1.1"]
       - id: tls.protocol.name
-        annotations:
-          traffic-generator:
-            values: [tls, ssl]
-            weights: [98, 2]
         brief: >
           Normalized lowercase protocol name parsed from original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)
         type:
@@ -132,10 +124,6 @@ groups:
         stability: development
         examples: ["1.2", "3"]
       - id: tls.resumed
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [30, 70]
         brief: "Boolean flag indicating if this TLS connection was resumed from an existing TLS negotiation."
         type: boolean
         stability: development

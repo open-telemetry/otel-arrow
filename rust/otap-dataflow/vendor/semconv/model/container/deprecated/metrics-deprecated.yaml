@@ -6,13 +6,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: exponential, mean: 1 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     entity_associations:
       - container
     deprecated:

@@ -1,10 +1,5 @@
 groups:
   - id: event.device.app.lifecycle
-    annotations:
-      traffic-generator:
-        severity:
-          values: [INFO, DEBUG]
-          weights: [90, 10]
     stability: development
     type: event
     name: device.app.lifecycle

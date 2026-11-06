@@ -10,10 +10,6 @@ attributes:
       the server address behind any intermediaries, for example proxies, if it's available.
     examples: ['example.com', '10.1.2.80', '/tmp/my.sock']
   - key: server.port
-    annotations:
-      traffic-generator:
-        values: [443, 80, 8080, 8443, 3000, 5432, 6379, 9092]
-        weights: [40, 20, 15, 5, 5, 5, 5, 5]
     stability: stable
     type: int
     brief: Server port number.

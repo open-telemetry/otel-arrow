@@ -22,13 +22,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1073741824 }
-          distribution: { type: exponential, mean: 1048576 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Received and transmitted bytes by the GPU."
     instrument: counter
@@ -44,13 +37,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Size of the GPU memory."
     instrument: updowncounter
@@ -63,13 +49,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Fraction of GPU memory used."
     instrument: gauge
@@ -82,13 +61,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "GPU memory used."
     instrument: updowncounter
@@ -101,13 +73,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Fraction of time spent in a specific task."
     instrument: gauge

@@ -9,10 +9,6 @@ groups:
         the process, i.e., the virtualized guest rather than the underlying host.
     attributes:
       - id: os.type
-        annotations:
-          traffic-generator:
-            values: [linux, windows, darwin]
-            weights: [75, 20, 5]
         type:
           members:
             - id: windows

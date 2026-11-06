@@ -5,10 +5,6 @@ groups:
     brief: 'This document defines semantic convention attributes in the HTTP namespace.'
     attributes:
       - id: http.request.body.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         type: int
         brief: >
           The size of the request payload body in bytes. This is the number of bytes transferred excluding headers and
@@ -41,10 +37,6 @@ groups:
 
         examples: [["application/json"], ["1.2.3.4", "1.2.3.5"]]
       - id: http.request.method
-        annotations:
-          traffic-generator:
-            values: [GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS]
-            weights: [60, 20, 8, 5, 3, 3, 1]
         stability: stable
         type:
           members:
@@ -123,10 +115,6 @@ groups:
         brief: Original HTTP method sent by the client in the request line.
         examples: ["GeT", "ACL", "foo"]
       - id: http.request.resend_count
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 10 }
-            distribution: { type: exponential, mean: 1 }
         stability: stable
         type: int
         brief: >
@@ -137,10 +125,6 @@ groups:
           or any other).
         examples: 3
       - id: http.request.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 1500, stddev: 4000 }
         type: int
         brief: >
           The total size of the request in bytes. This should be the total number of bytes sent over the wire, including the request line (HTTP/1.1),
@@ -148,10 +132,6 @@ groups:
         examples: 1437
         stability: development
       - id: http.response.body.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         type: int
         brief: >
           The size of the response payload body in bytes. This is the number of bytes transferred excluding headers and
@@ -182,10 +162,6 @@ groups:
             attribute with value `["abc", "def"]` or `["abc, def"]` depending on the HTTP library.
         examples: [["application/json"], ["abc", "def"]]
       - id: http.response.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 4000, stddev: 16000 }
         type: int
         brief: >
           The total size of the response in bytes. This should be the total number of bytes sent over the wire, including the status line (HTTP/1.1),
@@ -193,10 +169,6 @@ groups:
         examples: 1437
         stability: development
       - id: http.response.status_code
-        annotations:
-          traffic-generator:
-            values: [200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 409, 429, 500, 502, 503, 504]
-            weights: [600, 40, 30, 5, 10, 20, 25, 10, 8, 40, 5, 5, 15, 5, 8, 4]
         stability: stable
         type: int
         brief: '[HTTP response status code](https://tools.ietf.org/html/rfc7231#section-6).'

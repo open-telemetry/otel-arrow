@@ -32,10 +32,6 @@ groups:
         brief: Rate-limiting result, shows whether the lease was acquired or contains a rejection reason
         examples: ["acquired", "request_canceled"]
       - id: aspnetcore.routing.is_fallback
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [5, 95]
         type: boolean
         stability: stable
         brief: A value that indicates whether the matched route is a fallback route.
@@ -47,10 +43,6 @@ groups:
           implementation that handled the exception.
         examples: ["Contoso.MyHandler"]
       - id: aspnetcore.request.is_unhandled
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [2, 98]
         type: boolean
         stability: stable
         brief: Flag indicating if request was handled by the application pipeline.
@@ -125,10 +117,6 @@ groups:
         brief: The identifier that names a particular authentication handler.
         examples: ["Cookies", "Bearer", "Identity.Application"]
       - id: aspnetcore.user.is_authenticated
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [70, 30]
         type: boolean
         stability: stable
         brief: A value that indicates whether the user is authenticated.
@@ -410,10 +398,6 @@ groups:
         brief: The authentication type.
         examples: ["password", "two_factor"]
       - id: aspnetcore.sign_in.is_persistent
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [30, 70]
         type: boolean
         stability: development
         brief: A flag indicating whether the sign in is persistent.

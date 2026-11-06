@@ -5,16 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.02, stddev: 0.05 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Duration of database client operations."
     note: >
       Batch operations SHOULD be recorded as a single operation.
@@ -53,13 +43,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The number of connections that are currently in state described by the `state` attribute."
     instrument: updowncounter
@@ -76,13 +59,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The maximum number of idle open connections allowed."
     instrument: updowncounter
@@ -97,13 +73,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The minimum number of idle open connections allowed."
     instrument: updowncounter
@@ -118,13 +87,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The maximum number of open connections allowed."
     instrument: updowncounter
@@ -139,13 +101,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The number of current pending requests for an open connection."
     instrument: updowncounter
@@ -160,13 +115,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: exponential, mean: 1 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The number of connection timeouts that have occurred trying to obtain a connection from the pool."
     instrument: counter
@@ -181,16 +129,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.02, stddev: 0.05 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The time it took to create a new connection."
     instrument: histogram
@@ -205,16 +143,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.02, stddev: 0.05 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The time it took to obtain an open connection from the pool."
     instrument: histogram
@@ -229,16 +157,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.02, stddev: 0.05 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "The time between borrowing a connection and returning it to the pool."
     instrument: histogram
@@ -253,15 +171,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: lognormal, mean: 50, stddev: 200 }
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "The actual number of records returned by the database operation."
     instrument: histogram
     unit: "{row}"

@@ -6,10 +6,6 @@ groups:
     brief: 'Attributes describing telemetry around messaging systems and messaging activities.'
     attributes:
       - id: messaging.batch.message_count
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1000 }
-            distribution: { type: exponential, mean: 10 }
         type: int
         stability: development
         brief: The number of messages sent, received, or processed in the scope of the batching operation.
@@ -61,18 +57,10 @@ groups:
           used for grouping and aggregation.
         examples: ['/customers/{customerId}']
       - id: messaging.destination.anonymous
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [5, 95]
         type: boolean
         stability: development
         brief: 'A boolean that is true if the message destination is anonymous (could be unnamed or have auto-generated name).'
       - id: messaging.destination.temporary
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [5, 95]
         type: boolean
         stability: development
         brief: 'A boolean that is true if the message destination is temporary and might not exist anymore after messages are processed.'
@@ -90,10 +78,6 @@ groups:
           represented as a string. Sometimes called "Correlation ID".
         examples: 'MyConversationId'
       - id: messaging.message.envelope.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 4096 }
         type: int
         stability: development
         brief: >
@@ -108,10 +92,6 @@ groups:
         brief: 'A value used by the messaging system as an identifier for the message, represented as a string.'
         examples: '452a7c7c7c7048c2f887f61572b18fc2'
       - id: messaging.message.body.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 1024, stddev: 4096 }
         type: int
         stability: development
         brief: >
@@ -121,10 +101,6 @@ groups:
           body size should be used.
         examples: 1439
       - id: messaging.operation.type
-        annotations:
-          traffic-generator:
-            values: [create, send, receive, process, settle]
-            weights: [10, 35, 20, 30, 5]
         type:
           members:
             - id: create
@@ -181,10 +157,6 @@ groups:
           The system-specific name of the messaging operation.
         examples: [ "ack", "nack", "send" ]
       - id: messaging.system
-        annotations:
-          traffic-generator:
-            values: [kafka, rabbitmq, aws_sqs, servicebus, gcp_pubsub, eventhubs, aws.sns, activemq, pulsar, rocketmq]
-            weights: [35, 20, 12, 8, 7, 6, 4, 3, 3, 2]
         brief: The messaging system as identified by the client instrumentation.
         note: >
           The actual messaging system may differ from the one known by the client.
@@ -259,19 +231,12 @@ groups:
           If the key has no unambiguous, canonical string form, don't include its value.
         examples: 'myKey'
       - id: messaging.kafka.offset
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 100000000 }
         type: int
         stability: development
         brief: >
           The offset of a record in the corresponding Kafka partition.
         examples: 42
       - id: messaging.kafka.message.tombstone
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [2, 98]
         type: boolean
         stability: development
         brief: 'A boolean that is true if the message is a tombstone.'
@@ -299,9 +264,6 @@ groups:
           RabbitMQ message routing key.
         examples: 'myKey'
       - id: messaging.rabbitmq.message.delivery_tag
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 1000000 }
         type: int
         stability: development
         brief: >
@@ -314,10 +276,6 @@ groups:
       This group describes attributes specific to RocketMQ.
     attributes:
       - id: messaging.rocketmq.consumption_model
-        annotations:
-          traffic-generator:
-            values: [clustering, broadcasting]
-            weights: [80, 20]
         type:
           members:
             - id: clustering
@@ -332,18 +290,12 @@ groups:
         brief: >
           Model of message consumption. This only applies to consumer spans.
       - id: messaging.rocketmq.message.delay_time_level
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 18 }
         type: int
         stability: development
         brief: >
           The delay time level for delay message, which determines the message delay time.
         examples: 3
       - id: messaging.rocketmq.message.delivery_timestamp
-        annotations:
-          traffic-generator:
-            range: { min: 1700000000000, max: 1900000000000 }
         type: int
         stability: development
         brief: >
@@ -369,10 +321,6 @@ groups:
           The secondary classifier of message besides topic.
         examples: tagA
       - id: messaging.rocketmq.message.type
-        annotations:
-          traffic-generator:
-            values: [normal, fifo, delay, transaction]
-            weights: [70, 15, 10, 5]
         type:
           members:
             - id: normal
@@ -419,20 +367,12 @@ groups:
          The ack ID for a given message.
         examples: 'ack_id'
       - id: messaging.gcp_pubsub.message.ack_deadline
-        annotations:
-          traffic-generator:
-            values: [10, 30, 60, 600]
-            weights: [50, 25, 15, 10]
         type: int
         stability: development
         brief: >
           The ack deadline in seconds set for the modify ack deadline request.
         examples: 10
       - id: messaging.gcp_pubsub.message.delivery_attempt
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 10 }
-            distribution: { type: exponential, mean: 0.5 }
         type: int
         stability: development
         brief: >
@@ -445,29 +385,18 @@ groups:
       This group describes attributes specific to Azure Service Bus.
     attributes:
       - id: messaging.servicebus.message.delivery_count
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 10 }
-            distribution: { type: exponential, mean: 0.5 }
         type: int
         stability: development
         brief: >
           Number of deliveries that have been attempted for this message.
         examples: 2
       - id: messaging.servicebus.message.enqueued_time
-        annotations:
-          traffic-generator:
-            range: { min: 1700000000, max: 1900000000 }
         type: int
         stability: development
         brief: >
           The UTC epoch seconds at which the message has been accepted and stored in the entity.
         examples: 1701393730
       - id: messaging.servicebus.disposition_status
-        annotations:
-          traffic-generator:
-            values: [complete, abandon, defer, dead_letter]
-            weights: [85, 8, 4, 3]
         brief: >
           Describes the [settlement type](https://learn.microsoft.com/azure/service-bus-messaging/message-transfers-locks-settlement#peeklock).
         type:
@@ -496,9 +425,6 @@ groups:
       This group describes attributes specific to Azure Event Hubs.
     attributes:
       - id: messaging.eventhubs.message.enqueued_time
-        annotations:
-          traffic-generator:
-            range: { min: 1700000000, max: 1900000000 }
         type: int
         stability: development
         brief: >

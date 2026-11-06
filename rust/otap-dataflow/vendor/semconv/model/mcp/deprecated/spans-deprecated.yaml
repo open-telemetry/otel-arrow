@@ -22,13 +22,6 @@ groups:
     annotations:
       dependency_resolution:
         exclude: true
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 60000.0 }
-          distribution: { type: lognormal, mean: 100.0, stddev: 200.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     deprecated:
       reason: uncategorized
       note: >
@@ -82,13 +75,6 @@ groups:
     annotations:
       dependency_resolution:
         exclude: true
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 60000.0 }
-          distribution: { type: lognormal, mean: 100.0, stddev: 200.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     deprecated:
       reason: uncategorized
       note: >

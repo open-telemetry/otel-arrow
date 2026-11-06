@@ -35,16 +35,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Duration of messaging operation initiated by a producer or consumer client."
     note: >
       This metric SHOULD NOT be used to report processing duration - processing duration is reported in `messaging.process.duration` metric.
@@ -65,16 +55,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30.0 }
-          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
-        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Duration of processing operation."
     note: >
       This metric MUST be reported for operations with `messaging.operation.type` that matches `process`.
@@ -93,13 +73,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Number of messages producer attempted to send to the broker."
     note: >
       This metric MUST NOT count messages that were created but haven't yet been sent.
@@ -117,13 +90,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Number of messages that were delivered to the application."
     note: >
       Records the number of messages pulled from the broker or number of messages dispatched to the application in push-based scenarios.

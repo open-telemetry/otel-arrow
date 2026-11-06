@@ -6,10 +6,6 @@ groups:
       A cloud environment (e.g. GCP, Azure, AWS).
     attributes:
       - id: cloud.provider
-        annotations:
-          traffic-generator:
-            values: [aws, azure, gcp, oracle_cloud, alibaba_cloud, ibm_cloud]
-            weights: [45, 25, 20, 4, 3, 3]
         type:
           members:
             - id: 'akamai_cloud'
@@ -127,10 +123,6 @@ groups:
           Availability zones are called "zones" on Alibaba Cloud and Google Cloud.
         examples: ['us-east-1c']
       - id: cloud.platform
-        annotations:
-          traffic-generator:
-            values: [aws_ec2, aws_ecs, aws_eks, aws_lambda, azure.vm, azure.aks, azure.functions, azure.app_service, gcp_compute_engine, gcp_cloud_run, gcp_kubernetes_engine, gcp_cloud_functions]
-            weights: [20, 12, 10, 10, 8, 8, 6, 6, 8, 4, 6, 2]
         type:
           members:
             - id: akamai_cloud.compute

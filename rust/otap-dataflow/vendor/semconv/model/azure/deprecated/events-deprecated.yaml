@@ -1,10 +1,5 @@
 groups:
   - id: event.az.resource.log
-    annotations:
-      traffic-generator:
-        severity:
-          values: [INFO, WARN, ERROR, DEBUG]
-          weights: [70, 15, 10, 5]
     stability: development
     type: event
     name: az.resource.log

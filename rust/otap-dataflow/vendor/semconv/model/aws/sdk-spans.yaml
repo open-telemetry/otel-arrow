@@ -1,13 +1,5 @@
 groups:
   - id: span.aws.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     type: span
     stability: development
     span_kind: client
@@ -59,14 +51,6 @@ groups:
           [AWS documentation](https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html#available-regions).
 
   - id: span.dynamodb.batchgetitem.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.BatchGetItem` call.
     note: >
@@ -82,14 +66,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.batchwriteitem.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.BatchWriteItem` call.
     note: >
@@ -107,14 +83,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.createtable.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.CreateTable` call.
     note: >
@@ -143,14 +111,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.deleteitem.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.DeleteItem` call.
     note: >
@@ -171,14 +131,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.deletetable.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.DeleteTable` call.
     note: >
@@ -195,14 +147,6 @@ groups:
           - Users
 
   - id: span.dynamodb.describetable.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.DescribeTable` call.
     note: >
@@ -219,14 +163,6 @@ groups:
           - Users
 
   - id: span.dynamodb.getitem.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.GetItem` call.
     note: >
@@ -249,14 +185,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.listtables.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.ListTables` call.
     note: >
@@ -274,14 +202,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.putitem.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.PutItem` call.
     note: >
@@ -299,14 +219,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.query.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.Query` call.
     note: >
@@ -339,14 +251,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.scan.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.Scan` call.
     note: >
@@ -385,14 +289,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.updateitem.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.UpdateItem` call.
     note: >
@@ -413,14 +309,6 @@ groups:
         requirement_level: recommended
 
   - id: span.dynamodb.updatetable.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     brief: >
       This span represents a `DynamoDB.UpdateTable` call.
     note: >
@@ -447,14 +335,6 @@ groups:
         requirement_level: recommended
 
   - id: span.aws.s3.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     extends: span.aws.client
     type: span
     stability: development

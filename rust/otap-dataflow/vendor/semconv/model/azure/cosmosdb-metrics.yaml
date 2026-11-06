@@ -5,16 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 1, max: 1000 }
-          distribution: { type: lognormal, mean: 10, stddev: 25 }
-        bounds: [1, 5, 10, 25, 50, 100, 250, 500, 1000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "[Request units](https://learn.microsoft.com/azure/cosmos-db/request-units) consumed by the operation."
     instrument: histogram
     unit: "{request_unit}"
@@ -36,13 +26,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 200 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "Number of active client instances."
     instrument: updowncounter
     unit: "{instance}"

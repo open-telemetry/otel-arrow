@@ -5,10 +5,6 @@ groups:
     brief: 'Deprecated rpc message attributes.'
     attributes:
       - id: message.type
-        annotations:
-          traffic-generator:
-            values: [SENT, RECEIVED]
-            weights: [50, 50]
         type:
           members:
             - id: sent
@@ -23,10 +19,6 @@ groups:
           reason: obsoleted
           note: Deprecated, no replacement at this time.
       - id: message.id
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 1000 }
-            distribution: { type: exponential, mean: 5 }
         type: int
         stability: development
         brief: "Deprecated, no replacement at this time."
@@ -34,10 +26,6 @@ groups:
           reason: obsoleted
           note: Deprecated, no replacement at this time.
       - id: message.compressed_size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 512, stddev: 2048 }
         type: int
         stability: development
         brief: "Deprecated, no replacement at this time."
@@ -45,10 +33,6 @@ groups:
           reason: obsoleted
           note: Deprecated, no replacement at this time.
       - id: message.uncompressed_size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 4194304 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         type: int
         stability: development
         brief: "Deprecated, no replacement at this time."
@@ -92,10 +76,6 @@ groups:
           reason: renamed
           renamed_to: rpc.response.metadata
       - id: rpc.grpc.status_code
-        annotations:
-          traffic-generator:
-            values: [0, 14, 4, 5, 13, 3, 7, 8]
-            weights: [70, 8, 6, 5, 4, 3, 2, 2]
         type:
           members:
             - id: ok
@@ -172,10 +152,6 @@ groups:
           reason: uncategorized
           note: "Use string representation of the gRPC status code on the `rpc.response.status_code` attribute."
       - id: rpc.connect_rpc.error_code
-        annotations:
-          traffic-generator:
-            values: [unavailable, deadline_exceeded, not_found, internal, invalid_argument, permission_denied, cancelled, already_exists]
-            weights: [25, 20, 15, 10, 10, 8, 7, 5]
         type:
           members:
             - id: cancelled
@@ -232,10 +208,6 @@ groups:
           reason: renamed
           renamed_to: rpc.response.status_code
       - id: rpc.jsonrpc.error_code
-        annotations:
-          traffic-generator:
-            values: [-32700, -32600, -32601, -32602, -32603]
-            weights: [10, 20, 40, 20, 10]
         type: int
         stability: development
         brief: "Deprecated, use string representation on the `rpc.response.status_code` attribute instead."
@@ -252,10 +224,6 @@ groups:
           reason: uncategorized
           note: "Use the span status description when reporting JSON-RPC spans."
       - id: rpc.system
-        annotations:
-          traffic-generator:
-            values: [grpc, java_rmi, dotnet_wcf, apache_dubbo, connect_rpc, onc_rpc, jsonrpc]
-            weights: [60, 5, 10, 5, 8, 2, 10]
         brief: 'Deprecated, use `rpc.system.name` attribute instead.'
         deprecated:
           reason: renamed
@@ -317,10 +285,6 @@ groups:
           note: 'Value should be included in `rpc.method` which is expected
             to be a fully-qualified name.'
       - id: rpc.message.type
-        annotations:
-          traffic-generator:
-            values: [SENT, RECEIVED]
-            weights: [50, 50]
         type:
           members:
             - id: sent
@@ -335,10 +299,6 @@ groups:
           reason: obsoleted
           note: Deprecated, no replacement at this time.
       - id: rpc.message.id
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 1000 }
-            distribution: { type: exponential, mean: 5 }
         type: int
         stability: development
         brief: "MUST be calculated as two different counters starting from `1` one for sent messages and one for received message."
@@ -347,10 +307,6 @@ groups:
           reason: obsoleted
           note: Deprecated, no replacement at this time.
       - id: rpc.message.compressed_size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 512, stddev: 2048 }
         type: int
         stability: development
         brief: "Compressed size of the message in bytes."
@@ -358,10 +314,6 @@ groups:
           reason: obsoleted
           note: Deprecated, no replacement at this time.
       - id: rpc.message.uncompressed_size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 4194304 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         type: int
         stability: development
         brief: "Uncompressed size of the message in bytes."

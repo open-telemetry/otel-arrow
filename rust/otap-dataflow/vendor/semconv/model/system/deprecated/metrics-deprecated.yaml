@@ -5,13 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     deprecated:
       reason: renamed
@@ -23,14 +16,6 @@ groups:
       - host
 
   - id: metric.system.network.connections
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: normal, mean: 50, stddev: 30 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: system.network.connections
     stability: development
@@ -52,13 +37,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     deprecated:
       reason: renamed
@@ -84,13 +62,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     deprecated:
       reason: renamed
@@ -110,13 +81,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     deprecated:
       reason: renamed
@@ -133,13 +97,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     deprecated:
       reason: renamed

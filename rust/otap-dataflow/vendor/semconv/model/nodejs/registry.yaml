@@ -5,10 +5,6 @@ groups:
     display_name: Node.js Attributes
     attributes:
       - id: nodejs.eventloop.state
-        annotations:
-          traffic-generator:
-            values: [active, idle]
-            weights: [60, 40]
         stability: development
         brief: The state of event loop time.
         type:

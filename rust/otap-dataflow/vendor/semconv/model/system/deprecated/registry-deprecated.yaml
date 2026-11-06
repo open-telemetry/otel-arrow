@@ -101,10 +101,6 @@ groups:
         brief: "Deprecated, use `network.connection.state` instead."
         examples: [ "close_wait" ]
       - id: system.cpu.logical_number
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 63 }
-            distribution: { type: zipf, exponent: 0.8 }
         type: int
         stability: development
         brief: "Deprecated, use `cpu.logical_number` instead."

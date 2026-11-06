@@ -1,10 +1,5 @@
 groups:
   - id: event.rpc.client.call.exception
-    annotations:
-      traffic-generator:
-        severity:
-          values: [ERROR, WARN, FATAL]
-          weights: [80, 15, 5]
     name: rpc.client.call.exception
     stability: development
     type: event
@@ -29,11 +24,6 @@ groups:
       - ref: exception.stacktrace
 
   - id: event.rpc.server.call.exception
-    annotations:
-      traffic-generator:
-        severity:
-          values: [ERROR, WARN, FATAL]
-          weights: [80, 15, 5]
     name: rpc.server.call.exception
     stability: development
     type: event

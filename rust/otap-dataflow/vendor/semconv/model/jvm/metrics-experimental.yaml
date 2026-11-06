@@ -5,13 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     extends: attributes.jvm.memory
     brief: "Measure of initial memory requested."
@@ -24,13 +17,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Recent CPU utilization for the whole system as reported by the JVM."
     note: >
@@ -47,13 +33,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: lognormal, mean: 20, stddev: 40 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Average CPU load of the whole system for the last minute as reported by the JVM."
     note: >
@@ -77,13 +56,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     extends: attributes.jvm.buffer
     brief: "Measure of memory used by buffers."
@@ -96,13 +68,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     extends: attributes.jvm.buffer
     brief: "Measure of total memory capacity of buffers."
@@ -115,13 +80,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     extends: attributes.jvm.buffer
     brief: "Number of buffers in the pool."
@@ -134,13 +92,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10000000 }
-          distribution: { type: lognormal, mean: 10000, stddev: 50000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Number of open file descriptors as reported by the JVM."
     instrument: updowncounter
@@ -152,13 +103,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10000000 }
-          distribution: { type: lognormal, mean: 10000, stddev: 50000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Measure of max open file descriptors as reported by the JVM."
     instrument: updowncounter

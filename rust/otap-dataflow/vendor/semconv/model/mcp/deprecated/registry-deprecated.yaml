@@ -20,9 +20,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: ["tools/call", "tools/list", "resources/read", "resources/list", "prompts/get", "initialize", "ping"]
-            weights: [45, 15, 15, 10, 5, 5, 5]
         type:
           members:
             - id: notifications_cancelled

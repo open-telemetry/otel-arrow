@@ -143,9 +143,6 @@ groups:
         brief: Local address of the network connection - IP address or UNIX domain socket name.
         examples: ['10.1.2.80', '/tmp/my.sock']
       - id: network.local.port
-        annotations:
-          traffic-generator:
-            range: { min: 1024, max: 65535 }
         stability: stable
         type: int
         brief: Local port number of the network connection.
@@ -156,9 +153,6 @@ groups:
         brief: Peer address of the network connection - IP address or UNIX domain socket name.
         examples: ['10.1.2.80', '/tmp/my.sock']
       - id: network.peer.port
-        annotations:
-          traffic-generator:
-            range: { min: 1024, max: 65535 }
         stability: stable
         type: int
         brief: Peer port number of the network connection.
@@ -170,10 +164,6 @@ groups:
         note: The value SHOULD be normalized to lowercase.
         examples: ['amqp', 'http', 'mqtt']
       - id: network.protocol.version
-        annotations:
-          traffic-generator:
-            values: ["1.1", "2", "3"]
-            weights: [50, 40, 10]
         stability: stable
         type: string
         brief: The actual version of the protocol used for network communication.
@@ -183,10 +173,6 @@ groups:
           this attribute SHOULD be set to the negotiated version. If the actual protocol version is not known,
           this attribute SHOULD NOT be set.
       - id: network.transport
-        annotations:
-          traffic-generator:
-            values: [tcp, udp, quic, unix, pipe]
-            weights: [80, 10, 5, 3, 2]
         stability: stable
         type:
           members:
@@ -221,10 +207,6 @@ groups:
           different processes could be listening on TCP port 12345 and UDP port 12345.
         examples: ['tcp', 'udp']
       - id: network.type
-        annotations:
-          traffic-generator:
-            values: [ipv4, ipv6]
-            weights: [80, 20]
         stability: stable
         type:
           members:

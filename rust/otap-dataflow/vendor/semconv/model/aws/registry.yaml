@@ -91,10 +91,6 @@ groups:
               ]
             }'
       - id: aws.dynamodb.provisioned_read_capacity
-        annotations:
-          traffic-generator:
-            range: { min: 1.0, max: 1000.0 }
-            distribution: { type: lognormal, mean: 20.0, stddev: 50.0 }
         type: double
         stability: development
         brief: "The value of the `ProvisionedThroughput.ReadCapacityUnits` request parameter."
@@ -102,10 +98,6 @@ groups:
           - 1.0
           - 2.0
       - id: aws.dynamodb.provisioned_write_capacity
-        annotations:
-          traffic-generator:
-            range: { min: 1.0, max: 1000.0 }
-            distribution: { type: lognormal, mean: 10.0, stddev: 30.0 }
         type: double
         stability: development
         brief: "The value of the `ProvisionedThroughput.WriteCapacityUnits` request parameter."
@@ -113,10 +105,6 @@ groups:
           - 1.0
           - 2.0
       - id: aws.dynamodb.consistent_read
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [30, 70]
         type: boolean
         stability: development
         brief: "The value of the `ConsistentRead` request parameter."
@@ -129,10 +117,6 @@ groups:
           - Title, Price, Color
           - Title, Description, RelatedItems, ProductReviews
       - id: aws.dynamodb.limit
-        annotations:
-          traffic-generator:
-            values: [10, 25, 50, 100, 1000]
-            weights: [30, 20, 20, 20, 10]
         type: int
         stability: development
         brief: "The value of the `Limit` request parameter."
@@ -206,57 +190,34 @@ groups:
         brief: "The value of the `ExclusiveStartTableName` request parameter."
         examples: [Users, CatsTable]
       - id: aws.dynamodb.table_count
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 100 }
-            distribution: { type: exponential, mean: 10 }
         type: int
         stability: development
         brief: "The number of items in the `TableNames` response parameter."
         examples:
           - 20
       - id: aws.dynamodb.scan_forward
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [80, 20]
         type: boolean
         stability: development
         brief: "The value of the `ScanIndexForward` request parameter."
       - id: aws.dynamodb.segment
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 99 }
         type: int
         stability: development
         brief: "The value of the `Segment` request parameter."
         examples:
           - 10
       - id: aws.dynamodb.total_segments
-        annotations:
-          traffic-generator:
-            values: [1, 4, 10, 100]
-            weights: [40, 30, 20, 10]
         type: int
         stability: development
         brief: "The value of the `TotalSegments` request parameter."
         examples:
           - 100
       - id: aws.dynamodb.count
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1000 }
-            distribution: { type: exponential, mean: 20 }
         type: int
         stability: development
         brief: "The value of the `Count` response parameter."
         examples:
           - 10
       - id: aws.dynamodb.scanned_count
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 10000 }
-            distribution: { type: exponential, mean: 100 }
         type: int
         stability: development
         brief: "The value of the `ScannedCount` response parameter."
@@ -316,10 +277,6 @@ groups:
           The ARN of an [ECS cluster](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/clusters.html).
         examples: ["arn:aws:ecs:us-west-2:123456789123:cluster/my-cluster"]
       - id: aws.ecs.launchtype
-        annotations:
-          traffic-generator:
-            values: [fargate, ec2]
-            weights: [60, 40]
         type:
           members:
             - id: ec2
@@ -525,10 +482,6 @@ groups:
           The `delete` attribute corresponds to the `--delete` parameter of the
           [delete-objects operation within the S3 API](https://docs.aws.amazon.com/cli/latest/reference/s3api/delete-objects.html).
       - id: aws.s3.part_number
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 10000 }
-            distribution: { type: exponential, mean: 50 }
         type: int
         stability: development
         brief: "The part number of the part being uploaded in a multipart-upload operation. This is a positive integer between 1 and 10,000."

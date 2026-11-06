@@ -5,13 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 60.0 }
-          distribution: { type: exponential, mean: 0.5 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Total CPU seconds broken down by different CPU modes."
     instrument: counter
@@ -34,13 +27,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief:
       Difference in process.cpu.time since the last measurement, divided by the elapsed time and number of CPUs
@@ -65,13 +51,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "The amount of physical memory in use."
     instrument: updowncounter
@@ -86,13 +65,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 68719476736 }
-          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "The amount of committed virtual memory."
     instrument: updowncounter
@@ -107,13 +79,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1073741824 }
-          distribution: { type: exponential, mean: 1048576 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Disk bytes transferred."
     instrument: counter
@@ -130,13 +95,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Number of disk operations performed by the process."
     instrument: counter
@@ -153,13 +111,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Percentage of total physical memory that is used by the process."
     instrument: gauge
@@ -173,13 +124,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Number of pending signals for the process."
     instrument: updowncounter
@@ -193,13 +137,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1073741824 }
-          distribution: { type: exponential, mean: 1048576 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Network bytes transferred."
     instrument: counter
@@ -216,13 +153,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Process threads count."
     instrument: updowncounter
@@ -236,13 +166,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10000000 }
-          distribution: { type: lognormal, mean: 10000, stddev: 50000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Number of UNIX file descriptors in use by the process."
     instrument: updowncounter
@@ -256,13 +179,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10000000 }
-          distribution: { type: lognormal, mean: 10000, stddev: 50000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Number of handles held by the process."
     instrument: updowncounter
@@ -276,13 +192,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Number of times the process has been context switched."
     instrument: counter
@@ -299,13 +208,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: exponential, mean: 1 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "Number of page faults the process has made."
     instrument: counter
@@ -326,12 +228,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 60, max: 2592000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: release_candidate
     brief: "The time the process has been running."
     note: |

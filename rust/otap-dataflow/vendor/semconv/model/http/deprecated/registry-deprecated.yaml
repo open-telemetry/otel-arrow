@@ -13,10 +13,6 @@ groups:
           renamed_to: http.request.method
         examples: ["GET", "POST", "HEAD"]
       - id: http.status_code
-        annotations:
-          traffic-generator:
-            values: [200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 409, 429, 500, 502, 503, 504]
-            weights: [600, 40, 30, 5, 10, 20, 25, 10, 8, 40, 5, 5, 15, 5, 8, 4]
         type: int
         brief: 'Deprecated, use `http.response.status_code` instead.'
         stability: development
@@ -49,10 +45,6 @@ groups:
           note: Split to `url.path` and `url.query`.
         examples: ['/search?q=OpenTelemetry#SemConv']
       - id: http.request_content_length
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         type: int
         brief: 'Deprecated, use `http.request.header.content-length` instead.'
         stability: development
@@ -61,10 +53,6 @@ groups:
           note: Replaced by `http.request.header.content-length`.
         examples: 3495
       - id: http.response_content_length
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         type: int
         brief: 'Deprecated, use `http.response.header.content-length` instead.'
         stability: development
@@ -90,10 +78,6 @@ groups:
         brief: "Deprecated, use one of `server.address`, `client.address` or `http.request.header.host` instead, depending on the usage."
         examples: ['www.example.org']
       - id: http.request_content_length_uncompressed
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         stability: development
         deprecated:
           reason: renamed
@@ -102,10 +86,6 @@ groups:
         brief: "Deprecated, use `http.request.body.size` instead."
         examples: 5493
       - id: http.response_content_length_uncompressed
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1048576 }
-            distribution: { type: lognormal, mean: 2048, stddev: 8192 }
         stability: development
         deprecated:
           reason: renamed
@@ -122,10 +102,6 @@ groups:
         brief: "Deprecated, use `server.address` instead."
         examples: ['example.com']
       - id: http.flavor
-        annotations:
-          traffic-generator:
-            values: ["1.1", "2.0", "1.0", "3.0", "SPDY", "QUIC"]
-            weights: [50, 30, 10, 8, 1, 1]
         type:
           members:
             - id: http_1_0

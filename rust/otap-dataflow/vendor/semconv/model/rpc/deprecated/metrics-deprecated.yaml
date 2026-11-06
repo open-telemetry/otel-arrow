@@ -5,16 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 1, max: 100 }
-          distribution: { type: exponential, mean: 3 }
-        bounds: [1, 2, 5, 10, 20, 50, 100]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the number of messages received per RPC.
     instrument: histogram
@@ -34,16 +24,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 1, max: 100 }
-          distribution: { type: exponential, mean: 3 }
-        bounds: [1, 2, 5, 10, 20, 50, 100]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the number of messages sent per RPC.
     instrument: histogram
@@ -63,16 +43,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 1, max: 100 }
-          distribution: { type: exponential, mean: 3 }
-        bounds: [1, 2, 5, 10, 20, 50, 100]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the number of messages received per RPC.
     instrument: histogram
@@ -92,16 +62,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 1, max: 100 }
-          distribution: { type: exponential, mean: 3 }
-        bounds: [1, 2, 5, 10, 20, 50, 100]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the number of messages sent per RPC.
     instrument: histogram
@@ -121,16 +81,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 50.0, stddev: 100.0 }
-        bounds: [5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000, 2500.0, 5000, 7500.0, 10000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     instrument: histogram
     unit: "ms"
@@ -151,16 +101,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 30000.0 }
-          distribution: { type: lognormal, mean: 50.0, stddev: 100.0 }
-        bounds: [5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000, 2500.0, 5000, 7500.0, 10000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     instrument: histogram
     unit: "ms"
@@ -182,16 +122,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the size of RPC request messages (uncompressed).
     instrument: histogram
@@ -209,16 +139,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the size of RPC response messages (uncompressed).
     instrument: histogram
@@ -236,16 +156,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the size of RPC request messages (uncompressed).
     instrument: histogram
@@ -263,16 +173,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10485760 }
-          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
-        bounds: [0, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the size of RPC response messages (uncompressed).
     instrument: histogram

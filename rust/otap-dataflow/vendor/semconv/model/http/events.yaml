@@ -1,10 +1,5 @@
 groups:
   - id: event.http.client.request.exception
-    annotations:
-      traffic-generator:
-        severity:
-          values: [ERROR, WARN, FATAL]
-          weights: [80, 15, 5]
     name: http.client.request.exception
     stability: development
     type: event
@@ -33,11 +28,6 @@ groups:
       - ref: exception.stacktrace
 
   - id: event.http.server.request.exception
-    annotations:
-      traffic-generator:
-        severity:
-          values: [ERROR, WARN, FATAL]
-          weights: [80, 15, 5]
     name: http.server.request.exception
     stability: development
     type: event

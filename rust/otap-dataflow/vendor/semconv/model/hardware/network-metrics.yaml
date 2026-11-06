@@ -22,13 +22,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          values: [125000000, 1250000000, 12500000000]
-          weights: [50, 40, 10]
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Link speed."
     instrument: updowncounter
@@ -41,13 +34,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Utilization of the network bandwidth as a fraction."
     instrument: gauge
@@ -60,13 +46,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1073741824 }
-          distribution: { type: exponential, mean: 1048576 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Received and transmitted network traffic in bytes."
     instrument: counter
@@ -82,13 +61,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Received and transmitted network traffic in packets (or frames)."
     instrument: counter
@@ -104,13 +76,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          values: [0, 1]
-          weights: [5, 95]
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Link status: `1` (up) or `0` (down)."
     instrument: updowncounter

@@ -296,14 +296,6 @@ span_refinements:
 # Azure operations that do not map to a generic messaging operation type.
 spans:
   - type: messaging.servicebus.generic.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.1, max: 30000.0 }
-          distribution: { type: lognormal, mean: 10.0, stddev: 20.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     kind: client
     requirement_level: recommended
     stability: development
@@ -353,14 +345,6 @@ spans:
         sampling_relevant: true
 
   - type: messaging.eventhubs.generic.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 0.1, max: 30000.0 }
-          distribution: { type: lognormal, mean: 10.0, stddev: 20.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     kind: client
     requirement_level: recommended
     stability: development

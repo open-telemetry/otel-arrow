@@ -7,46 +7,26 @@ groups:
       Attributes specific to pprof that help convert from pprof to Profiling signal.
     attributes:
       - id: pprof.mapping.has_functions
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [90, 10]
         brief: >
           Indicates that there are functions related to this mapping.
         type: boolean
         stability: development
       - id: pprof.mapping.has_filenames
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [90, 10]
         brief: >
           Indicates that there are filenames related to this mapping.
         type: boolean
         stability: development
       - id: pprof.mapping.has_line_numbers
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [80, 20]
         brief: >
           Indicates that there are line numbers related to this mapping.
         type: boolean
         stability: development
       - id: pprof.mapping.has_inline_frames
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [40, 60]
         brief: >
           Indicates that there are inline frames related to this mapping.
         type: boolean
         stability: development
       - id: pprof.location.is_folded
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [10, 90]
         brief: >
           Provides an indication that multiple symbols map to this location's
           address, for example due to identical code folding by the linker. In
@@ -102,12 +82,6 @@ groups:
           - "cpu"
         stability: development
       - id: pprof.scope.sample_type_order
-        annotations:
-          traffic-generator:
-            length:
-              values: [4]
-            items:
-              range: { min: 0, max: 3 }
         brief: >
           Records the indexes of the sample types in the original profile.
         note: >

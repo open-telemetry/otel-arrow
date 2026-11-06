@@ -25,10 +25,6 @@ groups:
           Unique identifier of the parent component (typically the `hw.id` attribute of the enclosure, or disk controller)
         examples: ['dellStorage_perc_0']
       - id: hw.type
-        annotations:
-          traffic-generator:
-            values: [cpu, memory, disk_controller, network, gpu, physical_disk, logical_disk, power_supply, fan, temperature, voltage, battery, enclosure, tape_drive]
-            weights: [20, 20, 10, 10, 8, 8, 5, 5, 4, 2, 2, 2, 2, 2]
         type:
           members:
             - id: battery
@@ -95,10 +91,6 @@ groups:
           `hw.type=temperature` along with `hw.state=degraded` would indicate that the temperature of the hardware
           component has been reported as `degraded`.
       - id: hw.state
-        annotations:
-          traffic-generator:
-            values: [ok, degraded, predicted_failure, failed, needs_cleaning]
-            weights: [90, 5, 2, 2, 1]
         type:
           members:
             - id: degraded
@@ -125,10 +117,6 @@ groups:
         brief: >
           The current state of the component
       - id: hw.battery.state
-        annotations:
-          traffic-generator:
-            values: [discharging, charging]
-            weights: [60, 40]
         type:
           members:
             - id: charging
@@ -143,10 +131,6 @@ groups:
         brief: >
           The current state of the battery
       - id: hw.limit_type
-        annotations:
-          traffic-generator:
-            values: [max, critical, degraded, throttled, turbo, high.critical, high.degraded, low.critical, low.degraded]
-            weights: [30, 15, 15, 10, 8, 7, 6, 5, 4]
         type:
           members:
             - id: critical
@@ -257,10 +241,6 @@ groups:
 
       # GPU ATTRIBUTES
       - id: hw.gpu.task
-        annotations:
-          traffic-generator:
-            values: [general, encoder, decoder]
-            weights: [60, 20, 20]
         type:
           members:
             - id: decoder
@@ -287,10 +267,6 @@ groups:
           RAID Level of the logical disk
         examples: ['RAID0+1', 'RAID5', 'RAID10']
       - id: hw.logical_disk.state
-        annotations:
-          traffic-generator:
-            values: [used, free]
-            weights: [60, 40]
         type:
           members:
             - id: used
@@ -335,9 +311,6 @@ groups:
           Type of the physical disk
         examples: ['HDD', 'SSD', '10K']
       - id: hw.physical_disk.state
-        annotations:
-          traffic-generator:
-            values: [remaining]
         type:
           members:
             - id: remaining
@@ -356,10 +329,6 @@ groups:
 
       # TAPE DRIVE ATTRIBUTES
       - id: hw.tape_drive.operation_type
-        annotations:
-          traffic-generator:
-            values: [mount, unmount, clean]
-            weights: [45, 45, 10]
         type:
           members:
             - id: mount

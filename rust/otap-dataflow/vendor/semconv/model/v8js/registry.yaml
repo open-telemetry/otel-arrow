@@ -5,10 +5,6 @@ groups:
     display_name: V8 JS Attributes
     attributes:
       - id: v8js.gc.type
-        annotations:
-          traffic-generator:
-            values: [minor, major, incremental, weakcb]
-            weights: [70, 15, 10, 5]
         stability: development
         brief: The type of garbage collection.
         type:
@@ -30,10 +26,6 @@ groups:
               brief: 'Weak Callbacks (Process Weak Callbacks).'
               stability: development
       - id: v8js.heap.space.name
-        annotations:
-          traffic-generator:
-            values: [new_space, old_space, code_space, map_space, large_object_space]
-            weights: [30, 40, 10, 10, 10]
         stability: development
         brief: The name of the space type of heap memory.
         note: >
@@ -61,10 +53,6 @@ groups:
               brief: 'Large object memory space.'
               stability: development
       - id: v8js.resource.type
-        annotations:
-          traffic-generator:
-            values: [Timeout, TCPWrap, Immediate, TCPServerWrap, TTYWrap]
-            weights: [40, 30, 15, 10, 5]
         stability: development
         brief: The type of resource keeping the event loop active.
         type:

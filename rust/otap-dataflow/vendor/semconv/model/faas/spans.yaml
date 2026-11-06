@@ -16,14 +16,6 @@ attribute_groups:
 
 spans:
   - type: faas.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 900000.0 }
-          distribution: { type: lognormal, mean: 200.0, stddev: 400.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     kind: server
     requirement_level: recommended
     stability: development
@@ -37,14 +29,6 @@ spans:
       - ref_group: faas.attributes.server
 
   - type: faas.datasource.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 900000.0 }
-          distribution: { type: lognormal, mean: 200.0, stddev: 400.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     kind: server
     requirement_level: recommended
     stability: development
@@ -66,14 +50,6 @@ spans:
       - ref: faas.document.name
 
   - type: faas.timer.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 900000.0 }
-          distribution: { type: lognormal, mean: 200.0, stddev: 400.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     kind: server
     requirement_level: recommended
     stability: development
@@ -90,14 +66,6 @@ spans:
       - ref: faas.cron
 
   - type: faas.client
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 900000.0 }
-          distribution: { type: lognormal, mean: 200.0, stddev: 400.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [85, 10, 5]
     kind: client
     requirement_level: recommended
     stability: development

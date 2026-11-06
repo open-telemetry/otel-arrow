@@ -19,10 +19,6 @@ groups:
           All custom identifiers SHOULD be stable across different versions of an implementation.
         examples: ["opentelemetry"]
       - id: telemetry.sdk.language
-        annotations:
-          traffic-generator:
-            values: [java, go, python, nodejs, dotnet, rust, php, ruby, cpp]
-            weights: [25, 20, 20, 15, 10, 4, 3, 2, 1]
         type:
           members:
             - id: cpp

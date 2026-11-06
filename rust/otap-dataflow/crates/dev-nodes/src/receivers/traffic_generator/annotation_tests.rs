@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyValueKind;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
-    AggregationTemporality, metric::Data, number_data_point,
+    AggregationTemporality, HistogramDataPoint, metric::Data, number_data_point,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -1988,12 +1988,13 @@ fn bucketize_uses_upper_inclusive_bounds() {
     assert_eq!(bucketize(&[], &DEFAULT_HISTOGRAM_BOUNDS).len(), 16);
 }
 
-/// Scenario: Metrics are generated from the annotated vendored registry.
+/// Scenario: Metrics are generated from every metric group in the vendored
+/// registry, annotated or not.
 /// Guarantees: Counters are delta and non-negative, sums are delta, int
-/// metrics emit `as_int` points, number values stay in their annotated range,
-/// and histograms have consistent buckets, count, sum, min, and max.
+/// metrics emit `as_int` points, double metrics emit `as_double` points, and
+/// histograms have consistent buckets, count, sum, min, and max.
 #[test]
-fn generated_metrics_respect_annotations() {
+fn generated_metrics_are_well_formed() {
     let groups = groups_of(GroupType::Metric);
     let mut r = rng();
     let data = semconv_otlp_metrics_with_rng(groups.len() * 3, model(), &mut r);
@@ -2031,23 +2032,7 @@ fn generated_metrics_respect_annotations() {
             }
             Data::Histogram(h) => {
                 for p in &h.data_points {
-                    assert_eq!(p.bucket_counts.len(), p.explicit_bounds.len() + 1);
-                    assert_eq!(
-                        p.bucket_counts.iter().sum::<u64>(),
-                        p.count,
-                        "{}",
-                        metric.name
-                    );
-                    assert!(p.count >= 1);
-                    let (min, max, sum) = (
-                        p.min.expect("min"),
-                        p.max.expect("max"),
-                        p.sum.expect("sum"),
-                    );
-                    assert!(min <= max);
-                    assert!(
-                        sum >= min * p.count as f64 - 1e-6 && sum <= max * p.count as f64 + 1e-6
-                    );
+                    assert_histogram_point_consistent(p, &metric.name);
                 }
             }
             other => panic!("unexpected data {other:?}"),
@@ -2068,50 +2053,188 @@ fn number_value(v: Option<&number_data_point::Value>, int: bool, name: &str) -> 
     }
 }
 
-/// Scenario: Spans and logs are generated from the annotated vendored
-/// registry.
-/// Guarantees: Span durations vary and stay non-negative, status codes come
-/// from the annotation, and log severity number and text agree.
-#[test]
-fn generated_spans_and_logs_respect_annotations() {
-    let mut r = rng();
-    let traces =
-        semconv_otlp_traces_with_rng(groups_of(GroupType::Span).len() * 5, model(), &mut r);
-    let spans = &traces.resource_spans[0].scope_spans[0].spans;
-    let durations: HashSet<u64> = spans
-        .iter()
-        .map(|s| s.end_time_unix_nano - s.start_time_unix_nano)
-        .collect();
-    assert!(durations.len() > spans.len() / 2, "durations should vary");
-    let codes: HashSet<i32> = spans
-        .iter()
-        .filter_map(|s| s.status.as_ref().map(|s| s.code))
-        .collect();
-    assert!(codes.is_subset(&HashSet::from([0, 1, 2])));
-    assert!(codes.contains(&2), "error status should appear");
-
-    let logs = semconv_otlp_logs_with_rng(groups_of(GroupType::Event).len() * 10, model(), &mut r);
-    let mut severities = HashSet::new();
-    for rec in &logs.resource_logs[0].scope_logs[0].log_records {
-        assert_eq!(
-            severity_number(&rec.severity_text),
-            Some(rec.severity_number)
-        );
-        let _ = severities.insert(rec.severity_number);
-    }
+fn assert_histogram_point_consistent(p: &HistogramDataPoint, name: &str) {
+    assert_eq!(p.bucket_counts.len(), p.explicit_bounds.len() + 1, "{name}");
+    assert_eq!(p.bucket_counts.iter().sum::<u64>(), p.count, "{name}");
+    assert!(p.count >= 1, "{name}");
+    let (min, max, sum) = (
+        p.min.expect("min"),
+        p.max.expect("max"),
+        p.sum.expect("sum"),
+    );
+    assert!(min <= max, "{name}");
     assert!(
-        severities.len() > 2,
-        "severities should vary: {severities:?}"
+        sum >= min * p.count as f64 - 1e-6 && sum <= max * p.count as f64 + 1e-6,
+        "{name}"
     );
 }
 
 // ===========================================================================
-// Vendored registry
+// Vendored registry: representative annotations
 // ===========================================================================
+//
+// The vendored registry carries one representative `traffic-generator`
+// annotation per supported annotation kind (see the receiver README). The
+// tests below generate signals from those groups only and check that each
+// annotation drives the generated values.
 
-/// Scenario: Every annotation in the full vendored registry is validated.
+/// Span group annotated with `duration` and `status`; its attributes
+/// carry the int, double, enum, string, array, and template annotations.
+const REPRESENTATIVE_SPAN: &str = "span.azure.cosmosdb.client";
+/// Histogram metric annotated with `value`, `bounds`, `observations`, and
+/// `data_points`.
+const REPRESENTATIVE_HISTOGRAM: &str = "jvm.gc.duration";
+/// Counter metric annotated with an exponential `value`.
+const REPRESENTATIVE_COUNTER: &str = "jvm.class.loaded";
+/// UpDownCounter metric annotated with a uniform `value`; carries the
+/// annotated boolean attribute `jvm.thread.daemon`.
+const REPRESENTATIVE_UPDOWNCOUNTER: &str = "jvm.thread.count";
+/// Gauge metric annotated with a discrete double `value`.
+const REPRESENTATIVE_GAUGE: &str = "jvm.cpu.recent_utilization";
+/// Event group annotated with `severity`; carries the annotated `any`
+/// attribute `feature_flag.result.value`.
+const REPRESENTATIVE_EVENT: &str = "feature_flag.evaluation";
+
+/// Group-level and attribute-level representative annotations, as
+/// `(group id, attribute name)`; `None` marks a group-level annotation.
+const REPRESENTATIVE_ANNOTATIONS: &[(&str, Option<&str>)] = &[
+    ("span.azure.cosmosdb.client", None),
+    (
+        "span.azure.cosmosdb.client",
+        Some("azure.cosmosdb.request.body.size"),
+    ),
+    (
+        "span.azure.cosmosdb.client",
+        Some("azure.cosmosdb.operation.request_charge"),
+    ),
+    (
+        "span.azure.cosmosdb.client",
+        Some("azure.cosmosdb.connection.mode"),
+    ),
+    (
+        "span.azure.cosmosdb.client",
+        Some("azure.cosmosdb.operation.contacted_regions"),
+    ),
+    ("span.azure.cosmosdb.client", Some("db.operation.name")),
+    (
+        "span.azure.cosmosdb.client",
+        Some("db.response.returned_rows"),
+    ),
+    ("span.azure.cosmosdb.client", Some("db.query.parameter")),
+    ("metric.jvm.gc.duration", None),
+    ("metric.jvm.class.loaded", None),
+    ("metric.jvm.thread.count", None),
+    ("metric.jvm.thread.count", Some("jvm.thread.daemon")),
+    ("metric.jvm.cpu.recent_utilization", None),
+    ("event.feature_flag.evaluation", None),
+    (
+        "event.feature_flag.evaluation",
+        Some("feature_flag.result.value"),
+    ),
+];
+
+/// Value of attribute `key`, panicking when it is missing.
+fn attr_value<'a>(attrs: &'a [KeyValue], key: &str) -> &'a AnyValue {
+    attrs
+        .iter()
+        .find(|kv| kv.key == key)
+        .and_then(|kv| kv.value.as_ref())
+        .unwrap_or_else(|| panic!("attribute {key} missing"))
+}
+
+fn attr_scalar(attrs: &[KeyValue], key: &str) -> Scalar {
+    any_scalar(attr_value(attrs, key))
+}
+
+fn attr_int(attrs: &[KeyValue], key: &str) -> i64 {
+    match attr_scalar(attrs, key) {
+        Scalar::Int(i) => i,
+        other => panic!("{key}: expected int, got {other:?}"),
+    }
+}
+
+fn attr_string(attrs: &[KeyValue], key: &str) -> String {
+    match attr_scalar(attrs, key) {
+        Scalar::String(s) => s,
+        other => panic!("{key}: expected string, got {other:?}"),
+    }
+}
+
+/// A model restricted to the named span, metric, and event templates.
+fn representative_model(spans: &[&str], metrics: &[&str], events: &[&str]) -> SemconvModel {
+    let m = model();
+    let model = SemconvModel {
+        spans: m
+            .spans
+            .iter()
+            .filter(|t| spans.contains(&t.name.as_str()))
+            .cloned()
+            .collect(),
+        metrics: m
+            .metrics
+            .iter()
+            .flatten()
+            .filter(|t| metrics.contains(&t.name.as_str()))
+            .cloned()
+            .map(Some)
+            .collect(),
+        events: m
+            .events
+            .iter()
+            .filter(|t| events.contains(&t.name.as_str()))
+            .cloned()
+            .collect(),
+    };
+    assert_eq!(model.spans.len(), spans.len(), "missing span templates");
+    assert_eq!(
+        model.metrics.len(),
+        metrics.len(),
+        "missing metric templates"
+    );
+    assert_eq!(model.events.len(), events.len(), "missing event templates");
+    model
+}
+
+/// Scenario: The vendored registry is resolved and every representative
+/// group and attribute is looked up.
+/// Guarantees: Each representative annotation (one per supported annotation
+/// kind) is still present, so a registry refresh that drops them fails here
+/// with the missing group or attribute instead of silently weakening the
+/// generation tests below.
+#[test]
+fn vendored_registry_keeps_representative_annotations() {
+    let has = |a: Option<&BTreeMap<String, YamlValue>>| {
+        a.is_some_and(|a| a.contains_key(annotation::NAMESPACE))
+    };
+    let mut missing = Vec::new();
+    for (group_id, attribute) in REPRESENTATIVE_ANNOTATIONS {
+        let Some(group) = registry().groups.iter().find(|g| g.id == *group_id) else {
+            missing.push(format!("group {group_id} not found"));
+            continue;
+        };
+        let annotated = match attribute {
+            None => has(group.annotations.as_ref()),
+            Some(name) => group
+                .attributes
+                .iter()
+                .find(|a| a.name == *name)
+                .is_some_and(|a| has(a.annotations.as_ref())),
+        };
+        if !annotated {
+            missing.push(format!("{group_id} / {}", attribute.unwrap_or("(group)")));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "missing representative annotations:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// Scenario: Every annotation in the vendored registry is compiled.
 /// Guarantees: Every `traffic-generator` annotation parses and validates, so
-/// the receiver starts without configuration errors.
+/// the receiver starts without configuration errors when `registry_path`
+/// points at the vendored registry.
 #[test]
 fn vendored_registry_annotations_all_validate() {
     if let Err(errors) = SemconvModel::compile(registry()) {
@@ -2122,44 +2245,234 @@ fn vendored_registry_annotations_all_validate() {
     assert!(!groups_of(GroupType::Event).is_empty());
 }
 
-/// Scenario: The vendored registry is checked for annotation coverage.
-/// Guarantees: Every metric, span and event group, and every int, double,
-/// boolean, or int[] attribute has a `traffic-generator` annotation.
+/// Scenario: Spans are generated from the representative span group, whose
+/// group annotation sets `duration` and `status` and whose attribute
+/// definitions are annotated with an int lognormal range, a double normal
+/// range, a weighted enum, an unweighted string list, an int zipf range, a
+/// string array, and a string template.
+/// Guarantees: Durations stay within the annotated range and vary, every
+/// annotated status appears, and each attribute value has the attribute's
+/// type and stays within its annotated range or value set (zipf favors the
+/// range minimum, the enum favors its heavier member, template names expand
+/// to `<prefix>.<key>`).
 #[test]
-fn vendored_registry_annotation_coverage() {
-    let mut missing = Vec::new();
-    for g in &registry().groups {
-        let has = |a: Option<&BTreeMap<String, YamlValue>>| {
-            a.is_some_and(|a| a.contains_key(annotation::NAMESPACE))
-        };
-        if matches!(
-            g.r#type,
-            GroupType::Metric | GroupType::Span | GroupType::Event
-        ) && !has(g.annotations.as_ref())
-        {
-            missing.push(format!("group {}", g.id));
+fn representative_span_respects_annotations() {
+    const N: usize = 2_000;
+    let model = representative_model(&[REPRESENTATIVE_SPAN], &[], &[]);
+    let traces = semconv_otlp_traces_with_rng(N, &model, &mut rng());
+    let spans = &traces.resource_spans[0].scope_spans[0].spans;
+    assert_eq!(spans.len(), N);
+
+    let mut durations = HashSet::new();
+    let mut codes = HashSet::new();
+    let mut modes: HashMap<String, usize> = HashMap::new();
+    let mut operations = HashSet::new();
+    let mut rows: HashMap<i64, usize> = HashMap::new();
+    let mut region_lengths = HashSet::new();
+    let mut parameter_keys = HashSet::new();
+    for span in spans {
+        let d = span.end_time_unix_nano - span.start_time_unix_nano;
+        assert!(
+            (100_000..=30_000_000_000).contains(&d),
+            "duration {d}ns outside [0.1ms, 30000ms]"
+        );
+        let _ = durations.insert(d);
+        let _ = codes.insert(span.status.as_ref().expect("annotated status").code);
+
+        let a = &span.attributes;
+        let size = attr_int(a, "azure.cosmosdb.request.body.size");
+        assert!((0..=1_048_576).contains(&size), "body size {size}");
+        match attr_scalar(a, "azure.cosmosdb.operation.request_charge") {
+            Scalar::Double(c) => assert!((1.0..=100.0).contains(&c), "charge {c}"),
+            other => panic!("request_charge: expected double, got {other:?}"),
         }
-        for a in &g.attributes {
-            let numeric = matches!(
-                a.r#type,
-                AttributeType::PrimitiveOrArray(
-                    PrimitiveOrArrayTypeSpec::Int
-                        | PrimitiveOrArrayTypeSpec::Double
-                        | PrimitiveOrArrayTypeSpec::Boolean
-                        | PrimitiveOrArrayTypeSpec::Ints
-                )
+        *modes
+            .entry(attr_string(a, "azure.cosmosdb.connection.mode"))
+            .or_default() += 1;
+        let _ = operations.insert(attr_string(a, "db.operation.name"));
+        let n = attr_int(a, "db.response.returned_rows");
+        assert!((1..=1000).contains(&n), "returned_rows {n}");
+        *rows.entry(n).or_default() += 1;
+
+        let Some(AnyValueKind::ArrayValue(regions)) =
+            attr_value(a, "azure.cosmosdb.operation.contacted_regions")
+                .value
+                .as_ref()
+        else {
+            panic!("contacted_regions: expected array")
+        };
+        let _ = region_lengths.insert(regions.values.len());
+        for item in &regions.values {
+            assert!(
+                matches!(any_scalar(item), Scalar::String(s)
+                    if ["East US", "West Europe", "Southeast Asia"].contains(&s.as_str())),
+                "unexpected region {item:?}"
             );
-            if numeric && !has(a.annotations.as_ref()) {
-                missing.push(format!("{} / {}", g.id, a.name));
+        }
+
+        let params: Vec<&KeyValue> = a
+            .iter()
+            .filter(|kv| kv.key.starts_with("db.query.parameter."))
+            .collect();
+        assert_eq!(params.len(), 1, "one template attribute per span");
+        let _ = parameter_keys.insert(params[0].key.clone());
+        assert!(
+            matches!(kv_scalar(params[0]), Scalar::String(s)
+                if ["42", "alice", "100"].contains(&s.as_str())),
+            "unexpected parameter value {:?}",
+            params[0].value
+        );
+    }
+
+    assert!(durations.len() > N / 2, "durations should vary");
+    assert_eq!(codes, HashSet::from([0, 1, 2]));
+    assert_eq!(
+        modes.keys().cloned().collect::<HashSet<_>>(),
+        HashSet::from(["direct".to_owned(), "gateway".to_owned()])
+    );
+    assert!(modes["direct"] > modes["gateway"], "weights 9:1 {modes:?}");
+    assert_eq!(
+        operations,
+        HashSet::from([
+            "ReadItem".to_owned(),
+            "CreateItem".to_owned(),
+            "QueryItems".to_owned()
+        ])
+    );
+    let most_frequent_rows = rows.iter().max_by_key(|(_, c)| **c).map(|(v, _)| *v);
+    assert_eq!(most_frequent_rows, Some(1), "zipf favors range.min");
+    assert_eq!(region_lengths, HashSet::from([1, 2, 3]));
+    assert_eq!(
+        parameter_keys,
+        HashSet::from([
+            "db.query.parameter.id".to_owned(),
+            "db.query.parameter.name".to_owned(),
+            "db.query.parameter.limit".to_owned()
+        ])
+    );
+}
+
+/// Scenario: Metrics are generated from the representative histogram,
+/// counter, updowncounter, and gauge groups, and the updowncounter carries
+/// an annotated boolean attribute.
+/// Guarantees: The histogram uses the annotated `bounds`, per-point
+/// observation counts, value range, and 1 to 3 data points per metric; the
+/// counter emits monotonic int increments within its exponential range; the
+/// updowncounter emits non-monotonic ints within its uniform range with a
+/// weighted boolean attribute; the gauge emits only the annotated doubles.
+#[test]
+fn representative_metrics_respect_annotations() {
+    const ROUNDS: usize = 200;
+    let names = [
+        REPRESENTATIVE_HISTOGRAM,
+        REPRESENTATIVE_COUNTER,
+        REPRESENTATIVE_UPDOWNCOUNTER,
+        REPRESENTATIVE_GAUGE,
+    ];
+    let model = representative_model(&[], &names, &[]);
+    let data = semconv_otlp_metrics_with_rng(names.len() * ROUNDS, &model, &mut rng());
+    let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
+    assert_eq!(metrics.len(), names.len() * ROUNDS);
+
+    let mut histogram_points = HashSet::new();
+    let mut daemon: HashMap<bool, usize> = HashMap::new();
+    let mut gauge_values = HashSet::new();
+    let mut counter_values = HashSet::new();
+    for metric in metrics {
+        let name = metric.name.as_str();
+        match (name, metric.data.as_ref().expect("data")) {
+            (REPRESENTATIVE_HISTOGRAM, Data::Histogram(h)) => {
+                let _ = histogram_points.insert(h.data_points.len());
+                for p in &h.data_points {
+                    assert_histogram_point_consistent(p, name);
+                    assert_eq!(p.explicit_bounds, vec![0.01, 0.1, 1.0, 10.0]);
+                    assert!((10..=100).contains(&p.count), "observations {}", p.count);
+                    assert!(p.min.expect("min") >= 0.0 && p.max.expect("max") <= 10.0);
+                }
             }
+            (REPRESENTATIVE_COUNTER, Data::Sum(s)) => {
+                assert!(s.is_monotonic);
+                for p in &s.data_points {
+                    let v = number_value(p.value.as_ref(), true, name);
+                    assert!((0.0..=100.0).contains(&v), "{name} value {v}");
+                    let _ = counter_values.insert(v as i64);
+                }
+            }
+            (REPRESENTATIVE_UPDOWNCOUNTER, Data::Sum(s)) => {
+                assert!(!s.is_monotonic);
+                for p in &s.data_points {
+                    let v = number_value(p.value.as_ref(), true, name);
+                    assert!((10.0..=200.0).contains(&v), "{name} value {v}");
+                    match attr_scalar(&p.attributes, "jvm.thread.daemon") {
+                        Scalar::Bool(b) => *daemon.entry(b).or_default() += 1,
+                        other => panic!("jvm.thread.daemon: expected bool, got {other:?}"),
+                    }
+                }
+            }
+            (REPRESENTATIVE_GAUGE, Data::Gauge(g)) => {
+                for p in &g.data_points {
+                    let v = number_value(p.value.as_ref(), false, name);
+                    let _ = gauge_values.insert(v.to_bits());
+                }
+            }
+            (_, other) => panic!("{name}: unexpected data {other:?}"),
         }
     }
-    missing.sort();
-    missing.dedup();
+
+    assert_eq!(histogram_points, HashSet::from([1, 2, 3]));
+    assert!(counter_values.len() > 5, "counter values should vary");
     assert!(
-        missing.is_empty(),
-        "missing annotations:\n{}",
-        missing.join("\n")
+        daemon[&true] > daemon[&false],
+        "weights 3:1 favor true {daemon:?}"
+    );
+    assert_eq!(
+        gauge_values,
+        [0.25_f64, 0.5, 0.75].iter().map(|v| v.to_bits()).collect()
+    );
+}
+
+/// Scenario: Logs are generated from the representative event group, whose
+/// group annotation sets `severity` and whose `any` attribute definition is
+/// annotated with mixed string, boolean, int, and double values.
+/// Guarantees: Severity number and text agree and cover exactly the annotated
+/// names, and the `any` attribute emits every annotated value with its own
+/// scalar type.
+#[test]
+fn representative_event_respects_annotations() {
+    const N: usize = 1_000;
+    let model = representative_model(&[], &[], &[REPRESENTATIVE_EVENT]);
+    let logs = semconv_otlp_logs_with_rng(N, &model, &mut rng());
+    let records = &logs.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(records.len(), N);
+
+    let mut severities = HashSet::new();
+    let mut values = HashSet::new();
+    for rec in records {
+        assert_eq!(
+            severity_number(&rec.severity_text),
+            Some(rec.severity_number)
+        );
+        let _ = severities.insert(rec.severity_text.clone());
+        let _ = values.insert(format!(
+            "{:?}",
+            attr_scalar(&rec.attributes, "feature_flag.result.value")
+        ));
+    }
+    assert_eq!(
+        severities,
+        HashSet::from(["INFO".to_owned(), "DEBUG".to_owned(), "WARN".to_owned()])
+    );
+    assert_eq!(
+        values,
+        [
+            Scalar::String("#ff0000".into()),
+            Scalar::Bool(true),
+            Scalar::Int(3),
+            Scalar::Double(0.5),
+        ]
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect()
     );
 }
 

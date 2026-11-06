@@ -5,16 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 5.0 }
-          distribution: { type: lognormal, mean: 0.01, stddev: 0.02 }
-        bounds: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10]
-        observations:
-          range: { min: 10, max: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: Measures the time taken to perform a DNS lookup.
     instrument: histogram

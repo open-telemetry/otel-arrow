@@ -6,10 +6,6 @@ groups:
       Deprecated exception attributes.
     attributes:
       - id: exception.escaped
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [20, 80]
         type: boolean
         stability: stable
         deprecated:

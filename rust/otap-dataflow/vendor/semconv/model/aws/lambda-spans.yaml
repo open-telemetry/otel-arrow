@@ -1,13 +1,5 @@
 groups:
   - id: span.aws.lambda.server
-    annotations:
-      traffic-generator:
-        duration:
-          range: { min: 1.0, max: 900000.0 }
-          distribution: { type: lognormal, mean: 200.0, stddev: 400.0 }
-        status:
-          values: [unset, ok, error]
-          weights: [90, 5, 5]
     type: span
     span_kind: server
     stability: development

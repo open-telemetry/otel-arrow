@@ -1,10 +1,5 @@
 groups:
   - id: event.rpc.message
-    annotations:
-      traffic-generator:
-        severity:
-          values: [DEBUG, TRACE, INFO]
-          weights: [60, 30, 10]
     type: event
     stability: development
     name: rpc.message

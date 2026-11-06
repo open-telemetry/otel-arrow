@@ -20,13 +20,6 @@ metrics:
         # TODO hw.cpu.speed is used as a namespace by hw.cpu.speed.limit
         policy_exceptions:
           - metric_namespace_collision
-      traffic-generator:
-        value:
-          range: { min: 800000000, max: 5500000000 }
-          distribution: { type: normal, mean: 2800000000, stddev: 400000000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "CPU current frequency."
     instrument: gauge
@@ -40,13 +33,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 800000000, max: 5500000000 }
-          distribution: { type: normal, mean: 2800000000, stddev: 400000000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "CPU maximum frequency."
     instrument: gauge

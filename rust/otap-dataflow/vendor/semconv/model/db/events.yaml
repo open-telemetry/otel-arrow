@@ -1,10 +1,5 @@
 groups:
   - id: event.db.client.operation.exception
-    annotations:
-      traffic-generator:
-        severity:
-          values: [ERROR, WARN, FATAL]
-          weights: [80, 15, 5]
     name: db.client.operation.exception
     stability: development
     type: event

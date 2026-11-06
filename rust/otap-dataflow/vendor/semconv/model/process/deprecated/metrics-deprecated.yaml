@@ -1,13 +1,5 @@
 groups:
   - id: metric.process.open_file_descriptor.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 10000000 }
-          distribution: { type: lognormal, mean: 10000, stddev: 50000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: process.open_file_descriptor.count
     stability: development

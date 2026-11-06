@@ -6,10 +6,6 @@ groups:
       These attributes may be used for any operation to store information about a thread that started a span.
     attributes:
       - id: thread.id
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 10000 }
-            distribution: { type: zipf, exponent: 1.1 }
         type: int
         stability: development
         brief: >

@@ -5,13 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "The number of times a generation was collected since interpreter start."
     note: >
       This metric reports data from [`gc.stats()`](https://docs.python.org/3/library/gc.html#gc.get_stats).
@@ -28,13 +21,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "The total number of objects collected inside a generation since interpreter start."
     note: >
       This metric reports data from [`gc.stats()`](https://docs.python.org/3/library/gc.html#gc.get_stats).
@@ -51,13 +37,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     brief: "The total number of objects which were found to be uncollectable inside a generation since interpreter start."
     note: >
       This metric reports data from [`gc.stats()`](https://docs.python.org/3/library/gc.html#gc.get_stats).

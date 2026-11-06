@@ -40,10 +40,6 @@ groups:
           This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Function'. This constraint is imposed to prevent redundancy and maintain data integrity.
         examples: /usr/local/MyApplication/content_root/app/index.php
       - id: code.line.number
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 5000 }
-            distribution: { type: lognormal, mean: 200, stddev: 400 }
         type: int
         stability: stable
         brief: >
@@ -51,10 +47,6 @@ groups:
           This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Line'. This constraint is imposed to prevent redundancy and maintain data integrity.
         examples: 42
       - id: code.column.number
-        annotations:
-          traffic-generator:
-            range: { min: 1, max: 200 }
-            distribution: { type: lognormal, mean: 16, stddev: 20 }
         type: int
         stability: stable
         brief: >

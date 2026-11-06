@@ -39,9 +39,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [chat_completions, responses]
-            weights: [70, 30]
         stability: development
         type:
           members:

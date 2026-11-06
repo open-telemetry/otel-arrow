@@ -34,10 +34,6 @@ groups:
           should capture the exact value that the user agent provides.
         examples: ['Windows', 'macOS', 'Android']
       - id: browser.mobile
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [40, 60]
         type: boolean
         stability: development
         brief: 'A boolean that is true if the browser is running on a mobile device'
@@ -94,19 +90,11 @@ groups:
         brief: Name of the web vital.
         examples: ["cls"]
       - id: browser.web_vital.value
-        annotations:
-          traffic-generator:
-            range: { min: 0.0, max: 10.0 }
-            distribution: { type: lognormal, mean: 1.0, stddev: 1.5 }
         type: double
         stability: development
         brief: Value of the web vital.
         examples: [1.0]
       - id: browser.web_vital.delta
-        annotations:
-          traffic-generator:
-            range: { min: 0.0, max: 5.0 }
-            distribution: { type: exponential, mean: 0.2 }
         type: double
         stability: development
         brief: The delta between the current value and the last-reported value. See [delta](https://github.com/GoogleChrome/web-vitals?tab=readme-ov-file#report-only-the-delta-of-changes).

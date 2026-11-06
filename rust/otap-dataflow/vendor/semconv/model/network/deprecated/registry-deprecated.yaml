@@ -22,9 +22,6 @@ groups:
         brief: Deprecated, use `network.peer.address`.
         examples: ['192.168.0.1']
       - id: net.sock.peer.port
-        annotations:
-          traffic-generator:
-            range: { min: 1024, max: 65535 }
         type: int
         deprecated:
           reason: renamed
@@ -41,10 +38,6 @@ groups:
         brief: Deprecated, use `server.address` on client spans and `client.address` on server spans.
         examples: ['example.com']
       - id: net.peer.port
-        annotations:
-          traffic-generator:
-            values: [443, 80, 8080, 8443, 3000, 5432, 6379, 9092]
-            weights: [40, 20, 15, 5, 5, 5, 5, 5]
         type: int
         deprecated:
           reason: uncategorized
@@ -77,10 +70,6 @@ groups:
         brief: Deprecated, use `network.local.address`.
         examples: '192.168.0.1'
       - id: net.host.port
-        annotations:
-          traffic-generator:
-            values: [443, 80, 8080, 8443, 3000, 5432, 6379, 9092]
-            weights: [40, 20, 15, 5, 5, 5, 5, 5]
         type: int
         deprecated:
           reason: renamed
@@ -97,10 +86,6 @@ groups:
         brief: Deprecated, use `network.local.address`.
         examples: ['/var/my.sock']
       - id: net.sock.host.port
-        annotations:
-          traffic-generator:
-            values: [443, 80, 8080, 8443, 3000, 5432, 6379, 9092]
-            weights: [40, 20, 15, 5, 5, 5, 5, 5]
         type: int
         deprecated:
           reason: renamed
@@ -109,10 +94,6 @@ groups:
         brief: Deprecated, use `network.local.port`.
         examples: [8080]
       - id: net.transport
-        annotations:
-          traffic-generator:
-            values: [ip_tcp, ip_udp, pipe, inproc, other]
-            weights: [70, 20, 5, 3, 2]
         type:
           members:
             - id: ip_tcp
@@ -159,10 +140,6 @@ groups:
         brief: Deprecated, use `network.protocol.version`.
         examples: '3.1.1'
       - id: net.sock.family
-        annotations:
-          traffic-generator:
-            values: [inet, inet6, unix]
-            weights: [70, 20, 10]
         type:
           members:
             - id: inet

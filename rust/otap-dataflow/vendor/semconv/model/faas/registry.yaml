@@ -52,10 +52,6 @@ groups:
           - **AWS Lambda:** Use the (full) log stream name.
         examples: ['2021/06/28/[$LATEST]2f399eb14537447da05ab2a2e39309de']
       - id: faas.max_memory
-        annotations:
-          traffic-generator:
-            values: [134217728, 268435456, 536870912, 1073741824, 2147483648]
-            weights: [30, 25, 20, 15, 10]
         type: int
         stability: development
         brief: >
@@ -67,10 +63,6 @@ groups:
           provides this information (which must be multiplied by 1,048,576).
         examples: 134217728
       - id: faas.trigger
-        annotations:
-          traffic-generator:
-            values: [http, pubsub, timer, datasource, other]
-            weights: [50, 20, 15, 10, 5]
         stability: development
         brief: >
           Type of the trigger which caused this function invocation.
@@ -106,10 +98,6 @@ groups:
           invoked function.
         examples: 'my-function'
       - id: faas.invoked_provider
-        annotations:
-          traffic-generator:
-            values: [aws, azure, gcp, alibaba_cloud, tencent_cloud]
-            weights: [50, 20, 20, 5, 5]
         stability: development
         type:
           members:
@@ -169,10 +157,6 @@ groups:
           [Cron Expression](https://docs.oracle.com/cd/E12058_01/doc/doc.1014/e12030/cron_expressions.htm).
         examples: "0/5 * * * ? *"
       - id: faas.coldstart
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [5, 95]
         type: boolean
         stability: development
         brief: >
@@ -187,10 +171,6 @@ groups:
           and in Cosmos DB to the database name.
         examples: ['myBucketName', 'myDbName']
       - id: faas.document.operation
-        annotations:
-          traffic-generator:
-            values: [insert, edit, delete]
-            weights: [50, 30, 20]
         stability: development
         type:
           members:

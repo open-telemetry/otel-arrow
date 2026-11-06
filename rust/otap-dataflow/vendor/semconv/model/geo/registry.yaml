@@ -17,10 +17,6 @@ groups:
           Locality name. Represents the name of a city, town, village, or similar populated place.
         examples: [ 'Montreal', 'Berlin' ]
       - id: geo.continent.code
-        annotations:
-          traffic-generator:
-            values: [NA, EU, AS, SA, AF, OC, AN]
-            weights: [30, 25, 25, 8, 7, 4, 1]
         stability: development
         brief: >
           Two-letter code representing continent’s name.
@@ -61,19 +57,12 @@ groups:
           Two-letter ISO Country Code ([ISO 3166-1 alpha2](https://wikipedia.org/wiki/ISO_3166-1#Codes)).
         examples: [ 'CA' ]
       - id: geo.location.lon
-        annotations:
-          traffic-generator:
-            range: { min: -180.0, max: 180.0 }
         stability: development
         type: double
         brief: >
           Longitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).
         examples: [ -73.614830 ]
       - id: geo.location.lat
-        annotations:
-          traffic-generator:
-            range: { min: -90.0, max: 90.0 }
-            distribution: { type: normal, mean: 30.0, stddev: 25.0 }
         stability: development
         type: double
         brief: >

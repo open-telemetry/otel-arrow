@@ -48,7 +48,7 @@ groups:
         annotations:
           traffic-generator:
             values: [direct, gateway]
-            weights: [70, 30]
+            weights: [9, 1]
         type:
           members:
             - id: gateway
@@ -64,8 +64,8 @@ groups:
       - id: azure.cosmosdb.operation.request_charge
         annotations:
           traffic-generator:
-            range: { min: 1.0, max: 1000.0 }
-            distribution: { type: lognormal, mean: 10.0, stddev: 25.0 }
+            range: { min: 1, max: 100 }
+            distribution: { type: normal, mean: 10, stddev: 5 }
         type: double
         stability: development
         brief: >
@@ -80,6 +80,12 @@ groups:
         stability: development
         brief: Request payload size in bytes.
       - id: azure.cosmosdb.operation.contacted_regions
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items:
+              values: [East US, West Europe, Southeast Asia]
+              weights: [6, 3, 1]
         type: string[]
         stability: development
         brief: >
@@ -91,10 +97,6 @@ groups:
         examples:
           - ["North Central US", "Australia East", "Australia Southeast"]
       - id: azure.cosmosdb.response.sub_status_code
-        annotations:
-          traffic-generator:
-            values: [0, 1000, 1002, 3200]
-            weights: [85, 5, 5, 5]
         type: int
         stability: development
         brief: Cosmos DB sub status code.

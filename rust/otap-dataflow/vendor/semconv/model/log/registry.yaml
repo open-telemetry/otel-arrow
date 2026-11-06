@@ -6,10 +6,6 @@ groups:
       This document defines log attributes
     attributes:
       - id: log.iostream
-        annotations:
-          traffic-generator:
-            values: [stdout, stderr]
-            weights: [80, 20]
         stability: development
         brief: >
           The stream associated with the log. See below for a list of well-known values.

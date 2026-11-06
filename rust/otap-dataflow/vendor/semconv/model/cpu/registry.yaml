@@ -47,10 +47,6 @@ groups:
         stability: release_candidate
         examples: [ "user", "system" ]
       - id: cpu.logical_number
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 63 }
-            distribution: { type: zipf, exponent: 0.8 }
         type: int
         stability: development
         brief: "The logical CPU number [0..n-1]"

@@ -18,10 +18,6 @@ groups:
           The ID of the deployment.
         examples: ["1208"]
       - id: deployment.status
-        annotations:
-          traffic-generator:
-            values: [succeeded, failed]
-            weights: [90, 10]
         type:
           members:
             - id: failed

@@ -1,14 +1,6 @@
 groups:
   # metric.nfs.client.* metrics
   - id: metric.nfs.client.net.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.net.count
     stability: development
@@ -23,14 +15,6 @@ groups:
       - host
 
   - id: metric.nfs.client.net.tcp.connection.accepted
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.net.tcp.connection.accepted
     stability: development
@@ -43,14 +27,6 @@ groups:
       - host
 
   - id: metric.nfs.client.rpc.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.rpc.count
     stability: development
@@ -63,14 +39,6 @@ groups:
       - host
 
   - id: metric.nfs.client.rpc.retransmit.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100 }
-          distribution: { type: exponential, mean: 1 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.rpc.retransmit.count
     stability: development
@@ -83,14 +51,6 @@ groups:
       - host
 
   - id: metric.nfs.client.rpc.authrefresh.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.rpc.authrefresh.count
     stability: development
@@ -103,14 +63,6 @@ groups:
       - host
 
   - id: metric.nfs.client.operation.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.operation.count
     stability: development
@@ -124,14 +76,6 @@ groups:
       - host
 
   - id: metric.nfs.client.procedure.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.client.procedure.count
     stability: development
@@ -146,14 +90,6 @@ groups:
 
   # metric.nfs.server.* metrics
   - id: metric.nfs.server.repcache.requests
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.repcache.requests
     stability: development
@@ -166,14 +102,6 @@ groups:
       - host
 
   - id: metric.nfs.server.fh.stale.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.fh.stale.count
     stability: development
@@ -186,14 +114,6 @@ groups:
       - host
 
   - id: metric.nfs.server.io
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1073741824 }
-          distribution: { type: exponential, mean: 1048576 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.io
     stability: development
@@ -208,14 +128,6 @@ groups:
       - host
 
   - id: metric.nfs.server.thread.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 500 }
-          distribution: { type: normal, mean: 20, stddev: 15 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.thread.count
     stability: development
@@ -228,14 +140,6 @@ groups:
       - host
 
   - id: metric.nfs.server.net.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.net.count
     stability: development
@@ -250,14 +154,6 @@ groups:
       - host
 
   - id: metric.nfs.server.net.tcp.connection.accepted
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.net.tcp.connection.accepted
     stability: development
@@ -270,14 +166,6 @@ groups:
       - host
 
   - id: metric.nfs.server.rpc.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.rpc.count
     stability: development
@@ -293,14 +181,6 @@ groups:
       - host
 
   - id: metric.nfs.server.operation.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.operation.count
     stability: development
@@ -314,14 +194,6 @@ groups:
       - host
 
   - id: metric.nfs.server.procedure.count
-    annotations:
-      traffic-generator:
-        value:
-          range: { min: 0, max: 1000 }
-          distribution: { type: exponential, mean: 10 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     type: metric
     metric_name: nfs.server.procedure.count
     stability: development

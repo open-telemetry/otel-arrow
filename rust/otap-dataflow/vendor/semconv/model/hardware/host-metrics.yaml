@@ -5,13 +5,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 110.0 }
-          distribution: { type: normal, mean: 45.0, stddev: 10.0 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Ambient (external) temperature of the physical host."
     instrument: gauge
@@ -24,13 +17,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
-      traffic-generator:
-        value:
-          range: { min: 0, max: 100000 }
-          distribution: { type: exponential, mean: 100 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Total energy consumed by the entire physical host, in joules."
     instrument: counter
@@ -47,13 +33,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 110.0 }
-          distribution: { type: normal, mean: 45.0, stddev: 10.0 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: >
       By how many degrees Celsius the temperature of the physical host can be increased, before reaching a warning
@@ -68,13 +47,6 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 2000.0 }
-          distribution: { type: normal, mean: 150.0, stddev: 50.0 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: >
       Instantaneous power consumed by the entire physical host in Watts (`hw.host.energy` is preferred).

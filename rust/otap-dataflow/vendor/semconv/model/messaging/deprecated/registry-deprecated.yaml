@@ -6,10 +6,6 @@ groups:
     brief: "Describes deprecated messaging attributes."
     attributes:
       - id: messaging.kafka.destination.partition
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 63 }
-            distribution: { type: zipf, exponent: 0.5 }
         type: int
         brief: >
           Deprecated, use `messaging.destination.partition.id` instead.
@@ -77,9 +73,6 @@ groups:
           reason: renamed
           renamed_to: messaging.destination.subscription.name
       - id: messaging.kafka.message.offset
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 100000000 }
         type: int
         stability: development
         brief: >
@@ -89,10 +82,6 @@ groups:
           reason: renamed
           renamed_to: messaging.kafka.offset
       - id: messaging.destination_publish.anonymous
-        annotations:
-          traffic-generator:
-            values: [true, false]
-            weights: [5, 95]
         type: boolean
         stability: development
         brief: 'Deprecated, no replacement at this time.'

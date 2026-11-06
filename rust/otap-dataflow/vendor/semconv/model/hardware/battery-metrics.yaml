@@ -24,13 +24,6 @@ metrics:
         # TODO hw.battery.charge is used as a namespace by hw.battery.charge.limit
         policy_exceptions:
           - metric_namespace_collision
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.7, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Remaining fraction of battery charge."
     instrument: gauge
@@ -44,13 +37,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0.0, max: 1.0 }
-          distribution: { type: normal, mean: 0.7, stddev: 0.2 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Lower limit of battery charge fraction to ensure proper operation."
     instrument: gauge
@@ -72,12 +58,6 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
-      traffic-generator:
-        value:
-          range: { min: 0, max: 36000 }
-        data_points:
-          values: [1, 2, 3]
-          weights: [6, 3, 1]
     stability: development
     brief: "Time left before battery is completely charged or discharged."
     instrument: gauge

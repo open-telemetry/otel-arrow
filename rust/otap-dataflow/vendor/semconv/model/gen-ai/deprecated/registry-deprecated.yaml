@@ -21,9 +21,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 1, max: 128000 }
-            distribution: { type: lognormal, mean: 500, stddev: 1500 }
         stability: development
         deprecated:
           reason: uncategorized
@@ -36,9 +33,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 1, max: 16000 }
-            distribution: { type: lognormal, mean: 200, stddev: 400 }
         stability: development
         deprecated:
           reason: uncategorized
@@ -73,9 +67,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [openai, anthropic, azure.ai.openai, aws.bedrock, gcp.vertex_ai, gcp.gemini, cohere, mistral_ai]
-            weights: [40, 20, 12, 10, 8, 5, 3, 2]
         type:
           members:
             - id: openai
@@ -191,8 +182,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0, max: 1000000 }
         type: int
         deprecated:
           reason: uncategorized
@@ -205,9 +194,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [text, json_object, json_schema]
-            weights: [60, 25, 15]
         type:
           members:
             - id: text
@@ -233,9 +219,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [auto, default]
-            weights: [70, 30]
         type:
           members:
             - id: auto
@@ -293,9 +276,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [openai, azure.ai.openai, anthropic, aws.bedrock, gcp.vertex_ai, gcp.gemini, mistral_ai, cohere]
-            weights: [35, 15, 15, 10, 8, 7, 5, 5]
         deprecated:
           reason: uncategorized
           note: >
@@ -409,9 +389,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [100, 256, 512, 1024, 2048, 4096]
-            weights: [10, 15, 20, 25, 20, 10]
         deprecated:
           reason: uncategorized
           note: >
@@ -424,9 +401,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [1, 2, 3, 5]
-            weights: [85, 7, 5, 3]
         deprecated:
           reason: uncategorized
           note: >
@@ -439,9 +413,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0.0, max: 2.0 }
-            distribution: { type: normal, mean: 0.7, stddev: 0.3 }
         deprecated:
           reason: uncategorized
           note: >
@@ -454,9 +425,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0.0, max: 1.0 }
-            distribution: { type: normal, mean: 0.9, stddev: 0.1 }
         deprecated:
           reason: uncategorized
           note: >
@@ -469,9 +437,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 1.0, max: 100.0 }
-            distribution: { type: normal, mean: 40.0, stddev: 15.0 }
         deprecated:
           reason: uncategorized
           note: >
@@ -497,9 +462,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: -2.0, max: 2.0 }
-            distribution: { type: normal, mean: 0.0, stddev: 0.3 }
         deprecated:
           reason: uncategorized
           note: >
@@ -512,9 +474,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: -2.0, max: 2.0 }
-            distribution: { type: normal, mean: 0.0, stddev: 0.3 }
         deprecated:
           reason: uncategorized
           note: >
@@ -544,8 +503,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0, max: 1000000 }
         deprecated:
           reason: uncategorized
           note: >
@@ -558,9 +515,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [true, false]
-            weights: [60, 40]
         deprecated:
           reason: uncategorized
           note: >
@@ -610,9 +564,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0.05, max: 30.0 }
-            distribution: { type: lognormal, mean: 0.8, stddev: 0.8 }
         deprecated:
           reason: uncategorized
           note: >
@@ -628,9 +579,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 1, max: 128000 }
-            distribution: { type: lognormal, mean: 500, stddev: 1500 }
         deprecated:
           reason: uncategorized
           note: >
@@ -648,9 +596,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0, max: 128000 }
-            distribution: { type: lognormal, mean: 200, stddev: 800 }
         deprecated:
           reason: uncategorized
           note: >
@@ -665,9 +610,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0, max: 128000 }
-            distribution: { type: lognormal, mean: 100, stddev: 400 }
         deprecated:
           reason: uncategorized
           note: >
@@ -682,9 +624,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 1, max: 16000 }
-            distribution: { type: lognormal, mean: 200, stddev: 400 }
         deprecated:
           reason: uncategorized
           note: >
@@ -697,9 +636,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0, max: 16000 }
-            distribution: { type: lognormal, mean: 100, stddev: 300 }
         deprecated:
           reason: uncategorized
           note: >
@@ -980,9 +916,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [chat, generate_content, text_completion, embeddings, retrieval, create_agent, invoke_agent, execute_tool, invoke_workflow]
-            weights: [50, 10, 5, 15, 5, 2, 5, 6, 2]
         deprecated:
           reason: uncategorized
           note: >
@@ -1035,9 +968,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [text, json, image, speech]
-            weights: [70, 20, 5, 5]
         deprecated:
           reason: uncategorized
           note: >
@@ -1079,9 +1009,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            values: [256, 384, 512, 768, 1024, 1536, 3072]
-            weights: [5, 10, 15, 20, 20, 20, 10]
         deprecated:
           reason: uncategorized
           note: >
@@ -1317,9 +1244,6 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
-          traffic-generator:
-            range: { min: 0.0, max: 5.0 }
-            distribution: { type: normal, mean: 3.5, stddev: 1.0 }
         deprecated:
           reason: uncategorized
           note: >

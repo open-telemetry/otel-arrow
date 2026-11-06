@@ -10,9 +10,6 @@ attributes:
       the source address behind any intermediaries, for example proxies, if it's available.
     examples: ['source.example.com', '10.1.2.80', '/tmp/my.sock']
   - key: source.port
-    annotations:
-      traffic-generator:
-        range: { min: 1024, max: 65535 }
     type: int
     stability: development
     brief: 'Source port number'

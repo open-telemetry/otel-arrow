@@ -6,10 +6,6 @@ groups:
         This document defines attributes that represents an occurrence of a lifecycle transition on the Android platform.
     attributes:
       - id: android.state
-        annotations:
-          traffic-generator:
-            values: [foreground, background, created]
-            weights: [60, 30, 10]
         stability: development
         brief: Deprecated. Use `android.app.state` attribute instead.
         deprecated:

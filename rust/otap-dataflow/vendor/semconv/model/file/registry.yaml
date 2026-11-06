@@ -125,10 +125,6 @@ groups:
         stability: development
         examples: ['/home/alice/example.png', 'C:\Program Files\MyApp\myapp.exe']
       - id: file.size
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 1073741824 }
-            distribution: { type: lognormal, mean: 65536, stddev: 1048576 }
         type: int
         brief: >
           File size in bytes.

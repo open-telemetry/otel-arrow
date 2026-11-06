@@ -5,17 +5,10 @@ groups:
     display_name: ONC RPC (Sun RPC) attributes
     attributes:
       - id: onc_rpc.version
-        annotations:
-          traffic-generator:
-            values: [1, 2, 3, 4]
-            weights: [10, 30, 40, 20]
         type: int
         brief: "ONC/Sun RPC program version."
         stability: development
       - id: onc_rpc.procedure.number
-        annotations:
-          traffic-generator:
-            range: { min: 0, max: 30 }
         type: int
         stability: development
         brief: "ONC/Sun RPC procedure number."
