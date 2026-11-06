@@ -1,14 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Synthetic syslog and CEF profiles sharing the receiver's encoded batch construction.
+//! Synthetic syslog and CEF profiles sharing the codec's encoded batch construction.
 
-use chrono::{DateTime, Datelike, SecondsFormat, Utc};
-use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata_codec::{
+use crate::{
     CodecGeneratorRegistration, GenerationConfig, GenerationError, GenerationProfile, OtapPayload,
     PdataGenerator, ResolvedCodec,
 };
+use chrono::{DateTime, Datelike, SecondsFormat, Utc};
+use otel_arrow_dfe_config::SignalType;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use std::net::Ipv4Addr;
 
@@ -222,10 +222,10 @@ impl PdataGenerator for SyslogGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CodecService;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
     use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
-    use otel_arrow_dfe_pdata_codec::CodecService;
     use prost::Message;
 
     const TIMESTAMP: i64 = 1_704_067_200_123_456_789;

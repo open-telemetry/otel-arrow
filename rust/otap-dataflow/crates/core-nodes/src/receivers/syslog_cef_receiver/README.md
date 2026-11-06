@@ -30,6 +30,10 @@ config:
 
 ## Supported Formats
 
+The receiver uses the shared [syslog/CEF codec](../../../../pdata-codec/src/codecs/syslog/codec.rs),
+parsers, Arrow builders, and generator in `pdata-codec`. Socket handling and
+telemetry remain in this receiver.
+
 The receiver automatically detects and parses the following message formats:
 
 | Format | Description |
@@ -651,6 +655,6 @@ See [Configuration](#configuration).
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
-- [Parsing behavior](syslog-parsing-behavior.md)
+- [Parsing behavior](../../../../pdata-codec/src/codecs/syslog/syslog-parsing-behavior.md)
 - [Telemetry](telemetry.md)
 - [Core node catalog](../../../README.md)

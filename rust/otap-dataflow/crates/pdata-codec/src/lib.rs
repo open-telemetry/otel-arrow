@@ -74,6 +74,8 @@ pub mod builtins {
     pub use crate::codecs::otlp::{
         OTLP_ENCODING, OtlpBestEffortDecoder, OtlpEncoder, resolve_otlp,
     };
+    #[cfg(feature = "syslog-cef")]
+    pub use crate::codecs::syslog;
 }
 
 /// Reusable codec extension conformance checks.
