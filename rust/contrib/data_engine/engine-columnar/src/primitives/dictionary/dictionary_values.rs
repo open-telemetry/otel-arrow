@@ -792,10 +792,9 @@ mod tests {
     };
     use chrono::DateTime;
     use half::f16;
-    use otel_arrow_contrib_data_engine_expressions::{NullScalarExpression, QueryLocation};
-    use std::cell::RefCell;
 
     use super::*;
+    use crate::test_helpers::run_bound_diagnostic_test;
 
     fn assert_exact_remaining<'a>(
         mut iter: impl ExactSizeIterator<Item = ValueOrRef<'a>>,
@@ -919,58 +918,55 @@ mod tests {
     /// Guarantees: Lookup maps are absent when unnecessary and otherwise contain every original index with exact compacted indexes.
     #[test]
     fn transform_into_set_builds_complete_lookup_only_when_needed() {
-        let expression = NullScalarExpression::new(QueryLocation::new_fake());
-        let diagnostics = RefCell::new(Vec::new());
-        let receiver = ColumnarEngineDiagnosticReceiverImpl::new(
-            ColumnarEngineDiagnosticLevel::Warn,
-            &diagnostics,
+        run_bound_diagnostic_test(
+            |receiver| {
+                let cases = [
+                    (vec![], vec![], None),
+                    (vec![Some(10), Some(20), Some(30)], vec![10, 20, 30], None),
+                    (
+                        vec![Some(10), Some(20), Some(10), Some(30), Some(20)],
+                        vec![10, 20, 30],
+                        Some(vec![Some(0), Some(1), Some(0), Some(2), Some(1)]),
+                    ),
+                    (
+                        vec![Some(10), Some(20), None, Some(30), Some(10), None],
+                        vec![10, 20, 30],
+                        Some(vec![Some(0), Some(1), None, Some(2), Some(0), None]),
+                    ),
+                    (
+                        vec![None, Some(10), Some(10), Some(20)],
+                        vec![10, 20],
+                        Some(vec![None, Some(0), Some(0), Some(1)]),
+                    ),
+                    (vec![None, None], vec![], Some(vec![None, None])),
+                ];
+                for (input, expected_values, expected_lookup) in cases {
+                    let expected_values = expected_values
+                        .into_iter()
+                        .map(|value| ValueOrRef::Integer(i64::from(value)))
+                        .collect::<Vec<_>>();
+                    let expected_lookup = expected_lookup
+                        .map(|indexes| indexes.into_iter().enumerate().collect::<AHashMap<_, _>>());
+                    for values in [
+                        DictionaryValueArray::from(&Int32Array::from(input.clone())),
+                        input
+                            .into_iter()
+                            .map(|value| {
+                                value.map_or(ValueOrRef::Null, |value| {
+                                    ValueOrRef::Integer(i64::from(value))
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                            .into(),
+                    ] {
+                        let (values, lookup) = values.transform_into_set(receiver, Clone::clone);
+                        assert_eq!(values.into_iter().collect::<Vec<_>>(), expected_values);
+                        assert_eq!(lookup, expected_lookup);
+                    }
+                }
+            },
+            |diagnostics| assert!(diagnostics.is_empty()),
         );
-        let receiver = receiver.bind(&expression);
-        let cases = [
-            (vec![], vec![], None),
-            (vec![Some(10), Some(20), Some(30)], vec![10, 20, 30], None),
-            (
-                vec![Some(10), Some(20), Some(10), Some(30), Some(20)],
-                vec![10, 20, 30],
-                Some(vec![Some(0), Some(1), Some(0), Some(2), Some(1)]),
-            ),
-            (
-                vec![Some(10), Some(20), None, Some(30), Some(10), None],
-                vec![10, 20, 30],
-                Some(vec![Some(0), Some(1), None, Some(2), Some(0), None]),
-            ),
-            (
-                vec![None, Some(10), Some(10), Some(20)],
-                vec![10, 20],
-                Some(vec![None, Some(0), Some(0), Some(1)]),
-            ),
-            (vec![None, None], vec![], Some(vec![None, None])),
-        ];
-        for (input, expected_values, expected_lookup) in cases {
-            let expected_values = expected_values
-                .into_iter()
-                .map(|value| ValueOrRef::Integer(i64::from(value)))
-                .collect::<Vec<_>>();
-            let expected_lookup = expected_lookup
-                .map(|indexes| indexes.into_iter().enumerate().collect::<AHashMap<_, _>>());
-            for values in [
-                DictionaryValueArray::from(&Int32Array::from(input.clone())),
-                input
-                    .into_iter()
-                    .map(|value| {
-                        value.map_or(ValueOrRef::Null, |value| {
-                            ValueOrRef::Integer(i64::from(value))
-                        })
-                    })
-                    .collect::<Vec<_>>()
-                    .into(),
-            ] {
-                let (values, lookup) = values.transform_into_set(&receiver, Clone::clone);
-                assert_eq!(values.into_iter().collect::<Vec<_>>(), expected_values);
-                assert_eq!(lookup, expected_lookup);
-            }
-        }
-        assert!(diagnostics.borrow().is_empty());
     }
 
     /// Scenario: Arrow numeric and string arrays contain ordinary values, nulls, and boundary indexes.
