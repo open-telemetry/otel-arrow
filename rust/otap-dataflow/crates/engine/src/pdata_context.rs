@@ -54,7 +54,7 @@ use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
 };
 use otel_arrow_dfe_config::context::transport_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
+    HeaderCapturePolicy, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
@@ -481,6 +481,18 @@ impl NodeContextDeclarations {
         self.declarations.iter()
     }
 
+    /// Iterates over component-owned declarations, excluding engine-managed policies.
+    fn component_declarations(&self) -> impl Iterator<Item = &ContextDeclaration> {
+        self.iter().filter(|declaration| {
+            !matches!(
+                declaration,
+                ContextDeclaration::HeaderCapture { .. }
+                    | ContextDeclaration::HeaderPropagation { .. }
+                    | ContextDeclaration::AuthorizedIdentityCapture { .. }
+            )
+        })
+    }
+
     /// Returns whether the declaration set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -544,11 +556,11 @@ pub struct CompiledContextBindings {
     materialization_by_pipeline: HashMap<PipelineKey, ContextMaterializationPlan>,
 }
 
-/// Stores one node's component declarations, selected composites, and engine context policies.
+/// Stores one node's declarations, selected composites, and runtime bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledNodeState {
-    /// Declarations supplied by the component factory.
-    component_declarations: NodeContextDeclarations,
+    /// Sorted component and engine declarations; factory validation uses the component-only view.
+    declarations: NodeContextDeclarations,
     /// Selected composite definitions, including the whole presence gate for member selections.
     composites: Box<[ConfigContextEntryDeclaration]>,
     /// Runtime bindings shared with node construction without compiler bookkeeping.
@@ -763,13 +775,13 @@ fn original_name_key(name: &ContextEntryName) -> Box<str> {
 }
 
 impl CompiledNodeState {
-    /// Compiles header capture and separates component declarations from engine policies.
+    /// Compiles runtime bindings while retaining their source declarations.
     fn compile(
         prepared: PreparedNodeContextDeclarations,
         requirements: &ContextRuntimeRequirements,
         materialization_plan: &ContextMaterializationPlan,
     ) -> Result<Self, Error> {
-        let mut component_declarations = Vec::new();
+        let declarations = prepared.declarations;
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
@@ -777,56 +789,55 @@ impl CompiledNodeState {
         let mut headers = None;
         let mut edit = None;
         let mut merge = None;
-        for declaration in prepared.declarations {
+        for declaration in declarations.iter() {
             match declaration {
-                ContextDeclaration::Consumes { selector } => {
-                    match &selector {
-                        ContextConsumerSelector::Entries { entries } => {
-                            for entry in entries {
-                                values.push(ValueRead::compile(entry, materialization_plan)?);
-                            }
+                ContextDeclaration::Consumes { selector } => match selector {
+                    ContextConsumerSelector::Entries { entries } => {
+                        for entry in entries {
+                            values.push(ValueRead::compile(entry, materialization_plan)?);
                         }
-                        ContextConsumerSelector::AllCaptured { domain } => match domain {
-                            ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
-                            ContextDomain::AuthorizedIdentity => {
-                                return Err(invalid_context(
-                                    "all-captured authorized identity reads are not supported; use explicit named identity reads",
-                                ));
-                            }
-                        },
                     }
-                    component_declarations.push(ContextDeclaration::Consumes { selector });
-                }
-                ContextDeclaration::Produces { domain, entry } => {
-                    match domain {
-                        ContextDomain::TransportHeader => {}
+                    ContextConsumerSelector::AllCaptured { domain } => match domain {
+                        ContextDomain::TransportHeader => headers = Some(HeadersRead::new()),
                         ContextDomain::AuthorizedIdentity => {
-                            return Err(invalid_context(format!(
-                                "produced context entry `{entry}` is in the authorized-identity \
-                                 domain; only transport-header entries can be produced"
-                            )));
+                            return Err(invalid_context(
+                                "all-captured authorized identity reads are not supported; use explicit named identity reads",
+                            ));
                         }
+                    },
+                },
+                ContextDeclaration::Produces { domain, entry } => match domain {
+                    ContextDomain::TransportHeader => {}
+                    ContextDomain::AuthorizedIdentity => {
+                        return Err(invalid_context(format!(
+                            "produced context entry `{entry}` is in the authorized-identity \
+                                 domain; only transport-header entries can be produced"
+                        )));
                     }
-                    component_declarations.push(ContextDeclaration::Produces { domain, entry });
-                }
+                },
                 ContextDeclaration::HeaderCapture { policy } => {
-                    header_capture =
-                        Some(policy.compile(|name| requirements.preserves_original_name(name)));
+                    header_capture = Some(
+                        policy
+                            .clone()
+                            .compile(|name| requirements.preserves_original_name(name)),
+                    );
                 }
                 ContextDeclaration::HeaderPropagation { policy } => {
-                    header_propagation =
-                        Some(policy.bind(materialization_plan).map_err(invalid_context)?);
+                    header_propagation = Some(
+                        policy
+                            .clone()
+                            .bind(materialization_plan)
+                            .map_err(invalid_context)?,
+                    );
                 }
                 ContextDeclaration::AuthorizedIdentityCapture { policy } => {
-                    authorized_identity_capture = Some(policy);
+                    authorized_identity_capture = Some(policy.clone());
                 }
                 ContextDeclaration::Edits { actions } => {
-                    edit = Some(EditBinding::compile(&actions)?);
-                    component_declarations.push(ContextDeclaration::Edits { actions });
+                    edit = Some(EditBinding::compile(actions)?);
                 }
                 ContextDeclaration::Merges => {
                     merge = Some(MergeBinding);
-                    component_declarations.push(ContextDeclaration::Merges);
                 }
             }
         }
@@ -845,7 +856,7 @@ impl CompiledNodeState {
         values.sort_by(|left: &ValueRead, right| left.selector().cmp(right.selector()));
         values.dedup_by(|left, right| left.selector() == right.selector());
         Ok(Self {
-            component_declarations: component_declarations.into_iter().collect(),
+            declarations,
             composites: prepared.composites,
             bindings: Arc::new(NodeBindings {
                 arrival,
@@ -858,20 +869,14 @@ impl CompiledNodeState {
         })
     }
 
-    /// Returns whether the node has no component declarations or engine context policies.
+    /// Returns whether the node has no component or engine context declarations.
     fn is_empty(&self) -> bool {
-        self.component_declarations.is_empty() && self.bindings.is_empty()
+        self.declarations.is_empty()
     }
 
-    /// Compares the existing live-update inputs without adding adapter-derived state.
-    fn bindings_match(&self, other: &Self) -> bool {
-        self.component_declarations == other.component_declarations
-            && self.composites == other.composites
-            && self.bindings.header_capture_policy() == other.bindings.header_capture_policy()
-            && self.bindings.authorized_identity_policy()
-                == other.bindings.authorized_identity_policy()
-            && self.bindings.header_propagation_policy()
-                == other.bindings.header_propagation_policy()
+    /// Compares source declarations and selected definitions, independently of runtime bindings.
+    fn declarations_match(&self, other: &Self) -> bool {
+        self.declarations == other.declarations && self.composites == other.composites
     }
 }
 
@@ -951,52 +956,31 @@ impl CompiledContextBindings {
         Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
     }
 
-    /// Returns the node's compiled header capture policy.
-    pub(crate) fn header_capture_policy(
-        &self,
-        pipeline: &PipelineKey,
-        node: &ConfigNodeId,
-    ) -> Option<&CompiledHeaderCapturePolicy> {
-        self.node_bindings(pipeline, node)?.header_capture_policy()
-    }
-
-    /// Returns the node's header propagation policy.
-    pub(crate) fn header_propagation_policy(
-        &self,
-        pipeline: &PipelineKey,
-        node: &ConfigNodeId,
-    ) -> Option<&CompiledHeaderPropagationPolicy> {
-        self.node_bindings(pipeline, node)?
-            .header_propagation_policy()
-    }
-
-    /// Returns the node's authorized identity claim projection policy.
-    pub(crate) fn authorized_identity_policy(
-        &self,
-        pipeline: &PipelineKey,
-        node: &ConfigNodeId,
-    ) -> Option<&AuthorizedIdentityPolicy> {
-        self.node_bindings(pipeline, node)?
-            .authorized_identity_policy()
-    }
-
-    /// Compares one pipeline's bindings while ignoring nodes without context declarations.
+    /// Conservatively checks one pipeline's contribution to live-update context compatibility.
+    ///
+    /// Compares nodes that have component- or engine-owned context declarations.
+    /// Changes to other nodes remain subject to normal pipeline rollout checks.
+    ///
+    /// Equality of declarations and selected composite definitions is a proxy for
+    /// preserving shared context assumptions, not an invariant in itself. It can
+    /// reject safe changes: the compiler cannot yet prove which changes remain
+    /// compatible with surviving generations across topic boundaries (#4611).
     #[must_use]
-    pub fn pipeline_bindings_match(&self, other: &Self, pipeline: &PipelineKey) -> bool {
+    pub fn pipeline_context_compatible(&self, other: &Self, pipeline: &PipelineKey) -> bool {
         let current = self.by_pipeline.get(pipeline);
         let candidate = other.by_pipeline.get(pipeline);
-        let current_binding_count = current
+        let current_node_count = current
             .into_iter()
             .flat_map(|nodes| nodes.values())
             .filter(|node| !node.is_empty())
             .count();
-        let candidate_binding_count = candidate
+        let candidate_node_count = candidate
             .into_iter()
             .flat_map(|nodes| nodes.values())
             .filter(|node| !node.is_empty())
             .count();
 
-        current_binding_count == candidate_binding_count
+        current_node_count == candidate_node_count
             && current
                 .into_iter()
                 .flat_map(|nodes| nodes.iter())
@@ -1004,7 +988,7 @@ impl CompiledContextBindings {
                     node.is_empty()
                         || candidate
                             .and_then(|nodes| nodes.get(node_id))
-                            .is_some_and(|candidate_node| candidate_node.bindings_match(node))
+                            .is_some_and(|candidate_node| candidate_node.declarations_match(node))
                 })
     }
 
@@ -1020,7 +1004,14 @@ impl CompiledContextBindings {
             .get(pipeline)
             .and_then(|nodes| nodes.get(node))
         {
-            Some(expected) if expected.component_declarations == *declarations => Ok(()),
+            Some(expected)
+                if expected
+                    .declarations
+                    .component_declarations()
+                    .eq(declarations.iter()) =>
+            {
+                Ok(())
+            }
             _ => Err(Error::UnrecognizedContextDeclaration {}),
         }
     }
@@ -1608,10 +1599,10 @@ groups:
             .expect("test bindings compile")
     }
 
-    /// Scenario: compiled policies are accessed through a node binding and a cloned compiler snapshot.
-    /// Guarantees: existing policy accessors borrow the same stored policies and snapshot clones share them.
+    /// Scenario: a compiler snapshot containing node policies is cloned.
+    /// Guarantees: snapshot clones share the same node bindings instead of copying their policies.
     #[test]
-    fn node_bindings_share_existing_policies() {
+    fn compiler_snapshot_clones_share_node_bindings() {
         let compiled = compiled_bindings(
             [
                 ContextDeclaration::HeaderCapture {
@@ -1642,34 +1633,81 @@ groups:
                 .node_bindings(&pipeline, &node)
                 .expect("cloned bindings"),
         ));
-        assert!(std::ptr::eq(
-            compiled
-                .header_capture_policy(&pipeline, &node)
-                .expect("capture accessor"),
-            bindings
-                .arrival()
-                .expect("arrival")
-                .header_capture
-                .as_ref()
-                .expect("stored capture policy"),
-        ));
-        assert!(std::ptr::eq(
-            compiled
-                .header_propagation_policy(&pipeline, &node)
-                .expect("propagation accessor"),
-            &bindings.sink().expect("sink").policy,
-        ));
-        assert!(std::ptr::eq(
-            compiled
-                .authorized_identity_policy(&pipeline, &node)
-                .expect("identity accessor"),
-            bindings
-                .arrival()
-                .expect("arrival")
-                .authorized_identity_capture
-                .as_ref()
-                .expect("stored identity policy"),
-        ));
+    }
+
+    /// Scenario: runtime capture, identity, and propagation policies are removed from a compiled snapshot.
+    /// Guarantees: live updates compare retained declarations, including node participation, not runtime policies.
+    #[test]
+    fn live_update_ignores_compiled_engine_policies() {
+        let current = compiled_bindings(
+            [
+                ContextDeclaration::HeaderCapture {
+                    policy: HeaderCapturePolicy::default(),
+                },
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: serde_json::from_value(serde_json::json!([
+                        {"claim": "sub", "store_as": "tenant"}
+                    ]))
+                    .expect("identity policy"),
+                },
+                ContextDeclaration::HeaderPropagation {
+                    policy: HeaderPropagationPolicy::default(),
+                },
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let key = pipeline("group", "pipeline");
+        let mut without_policies = current.clone();
+        without_policies
+            .by_pipeline
+            .get_mut(&key)
+            .expect("pipeline")
+            .get_mut(&ConfigNodeId::from("node"))
+            .expect("node")
+            .bindings = Arc::new(NodeBindings::default());
+
+        assert!(current.pipeline_context_compatible(&without_policies, &key));
+        assert!(without_policies.pipeline_context_compatible(&current, &key));
+    }
+
+    /// Scenario: capture declarations differ only in wire-name casing and compile to identical policies.
+    /// Guarantees: live updates reject different declarations even when compilation erases the difference.
+    #[test]
+    fn live_update_rejects_different_declarations_with_equivalent_policies() {
+        let compile = |wire_name| {
+            compiled_bindings(
+                [ContextDeclaration::HeaderCapture {
+                    policy: HeaderCapturePolicy::new(
+                        CaptureDefaults::default(),
+                        vec![CaptureRule {
+                            match_names: vec![context_name(wire_name)],
+                            store_as: None,
+                            sensitive: false,
+                            value_kind: None,
+                        }],
+                    ),
+                }]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let current = compile("X-Tenant");
+        let candidate = compile("x-tenant");
+        let key = pipeline("group", "pipeline");
+        let node = ConfigNodeId::from("node");
+        assert_eq!(
+            current
+                .node_bindings(&key, &node)
+                .expect("current node bindings")
+                .header_capture_policy(),
+            candidate
+                .node_bindings(&key, &node)
+                .expect("candidate node bindings")
+                .header_capture_policy()
+        );
+        assert!(!current.pipeline_context_compatible(&candidate, &key));
+        assert!(!candidate.pipeline_context_compatible(&current, &key));
     }
 
     /// Scenario: read adapters are derived from declarations that specify primitive matching semantics.
@@ -1705,11 +1743,11 @@ groups:
             .get_mut(&ConfigNodeId::from("node"))
             .expect("node");
         Arc::make_mut(&mut node.bindings).values = Box::new([]);
-        assert!(current.pipeline_bindings_match(&without_adapter, &key));
-        assert!(without_adapter.pipeline_bindings_match(&current, &key));
+        assert!(current.pipeline_context_compatible(&without_adapter, &key));
+        assert!(without_adapter.pipeline_context_compatible(&current, &key));
         let different_matching = compile(ContextNameMatching::AsciiCaseInsensitive);
-        assert!(!current.pipeline_bindings_match(&different_matching, &key));
-        assert!(!different_matching.pipeline_bindings_match(&current, &key));
+        assert!(!current.pipeline_context_compatible(&different_matching, &key));
+        assert!(!different_matching.pipeline_context_compatible(&current, &key));
     }
 
     /// Scenario: arrival adapters add pipeline materialization without changing legacy declarations or policies.
@@ -1735,9 +1773,9 @@ groups:
         assert!(
             compiled
                 .bindings
-                .pipeline_bindings_match(&without_receiver, &key)
+                .pipeline_context_compatible(&without_receiver, &key)
         );
-        assert!(without_receiver.pipeline_bindings_match(&compiled.bindings, &key));
+        assert!(without_receiver.pipeline_context_compatible(&compiled.bindings, &key));
 
         let current = compiled_bindings(
             [ContextDeclaration::HeaderCapture {
@@ -1761,8 +1799,8 @@ groups:
                 .expect("materialization plan")
                 .clone(),
         );
-        assert!(current.pipeline_bindings_match(&changed, &key));
-        assert!(changed.pipeline_bindings_match(&current, &key));
+        assert!(current.pipeline_context_compatible(&changed, &key));
+        assert!(changed.pipeline_context_compatible(&current, &key));
     }
 
     /// Resolves a pipeline with producing, editing, merging, and plain nodes in one chain.
@@ -1957,7 +1995,7 @@ groups:
             .get_mut(&key)
             .expect("pipeline");
         assert_eq!(
-            nodes[&ConfigNodeId::from("merge")].component_declarations,
+            nodes[&ConfigNodeId::from("merge")].declarations,
             [ContextDeclaration::Merges].into_iter().collect()
         );
         for node in nodes.values_mut() {
@@ -1968,9 +2006,9 @@ groups:
         assert!(
             compiled
                 .bindings
-                .pipeline_bindings_match(&without_adapters, &key)
+                .pipeline_context_compatible(&without_adapters, &key)
         );
-        assert!(without_adapters.pipeline_bindings_match(&compiled.bindings, &key));
+        assert!(without_adapters.pipeline_context_compatible(&compiled.bindings, &key));
     }
 
     /// Scenario: node contexts share names across groups and pipelines, or reference unknown nodes.
@@ -2170,8 +2208,8 @@ groups:
                 .validate_node_declarations(&key, &node, &identity)
                 .is_err()
         );
-        assert!(!installed.pipeline_bindings_match(&candidate, &key));
-        assert!(!candidate.pipeline_bindings_match(&installed, &key));
+        assert!(!installed.pipeline_context_compatible(&candidate, &key));
+        assert!(!candidate.pipeline_context_compatible(&installed, &key));
     }
 
     /// Scenario: a node declares all-captured identity reads, alone or alongside all-captured headers.
@@ -2577,12 +2615,12 @@ groups:
             assert!(
                 !installed
                     .bindings
-                    .pipeline_bindings_match(&candidate.bindings, &key)
+                    .pipeline_context_compatible(&candidate.bindings, &key)
             );
             assert!(
                 !candidate
                     .bindings
-                    .pipeline_bindings_match(&installed.bindings, &key)
+                    .pipeline_context_compatible(&installed.bindings, &key)
             );
         }
         let reordered = "[{type: transport_header_match, name: environment, value: production}, \
@@ -2597,7 +2635,7 @@ groups:
         assert!(
             installed
                 .bindings
-                .pipeline_bindings_match(&candidate.bindings, &key)
+                .pipeline_context_compatible(&candidate.bindings, &key)
         );
     }
 
@@ -2645,7 +2683,9 @@ groups:
             .collect(),
         );
         let capture = bindings
-            .header_capture_policy(&pipeline("group", "pipeline"), &ConfigNodeId::from("node"))
+            .node_bindings(&pipeline("group", "pipeline"), &ConfigNodeId::from("node"))
+            .expect("node bindings")
+            .header_capture_policy()
             .expect("compiled capture policy");
         let mut headers = TransportHeaders::new();
 
@@ -2884,10 +2924,11 @@ groups:
             .bind(&ContextMaterializationPlan::default())
             .expect("prepared policy binds");
         assert_eq!(
-            compiled.header_propagation_policy(
-                &pipeline("group", "pipeline"),
-                &ConfigNodeId::from("node")
-            ),
+            compiled
+                .node_bindings(&pipeline("group", "pipeline"), &ConfigNodeId::from("node"))
+                .expect("node bindings")
+                .sink()
+                .map(SinkBinding::policy),
             Some(&expected),
         );
     }
@@ -3075,8 +3116,11 @@ default:
         let exporter = ConfigNodeId::from("exporter");
         let policy = installed
             .bindings
-            .header_propagation_policy(&pipeline, &exporter)
-            .expect("compiled exporter propagation policy");
+            .node_bindings(&pipeline, &exporter)
+            .expect("exporter bindings")
+            .sink()
+            .expect("compiled exporter sink")
+            .policy();
         assert!(!policy.materialization_plan().is_empty());
         assert_eq!(
             installed.bindings.context_materialization_plan(&pipeline),
@@ -3095,7 +3139,7 @@ default:
         assert!(
             !installed
                 .bindings
-                .pipeline_bindings_match(&condition_candidate.bindings, &pipeline)
+                .pipeline_context_compatible(&condition_candidate.bindings, &pipeline)
         );
 
         let changed_member = resolve_conditional_pipeline(current_composite, "tenant:account_id");
@@ -3105,7 +3149,7 @@ default:
         assert!(
             !installed
                 .bindings
-                .pipeline_bindings_match(&member_candidate.bindings, &pipeline)
+                .pipeline_context_compatible(&member_candidate.bindings, &pipeline)
         );
     }
 
@@ -3136,7 +3180,7 @@ default:
         assert!(
             installed
                 .bindings
-                .pipeline_bindings_match(&candidate.bindings, &pipeline("default", "main"))
+                .pipeline_context_compatible(&candidate.bindings, &pipeline("default", "main"))
         );
     }
 
@@ -3192,14 +3236,7 @@ default:
                 .and_then(|nodes| nodes.get(&ConfigNodeId::from("node")))
                 .expect("compiled node binding");
             assert!(node.is_empty());
-            assert!(
-                compiled
-                    .authorized_identity_policy(
-                        &pipeline("group", "pipeline"),
-                        &ConfigNodeId::from("node"),
-                    )
-                    .is_none()
-            );
+            assert!(node.bindings.authorized_identity_policy().is_none());
         }
     }
 
@@ -3231,11 +3268,14 @@ default:
         let pipeline = pipeline("group", "pipeline");
 
         assert_eq!(
-            compiled.authorized_identity_policy(&pipeline, &ConfigNodeId::from("node")),
+            compiled
+                .node_bindings(&pipeline, &ConfigNodeId::from("node"))
+                .expect("node bindings")
+                .authorized_identity_policy(),
             Some(&policy),
         );
-        assert!(!compiled.pipeline_bindings_match(&changed, &pipeline));
-        assert!(!changed.pipeline_bindings_match(&compiled, &pipeline));
+        assert!(!compiled.pipeline_context_compatible(&changed, &pipeline));
+        assert!(!changed.pipeline_context_compatible(&compiled, &pipeline));
     }
 
     /// Scenario: a node declares a context read and a propagation policy.
@@ -3304,7 +3344,11 @@ default:
             .bind(&ContextMaterializationPlan::default())
             .expect("prepared policy binds");
         assert_eq!(
-            bindings.header_propagation_policy(&pipeline, &node),
+            bindings
+                .node_bindings(&pipeline, &node)
+                .expect("node bindings")
+                .sink()
+                .map(SinkBinding::policy),
             Some(&expected)
         );
     }
