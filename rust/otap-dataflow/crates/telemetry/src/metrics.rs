@@ -655,6 +655,12 @@ pub struct MetricsEntry {
     /// Earliest time a pending unregister may complete (set with `pending_unregister`).
     unregister_deadline: Option<Instant>,
 
+    /// Whether an export took this pending unregister, so it waits until its
+    /// unexported values are exported even when no collector is configured. Set
+    /// when the set is deferred with an export already in flight, or when an
+    /// export picks up a set that is already pending unregister.
+    final_export_required: bool,
+
     /// Number of item buckets (1 for plain and registration-only sets, the
     /// [`MeasurementAttributeSet::CARDINALITY`] for measurement sets).
     pub bucket_count: usize,
@@ -680,6 +686,7 @@ impl Debug for MetricsEntry {
             .field("admin_observed", &self.admin_observed)
             .field("pending_unregister", &self.pending_unregister)
             .field("unregister_deadline", &self.unregister_deadline)
+            .field("final_export_required", &self.final_export_required)
             .field("bucket_count", &self.bucket_count)
             .finish()
     }
@@ -706,6 +713,7 @@ impl MetricsEntry {
             admin_observed: vec![false],
             pending_unregister: false,
             unregister_deadline: None,
+            final_export_required: false,
             bucket_count: 1,
             measurement_attributes: &[],
             registration_attributes: Vec::new(),
@@ -741,6 +749,7 @@ impl MetricsEntry {
             admin_observed: vec![false; bucket_count],
             pending_unregister: false,
             unregister_deadline: None,
+            final_export_required: false,
             bucket_count,
             measurement_attributes,
             registration_attributes,
@@ -748,15 +757,15 @@ impl MetricsEntry {
     }
 
     /// Whether a pending unregister can complete: the grace period has elapsed,
-    /// no export owns this entry's values, and (when an exporter exists) its
-    /// final values have been exported.
+    /// no export owns this entry's values, and (when an exporter exists or an
+    /// export took this unregister) its final values have been exported.
     fn unregister_ready(&self, now: Instant, has_metric_exporter: bool) -> bool {
         let export_dirty = self.export_dirty.iter().any(|dirty| *dirty);
         self.pending_unregister
             && self
                 .unregister_deadline
                 .is_some_and(|deadline| deadline <= now)
-            && !(has_metric_exporter && export_dirty)
+            && !((has_metric_exporter || self.final_export_required) && export_dirty)
             && !self.export_in_flight.iter().any(|in_flight| *in_flight)
     }
 }
@@ -1105,6 +1114,9 @@ impl MetricSetRegistry {
             let deadline = now + grace;
             entry.pending_unregister = true;
             entry.unregister_deadline = Some(deadline);
+            // An in-flight export owns this entry's values, so even without a
+            // collector the unregister must wait until they are exported.
+            entry.final_export_required = export_in_flight;
             if !grace.is_zero() {
                 // Without a grace period the export path completes the
                 // unregister; only grace deadlines need a timed sweep.
@@ -1269,9 +1281,6 @@ impl MetricSetRegistry {
         entities: &EntityRegistry,
         requested_time_unix_nano: u64,
     ) -> (MetricExportBatch, Vec<MetricExportCheckpoint>) {
-        // An exporter now drains this registry, so unregistered metric sets
-        // must wait for values reported during or after this export.
-        self.set_has_metric_exporter();
         let time_unix_nano = self
             .metrics
             .values()
@@ -1333,6 +1342,12 @@ impl MetricSetRegistry {
                     entry.export_dirty[bucket] = false;
                     entry.export_in_flight[bucket] = true;
                     exported_now = true;
+                    // This export now owns the values of a set already pending
+                    // unregister, so completing the unregister must wait for the
+                    // export to commit even when no collector is configured.
+                    if entry.pending_unregister {
+                        entry.final_export_required = true;
+                    }
                 }
 
                 // Empty collection intervals still delimit the next delta window.

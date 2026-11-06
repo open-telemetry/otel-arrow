@@ -1154,6 +1154,94 @@ mod tests {
         assert_eq!(telemetry_registry.entity_count(), 0);
     }
 
+    /// Scenario: without a collector and with no grace period, a metric set is unregistered
+    /// while dirty, after an unrelated export has already run against the registry.
+    /// Guarantees: a prior export does not switch on retention; the dirty unregister removes the
+    /// entry and its entity immediately, as it would with no export at all.
+    #[test]
+    fn test_direct_export_does_not_retain_later_dirty_unregistration() {
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("standalone".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        // An unrelated export runs first; it must not enable dirty retention.
+        assert!(
+            telemetry_registry
+                .drain_metric_export_batch_at(u64::MAX)
+                .is_empty()
+        );
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(13), MetricValue::U64(21)],
+        );
+        assert!(telemetry_registry.unregister_metric_set(metrics_key));
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
+    }
+
+    /// Scenario: without a collector and with a grace period, a direct export picks up a set that
+    /// was already deferred for grace, and a newer snapshot arrives before the export commits.
+    /// Guarantees: the export taking the pending unregister keeps the set past the grace deadline
+    /// until the newer snapshot is exported, which then completes the unregister.
+    #[test]
+    fn test_unregistration_grace_export_during_grace_keeps_late_snapshot() {
+        let grace = Duration::from_secs(30);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        telemetry_registry.set_metric_unregister_grace(grace);
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("grace".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(1), MetricValue::U64(2)],
+        );
+
+        // The commit checks readiness against the wall clock, so the deadline
+        // must already be in the past once the export completes.
+        let Some(unregistered_at) = Instant::now().checked_sub(grace * 2) else {
+            return;
+        };
+        assert!(telemetry_registry.unregister_metric_set_at(metrics_key, unregistered_at));
+
+        // A direct export takes the deferred set's values while a newer snapshot
+        // arrives, so the set must survive the already-elapsed grace deadline.
+        let export = telemetry_registry.begin_metric_export_batch_at(u64::MAX);
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(10), MetricValue::U64(20)],
+        );
+        let first_batch = export.commit();
+        assert_eq!(
+            first_batch.metric_sets[0].values,
+            vec![MetricValue::U64(1), MetricValue::U64(2)]
+        );
+        assert_eq!(
+            telemetry_registry.metric_set_count(),
+            1,
+            "the snapshot reported during the export must not be dropped"
+        );
+        assert_eq!(
+            telemetry_registry.reap_expired_metric_unregisters(Instant::now()),
+            None
+        );
+        assert_eq!(telemetry_registry.metric_set_count(), 1);
+
+        let final_batch = telemetry_registry.drain_metric_export_batch_at(u64::MAX);
+        assert_eq!(final_batch.metric_sets.len(), 1);
+        assert_eq!(
+            final_batch.metric_sets[0].values,
+            vec![MetricValue::U64(10), MetricValue::U64(20)]
+        );
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
+    }
+
     #[test]
     fn test_registration_attribute_metric_set_routes() {
         let registry = TelemetryRegistryHandle::new();
