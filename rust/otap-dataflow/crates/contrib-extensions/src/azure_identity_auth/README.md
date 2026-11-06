@@ -189,7 +189,7 @@ Metric set: `extension.auth` (shared).
 | --- | --- | --- | --- | --- |
 | `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Credential acquisitions partitioned by `outcome` (`success`, `failure`). |
 | `publishes` | `extension.auth` | Counter | `{publication}` | Credentials or tokens published to consumers via the watch channel partitioned by `outcome`. |
-| `duration` | `extension.auth` | Mmsc | `ms` | Acquisition duration in milliseconds partitioned by `outcome` (min/max/sum/count). |
+| `duration` | `extension.auth` | Mmsc | `s` | Acquisition duration in seconds partitioned by `outcome` (min/max/sum/count). |
 
 Events:
 
@@ -215,8 +215,8 @@ The `extension.auth` telemetry scope records:
   unit `{acquisition}`.
 - `publishes`: Counter of credentials or tokens published to consumers via the
   watch channel partitioned by `outcome`, unit `{publication}`.
-- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
-  (`ms`, min/max/sum/count).
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
 
 ## Related Docs
 

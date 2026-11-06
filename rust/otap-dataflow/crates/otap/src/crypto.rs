@@ -33,21 +33,13 @@ pub fn selected_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
     }
 
     cfg_select! {
-        feature = "crypto-ring" => {
-            Arc::new(rustls::crypto::ring::default_provider())
-        }
+        feature = "crypto-ring" => Arc::new(rustls::crypto::ring::default_provider()),
 
-        feature = "crypto-aws-lc" => {
-            Arc::new(rustls::crypto::aws_lc_rs::default_provider())
-        }
+        feature = "crypto-aws-lc" => Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
 
-        feature = "crypto-openssl" => {
-            Arc::new(rustls_openssl::default_provider())
-        }
+        feature = "crypto-openssl" => Arc::new(rustls_openssl::default_provider()),
 
-        feature = "crypto-symcrypt" => {
-            rustls_symcrypt::default_symcrypt_provider_arc()
-        }
+        feature = "crypto-symcrypt" => rustls_symcrypt::default_symcrypt_provider_arc(),
 
         _ => {
             panic!(
@@ -113,8 +105,8 @@ pub fn install_crypto_provider() -> Result<(), String> {
 
         _ => {
             otel_arrow_dfe_telemetry::otel_warn!(
-            "crypto.no_provider",
-            message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
+                "crypto.no_provider",
+                message = "no crypto-* feature enabled: TLS operations will fail at runtime. \
                        Enable exactly one of: crypto-ring, crypto-aws-lc, crypto-openssl, \
                        crypto-symcrypt"
             );

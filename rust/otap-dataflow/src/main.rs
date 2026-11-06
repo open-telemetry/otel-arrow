@@ -83,16 +83,17 @@ cfg_select! {
     all(not(tarpaulin_include), feature = "dhat-heap") => {
         #[global_allocator]
         static GLOBAL: dhat::Alloc = dhat::Alloc;
-        static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
+        static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> =
+            LazyLock::new(|| Mutex::new(None));
 
         fn dhat_start() {
-                let mut profiler = DHAT_PROFILER.lock().unwrap();
-                *profiler = Some(dhat::Profiler::new_heap());
+            let mut profiler = DHAT_PROFILER.lock().unwrap();
+            *profiler = Some(dhat::Profiler::new_heap());
         }
 
         fn dhat_finish() {
-                let mut profiler = DHAT_PROFILER.lock().unwrap();
-                let _ = profiler.take();
+            let mut profiler = DHAT_PROFILER.lock().unwrap();
+            let _ = profiler.take();
         }
     }
 

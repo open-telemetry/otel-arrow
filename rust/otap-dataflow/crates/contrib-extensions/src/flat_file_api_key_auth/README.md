@@ -64,8 +64,8 @@ The `extension.auth` telemetry scope records:
   unit `{acquisition}`.
 - `publishes`: Counter of published API keys partitioned by `outcome`,
   unit `{publication}`.
-- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
-  (`ms`, min/max/sum/count).
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
 
 ## Building
 

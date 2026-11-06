@@ -53,16 +53,13 @@ impl AzureIdentityAuthMetrics {
 }
 
 impl BackgroundProviderMetrics for AzureIdentityAuthMetrics {
-    fn record_acquisition(&mut self, outcome: Outcome) {
-        self.acquisition_metrics.record_acquisition(outcome);
+    fn record_acquisition(&mut self, outcome: Outcome, duration_secs: f64) {
+        self.acquisition_metrics
+            .record_acquisition(outcome, duration_secs);
     }
 
     fn record_publish(&mut self) {
         self.acquisition_metrics.record_publish();
-    }
-
-    fn record_success_latency(&mut self, latency_ms: f64) {
-        self.acquisition_metrics.record_success_latency(latency_ms);
     }
 
     fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
@@ -85,15 +82,15 @@ mod tests {
         let registry = TelemetryRegistryHandle::new();
         let mut metrics = AzureIdentityAuthMetrics::new_test(&registry);
 
-        metrics.record_acquisition(Outcome::Success);
-        metrics.record_acquisition(Outcome::Failure);
-        metrics.record_acquisition(Outcome::Failure);
+        metrics.record_acquisition(Outcome::Success, 0.015);
+        metrics.record_acquisition(Outcome::Failure, 0.005);
+        metrics.record_acquisition(Outcome::Failure, 0.005);
 
         assert_eq!(
             metrics
                 .acquisition_metrics
                 .get(OutcomeAttributes {
-                    outcome: Outcome::Success
+                    outcome: Outcome::Success,
                 })
                 .acquisitions
                 .get(),
@@ -103,7 +100,7 @@ mod tests {
             metrics
                 .acquisition_metrics
                 .get(OutcomeAttributes {
-                    outcome: Outcome::Failure
+                    outcome: Outcome::Failure,
                 })
                 .acquisitions
                 .get(),
@@ -118,16 +115,14 @@ mod tests {
 
         metrics.record_publish();
         metrics.record_publish();
-        metrics.record_success_latency(15.0);
+        metrics.record_acquisition(Outcome::Success, 0.015);
 
-        let success = metrics
-            .acquisition_metrics
-            .get(OutcomeAttributes {
-                outcome: Outcome::Success,
-            });
+        let success = metrics.acquisition_metrics.get(OutcomeAttributes {
+            outcome: Outcome::Success,
+        });
         assert_eq!(success.publishes.get(), 2);
         assert_eq!(success.duration.count, 1);
-        assert_eq!(success.duration.sum, 15.0);
+        assert_eq!(success.duration.sum, 0.015);
     }
 
     #[test]
@@ -135,14 +130,14 @@ mod tests {
         let registry = TelemetryRegistryHandle::new();
         let mut metrics = AzureIdentityAuthMetrics::new_test(&registry);
 
-        metrics.record_acquisition(Outcome::Success);
+        metrics.record_acquisition(Outcome::Success, 0.01);
         metrics.record_publish();
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
 
         let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(4);
-        metrics.record_acquisition(Outcome::Failure);
+        metrics.record_acquisition(Outcome::Failure, 0.005);
         metrics.record_publish();
         metrics.report(&mut reporter).expect("report succeeds");
 

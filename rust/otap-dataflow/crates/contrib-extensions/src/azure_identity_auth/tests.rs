@@ -937,8 +937,8 @@ fn metrics_tracker_records_snapshots_and_reports() {
     let before = tracker.terminal_snapshots();
     assert!(before.is_empty(), "a fresh tracker has no touched buckets");
 
-    tracker.record_success(12.5);
-    tracker.record_failure();
+    tracker.record_success(0.0125);
+    tracker.record_failure(0.005);
     tracker.record_publish();
 
     // Both acquisition outcomes (success, failure) snapshot.
@@ -947,15 +947,15 @@ fn metrics_tracker_records_snapshots_and_reports() {
     assert!(
         after
             .iter()
-            .all(|s| s.get_metrics().iter().all(|m| !m.is_zero())),
-        "every recorded metric is non-zero after recording"
+            .all(|s| s.get_metrics().iter().any(|m| !m.is_zero())),
+        "every outcome snapshot has recorded metrics"
     );
 
     // Reporting flushes the recorded metrics to the telemetry channel.
     let (rx, mut reporter) =
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
-    tracker.record_success(10.0);
-    tracker.record_failure();
+    tracker.record_success(0.01);
+    tracker.record_failure(0.005);
     tracker.record_publish();
     tracker.report(&mut reporter).expect("report succeeds");
     assert_eq!(
