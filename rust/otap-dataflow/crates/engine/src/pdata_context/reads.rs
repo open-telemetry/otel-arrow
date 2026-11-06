@@ -425,7 +425,6 @@ mod tests {
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
-    use otel_arrow_dfe_config::node::NodeKind;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -455,7 +454,7 @@ mod tests {
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, composites)
+                PreparedNodeContextDeclarations::new(declarations, composites)
                     .expect("valid declarations"),
             )]),
         )]);

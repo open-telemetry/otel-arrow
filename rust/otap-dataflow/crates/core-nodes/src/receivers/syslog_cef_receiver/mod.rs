@@ -22,7 +22,7 @@ use otel_arrow_dfe_engine::context::{
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::memory_limiter::LocalReceiverAdmissionState;
 use otel_arrow_dfe_engine::node::NodeId;
-use otel_arrow_dfe_engine::pdata_context::{Arrival, ArrivalHeaders};
+use otel_arrow_dfe_engine::pdata_context::{Arrival, ArrivalHeaders, ContextDeclarationProvider};
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
@@ -741,7 +741,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                     .with_startup_readiness(),
             )
         },
-    context_declarations: None,
+    context_declarations: Some(ContextDeclarationProvider::arriving()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };

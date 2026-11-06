@@ -273,6 +273,8 @@ pub enum ContextAction {
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
+    /// Declares that a receiver forms each new context at arrival.
+    Arrival,
     /// Declares a static context producer (e.g. traffic generator).
     Produces {
         /// Source authority domain.
@@ -327,8 +329,8 @@ impl ContextDeclaration {
             ) => Some("is managed by the engine"),
             (Self::Consumes { .. }, NodeKind::Processor | NodeKind::Exporter) => None,
             (Self::Consumes { .. }, NodeKind::Receiver) => Some("is not allowed for receivers"),
-            (Self::Produces { .. }, NodeKind::Receiver) => None,
-            (Self::Produces { .. }, NodeKind::Processor | NodeKind::Exporter) => {
+            (Self::Arrival | Self::Produces { .. }, NodeKind::Receiver) => None,
+            (Self::Arrival | Self::Produces { .. }, NodeKind::Processor | NodeKind::Exporter) => {
                 Some("is only supported by receivers")
             }
             (Self::Edits { .. } | Self::Merges, NodeKind::Processor) => None,
@@ -383,6 +385,7 @@ impl ContextDeclaration {
             Self::Consumes {
                 selector: ContextConsumerSelector::AllCaptured { .. },
             }
+            | Self::Arrival
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
             | Self::AuthorizedIdentityCapture { .. }
@@ -518,6 +521,14 @@ impl ContextDeclarationProvider {
         }
     }
 
+    /// Declares a receiver that forms each new context at arrival.
+    #[must_use]
+    pub const fn arriving() -> Self {
+        Self {
+            declarations: default_arrival_context_declarations,
+        }
+    }
+
     /// Default Context merging function that maintains only network_info.
     #[must_use]
     pub const fn merging() -> Self {
@@ -525,6 +536,12 @@ impl ContextDeclarationProvider {
             declarations: default_merge_context_declarations,
         }
     }
+}
+
+fn default_arrival_context_declarations(
+    _: &serde_json::Value,
+) -> Result<NodeContextDeclarations, Error> {
+    Ok([ContextDeclaration::Arrival].into_iter().collect())
 }
 
 fn default_merge_context_declarations(
@@ -574,8 +591,6 @@ type ContextDeclarationsByPipeline =
 /// Validated declarations with their selected definitions and capture requirements.
 #[derive(Debug)]
 struct PreparedNodeContextDeclarations {
-    /// Node kind.
-    kind: NodeKind,
     /// Sorted component and engine declarations for the node.
     declarations: NodeContextDeclarations,
     /// Selected composite definitions in canonical order with their full presence gates.
@@ -587,7 +602,6 @@ struct PreparedNodeContextDeclarations {
 impl PreparedNodeContextDeclarations {
     /// Validates selections, canonicalizes composite definitions, and derives runtime requirements.
     fn new(
-        kind: NodeKind,
         declarations: NodeContextDeclarations,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<Self, Error> {
@@ -607,7 +621,8 @@ impl PreparedNodeContextDeclarations {
                     ContextDeclaration::HeaderPropagation { policy } => {
                         policy.visit_composite_names(|name| names.push(name.clone()));
                     }
-                    ContextDeclaration::Produces { .. }
+                    ContextDeclaration::Arrival
+                    | ContextDeclaration::Produces { .. }
                     | ContextDeclaration::Consumes {
                         selector: ContextConsumerSelector::AllCaptured { .. },
                     }
@@ -637,7 +652,6 @@ impl PreparedNodeContextDeclarations {
             },
         )?;
         Ok(Self {
-            kind,
             declarations,
             composites,
             requirements,
@@ -785,12 +799,14 @@ impl CompiledNodeState {
         let mut header_capture = None;
         let mut header_propagation = None;
         let mut authorized_identity_capture = None;
+        let mut arrival = false;
         let mut values = Vec::new();
         let mut headers = None;
         let mut edit = None;
         let mut merge = None;
         for declaration in declarations.iter() {
             match declaration {
+                ContextDeclaration::Arrival => arrival = true,
                 ContextDeclaration::Consumes { selector } => match selector {
                     ContextConsumerSelector::Entries { entries } => {
                         for entry in entries {
@@ -842,14 +858,15 @@ impl CompiledNodeState {
             }
         }
 
-        let arrival = (prepared.kind == NodeKind::Receiver
-            || header_capture.is_some()
-            || authorized_identity_capture.is_some())
-        .then_some(ArrivalBinding {
-            header_capture,
-            authorized_identity_capture,
-            materialization: materialization_plan.clone(),
-        });
+        // TODO(4541): capture declarations compile an arrival binding for receivers
+        // still using the legacy policy accessors; step 5 requires `Arrival`.
+        let arrival =
+            (arrival || header_capture.is_some() || authorized_identity_capture.is_some())
+                .then_some(ArrivalBinding {
+                    header_capture,
+                    authorized_identity_capture,
+                    materialization: materialization_plan.clone(),
+                });
 
         let sink = header_propagation.map(|policy| SinkBinding { policy });
 
@@ -1086,12 +1103,9 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     .into_iter()
                     .chain(wrapper_declarations)
                     .collect();
-                let declarations = PreparedNodeContextDeclarations::new(
-                    node_config.kind(),
-                    declarations,
-                    &pipeline.policies.context,
-                )
-                .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
+                let declarations =
+                    PreparedNodeContextDeclarations::new(declarations, &pipeline.policies.context)
+                        .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
             }
             let _ = declarations.insert(pipeline_key, declarations_by_node);
@@ -1283,10 +1297,13 @@ mod tests {
         /// Whether the entry is declared in the authorized-identity domain.
         #[serde(default)]
         identity: bool,
+        /// Whether the node also declares arrival.
+        #[serde(default)]
+        arrival: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
-        /// Declares the configured produced entry.
+        /// Declares the configured produced entry and an optional arrival.
         fn context_declarations(&self) -> NodeContextDeclarations {
             [ContextDeclaration::Produces {
                 domain: if self.identity {
@@ -1297,6 +1314,7 @@ mod tests {
                 entry: self.entry.clone(),
             }]
             .into_iter()
+            .chain(self.arrival.then_some(ContextDeclaration::Arrival))
             .collect()
         }
     }
@@ -1585,8 +1603,7 @@ groups:
             pipeline("group", "pipeline"),
             HashMap::from([(
                 ConfigNodeId::from("node"),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, effective, &[])
-                    .expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(effective, &[]).expect("valid declarations"),
             )]),
         )])
     }
@@ -1751,7 +1768,8 @@ groups:
     }
 
     /// Scenario: arrival adapters add pipeline materialization without changing legacy declarations or policies.
-    /// Guarantees: live-update comparison still ignores policy-free receivers and adapter-derived plans.
+    /// Guarantees: receivers without declarations compile no arrival binding, and live-update
+    /// comparison still ignores them and adapter-derived plans.
     #[test]
     fn arrival_adapters_preserve_live_update_inputs() {
         let compiled = test_pipeline_factory()
@@ -1769,7 +1787,7 @@ groups:
             .expect("pipeline")
             .remove(&receiver)
             .expect("receiver");
-        assert!(removed.bindings.arrival().is_some());
+        assert!(removed.bindings.arrival().is_none());
         assert!(
             compiled
                 .bindings
@@ -1816,7 +1834,7 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:produce"
-            config: {entry: generated}
+            config: {entry: generated, arrival: true}
           edit:
             type: "urn:test:processor:edit"
             config: {entry: partition}
@@ -1844,8 +1862,8 @@ groups:
         .resolve()
     }
 
-    /// Scenario: a pipeline contains producing, editing, merging, and plain nodes.
-    /// Guarantees: the receiver gets an arrival binding, the editing processor
+    /// Scenario: a pipeline contains arriving, editing, merging, and plain nodes.
+    /// Guarantees: the receiver gets an arrival binding because it declares one, the editing processor
     /// gets an edit for only its declared entries, and the merging processor
     /// gets a merge binding. Plain nodes get neither edit nor merge bindings.
     #[test]
@@ -1910,6 +1928,12 @@ groups:
                 "urn:test:exporter:produces",
                 serde_json::json!({"entry": "tenant"}),
                 "only supported by receivers",
+            ),
+            (
+                NodeKind::Exporter,
+                "urn:test:exporter:produces",
+                serde_json::json!({"entry": "tenant", "arrival": true}),
+                "`Arrival` context declaration, which is only supported by receivers",
             ),
             (
                 NodeKind::Exporter,
@@ -2031,12 +2055,8 @@ groups:
                 .or_default()
                 .insert(
                     node.into(),
-                    PreparedNodeContextDeclarations::new(
-                        NodeKind::Exporter,
-                        NodeContextDeclarations::default(),
-                        &[],
-                    )
-                    .expect("empty declarations"),
+                    PreparedNodeContextDeclarations::new(NodeContextDeclarations::default(), &[])
+                        .expect("empty declarations"),
                 );
         }
         let requirements = ContextRuntimeRequirements::compile(&declarations);
@@ -2247,7 +2267,6 @@ groups:
     fn composite_member_requirements_preserve_source_domain_and_gate() {
         let context = [mixed_composite()];
         let prepared = PreparedNodeContextDeclarations::new(
-            NodeKind::Exporter,
             consumer(
                 member_target("tenant", "header_id"),
                 ContextEntrySelectorForm::OriginalKeyValue,
@@ -2277,7 +2296,6 @@ groups:
             ContextEntrySelectorForm::StoredKeyValue,
         ] {
             let prepared = PreparedNodeContextDeclarations::new(
-                NodeKind::Exporter,
                 consumer(member_target("tenant", "identity_id"), form),
                 &context,
             )
@@ -2300,7 +2318,6 @@ groups:
             ]
         );
         let prepared = PreparedNodeContextDeclarations::new(
-            NodeKind::Exporter,
             consumer(whole.clone(), ContextEntrySelectorForm::StoredKeyValue),
             &context,
         )
@@ -2314,7 +2331,6 @@ groups:
         let mut headers_only = mixed_composite();
         _ = headers_only.definition.0.remove(1);
         let prepared = PreparedNodeContextDeclarations::new(
-            NodeKind::Exporter,
             consumer(whole, ContextEntrySelectorForm::OriginalKeyValue),
             &[headers_only],
         )
@@ -2350,7 +2366,6 @@ groups:
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
-            NodeKind::Exporter,
             consumer(
                 member_target("route", "route_name"),
                 ContextEntrySelectorForm::Value,
@@ -2361,7 +2376,6 @@ groups:
         assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member_target("route", "route_name"), whole] {
             let error = PreparedNodeContextDeclarations::new(
-                NodeKind::Exporter,
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
                 &context,
             )
@@ -2385,7 +2399,6 @@ groups:
             HashMap::from([(
                 ConfigNodeId::from("node"),
                 PreparedNodeContextDeclarations::new(
-                    NodeKind::Exporter,
                     consumer(
                         member_target("route", "route_name"),
                         ContextEntrySelectorForm::Value,
@@ -2423,7 +2436,6 @@ groups:
         );
 
         let prepared = PreparedNodeContextDeclarations::new(
-            NodeKind::Exporter,
             consumer(member.clone(), ContextEntrySelectorForm::Value),
             &context,
         )
@@ -2431,7 +2443,6 @@ groups:
         assert_eq!(prepared.requirements, ContextRuntimeRequirements::none());
         for target in [member, whole] {
             let error = PreparedNodeContextDeclarations::new(
-                NodeKind::Exporter,
                 consumer(target, ContextEntrySelectorForm::OriginalKeyValue),
                 &context,
             )
@@ -2483,12 +2494,8 @@ groups:
                 "original wire name requested for AuthorizedIdentity context entry `id`",
             ),
         ] {
-            let error = PreparedNodeContextDeclarations::new(
-                NodeKind::Exporter,
-                consumer(target, form),
-                &context,
-            )
-            .expect_err("invalid selection must fail");
+            let error = PreparedNodeContextDeclarations::new(consumer(target, form), &context)
+                .expect_err("invalid selection must fail");
             assert!(error.to_string().contains(expected), "{error}");
         }
     }
@@ -3302,7 +3309,7 @@ default:
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, &[])
+                PreparedNodeContextDeclarations::new(declarations, &[])
                     .expect("valid declarations"),
             )]),
         )]);
