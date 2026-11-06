@@ -36,6 +36,11 @@ pub struct CodecsConfig {
 }
 
 /// Either inline settings or a named reference, never a mixture of both.
+///
+/// Inline settings are a one-off override that can follow the distribution's
+/// default implementation. Named references reuse an explicitly identified
+/// implementation's settings. Both are pipeline-scoped, not per-node policies;
+/// `Inline` is a Rust variant name, not a YAML key.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum CodecBinding {

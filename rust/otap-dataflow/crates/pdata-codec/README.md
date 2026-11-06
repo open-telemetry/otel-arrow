@@ -171,6 +171,17 @@ Node construction receives the selected immutable registry through
 Only effect handlers access mutable instances. No YAML parsing or
 configuration-name resolution happens per message.
 
+Inline bindings provide one-off settings and may use the distribution's default
+implementation. Named definitions select an implementation explicitly and allow
+settings to be reused; both forms have the same pipeline-local lifecycle. They
+are not per-node overrides. See the [binding choices and runnable example](../../docs/codecs.md#named-configurations).
+
+`CodecRegistry::resolve_encoding` recognizes canonical byte identities and the
+legacy OTLP alias without choosing an implementation. Configuration parsers use
+it before pipeline bindings are applied. Implementation selection remains in
+`CodecRegistry::resolve`; native OTAP and node-owned batching settings stay
+outside encoding-name lookup.
+
 ```mermaid
 flowchart LR
     linked["Linked registrations + distribution defaults"] --> registry["Validated registry"]

@@ -485,6 +485,23 @@ impl CodecRegistry {
         })
     }
 
+    /// Recognizes a linked encoding name, including the legacy `otlp` alias.
+    ///
+    /// This returns canonical identity only: it neither selects an implementation
+    /// nor creates codec state. It also works when multiple implementations need
+    /// a later pipeline binding to resolve ambiguity. Native `otap` is not a codec.
+    pub fn resolve_encoding(&self, name: &str) -> Result<&'static PdataEncoding, RegistryError> {
+        let otlp = PdataEncoding::OTLP;
+        let name = if name == "otlp" { otlp.as_str() } else { name };
+        self.codecs
+            .iter()
+            .map(|codec| codec.encoding())
+            .find(|encoding| encoding.as_str() == name)
+            .ok_or_else(|| RegistryError::NotFound {
+                encoding: PdataEncoding::from(name.to_owned()),
+            })
+    }
+
     /// Resolves the selected implementation or a unique distribution default.
     pub fn resolve(&self, encoding: &PdataEncoding) -> Result<ResolvedCodec, RegistryError> {
         if let Some(codec) = self
@@ -775,6 +792,64 @@ mod tests {
             ));
         }
     }
+    /// Scenario: Encoding lookup sees aliases, custom names, and ambiguous implementations before a pipeline binding.
+    /// Guarantees: Names normalize without selecting defaults or creating instances; native and unknown names remain outside the codec registry.
+    #[test]
+    fn encoding_lookup_preserves_later_implementation_selection() {
+        static OTLP: CodecMetadata = CodecMetadata::new(PdataEncoding::OTLP, &[SignalType::Logs]);
+        static CODECS: [CodecRegistration; 3] = [
+            CodecRegistration::new(&OTLP)
+                .with_implementation("otlp.first")
+                .with_decoder(|_| panic!("name lookup must not create a decoder"))
+                .with_item_counter(|_, _| Some(0)),
+            CodecRegistration::new(&OTLP)
+                .with_implementation("otlp.second")
+                .with_decoder(|_| panic!("name lookup must not create a decoder"))
+                .with_item_counter(|_, _| Some(0)),
+            CodecRegistration::new(&EMPTY_METADATA)
+                .with_decoder(|_| panic!("name lookup must not create a decoder"))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        let mut registry = CodecRegistry::validate(&CODECS).unwrap();
+        for name in ["otlp", "otlp-bytes"] {
+            assert_eq!(
+                registry.resolve_encoding(name).unwrap(),
+                &PdataEncoding::OTLP
+            );
+            assert!(matches!(
+                crate::PdataFormat::resolve(&registry, name),
+                Err(CodecError::Registry(
+                    RegistryError::AmbiguousImplementation { .. }
+                )),
+            ));
+        }
+        assert_eq!(
+            registry.resolve_encoding("empty-v1").unwrap(),
+            EMPTY_METADATA.encoding()
+        );
+        for name in ["otap", "preserve", "unknown"] {
+            assert!(matches!(
+                registry.resolve_encoding(name),
+                Err(RegistryError::NotFound { .. })
+            ));
+        }
+        assert_eq!(
+            crate::PdataFormat::resolve(&registry, "otap").unwrap(),
+            crate::PdataFormat::OTAP
+        );
+        registry.select(registry.implementation("otlp.second").unwrap());
+        for name in ["otlp", "otlp-bytes"] {
+            assert_eq!(
+                crate::PdataFormat::resolve(&registry, name)
+                    .unwrap()
+                    .codec()
+                    .unwrap()
+                    .implementation(),
+                "otlp.second"
+            );
+        }
+    }
+
     /// Scenario: Two implementations share an encoding and registration order changes.
     /// Guarantees: Explicit/default selection is deterministic, while ambiguous or duplicate defaults fail safely.
     #[test]

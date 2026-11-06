@@ -61,6 +61,17 @@ an implementation. Duplicate implementation IDs and conflicting defaults fail.
 
 ### Named configurations
 
+Use direct (inline) settings for a one-off override without introducing a name.
+They can omit `implementation` to follow the distribution's default, including
+an optimized replacement. There is no `inline:` YAML key.
+
+Use a named configuration to reuse settings and explicitly select an
+implementation. Named definitions require an implementation ID so their options
+can be validated even when no binding references them. Both forms resolve at
+startup; neither adds per-message configuration lookup. They apply to all nodes
+using that encoding in a pipeline, because those nodes share the codec service;
+node-level policies do not create separate codec settings or instances.
+
 Names let pipelines reuse settings without sharing mutable state:
 
 ```yaml
@@ -75,12 +86,18 @@ codecs:
       configuration: checked_otlp
 ```
 
-Named definitions require an implementation ID. Declaring a name does not select
-it, although its settings are validated during startup. A binding accepts either
-a reference or inline settings, never both. Native instances remain lazy;
-preparation can own immutable implementation resources. Different pipelines
-using the same name have independent mutable codec state. Multiple selected
-configurations for one encoding within a pipeline are not supported.
+Declaring a name does not select it, although its settings are validated during
+startup. A binding accepts either a reference or inline settings, never both.
+Codec instances remain lazy; preparation can own immutable implementation
+resources. Different pipelines using the same name have independent mutable
+codec state. Multiple selected configurations for one encoding within a pipeline
+are not supported.
+
+See the runnable [strict OTLP-to-OTAP example](../configs/otlp-strict-otap.yaml).
+It defines a named configuration at root scope and binds it only in the ingest
+pipeline, leaving the observability pipeline on its defaults. OTAP export
+requires decoding, so this example exercises strict validation rather than
+opaque forwarding.
 
 ### Scope and inheritance
 

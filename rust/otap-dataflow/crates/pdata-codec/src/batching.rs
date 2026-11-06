@@ -13,8 +13,8 @@ use otel_arrow_dfe_config::SignalType;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CodecError, CodecRegistry, CodecService, EncodePolicy, EncodedPdata, EncodingPlan,
-    PdataEncoding, PdataFormat, PdataPayload,
+    CodecError, CodecRegistry, CodecService, EncodePolicy, EncodedPdata, EncodingPlan, PdataFormat,
+    PdataPayload,
 };
 
 /// Reusable encoded batching implementation owned by one pipeline runtime.
@@ -197,12 +197,8 @@ impl PdataFormat {
     pub fn resolve(registry: &CodecRegistry, name: &str) -> Result<Self, CodecError> {
         match name {
             "otap" => Ok(Self::OTAP),
-            "otlp" => registry
-                .resolve(&PdataEncoding::OTLP)
-                .map(Self::encoded)
-                .map_err(Into::into),
             name => registry
-                .resolve(&PdataEncoding::from(name.to_owned()))
+                .resolve(registry.resolve_encoding(name)?)
                 .map(Self::encoded)
                 .map_err(Into::into),
         }
@@ -647,7 +643,7 @@ fn format_error(error: impl Into<String>) -> CodecError {
 mod tests {
     use super::*;
     use crate::testing::{DECODE_ONLY_ENCODING, ENCODE_ONLY_ENCODING};
-    use crate::{CodecServiceBuilder, DecodePolicy, DecodeValidation};
+    use crate::{CodecServiceBuilder, DecodePolicy, DecodeValidation, PdataEncoding};
     use otel_arrow_dfe_pdata::OtapPayloadHelpers;
     use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,

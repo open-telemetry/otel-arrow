@@ -278,24 +278,18 @@ impl TryFrom<ConfigInput> for Config {
         let registry = CodecRegistry::global().map_err(|error| error.to_string())?;
         let mut codecs = BTreeMap::new();
         for (name, settings) in input.codecs {
-            // Canonicalize the legacy spelling so `otlp`, `otlp-bytes`, and
-            // the top-level `otlp` settings cannot define conflicting thresholds.
-            // Parsing knows encoding names; implementation selection comes later
-            // from the pipeline registry supplied to plans_with_registry.
-            let canonical = if name == "otlp" {
-                PdataEncoding::OTLP.as_str().to_owned()
-            } else {
+            // Native OTAP is processor-owned. The registry recognizes encoded
+            // names and aliases without choosing an implementation; pipeline
+            // bindings supply that choice when plans are constructed below.
+            let canonical = if name == "otap" {
                 name
+            } else {
+                registry
+                    .resolve_encoding(&name)
+                    .map_err(|_| format!("unknown batching encoding {name}"))?
+                    .as_str()
+                    .to_owned()
             };
-            // Native Arrow records have no codec registration. Every encoded
-            // representation, including OTLP, must have a linked implementation.
-            if canonical != "otap"
-                && !registry
-                    .codecs()
-                    .any(|codec| codec.encoding().as_str() == canonical)
-            {
-                return Err(format!("unknown batching encoding {canonical}"));
-            }
             if (canonical == "otap" && input.otap.is_some())
                 || (canonical == PdataEncoding::OTLP.as_str() && input.otlp.is_some())
                 || codecs.insert(canonical.clone(), settings).is_some()
@@ -2158,6 +2152,30 @@ mod tests {
             "format": "otlp-bytes", "codecs": { "otlp-bytes": { "min_size": 32, "max_size": 64, "sizer": "bytes" } }
         })).unwrap();
         assert_eq!(legacy.plans().unwrap(), canonical.plans().unwrap());
+        let alias: Config = serde_json::from_value(json!({
+            "codecs": { "otlp": { "min_size": 32, "max_size": 64, "sizer": "bytes" } },
+            "format": "otlp",
+        }))
+        .unwrap();
+        assert_eq!(alias.plans().unwrap(), canonical.plans().unwrap());
+        for conflicting in [
+            json!({
+                "otlp": {"min_size": 32, "sizer": "bytes"},
+                "codecs": {"otlp": {"min_size": 32, "sizer": "bytes"}},
+            }),
+            json!({"codecs": {
+                "otlp": {"min_size": 32, "sizer": "bytes"},
+                "otlp-bytes": {"min_size": 32, "sizer": "bytes"},
+            }}),
+        ] {
+            let error = serde_json::from_value::<Config>(conflicting).unwrap_err();
+            assert!(error.to_string().contains("duplicate"), "{error}");
+        }
+        let native: Config = serde_json::from_value(json!({
+            "codecs": {"otap": {"min_size": 1, "sizer": "items"}},
+        }))
+        .unwrap();
+        assert_eq!(native.codecs.len(), 1);
         let immediate: Config = serde_json::from_value(json!({
             "max_batch_duration": "0s",
             "otap": { "max_size": 100, "sizer": "items" },

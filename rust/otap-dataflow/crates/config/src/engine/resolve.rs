@@ -469,6 +469,36 @@ mod tests {
         assert_eq!(codec_validation(&observability.unwrap().codecs), Strict);
     }
 
+    /// Scenario: The runnable OTLP-to-OTAP example uses an inherited named configuration.
+    /// Guarantees: Its binding is a reference, ingest decoding is strict, and observability retains best effort.
+    #[test]
+    fn named_codec_config_example_preserves_observability_defaults() {
+        use crate::codecs::{CodecBinding, DecodeValidation};
+        let config = crate::engine::OtelDataflowSpec::from_yaml(include_str!(
+            "../../../../configs/otlp-strict-otap.yaml"
+        ))
+        .unwrap();
+        let (_, regular, observability) = config.resolve().into_parts();
+        assert_eq!(regular.len(), 1);
+        assert!(
+            matches!(regular[0].pipeline.codecs().unwrap().bindings.get("otlp-bytes"),
+            Some(CodecBinding::Named(reference)) if reference.configuration == "checked_otlp")
+        );
+        assert_eq!(
+            codec_validation(&regular[0].codecs),
+            DecodeValidation::Strict
+        );
+        let selected = regular[0].codecs.effective_bindings().unwrap();
+        assert_eq!(
+            selected["otlp-bytes"].implementation.as_deref(),
+            Some("otel.otlp")
+        );
+        assert_eq!(
+            codec_validation(&observability.unwrap().codecs),
+            DecodeValidation::BestEffort
+        );
+    }
+
     #[test]
     fn runtime_shape_matches_ignoring_resources_ignores_resource_only_changes() {
         let current = ResolvedPipelineConfig {
