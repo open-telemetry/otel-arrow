@@ -7747,6 +7747,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
@@ -8116,6 +8117,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
  "serde",
+ "serde_yaml",
  "thiserror 2.0.21",
 ]
 

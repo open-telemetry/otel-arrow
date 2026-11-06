@@ -23,12 +23,17 @@
 //! ```
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
-use otel_arrow_dfe_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otel_arrow_dfe_config::codecs::{CodecsConfig, ResolvedCodecsConfig};
+use otel_arrow_dfe_config::engine::{
+    HttpAdminSettings, OtelDataflowSpec, ResolvedOtelDataflowSpec,
+};
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
 use otel_arrow_dfe_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use otel_arrow_dfe_engine::PipelineFactory;
+use otel_arrow_dfe_pdata_codec::{CodecError, CodecServiceBuilder};
 use otel_arrow_dfe_telemetry::output_service::{
     OutputService, OutputServiceConfig, ShutdownOutcome,
 };
@@ -245,12 +250,59 @@ fn validate_rate_limiter_bindings(
 ///
 /// This is the top-level validation entry point that iterates over all
 /// pipeline groups, all pipelines within each group, and the observability
-/// pipeline.
+/// pipeline. It also validates visible codec declarations, including unused
+/// named definitions, without creating mutable codec instances.
 pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for resolved in engine_cfg.resolve().pipelines {
+    resolve_and_validate_engine_components(engine_cfg, factory).map(|_| ())
+}
+
+/// Validates codec declarations and resolves registered defaults without instances.
+pub(crate) fn canonical_codec_configuration(
+    configuration: &ResolvedCodecsConfig,
+) -> Result<ResolvedCodecsConfig, CodecError> {
+    CodecServiceBuilder::from_global_registry()?
+        .with_configuration(configuration.clone())
+        .canonical_configuration()
+}
+
+/// Validates declarations visible to an empty group before it gains pipelines.
+/// Preparation callbacks run without holding controller state or creating instances.
+pub(crate) fn validate_empty_group_codecs(
+    group_id: &PipelineGroupId,
+    group: &PipelineGroupConfig,
+    inherited: Option<&CodecsConfig>,
+) -> Result<(), CodecError> {
+    let configuration =
+        CodecsConfig::resolve([group.codecs.as_ref(), inherited].into_iter().flatten());
+    canonical_codec_configuration(&configuration)
+        .map(|_| ())
+        .map_err(|error| {
+            CodecError::configuration(format!(
+                "Invalid codecs for empty group={group_id}: {error}"
+            ))
+        })
+}
+
+/// Returns a validated snapshot with canonical codec settings for rollout comparisons.
+///
+/// Validate even unused definitions and no-op updates. Codec preparation is
+/// immutable; runtime-local decoder, encoder, and batcher instances remain lazy.
+pub(crate) fn resolve_and_validate_engine_components<PData: 'static + Clone + Debug>(
+    engine_cfg: &OtelDataflowSpec,
+    factory: &PipelineFactory<PData>,
+) -> Result<ResolvedOtelDataflowSpec, Box<dyn std::error::Error>> {
+    // Empty groups have no resolved pipeline, but unused definitions and bindings
+    // still need startup validation, including inherited root declarations.
+    for (group_id, group) in &engine_cfg.groups {
+        if group.pipelines.is_empty() {
+            validate_empty_group_codecs(group_id, group, engine_cfg.codecs.as_ref())?;
+        }
+    }
+    let mut configuration = engine_cfg.resolve();
+    for resolved in &mut configuration.pipelines {
         validate_pipeline_components(
             &resolved.pipeline_group_id,
             &resolved.pipeline_id,
@@ -263,9 +315,16 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
             &resolved.pipeline,
             &resolved.policies,
         )?;
+        resolved.codecs = canonical_codec_configuration(&resolved.codecs).map_err(|error| {
+            std::io::Error::other(format!(
+                "Invalid codecs for pipeline group={} pipeline={}: {error}",
+                resolved.pipeline_group_id.as_ref(),
+                resolved.pipeline_id.as_ref(),
+            ))
+        })?;
     }
 
-    Ok(())
+    Ok(configuration)
 }
 
 /// Validates configured controller extensions against the supplied registry.
