@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793927689919,
+  "lastUpdate": 1793928810264,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -80589,6 +80589,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 108.33,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "022818814d1d1fe69f24ba58b0b8c4e4197d4149",
+          "message": "feat(pdata): add codec bindings and named configurations (#4480)\n\n# Change summary\n\nAdd optional codec configuration, with independent settings for each\nencoding and reusable named configurations.\n\nTo understand what this PR enables, start with the [codec user\nguide](https://github.com/lquerel/otel-arrow/blob/pdata-codec-series-06-codec-configuration/rust/otap-dataflow/docs/codecs.md)\nand [developer\nguide](https://github.com/lquerel/otel-arrow/blob/pdata-codec-series-06-codec-configuration/rust/otap-dataflow/crates/pdata-codec/README.md).\n\n- `codecs.bindings` selects an implementation and its settings for an\nencoding. Bindings can use inline settings or reference\n`codecs.configurations`.\n- Configuration inherits from root to group to pipeline. Omitting\n`codecs` preserves discovery of linked implementations and their\ndefaults; it is not an allowlist.\n- Startup preparation validates settings and selects factories. Mutable\ncodec instances remain lazy and local to each pipeline runtime.\n- Selected settings participate in pipeline redeployment decisions and\nlive configuration reconciliation.\n- User and developer guides explain configuration, validation\nboundaries, and extension contracts. Prepared factories accommodate\nfuture hosted codecs; WASM loading and execution are not implemented\nhere.\n\nFor example, bind `otlp-bytes` to a named configuration of the\n`otel.otlp` implementation:\n\n```yaml\ncodecs:\n  configurations:\n    checked_otlp:\n      implementation: otel.otlp\n      decode:\n        validation: strict\n  bindings:\n    otlp-bytes:\n      configuration: checked_otlp\n```\n\n## Related issue\n\nPart of #3452.\n\n## Validation\n\n`cargo xtask check` passed \n\n## User-facing changes\n\nAdds optional codec bindings and named configurations. Existing\nconfigurations keep the built-in `best_effort` default. Strict OTLP\ndecoding adds CPU and allocation cost when decoding is required; it does\nnot validate opaque\npass-through traffic.",
+          "timestamp": "2026-11-06T00:48:43Z",
+          "tree_id": "19925e7ec5da537fca053744555e69167fd6fa5d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/022818814d1d1fe69f24ba58b0b8c4e4197d4149"
+        },
+        "date": 1793928786838,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.71,
             "unit": "MB"
           }
         ]
