@@ -647,6 +647,7 @@ impl TargetScraper {
         let resource_transform = build_target_resource_transform(&self.job_name, target_url);
 
         let mut scrape_ok = true;
+        let mut drain_deadline: Option<StdInstant> = None;
 
         // TODO(bwplotka): Switch to cooperative incremental decoding so large payloads yield to
         // the local runtime once https://github.com/prometheus/scrape.rs/issues/27 lands.
@@ -665,6 +666,7 @@ impl TargetScraper {
                             scrape_timestamp_ms,
                             Some(self.start_timestamp_ns),
                             Some(&resource_transform),
+                            &mut drain_deadline,
                             ctrl_msg_recv,
                             effect_handler,
                             metrics,
@@ -674,6 +676,10 @@ impl TargetScraper {
                             SendOutcome::Sent => {}
                             SendOutcome::Failed => {
                                 scrape_ok = false;
+                            }
+                            SendOutcome::DrainTimedOut(deadline) => {
+                                scrape_ok = false;
+                                drain_deadline = Some(deadline);
                             }
                             SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
                         }
@@ -708,6 +714,7 @@ impl TargetScraper {
                                 scrape_timestamp_ms,
                                 Some(self.start_timestamp_ns),
                                 Some(&resource_transform),
+                                &mut drain_deadline,
                                 ctrl_msg_recv,
                                 effect_handler,
                                 metrics,
@@ -717,6 +724,11 @@ impl TargetScraper {
                                 SendOutcome::Sent => {}
                                 SendOutcome::Failed => {
                                     scrape_ok = false;
+                                    break;
+                                }
+                                SendOutcome::DrainTimedOut(deadline) => {
+                                    scrape_ok = false;
+                                    drain_deadline = Some(deadline);
                                     break;
                                 }
                                 SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
@@ -744,6 +756,12 @@ impl TargetScraper {
                 metrics.scrapes_failed.add(1);
             }
             metrics.scrape_duration_ns.record(elapsed_nanos(started));
+        }
+        if let Some(deadline) = drain_deadline {
+            if let Err(err) = effect_handler.notify_receiver_drained().await {
+                return ControlFlow::Break(Err(err));
+            }
+            return ControlFlow::Break(Ok(terminal_state(deadline, metrics)));
         }
         ControlFlow::Continue(())
     }
@@ -843,6 +861,7 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
 enum SendOutcome {
     Sent,
     Failed,
+    DrainTimedOut(StdInstant),
     Exit(Result<TerminalState, Error>),
 }
 
@@ -853,10 +872,16 @@ async fn send_decoded_records(
     scrape_timestamp_ms: i64,
     default_start_timestamp_ns: Option<i64>,
     resource_transform: Option<&AttributesTransform>,
+    drain_deadline: &mut Option<StdInstant>,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
 ) -> SendOutcome {
+    if let Some(deadline) = *drain_deadline
+        && StdInstant::now() >= deadline
+    {
+        return SendOutcome::DrainTimedOut(deadline);
+    }
     let otap = match records_to_otap_with_resource(
         records,
         honor_timestamps,
@@ -883,17 +908,38 @@ async fn send_decoded_records(
         Err(TypedError::ChannelSendError(SendError::Full(pdata))) => {
             // NOTE: Downstream consumers run on the same single-threaded LocalSet, so when the
             // channel fills during multi-chunk decoding we must await capacity to let them poll
-            // while still servicing control messages.
+            // while still servicing control messages and respecting any active drain deadline.
             let mut send = Box::pin(effect_handler.send_message_with_source_node(pdata));
             loop {
                 tokio::select! {
                     biased;
 
+                    _ = async {
+                        if let Some(deadline) = *drain_deadline {
+                            sleep_until(Instant::from_std(deadline)).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    }, if drain_deadline.is_some() => {
+                        let deadline = drain_deadline.expect("drain_deadline checked Some");
+                        return SendOutcome::DrainTimedOut(deadline);
+                    }
+
                     msg = ctrl_msg_recv.recv() => {
-                        if let ControlFlow::Break(exit) =
-                            handle_control_msg(msg, effect_handler, metrics).await
-                        {
-                            return SendOutcome::Exit(exit);
+                        match msg {
+                            Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                                otel_info!("prometheus_receiver.drain_ingress");
+                                *drain_deadline = Some(
+                                    drain_deadline.map_or(deadline, |prev| prev.min(deadline)),
+                                );
+                            }
+                            other => {
+                                if let ControlFlow::Break(exit) =
+                                    handle_control_msg(other, effect_handler, metrics).await
+                                {
+                                    return SendOutcome::Exit(exit);
+                                }
+                            }
                         }
                     }
 
@@ -1285,8 +1331,9 @@ mod tests {
 
     /// Scenario: `DrainIngress` arrives while the receiver is parked waiting for capacity on a
     /// full downstream channel during a multi-chunk scrape.
-    /// Guarantees: control messages are still serviced while blocked on backpressure, ingress
-    /// drain is notified to the runtime, and the receiver terminates cleanly.
+    /// Guarantees: pending and remaining chunks of the already-fetched scrape are sent until the
+    /// drain deadline before `ReceiverDrained` is notified, and if the channel stays full past
+    /// the deadline, the receiver stops waiting at the deadline and exits cleanly.
     #[test]
     fn handles_drain_ingress_while_blocked_on_full_downstream_channel() {
         let (rt, local) = setup_test_runtime();
@@ -1294,6 +1341,7 @@ mod tests {
             let payload = concat!(
                 "# TYPE blocked_metric_0 counter\nblocked_metric_0 10\n",
                 "# TYPE blocked_metric_1 counter\nblocked_metric_1 20\n",
+                "# TYPE blocked_metric_2 counter\nblocked_metric_2 30\n",
             );
 
             let listener = TcpListener::bind("127.0.0.1:0")
@@ -1349,10 +1397,22 @@ mod tests {
 
             ctrl_tx
                 .send(NodeControlMsg::DrainIngress {
-                    deadline: StdInstant::now() + Duration::from_secs(1),
+                    deadline: StdInstant::now() + Duration::from_secs(2),
                     reason: "test ingress drain".to_owned(),
                 })
                 .expect("send drain ingress control message");
+            tokio::task::yield_now().await;
+
+            // Drain all three chunks from the admitted scrape before the deadline expires.
+            let mut received_points = 0usize;
+            for _ in 0..3 {
+                let mut pdata = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                    .await
+                    .expect("admitted chunk arrives before drain deadline")
+                    .expect("downstream channel stays open");
+                received_points += pdata.num_items();
+            }
+            assert_eq!(received_points, 3);
 
             let _ = tokio::time::timeout(Duration::from_secs(2), handle)
                 .await
