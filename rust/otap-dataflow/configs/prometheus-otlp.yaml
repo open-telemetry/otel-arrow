@@ -8,9 +8,11 @@ groups:
         #
         # Scrapes Prometheus text (0.0.4 / 1.0.0) and OpenMetrics 1.0 endpoints
         # and decodes them directly into OTAP Arrow record batches via `expfmt`.
-        # When run across multiple cores (`--num-cores N`), targets are sharded
-        # across cores (`target_index % num_cores == core_id`) with one reusable
-        # `ArrowDecoder` per core.
+        #
+        # The prometheus_receiver requires a single-core source pipeline, so
+        # this config is meant to be run as:
+        #
+        #   df_engine --config configs/prometheus-otlp.yaml --num-cores 1
 
         policies:
           channel_capacity:
