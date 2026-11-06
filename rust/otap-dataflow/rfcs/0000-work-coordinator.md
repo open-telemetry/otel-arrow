@@ -1,7 +1,7 @@
 ---
 Proposal Name: work-coordinator
 Start Date: 2026-11-05
-RFC PR: Pending
+RFC PR: open-telemetry/otel-arrow#4665
 Tracking Issue: Pending; related epic open-telemetry/otel-arrow#4001
 ---
 
@@ -16,27 +16,55 @@ pipeline replacements. Typed messages and a common ownership protocol preserve
 the engine's local data path. Capability profiles allow adoption from basic
 in-memory assignment through durable fencing and checkpointed source recovery.
 
+For example, a Prometheus coordinator discovers targets through DNS and assigns
+them across three instances of the same configured receiver:
+
+```mermaid
+flowchart TB
+    DNS["DNS service discovery"]
+    subgraph Logical["One logical pipeline - same configuration on three cores"]
+        W["Prometheus WorkCoordinator<br/>DNS discovery and target assignment<br/>Independent host"]
+        subgraph P0["Pipeline instance 1 - core 0"]
+            R0["Prometheus receiver<br/>WorkParticipant"]
+            R0 -->|Metrics| D0["Local processors / exporters"]
+        end
+        subgraph P1["Pipeline instance 2 - core 1"]
+            R1["Prometheus receiver<br/>WorkParticipant"]
+            R1 -->|Metrics| D1["Local processors / exporters"]
+        end
+        subgraph P2["Pipeline instance 3 - core 2"]
+            R2["Prometheus receiver<br/>WorkParticipant"]
+            R2 -->|Metrics| D2["Local processors / exporters"]
+        end
+        W -.->|Assign A, B| R0
+        W -.->|Assign C, D| R1
+        W -.->|Assign E, F| R2
+    end
+    DNS <-->|DNS queries / records| W
+    R0 <-->|HTTP scrape| T0["Targets A, B"]
+    R1 <-->|HTTP scrape| T1["Targets C, D"]
+    R2 <-->|HTTP scrape| T2["Targets E, F"]
+```
+
+Each target has one assigned receiver. Scraping and metric processing run in
+the owning pipeline instance; the coordinator handles discovery and assignment.
+
 ## Motivation
 
 Replicating a pull receiver on several cores can duplicate file reads, scrapes,
 and checkpoint writers. Coordination needs a lifetime independent of those
 instances and explicit participation in live reconciliation.
 
-The node implementer declares this dependency. Pipeline authors configure the
-receiver's behavior without separately declaring its coordination infrastructure.
-The same mechanism can support processors and exporters; source scheduling,
-I/O, decoding, and progress representation remain node-specific.
-
-This RFC builds on the source ownership and completion requirements described
-in [epic #4001][source-epic]. It introduces node-declared WorkCoordinators and
-capability profiles that allow incremental adoption, from basic assignment to
-durable fencing and advanced source guarantees.
-
-Cross-process ownership, coordination across logical pipelines, transparent
-coordinator restart, and exactly-once delivery are outside this proposal.
-Complete receiver implementations are separate work.
+The engine's [thread-per-core, share-nothing model][runtime-model] keeps node
+state and PData local to each core. Shared discovery and ownership must preserve
+that locality while coordinating work across instances.
 
 ## Guide-level explanation
+
+The node implementer declares the coordinator dependency; pipeline authors
+configure the node without separately wiring coordination infrastructure.
+Receivers, processors, and exporters share the contract. Discovery, execution,
+and source progress remain node-specific.
 
 ### Responsibilities
 
@@ -62,9 +90,10 @@ flowchart TB
     end
 ```
 
-The authority is a library object on the coordinator runtime. Progress commits
-use the same effective authority as assignments, through a separate writer
-handle; per-publication Ack/Nack does not pass through the coordinator loop.
+The controller owns lifecycle; each coordinator has an independent thread and
+current-thread runtime for discovery and assignment. Progress commits use the
+same authority through a separate writer. Per-publication Ack/Nack bypasses both
+controller and coordinator loops; controller work is per lifecycle transition.
 
 ### Capability profiles
 
@@ -74,7 +103,7 @@ downgrade. These are conformance contracts, not a new YAML section.
 
 | Profile | Contract | First uses |
 | --- | --- | --- |
-| Basic | In-memory assignment, bounded communication, a fixed participant set, cooperative catalog changes, and orderly shutdown. No rolling replacement, resize, forced takeover, or automatic per-core recovery. | Multicore Prometheus on a fixed footprint; Filelog discovery with one reader/checkpoint owner per namespace. |
+| Basic | Fixed-fleet assignment, bounded communication, cooperative catalog changes, and orderly shutdown. No rolling replacement, resize, forced takeover, or automatic per-core recovery. | Multicore Prometheus on a fixed footprint; Filelog discovery with one reader/checkpoint owner per namespace. |
 | Cooperative | Adds acknowledged resize, compatible replacement, rollback, and recovery after proven cleanup. Checkpointed multicore execution requires serialized local progress writes. | Prometheus live reconciliation; conservative Filelog handoff and qualified multicore reading. |
 | Fenced progress | Adds durable grants, stale-writer rejection, bounded atomic progress transactions, and validated downstream completion. Fenced takeover requires additional source qualification. | Advanced Filelog and other checkpointed sources. |
 
@@ -83,6 +112,10 @@ exclusion and Ack-gated checkpoints; it does not promise transparent failover,
 lossless handoff, or record-identical crash replay. Its one-core restriction can
 remain until a multicore adapter satisfies the selected profile. A weaker
 profile never permits unfenced concurrent writers or checkpointing before Ack.
+
+Cross-process ownership, coordination across logical pipelines, transparent
+coordinator restart, and exactly-once delivery are outside this proposal.
+Complete receiver implementations are separate work.
 
 ## Reference-level explanation
 
@@ -134,16 +167,20 @@ let participant = pipeline_ctx
 | Surface | Main operations |
 | --- | --- |
 | `CoordinatorRuntime<P>` | Signal host readiness; receive lifecycle events, `ParticipantRegistry` updates, and `ParticipantRequest` messages; send a `CoordinatorNotice` to one session; propose assignments. |
-| `WorkParticipant<P>` | `ready_for_assignments`, `recv`, `request`, `accept`, `activated`, `released`, and resynchronization. Events distinguish offers, active grants, revocation, `CoordinatorNotice` messages, and authority loss. |
-| Admission guard | `try_admit(grant)` locally reserves an operation and its permitted publication/completion. Validation and reservation are atomic relative to invalidation. Dropping a ticket is abandonment, not Ack or proof a worker stopped. |
+| `WorkParticipant<P>` | `ready_for_assignments`, `recv`, `request`, `accept`, `activated`, `released`, `progress_writer`, and resynchronization. Events distinguish offers, active grants, revocation, `CoordinatorNotice` messages, and authority loss. |
+| Admission guard | `try_admit(grant)` atomically checks admission and reserves execution/publication. Revocation closes admission; retirement/failure invalidate tickets. Dropping a ticket proves neither Ack nor worker exit. |
 | `AssignmentBackend<P>` | `capabilities`, `activate`, `retire`, and `resolve` an operation with an unknown outcome. Only a confirmed activation authorizes execution. |
+| `ProgressWriter` | Cloneable `Send + Sync` handle for conditional commits, asynchronous receipts/outcome resolution, and source-state reads. |
 
 Offers, grants, and lifecycle receipts are engine-defined and session/revision
 checked. Custom messages cannot manufacture authority. Binding/type erasure is
 confined to initialization; there is no hot-path registry lookup or per-record
 coordination RPC. Messages carry metadata, not PData or live node/I/O handles.
-Allocation policy is replaceable; the default retains eligible
-owners and assigns unowned work. Filelog can retain its fixed virtual partitions.
+The default allocator retains eligible owners. During rolling replacement,
+retained work moves core-for-core; new work follows the target fleet's planned
+shares and waits for unready targets. Released old-revision-only work retires,
+with metadata retained for rollback. Allocation policy remains
+replaceable; Filelog can retain its fixed virtual partitions.
 
 ### Authority and progress
 
@@ -153,20 +190,30 @@ work but does not authorize execution: the participant accepts, the backend
 confirms activation, and the participant acknowledges installing the grant.
 Catalog removal retires ownership before forgetting its entry.
 
-| Progress requirement | Enforcement |
-| --- | --- |
-| `None` | No checkpoint dependency, as for ordinary Prometheus target assignment. |
-| `ExclusiveWriter` | Existing singleton checkpoint API under exclusive namespace ownership; all old workers must stop before another writer starts. |
-| `SerializedLocal` | One local authority serializes grant validation, progress application, and ownership retirement. |
-| `DurableFenced` | Effective grants and conditional progress updates share a crash-consistent transaction boundary; stale writers are rejected. |
+| Progress requirement | Allowed profiles | Enforcement |
+| --- | --- | --- |
+| `None` | Basic, Cooperative | No checkpoint dependency, as for ordinary Prometheus target assignment. |
+| `ExclusiveWriter` | Basic, Cooperative | Singleton checkpoint API under exclusive namespace ownership; all old workers must stop before another writer starts. |
+| `SerializedLocal` | Cooperative | One local authority serializes grant validation, progress application, and ownership retirement. |
+| `DurableFenced` | Cooperative, Fenced progress | Effective grants and conditional progress share a crash-consistent transaction boundary; stale writers are rejected. |
 
-Serialized/fenced adapters use a `ProgressWriter` for the same authority domain.
-Commits carry the namespace, source key, exact grant, expected checkpoint revision,
-and opaque source progress. The fenced profile supports bounded all-or-none
-updates when a publication spans several files or assignments. Checking ownership
-in one place and writing independently elsewhere is insufficient. Persisting the
-desired placement plan remains optional; reconstructing placement must preserve
-source progress.
+All combinations require the corresponding backend and source adapter to be
+qualified. `CooperativeOnly` is the default takeover policy for every profile;
+`AllowFencedTakeover` requires Fenced progress and the source guarantees below.
+Selecting durable storage alone does not change a Basic or Cooperative profile.
+
+Serialized/fenced adapters obtain `participant.progress_writer()` and may clone
+it into I/O workers without making local participants or node state `Send`.
+One bounded writer serializes activation, retirement, and commits for the same
+authority domain. Submission returns `Capacity` rather than waiting for queue
+space; receipts are awaited asynchronously. Disk I/O stays on the writer worker,
+outside admission/queue locks. Per-publication feedback bypasses the coordinator.
+
+Commits carry the namespace, source key, exact grant, expected revision, and opaque
+progress. Fenced commits support bounded all-or-none updates across contributing
+files/assignments. Independent ownership checks and checkpoint writes are
+insufficient. Placement may be reconstructed; committed source progress must
+survive.
 
 Activation, retirement, and commits have operation IDs and definite outcomes.
 Timeout or caller cancellation does not prove a write failed. Resolve an ambiguous
@@ -184,7 +231,7 @@ Basic supports create, no-op, catalog changes, shutdown, and deletion. It reject
 replacement/resize before mutation and stops the logical pipeline on participant
 failure instead of attempting unsupported per-core recovery.
 
-Both live profiles support this cooperative cutover:
+Both live profiles use this handoff at each node's safe drain boundary:
 
 ```mermaid
 sequenceDiagram
@@ -195,8 +242,11 @@ sequenceDiagram
     participant B as Authority backend
     C->>W: Prepare candidate revision
     C->>N: Launch
-    N-->>C: ReadyForAssignments, without ownership
-    C->>W: Transfer required assignments
+    N-->>W: ReadyForAssignments, without ownership
+    N-->>C: Pipeline startup ready
+    C->>O: Begin dependency-ordered drain
+    Note over C,O: Keep downstream grants through upstream data/completion drain
+    C->>W: Transfer assignments at node's drain boundary
     W->>O: Revoke
     O->>O: Settle I/O, delivery, and progress
     O-->>W: Released
@@ -219,6 +269,11 @@ could wait for ownership while the controller waits for readiness before
 draining the old owner. Idle participants and empty catalogs must not block
 readiness.
 
+Stop ingress first. Processor/exporter grants needed to process upstream PData
+and unwind Ack/Nack remain accepting until that input/completion path drains.
+Then revoke and settle their own admitted work before release. Transferring all
+node grants before beginning pipeline drain is not a valid generic cutover.
+
 Unchanged settings reuse the host/revision. Compatible changes stage candidate
 settings alongside committed settings; the first candidate must not globally
 overwrite behavior for old participants. Incompatible identity, provider, or
@@ -227,24 +282,29 @@ atomic settings switch across the fleet are outside this proposal.
 
 | Operation | Rule |
 | --- | --- |
-| Resize | Prepare added sessions; release departing sessions before reassignment. Common-core sessions stay live. |
+| Resize | Ready added sessions without ownership; release departing owners, then rebalance once over the target fleet. Scale-up revokes selected common-core grants; common runtimes stay live. |
 | Recovery | Use fresh sessions/terms after proven cleanup or qualified fencing. |
 | Rollback | Restore prior configuration/eligibility with fresh grants; never revive a term, rewind progress, or undo external effects. |
-| Delete/shutdown | Stop admission, preserve completion paths during drain, join node/provider workers, then retire hosts and declarations. Retain failed cleanup state. |
+| Delete/shutdown | Stop ingress; preserve downstream grants and completion paths during drain. Settle tickets and join workers before release/retirement; retire hosts last. Retain failed cleanup state. |
 
-Required activations precede a core's serving cutover. The controller records its
-final deployment/revision commit decision before host finalization. A lost final
-receipt is retried or queried, not interpreted as permission to roll back a
+Added-core startup readiness must not wait for rebalancing before departing cores
+can drain. Required activations precede a core's serving cutover. The controller
+records its final deployment/revision commit decision before host finalization.
+A lost final receipt is retried or queried and never permits rolling back a
 committed generation. Full-config reconciliation retains its existing partial
 commit behavior. Controller locks are never held while awaiting receipts.
 
 ### Failure and source guarantees
 
-Every work unit has at most one current authorized owner. Under
-`CooperativeOnly`, release means no worker can start, publish, or commit further
-work under that grant. Revocation stops new admission while admitted work settles
-with its completion path alive. A dropped client, runtime exit, or expired
-deadline alone does not establish this; source workers must be accounted for.
+Every work unit has at most one current authorized owner. Cooperative `Revoke`
+closes new admission while existing tickets may settle and commit progress.
+`Retire` or fenced takeover invalidates the affected grant and its tickets;
+coordinator failure invalidates the whole domain. Commits serialize with
+retirement so late Ack cannot mutate progress after its fence.
+
+Under `CooperativeOnly`, `Released` requires settled tickets and physically
+stopped workers; retirement follows release. A dropped client/ticket, runtime
+exit, or expired deadline alone does not prove cleanup.
 
 `AllowFencedTakeover` additionally requires a qualified backend and source policy:
 retire old authority, reject stale mutations and new publication admissions, then
@@ -270,29 +330,57 @@ multi-file transactions and checkpoint migration; they do not gate early modes.
 ### Runtime, integration, and validation
 
 Initially host each coordinator on a bounded, controller-owned, unpinned thread
-with a current-thread Tokio runtime. Reuse existing hosting/readiness machinery;
-retain extensions' configuration model and `PipelineRuntimeServices`' per-instance
-scope. Generic contracts and binding belong in `engine`, lifecycle ownership in
-`controller`, and source/backend adapters in suitable leaf crates.
+with a current-thread Tokio runtime. Retain extensions' configuration model and
+`PipelineRuntimeServices`' per-instance scope. Contracts/binding belong in `engine`,
+lifecycle ownership in `controller`, and source/backend adapters in leaf crates.
+
+Supervise actual host/worker termination with deadlines before native joins.
+On timeout, retain unfinished handles, ownership, resource reservations, and
+failure state; invalidate admission and escalate. Timeout never proves cleanup.
+Adapt existing hosting/readiness machinery: `ThreadLocalTaskHandle`'s unbounded
+joins and error-suppressing `Drop` are insufficient for this lifecycle contract.
 
 Bound items and retained bytes for messages, catalogs, snapshots, sessions,
 transitions, receipts, and staged settings; also cap host threads. Preserve
-priority capacity for revocation, invalidation, and shutdown. Revision gaps suspend
-admission until bounded snapshot resynchronization. Blocking work uses managed
-workers; control continues under downstream or storage backpressure. Capacity
-pressure cannot evict active grants or required transition state.
+priority capacity for revocation, invalidation, and shutdown. A missing delta
+requires admission suspension and bounded snapshot resynchronization; coalescing
+complete snapshots is safe when the latest view replaces the old one. Keep
+synchronization brief and memory-only; blocking work uses managed workers.
+Control continues under downstream or storage backpressure. Capacity pressure
+cannot evict active grants or required transition state.
 
 Expose bounded health, assignment/transition summaries, queue bytes, and blocked
 handoff reasons through existing telemetry/diagnostics. Keep source IDs, paths,
 URLs, and operation IDs out of metric labels and redact sensitive settings.
 
-Validation follows the profiles: test early receiver adoption independently of
-durability, then overlapping generations, resize/recovery/rollback, stale sessions,
-ambiguous backend outcomes, saturated control paths, and failed worker cleanup.
-Durable qualification adds real crash/reopen, atomic multi-file, and migration
-tests. Include a processor/exporter participant to protect the generic contract.
-Measure CPU, retained bytes/RSS, handoff latency, and control responsiveness under
-catalog churn and backpressure, following the [async guidance][async-guide].
+Validate early profiles independently of durability, then changed-catalog rolling
+replacement, resize/core swaps, recovery/rollback, stale sessions, ambiguous writes,
+saturated control, and hung/failed cleanup. Cover snapshot gaps/resynchronization,
+dropped tickets, and competing coordinator keys using one `SourceNamespaceId`.
+Include processor/exporter drain with upstream data and late completions. Durable
+qualification adds real crash/reopen, atomic multi-file, and migration tests.
+Deterministic tests use scoped retained-byte counters; benchmarks measure CPU,
+RSS, admission-lock contention, handoff latency, and control responsiveness under
+churn/backpressure, following the [async guidance][async-guide] and
+[reliable-test guidance][reliable-tests].
+
+## Drawbacks
+
+Each coordinator adds a host thread/runtime, queues, snapshots, and lifecycle
+state; durable storage also needs a writer worker. Cross-core admission and
+handoff add synchronization and failure states to maintain and qualify.
+Thread/memory limits and contention measurements are required even though PData
+processing stays local.
+
+## Rationale and alternatives
+
+Separate the ownership contract from its hosting implementation:
+
+| Approach | Tradeoff |
+| --- | --- |
+| Node-declared WorkCoordinator | Encapsulates discovery, exact ownership, and reconciliation without author wiring; adds a dedicated protocol/lifecycle surface. |
+| Higher-scoped extension | Viable hosting alternative if implicit node declarations are added. Broader scope alone still needs participant, grant, and reconciliation semantics. Reuse hosting internals where useful. |
+| Per-instance discovery or ad hoc shared service | Either duplicates work or makes each node implement its own ownership, bounds, and live-reconciliation protocol. |
 
 ## Prior art
 
@@ -305,8 +393,8 @@ catalog churn and backpressure, following the [async guidance][async-guide].
 
 ## Unresolved questions
 
-- Finalize the participant/admission-guard API and processor/exporter drain
-  ordering before freezing public interfaces.
+- Finalize the controller/node barriers that enforce dependency-ordered drain
+  before freezing public interfaces.
 - Specify acceptable fencing evidence and which Filelog conditions permit forced
   takeover; absence of such evidence leaves the move blocked.
 - Choose measured default/hard resource limits and the smallest factory/telemetry
@@ -326,6 +414,8 @@ needs an external grant chain honored by the authoritative progress backend.
 [filelog-design]: ../docs/filelog-receiver.md
 [live-config]: ../docs/admin/live-reconfiguration.md
 [async-guide]: ../docs/async-best-practices.md
+[runtime-model]: ../docs/ai/ai-assisted-pr-review.md#core-architectural-invariants
+[reliable-tests]: ../CONTRIBUTING.md#reliable-tests
 [extension-code]: ../crates/engine/src/shared/extension.rs
 [factory-code]: ../crates/engine/src/lib.rs
 [thread-code]: ../crates/controller/src/thread_task.rs
