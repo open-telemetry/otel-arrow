@@ -858,15 +858,11 @@ impl CompiledNodeState {
             }
         }
 
-        // TODO(4541): capture declarations compile an arrival binding for receivers
-        // still using the legacy policy accessors; step 5 requires `Arrival`.
-        let arrival =
-            (arrival || header_capture.is_some() || authorized_identity_capture.is_some())
-                .then_some(ArrivalBinding {
-                    header_capture,
-                    authorized_identity_capture,
-                    materialization: materialization_plan.clone(),
-                });
+        let arrival = arrival.then_some(ArrivalBinding {
+            header_capture,
+            authorized_identity_capture,
+            materialization: materialization_plan.clone(),
+        });
 
         let sink = header_propagation.map(|policy| SinkBinding { policy });
 
@@ -1694,17 +1690,20 @@ groups:
     fn live_update_rejects_different_declarations_with_equivalent_policies() {
         let compile = |wire_name| {
             compiled_bindings(
-                [ContextDeclaration::HeaderCapture {
-                    policy: HeaderCapturePolicy::new(
-                        CaptureDefaults::default(),
-                        vec![CaptureRule {
-                            match_names: vec![context_name(wire_name)],
-                            store_as: None,
-                            sensitive: false,
-                            value_kind: None,
-                        }],
-                    ),
-                }]
+                [
+                    ContextDeclaration::Arrival,
+                    ContextDeclaration::HeaderCapture {
+                        policy: HeaderCapturePolicy::new(
+                            CaptureDefaults::default(),
+                            vec![CaptureRule {
+                                match_names: vec![context_name(wire_name)],
+                                store_as: None,
+                                sensitive: false,
+                                value_kind: None,
+                            }],
+                        ),
+                    },
+                ]
                 .into_iter()
                 .collect(),
             )
@@ -2669,6 +2668,7 @@ groups:
         );
         let bindings = compiled_bindings(
             [
+                ContextDeclaration::Arrival,
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries {
                         entries: ["x-first", "canonical"]
@@ -3254,21 +3254,26 @@ default:
         let policy: AuthorizedIdentityPolicy =
             serde_json::from_value(serde_json::json!([{"claim": "sub", "store_as": "tenant"}]))
                 .expect("valid authorized identity policy");
-        let declarations: NodeContextDeclarations =
-            [ContextDeclaration::AuthorizedIdentityCapture {
+        let declarations: NodeContextDeclarations = [
+            ContextDeclaration::Arrival,
+            ContextDeclaration::AuthorizedIdentityCapture {
                 policy: policy.clone(),
-            }]
-            .into_iter()
-            .collect();
+            },
+        ]
+        .into_iter()
+        .collect();
         let compiled = compiled_bindings(declarations);
         let changed_policy: AuthorizedIdentityPolicy = serde_json::from_value(
             serde_json::json!([{"claim": "groups", "store_as": "access_groups"}]),
         )
         .expect("valid changed authorized identity policy");
         let changed = compiled_bindings(
-            [ContextDeclaration::AuthorizedIdentityCapture {
-                policy: changed_policy,
-            }]
+            [
+                ContextDeclaration::Arrival,
+                ContextDeclaration::AuthorizedIdentityCapture {
+                    policy: changed_policy,
+                },
+            ]
             .into_iter()
             .collect(),
         );

@@ -16,6 +16,10 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataSender;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::pdata_context::NodeBindings;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::receiver::ReceiverContextMaterialization;
 use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
@@ -29,9 +33,69 @@ use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
+#[cfg(any(test, feature = "test-utils"))]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
+
+/// Installs the arrival binding that a receiver declaring
+/// `ContextDeclaration::Arrival` compiles to in a pipeline without context
+/// policies, so tests that build receivers directly can call `form_context`.
+/// Bindings that are already installed are kept.
+#[cfg(any(test, feature = "test-utils"))]
+pub trait WithDefaultArrivalBinding: Sized {
+    /// Returns `self` with the default arrival binding installed.
+    #[must_use]
+    fn with_default_arrival_binding_for_test(self) -> Self;
+}
+
+/// Returns arrival-only bindings retaining any installed materialization plan.
+#[cfg(any(test, feature = "test-utils"))]
+fn default_arrival_bindings<PData>(
+    materialization: Option<&ReceiverContextMaterialization<PData>>,
+) -> Arc<NodeBindings> {
+    let mut bindings = NodeBindings::default();
+    bindings.set_materialization_plan(
+        materialization
+            .map(|materialization| materialization.plan.clone())
+            .unwrap_or_default(),
+    );
+    Arc::new(bindings)
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl<PData> WithDefaultArrivalBinding for ReceiverWrapper<PData> {
+    fn with_default_arrival_binding_for_test(mut self) -> Self {
+        let (ReceiverWrapper::Local {
+            node_bindings,
+            context_materialization_plan,
+            ..
+        }
+        | ReceiverWrapper::Shared {
+            node_bindings,
+            context_materialization_plan,
+            ..
+        }) = &mut self;
+        if node_bindings.is_none() {
+            *node_bindings = Some(default_arrival_bindings(
+                context_materialization_plan.as_ref(),
+            ));
+        }
+        self
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl<PData> WithDefaultArrivalBinding for crate::local::receiver::EffectHandler<PData> {
+    fn with_default_arrival_binding_for_test(mut self) -> Self {
+        if self.node_bindings().is_none() {
+            let bindings = default_arrival_bindings(self.context_materialization_plan.as_ref());
+            self.set_node_bindings(bindings);
+        }
+        self
+    }
+}
 
 /// Context used during the test phase of a test.
 pub struct TestContext<PData> {

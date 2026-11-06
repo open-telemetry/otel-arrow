@@ -150,7 +150,7 @@ pub struct EffectHandler<PData> {
     /// context, or handler-local when created by the legacy policy setters.
     node_bindings: Option<Arc<NodeBindings>>,
     /// Data-type-specific context materialization shared by local handler clones.
-    context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+    pub(crate) context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     /// Optional signal used to gate pipeline startup on receiver initialization.
     readiness: Option<ReadinessSignaller>,
     /// Shares the runtime's budget so fatal handoff cannot restart the error-path flush timeout.
@@ -311,20 +311,6 @@ impl<PData> EffectHandler<PData> {
 
     pub(crate) fn set_readiness_signaller(&mut self, readiness: Option<ReadinessSignaller>) {
         self.readiness = readiness;
-    }
-
-    /// Installs an arrival binding equivalent to a pipeline without context
-    /// policies, unless bindings are already installed, so tests that build
-    /// the handler directly can call `form_context`.
-    #[cfg(any(test, feature = "test-utils"))]
-    #[must_use]
-    pub fn with_default_arrival_binding_for_test(mut self) -> Self {
-        if self.node_bindings.is_none() {
-            self.node_bindings = Some(crate::receiver::default_arrival_bindings(
-                self.context_materialization_plan.as_ref(),
-            ));
-        }
-        self
     }
 
     /// Attaches an observable readiness signal to a receiver effect handler in tests.

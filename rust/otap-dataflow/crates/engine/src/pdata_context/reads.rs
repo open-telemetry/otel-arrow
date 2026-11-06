@@ -561,6 +561,7 @@ mod tests {
         .collect::<Vec<_>>();
         let bindings = compile(
             [
+                ContextDeclaration::Arrival,
                 consumes(selectors.clone()),
                 ContextDeclaration::HeaderCapture {
                     policy: serde_json::from_value(serde_json::json!({
@@ -724,6 +725,7 @@ mod tests {
     fn all_captured_matches_capture_and_overlay_iteration() {
         let bindings = compile(
             [
+                ContextDeclaration::Arrival,
                 ContextDeclaration::HeaderCapture {
                     policy: serde_json::from_value(serde_json::json!({
                         "headers": [
@@ -816,6 +818,7 @@ mod tests {
         ];
         let bindings = compile(
             [
+                ContextDeclaration::Arrival,
                 consumes(selectors.clone()),
                 ContextDeclaration::HeaderCapture {
                     policy: serde_json::from_value(serde_json::json!({
@@ -1217,6 +1220,7 @@ mod tests {
         ];
         let bindings = compile(
             [
+                ContextDeclaration::Arrival,
                 consumes(selectors.to_vec()),
                 ContextDeclaration::AuthorizedIdentityCapture {
                     policy: serde_json::from_value(serde_json::json!([

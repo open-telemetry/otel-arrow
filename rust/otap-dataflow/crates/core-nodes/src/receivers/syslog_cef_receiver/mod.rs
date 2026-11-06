@@ -1801,7 +1801,7 @@ mod tests {
     use otel_arrow_dfe_engine::message::Receiver as EngineReceiver;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
-        receiver::{NotSendValidateContext, TestContext, TestRuntime},
+        receiver::{NotSendValidateContext, TestContext, TestRuntime, WithDefaultArrivalBinding},
         test_node,
     };
     use std::collections::HashMap;
@@ -4081,7 +4081,8 @@ mod telemetry_tests {
     use otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel;
     use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::testing::{
-        setup_test_runtime, test_node, test_pipeline_ctx_with_interests,
+        receiver::WithDefaultArrivalBinding, setup_test_runtime, test_node,
+        test_pipeline_ctx_with_interests,
     };
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::time::Instant;

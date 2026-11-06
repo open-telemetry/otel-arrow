@@ -108,10 +108,14 @@ struct ContextBindingsTestConfig {
 
 impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Produces {
-            domain: ContextDomain::TransportHeader,
-            entry: self.produces.clone(),
-        })
+        [
+            ContextDeclaration::Arrival,
+            ContextDeclaration::Produces {
+                domain: ContextDomain::TransportHeader,
+                entry: self.produces.clone(),
+            },
+        ]
+        .into_iter()
         .collect()
     }
 }

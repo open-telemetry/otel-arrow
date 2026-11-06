@@ -43,6 +43,7 @@ use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::ContextDeclarationProvider;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver as shared;
@@ -236,7 +237,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 .with_startup_readiness(),
         )
     },
-    context_declarations: None,
+    context_declarations: Some(ContextDeclarationProvider::arriving()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
