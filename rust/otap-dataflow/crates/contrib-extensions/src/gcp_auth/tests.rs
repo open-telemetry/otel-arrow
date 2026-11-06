@@ -523,11 +523,12 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
     }
 
     let failing_server = MockServer::start().await;
+    let utf8_boundary_body = format!("{}\u{20AC}{}", "a".repeat(255), "b".repeat(50));
     Mock::given(method("GET"))
         .and(path(
             "/computeMetadata/v1/instance/service-accounts/default/token",
         ))
-        .respond_with(ResponseTemplate::new(403).set_body_string("x".repeat(2048)))
+        .respond_with(ResponseTemplate::new(403).set_body_string(utf8_boundary_body))
         .mount(&failing_server)
         .await;
 
@@ -542,10 +543,33 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
     assert!(http_err.contains("403"));
     assert!(http_err.contains("[truncated]"));
     assert!(
+        !http_err.contains('\u{20AC}'),
+        "multi-byte char straddling byte 256 must be cleanly excluded before truncation suffix"
+    );
+    assert!(
         http_err.len() < 512,
         "error message must remain bounded, got {} bytes",
         http_err.len()
     );
+
+    let short_err_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .respond_with(ResponseTemplate::new(403).set_body_string("permission denied"))
+        .mount(&short_err_server)
+        .await;
+    let short_err_cfg =
+        config_from_json(serde_json::json!({ "endpoint": short_err_server.uri() })).expect("valid");
+    let short_err_auth = Auth::new(&short_err_cfg).expect("auth builds");
+    let short_err = short_err_auth
+        .fetch()
+        .await
+        .expect_err("HTTP 403 must fail");
+    short_err_auth.log_refresh_failure(&short_err);
+    assert!(short_err.to_string().contains("permission denied"));
+    assert!(!short_err.to_string().contains("[truncated]"));
 
     let oversized_server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -565,8 +589,8 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
         .expect_err("oversized 200 response must fail")
         .to_string();
     assert!(
-        oversized_err.contains("exceeds limit"),
-        "expected size limit error, got {oversized_err}"
+        oversized_err.contains("content-length") && oversized_err.contains("exceeds limit"),
+        "expected content-length size limit error, got {oversized_err}"
     );
 
     let redirect_server = MockServer::start().await;
@@ -598,6 +622,123 @@ async fn non_bearer_token_type_and_http_errors_are_rejected() {
     );
 }
 
+/// Scenario: The metadata server streams a chunked HTTP 200 body exceeding 64 KiB without a
+/// `Content-Length` header, returns malformed JSON or a non-numeric `expires_in` string, or stalls
+/// past `config.timeout`.
+/// Guarantees: `Auth::fetch` aborts the streaming read at `MAX_TOKEN_RESPONSE_BYTES`, rejects
+/// invalid JSON and non-numeric `expires_in` strings, and times out stalled requests.
+#[tokio::test]
+async fn chunked_oversized_body_malformed_json_and_request_timeout_are_rejected() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("local addr");
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept connection");
+        let mut req_buf = [0u8; 1024];
+        let _ = socket.read(&mut req_buf).await;
+        let headers = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n";
+        socket.write_all(headers).await.expect("write headers");
+        let chunk_payload = vec![b'a'; 32 * 1024];
+        let chunk_header = format!("{:X}\r\n", chunk_payload.len());
+        for _ in 0..3 {
+            if socket.write_all(chunk_header.as_bytes()).await.is_err() {
+                break;
+            }
+            if socket.write_all(&chunk_payload).await.is_err() {
+                break;
+            }
+            if socket.write_all(b"\r\n").await.is_err() {
+                break;
+            }
+        }
+        let _ = socket.write_all(b"0\r\n\r\n").await;
+    });
+
+    let chunked_cfg = config_from_json(serde_json::json!({
+        "endpoint": format!("http://{addr}"),
+    }))
+    .expect("valid");
+    let chunked_auth = Auth::new(&chunked_cfg).expect("auth builds");
+    let chunked_err = chunked_auth
+        .fetch()
+        .await
+        .expect_err("chunked oversized 200 response must fail")
+        .to_string();
+    server_task.await.expect("chunked server task completes");
+    assert!(
+        chunked_err.contains("metadata token response body exceeds limit"),
+        "expected streaming body limit error, got {chunked_err}"
+    );
+
+    for bad_body in [
+        "not valid json".to_string(),
+        serde_json::json!({
+            "access_token": "gcp-token",
+            "expires_in": "not-a-number",
+        })
+        .to_string(),
+    ] {
+        let bad_json_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/computeMetadata/v1/instance/service-accounts/default/token",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(bad_body))
+            .mount(&bad_json_server)
+            .await;
+
+        let bad_json_cfg =
+            config_from_json(serde_json::json!({ "endpoint": bad_json_server.uri() }))
+                .expect("valid");
+        let bad_json_auth = Auth::new(&bad_json_cfg).expect("auth builds");
+        let bad_json_err = bad_json_auth
+            .fetch()
+            .await
+            .expect_err("malformed JSON or non-numeric expires_in must fail")
+            .to_string();
+        assert!(
+            bad_json_err.contains("invalid metadata token response"),
+            "expected invalid metadata token response error, got {bad_json_err}"
+        );
+    }
+
+    let slow_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(10))
+                .set_body_json(serde_json::json!({
+                    "access_token": "slow-token",
+                    "expires_in": 120,
+                })),
+        )
+        .mount(&slow_server)
+        .await;
+
+    let timeout_cfg = config_from_json(serde_json::json!({
+        "endpoint": slow_server.uri(),
+        "timeout": "100ms",
+    }))
+    .expect("valid");
+    let timeout_auth = Auth::new(&timeout_cfg).expect("auth builds");
+    let timeout_err = timeout_auth
+        .fetch()
+        .await
+        .expect_err("stalled metadata request must time out")
+        .to_string();
+    assert!(
+        timeout_err.contains("metadata server request failed"),
+        "expected transport timeout error, got {timeout_err}"
+    );
+}
+
 /// Scenario: The static extension factory registration is inspected.
 /// Guarantees: `GCP_AUTH_EXTENSION` is registered under `urn:otel:extension:gcp_auth` and
 /// advertises `bearer_token_provider` as a shared capability.
@@ -614,19 +755,46 @@ fn factory_is_registered_with_bearer_token_provider_capability() {
     );
 }
 
-/// Scenario: The factory `create` hook is invoked with a default configuration.
-/// Guarantees: Wiring produces an active shared extension bundle with no local variant.
+/// Scenario: The factory `create` hook and `Auth::new` are invoked with valid and invalid
+/// configurations.
+/// Guarantees: Wiring with a valid configuration produces an active shared extension bundle with
+/// no local variant, and invalid configurations fail fast with `ConfigError::InvalidUserConfig`
+/// or `Error::BuildHttpClient`.
 #[test]
 fn create_builds_a_shared_active_bundle() {
+    let invalid_auth_cfg = Config {
+        endpoint: Some("not-a-url".to_string()),
+        ..Config::default()
+    };
+    let build_err = Auth::new(&invalid_auth_cfg)
+        .err()
+        .expect("invalid endpoint must fail Auth::new");
+    assert!(
+        build_err
+            .to_string()
+            .contains("failed to build the GCP metadata HTTP client"),
+        "expected BuildHttpClient error, got {build_err}"
+    );
+
     let (ext_ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
     let name: otel_arrow_dfe_config::ExtensionId = "gcp-auth".into();
+    let extension_config = ExtensionConfig::new(name.clone());
+
+    let bad_user_config = Arc::new(ExtensionUserConfig::new(
+        GCP_AUTH_URN.into(),
+        serde_json::json!({ "timeout": "0s" }),
+    ));
+    let create_err = create(&ext_ctx, name.clone(), bad_user_config, &extension_config)
+        .err()
+        .expect("invalid config must fail create()");
+    assert!(matches!(create_err, ConfigError::InvalidUserConfig { .. }));
+
     let user_config = Arc::new(ExtensionUserConfig::new(
         GCP_AUTH_URN.into(),
-        serde_json::json!({}),
+        serde_json::json!({ "endpoint": DEFAULT_METADATA_ENDPOINT }),
     ));
-    let extension_config = ExtensionConfig::new(name.clone());
     let bundle = create(&ext_ctx, name, user_config, &extension_config)
-        .expect("a default config wires successfully");
+        .expect("a valid config wires successfully");
     assert!(bundle.local().is_none());
     let shared = bundle.shared().expect("a shared variant is produced");
     assert_eq!(shared.variant(), ExtensionVariant::Shared);
