@@ -198,7 +198,7 @@ regex = "1.12"
 regex-automata = "0.4.18"
 regex-syntax = "0.8.11"
 ring = "0.17"
-roaring = "0.11.2"
+roaring = "0.12.0"
 ryu = "1"
 rustix = { version = "1.1.5", features = ["fs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
