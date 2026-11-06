@@ -146,6 +146,7 @@
     {
       // kube and k8s-openapi must use the same Kubernetes API types.
       "groupName": "kubernetes crates",
+      "separateMajorMinor": false,
       "matchManagers": ["cargo"],
       "matchDepNames": ["kube", "k8s-openapi"],
       "schedule": [
