@@ -709,7 +709,7 @@ mod tests {
             "rendered log: {rendered_pipeline}"
         );
         assert!(
-            rendered_pipeline.contains("[...]"),
+            rendered_pipeline.contains("[\u{2020}]"),
             "rendered log: {rendered_pipeline}"
         );
         assert!(
