@@ -120,6 +120,7 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
                 exporter_config,
             ))
         },
+    work_coordinators: None,
     context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
         ValidationExporterConfig,
     >()),

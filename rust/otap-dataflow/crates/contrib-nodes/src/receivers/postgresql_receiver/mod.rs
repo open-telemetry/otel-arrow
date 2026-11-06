@@ -55,6 +55,7 @@ pub static POSTGRESQL_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             .map(|_| ())
             .map_err(config_error)
     },
+    work_coordinators: None,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };

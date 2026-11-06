@@ -125,6 +125,7 @@ static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
             receiver_config,
         ))
     },
+    work_coordinators: None,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |value| Config::from_json(value).map(|_| ()),

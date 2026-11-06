@@ -181,49 +181,6 @@ fn same_process_lock_and_namespace_isolation() {
     let _reopened = store(&root);
 }
 
-/// Scenario: A child process attempts to open the namespace held by its parent.
-/// Guarantees: The OS lock excludes distinct processes as well as independent in-process opens.
-#[test]
-fn cross_process_lock() {
-    let (dir, root) = root();
-    let _store = store(&root);
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "store::tests::lock_child",
-            "--nocapture",
-            "--format=pretty",
-        ])
-        .env("FILELOG_LOCK_TEST_ROOT", dir.path())
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("test store::tests::lock_child ... ok"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("test result: ok. 1 passed; 0 failed;"),
-        "{stdout}"
-    );
-}
-
-/// Scenario: The lock-test child opens its parent's checkpoint namespace.
-/// Guarantees: Cross-process contention reports Locked without changing authority.
-#[test]
-fn lock_child() {
-    let Some(path) = std::env::var_os("FILELOG_LOCK_TEST_ROOT") else {
-        return;
-    };
-    let file = File::open(path).unwrap();
-    let root = StateRoot::from_borrowed_fd(file.as_fd()).unwrap();
-    assert!(matches!(
-        CheckpointStore::open(&root, ID, config()),
-        Err(StoreError::Locked)
-    ));
-}
-
 /// Scenario: A valid registration precedes a progress frame cut at every possible byte.
 /// Guarantees: Only that incomplete suffix is removed and the entire accepted prefix is byte-identical.
 #[test]

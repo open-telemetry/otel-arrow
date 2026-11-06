@@ -118,6 +118,7 @@ pub static SQL_SERVER_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             .map(|_| ())
             .map_err(invalid)
     },
+    work_coordinators: None,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
