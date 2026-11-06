@@ -10,9 +10,9 @@
 
 ## Overview
 
-The traffic generator receiver emits synthetic or semantic-convention-derived
-telemetry for tests, demos, and benchmark scenarios. It is compiled only when
-the `dev-tools` feature is enabled.
+The traffic generator receiver emits synthetic, semantic-convention-derived,
+or codec-generated telemetry for tests, demos, and benchmark scenarios. It is
+compiled only when the `dev-tools` feature is enabled.
 
 ## Getting Started
 
@@ -72,6 +72,66 @@ config:
 
 Transport-header names preserve their configured spelling. Names that differ
 only by case remain distinct stored context entries.
+
+### Codec-owned generation
+
+Set `data_source: codec` to generate the selected codec's encoded payloads
+instead of constructing OTLP signals. The codec owns format-specific profiles,
+framing, and allocation limits; the receiver still owns signal weights, rate,
+batch size, total signal limits, and fresh/pre-generated strategies.
+
+```text
+trafficgen pacing -> codec generator -> encoded payload -> downstream nodes
+                                                           |
+                                            decode when native records are needed
+```
+
+Configuration template: replace the encoding and profile placeholders with
+values advertised by a linked codec that supports generation.
+
+```yaml
+type: receiver:traffic_generator
+config:
+  data_source: codec
+  generation_strategy: pre_generated
+  codec:
+    encoding: your-encoding
+    profile: your-profile
+    max_batch_bytes: 2097152
+  traffic_config:
+    signals_per_second: 1000
+    max_batch_size: 100
+    log_weight: 1
+```
+
+`codec.encoding` selects a registered encoding and `codec.profile` selects one
+of its advertised generation profiles. Codecs opt in to generation separately
+from ordinary encoding support. Unknown encodings, unavailable profiles,
+unsupported signals, and codecs without a generator fail configuration
+validation.
+
+The receiver seeds each codec generator internally.
+By default, each generated batch receives the current time. Fresh
+mode generates new contents and timestamps; pre-generated mode caches a run of
+batches at startup and replays their bytes, including timestamps, unchanged.
+Set `codec.timestamp_unix_nano` to a nonnegative integer for fixed timestamps
+in either strategy. Timestamp precision and interpretation depend on the codec.
+
+`codec.max_batch_bytes` defaults to 2 MiB. The codec validates its own limits
+and worst-case allocation size at startup; the shared generation wrapper also
+checks each emitted payload's encoding, signal, item count, and encoded size.
+Reduce `traffic_config.max_batch_size` if a batch cannot fit the byte limit.
+Synthetic-only body-size, attribute, and trace-context settings are rejected
+with codec generation; use codec profiles to define generated contents.
+
+Generation injects encoded pdata directly, without a client or network
+transport. Payloads retain their encoded representation until a downstream node
+requires native records, exercising the real decoder rather than embedding
+format-looking text in OTLP bodies. This does not test socket handling or
+transport framing.
+
+See the [codec generation contract](../../../../pdata-codec/README.md#synthetic-generation-for-trafficgen)
+for implementing profiles.
 
 ## Purpose
 
