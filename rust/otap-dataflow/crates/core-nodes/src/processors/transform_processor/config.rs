@@ -3,6 +3,12 @@
 
 use std::num::NonZeroUsize;
 
+use otel_arrow_dfe_config::ContextEntryName;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration, ContextDomain,
+    ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake, ContextEntryTarget,
+    ContextNameMatching, NodeContextDeclarations,
+};
 use serde::Deserialize;
 
 /// Configuration for the [`TransformProcessor`](super::TransformProcessor)
@@ -74,4 +80,29 @@ const fn default_skip_sanitize_result() -> bool {
 
 const fn default_filter_attribute_keys_case_sensitive() -> bool {
     true
+}
+
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        NodeContextDeclarations::from_iter([
+            ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::AllCaptured {
+                    domain: ContextDomain::TransportHeader,
+                },
+            },
+            ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::Entries {
+                    entries: Box::new([ContextEntrySelector {
+                        target: ContextEntryTarget::Primitive {
+                            domain: ContextDomain::TransportHeader,
+                            name: ContextEntryName::try_from("todo").unwrap(),
+                            matching: ContextNameMatching::Exact,
+                        },
+                        form: ContextEntrySelectorForm::StoredKeyValue,
+                        take: ContextEntryTake::First,
+                    }]),
+                },
+            },
+        ])
+    }
 }

@@ -884,23 +884,4 @@ use std::sync::Arc;
         let pipeline_expr = KqlParser::parse("logsfoo | where true").unwrap().pipeline;
         assert!(SignalContext::try_infer(&pipeline_expr).is_err());
     }
-
-
-    #[test]
-    fn infernal_proto_write() {
-        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
-        use prost::Message;
-        let logs_data = to_logs_data(vec![
-            LogRecord::build()
-                .event_name("hello").finish()
-        ]);
-
-        let mut as_bytes = Vec::new();
-        logs_data.encode(&mut as_bytes).unwrap();
-
-        let mut file = std::fs::File::create("/tmp/otlp_bytes.proto").unwrap();
-        assert!(file.write(&as_bytes).unwrap() > 0);
-        file.flush().unwrap();
-        drop(file);
-    }
 }

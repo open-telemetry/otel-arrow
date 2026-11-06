@@ -48,16 +48,7 @@ use linkme::distributed_slice;
 use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
 use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otel_arrow_dfe_engine::{
-    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
-    ProcessorFactory, ProducerEffectHandlerExtension,
-    config::ProcessorConfig,
-    context::PipelineContext,
-    control::{AckMsg, NackCause, NackMsg, NodeControlMsg},
-    error::{Error as EngineError, ProcessorErrorKind},
-    local::processor::{EffectHandler, Processor},
-    message::Message,
-    node::NodeId,
-    processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper},
+    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension, config::ProcessorConfig, context::PipelineContext, control::{AckMsg, NackCause, NackMsg, NodeControlMsg}, error::{Error as EngineError, ProcessorErrorKind}, local::processor::{EffectHandler, Processor}, message::Message, node::NodeId, pdata_context::ContextDeclarationProvider, processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper}
 };
 use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,
@@ -140,6 +131,8 @@ impl TransformProcessor {
             .node_bindings(&pipeline_ctx.pipeline_key(), &node_id.name)
             .cloned()
             .unwrap_or_default();
+
+        println!("node_bindings = {node_bindings:#?}");
 
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
@@ -510,7 +503,7 @@ fn create_transform_processor(
 pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
-    context_declarations: None,
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -592,6 +585,11 @@ impl Processor<OtapPdata> for TransformProcessor {
                     }
                 };
 
+                // set metadata
+                // TODO - don't clone this
+                let metadata = delivery.context().metadata();
+                self.execution_state.set_metadata(metadata.clone());
+
                 let result = async {
                     let mut records = records;
                     for transform in &mut self.transforms[first..] {
@@ -602,6 +600,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                         records.decode_transport_optimized_ids().map_err(|error| {
                             TransformOperationError::new(TransformErrorType::IdDecode, error.into())
                         })?;
+
                         records = transform
                             .pipeline
                             .execute_with_state(records, &mut self.execution_state)
