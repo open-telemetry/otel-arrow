@@ -244,6 +244,7 @@ pub struct ExporterFutureRecord<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized> {
 
 impl<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized> ExporterFutureRecord<'a, K, P> {
     /// Creates a new record with the specified topic name.
+    #[must_use]
     pub fn to(topic: &'a str) -> ExporterFutureRecord<'a, K, P> {
         ExporterFutureRecord {
             topic,
@@ -271,6 +272,7 @@ impl<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized> ExporterFutureRecord<'a, K, P
 
     /// Sets the destination partition of the record.
     #[allow(dead_code)]
+    #[must_use]
     pub fn partition(mut self, partition: i32) -> ExporterFutureRecord<'a, K, P> {
         self.partition = Some(partition);
         self
@@ -290,12 +292,14 @@ impl<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized> ExporterFutureRecord<'a, K, P
 
     /// Sets the destination timestamp of the record.
     #[allow(dead_code)]
+    #[must_use]
     pub fn timestamp(mut self, timestamp: i64) -> ExporterFutureRecord<'a, K, P> {
         self.timestamp = Some(timestamp);
         self
     }
 
     /// Sets the headers of the record.
+    #[must_use]
     pub fn headers(mut self, headers: OwnedHeaders) -> ExporterFutureRecord<'a, K, P> {
         self.headers = Some(headers);
         self

@@ -20,6 +20,21 @@ fn classify_offset_feedback_commits_current_generation_ack() {
     );
 }
 
+/// Scenario (offset guarantees): a DLQ workflow captured under ownership
+/// generation 1 completes asynchronously, but the partition was revoked and
+/// reassigned to this consumer under generation 2 (and re-tracked) before the
+/// completion arrived.
+/// Guarantees: the stale completion is classified `DropStale` by the same policy
+/// the DLQ completion guard uses, so it cannot advance/commit an offset that the
+/// new generation now owns (which would drop the newly pending record).
+#[test]
+fn classify_offset_feedback_drops_stale_dlq_completion_after_reassign() {
+    assert_eq!(
+        classify_offset_feedback(1, Some(2), 2, true),
+        OffsetFeedbackAction::DropStale,
+    );
+}
+
 /// Scenario (offset guarantees): an ack arrives whose generation is older than the partition's
 /// tracked generation (the partition was reassigned and re-tracked under a
 /// newer generation).
