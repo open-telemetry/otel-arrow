@@ -83,7 +83,7 @@ pub struct Context {
     signal: Option<SignalType>,
 }
 
-/// Starts a message's delivery context from its formed arrival metadata.
+/// Starts a new message's delivery context from its formed metadata.
 impl From<Metadata> for Context {
     fn from(metadata: Metadata) -> Self {
         Self {
