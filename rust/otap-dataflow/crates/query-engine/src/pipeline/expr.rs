@@ -47,15 +47,16 @@ use arrow::datatypes::{Field, Schema};
 use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::scalar::ScalarValue;
-use otel_arrow_dfe_config::SignalType;
+
 use otel_arrow_dfe_pdata::otlp::attributes::cbor::SerializedValuePathElement;
 use otel_arrow_dfe_pdata::schema::consts;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::error::Result;
+use crate::pipeline::expr::batch::BatchEval;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
+mod batch;
 mod bitmap;
 pub(crate) mod eval;
 pub(crate) mod join;
@@ -537,32 +538,6 @@ impl LeafEval {
     }
 }
 
-/// An evaluation of a property of the entire `OtapArrowRecords` batch.
-///
-/// Results are uniform across all rows.
-pub(crate) trait BatchEval: std::fmt::Debug {
-    /// Evaluate against the entire batch.
-    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> ScalarValue;
-}
-
-/// Checks whether the batch contains a specific signal type.
-#[derive(Debug)]
-pub(crate) struct SignalTypePredicate {
-    pub signal_type: SignalType,
-}
-
-impl SignalTypePredicate {
-    pub fn new(signal_type: SignalType) -> Self {
-        Self { signal_type }
-    }
-}
-
-impl BatchEval for SignalTypePredicate {
-    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> ScalarValue {
-        ScalarValue::Boolean(Some(otap_batch.signal_type() == self.signal_type))
-    }
-}
-
 /// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
 /// the call to PhysicalExpr::evaluate. We just pass a static empty record batch.
 pub(crate) static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
@@ -585,10 +560,11 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
+    use crate::pipeline::expr::batch::SignalTypePredicate;
     use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{
         ChildRecordKind, DataScope, LeafEval, RecordScope, ScopedExpr, ScopedValue,
-        ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
+        ShortCircuitStrategy, VALUE_COLUMN_NAME, arg_column_name,
     };
     use crate::pipeline::functions::test::always_panic;
     use crate::pipeline::id_mask::IdMask;

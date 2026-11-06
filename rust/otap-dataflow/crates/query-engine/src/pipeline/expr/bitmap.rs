@@ -148,7 +148,7 @@ fn execute_eval_as_id_mask(
 ) -> Result<ScopedIdMask> {
     let (mask, scope) = match eval {
         LeafEval::BatchEval(eval) => {
-            let eval_result = eval.evaluate(otap_batch);
+            let eval_result = eval.evaluate(otap_batch, eval_ctx)?;
             let mask = scalar_value_to_id_mask(&eval_result)?;
 
             (mask, None)

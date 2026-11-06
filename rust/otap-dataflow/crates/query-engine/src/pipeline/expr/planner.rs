@@ -47,6 +47,7 @@ use crate::consts::{
     XXH128_FUNC_NAME,
 };
 use crate::error::{Error, Result};
+use crate::pipeline::expr::batch::SignalTypePredicate;
 use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
     ExprLogicalType, attribute_field_type, cast_expr, coerce_arithmetic, data_point_field_type,
@@ -54,7 +55,7 @@ use crate::pipeline::expr::types::{
 };
 use crate::pipeline::expr::{
     ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr,
-    ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
+    ShortCircuitStrategy, VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;

@@ -34,6 +34,7 @@ otel-arrow-contrib-data-engine-parser-abstractions = { workspace = true }
 uuid = { workspace = true }
 
 otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]

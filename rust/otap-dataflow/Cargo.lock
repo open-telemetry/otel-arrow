@@ -8156,6 +8156,7 @@ dependencies = [
  "otel-arrow-contrib-data-engine-kql-parser",
  "otel-arrow-contrib-data-engine-parser-abstractions",
  "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-query-engine-languages",

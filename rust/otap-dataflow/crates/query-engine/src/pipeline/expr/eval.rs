@@ -66,7 +66,7 @@ pub(crate) struct EvalContext<'a> {
     /// DataFusion Session context. Used for planning physical expression from logical exprs
     session_context: &'a SessionContext,
 
-    /// TODO
+    /// TODO doesn't need to be mutable
     exec_state: &'a mut ExecutionState,
 }
 
@@ -114,6 +114,10 @@ impl<'a> EvalContext<'a> {
     /// return the data_point_type
     pub fn data_point_type(&self) -> Option<&MetricDataPointType> {
         self.data_point_type.as_ref()
+    }
+
+    pub fn state(&'a self) -> &'a ExecutionState {
+        &self.exec_state
     }
 }
 
@@ -328,7 +332,7 @@ pub(super) fn eval_datafusion_expr_value(
         }
 
         LeafEval::BatchEval(eval) => {
-            let result = eval.evaluate(otap_batch);
+            let result = eval.evaluate(otap_batch, eval_ctx)?;
             Ok(Some(ScopedValue {
                 values: ColumnarValue::Scalar(result),
                 scope: DataScope::StaticScalar,
