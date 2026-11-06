@@ -1,5 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
+
 //! Task periodically collecting the internal signals emitted by the engine and the pipelines.
 
 use std::future::Future;
