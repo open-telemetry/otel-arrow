@@ -86,6 +86,21 @@ pub(crate) fn legacy_bindings_mut<'a, PData>(
     }))
 }
 
+/// Returns receiver bindings equivalent to a pipeline without context policies,
+/// retaining any installed materialization plan.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn default_arrival_bindings<PData>(
+    materialization: Option<&ReceiverContextMaterialization<PData>>,
+) -> Arc<NodeBindings> {
+    let mut bindings = NodeBindings::default();
+    bindings.set_materialization_plan(
+        materialization
+            .map(|materialization| materialization.plan.clone())
+            .unwrap_or_default(),
+    );
+    Arc::new(bindings)
+}
+
 /// Engine-managed startup-readiness state carried by a receiver wrapper.
 ///
 /// Receiver factories opt in through [`ReceiverWrapper::with_startup_readiness`];
@@ -690,6 +705,30 @@ impl<PData> ReceiverWrapper<PData> {
                 ..
             } => legacy_bindings_mut(node_bindings, context_materialization_plan.as_ref()),
         }
+    }
+
+    /// Installs an arrival binding equivalent to a pipeline without context
+    /// policies, unless bindings are already installed, so receiver tests can
+    /// call `form_context`.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_default_arrival_binding_for_test(mut self) -> Self {
+        let (Self::Local {
+            node_bindings,
+            context_materialization_plan,
+            ..
+        }
+        | Self::Shared {
+            node_bindings,
+            context_materialization_plan,
+            ..
+        }) = &mut self;
+        if node_bindings.is_none() {
+            *node_bindings = Some(default_arrival_bindings(
+                context_materialization_plan.as_ref(),
+            ));
+        }
+        self
     }
 
     /// Returns the wrapper with the compiler-owned bindings for this receiver.

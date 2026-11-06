@@ -313,6 +313,20 @@ impl<PData> EffectHandler<PData> {
         self.readiness = readiness;
     }
 
+    /// Installs an arrival binding equivalent to a pipeline without context
+    /// policies, unless bindings are already installed, so tests that build
+    /// the handler directly can call `form_context`.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn with_default_arrival_binding_for_test(mut self) -> Self {
+        if self.node_bindings.is_none() {
+            self.node_bindings = Some(crate::receiver::default_arrival_bindings(
+                self.context_materialization_plan.as_ref(),
+            ));
+        }
+        self
+    }
+
     /// Attaches an observable readiness signal to a receiver effect handler in tests.
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
