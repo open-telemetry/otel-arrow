@@ -452,12 +452,7 @@ fn candidate_failure_at_commit_rolls_back_only_candidate() {
             .expect_err("exit recorded before callback"),
         "reader exited"
     );
-    runtime.fail_coordinated_deployment(
-        &plan.pipeline_key,
-        plan.target_deployment.baseline_generation,
-        owner,
-        "discovery failed".into(),
-    );
+    runtime.fail_coordinated_deployment(&plan.pipeline_key, owner, "discovery failed".into());
     let reason = runtime
         .commit_pipeline_deployment(&plan)
         .expect_err("failed candidate");
