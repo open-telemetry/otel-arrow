@@ -675,7 +675,7 @@ fn seal_syslog_batch(
             peer,
         })
         .map_err(|error| format!("context formation failed: {error}"))?;
-    Ok(OtapPdata::new_todo_context(payload).with_metadata(metadata))
+    Ok(OtapPdata::new(metadata.into(), payload))
 }
 
 /// Applies message-rate admission for one framed syslog message.

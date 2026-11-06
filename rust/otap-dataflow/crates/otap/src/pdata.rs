@@ -83,6 +83,16 @@ pub struct Context {
     signal: Option<SignalType>,
 }
 
+/// Starts a message's delivery context from its formed arrival metadata.
+impl From<Metadata> for Context {
+    fn from(metadata: Metadata) -> Self {
+        Self {
+            metadata,
+            ..Self::default()
+        }
+    }
+}
+
 impl Context {
     /// Create a context with reserved frame capacity to avoid reallocating
     /// when the first subscriber is pushed.
