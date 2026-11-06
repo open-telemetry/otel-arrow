@@ -8,7 +8,7 @@
 use crate::error::ValidationError;
 use crate::template::render_jinja;
 use minijinja::context;
-use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
+use otel_arrow_dfe_config::context::transport_policy::TransportHeadersPolicy;
 use serde_yaml::{Mapping, Value};
 use std::fs;
 
@@ -356,7 +356,7 @@ fn set_config_by_path(
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::transport_headers_policy::*;
+    use otel_arrow_dfe_config::context::transport_policy::*;
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")

@@ -6,7 +6,7 @@ This directory contains the repository's main CI workflows:
 - [`contrib-integration.yml`](contrib-integration.yml): Path-aware contrib
   integration tests called by Rust CI.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
-- [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
+- [`repo-lint.yaml`](repo-lint.yaml): Repository lint, cargo-deny, and sanity checks.
 - [`changelog.yml`](changelog.yml): Changelog validation.
 - [`owner-coverage.yml`](owner-coverage.yml): Advisory contrib-owner coverage
   through owner-authorship or approval; red when missing, but not required.
@@ -19,8 +19,8 @@ This directory contains the repository's main CI workflows:
 
 | Event | Rust | Go | Repository |
 | --- | --- | --- | --- |
-| Pull request | Required and non-required jobs | Required jobs | Lint and changelog |
-| Merge queue | Required jobs and coverage | Required jobs | Lint and changelog |
+| Pull request | Required and non-required jobs | Required jobs | Lint, cargo-deny, and changelog |
+| Merge queue | Required jobs and coverage | Required jobs | Lint, cargo-deny, and changelog |
 | Merge to `main` | Shared-cache maintenance | CodeQL | - |
 
 Pull requests provide broad feedback. Merge-queue runs validate what is
@@ -34,6 +34,11 @@ The aggregate Rust and Go status jobs define required validation through their
 `needs` lists. Treat those lists as the source of truth when adding or removing
 required jobs. New external integration jobs can remain non-required while
 their reliability is established.
+
+Repo Lint's required `sanity` check enforces cargo-deny for both Rust workspaces.
+Maintainers may apply `skipdeny` for pre-existing failures not introduced by the
+PR; record a reason and tracking issue. Relabeling reruns Repo Lint, not Rust CI.
+Other required checks remain enforced.
 
 ## Contrib integration tests
 

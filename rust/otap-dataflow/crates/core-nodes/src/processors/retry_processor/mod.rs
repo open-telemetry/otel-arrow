@@ -5,7 +5,8 @@
 //! ACK/NACK handling.  Retry state is stored in the Context. Retries are
 //! issued using exponential backoff.
 //!
-//! The processor is configured via [`retry_processor::RetryConfig`] with
+//! The processor is configured via
+//! [`RetryConfig`](crate::processors::retry_processor::RetryConfig) with
 //! parameters for:
 //! - Initial and maximum retry delays
 //! - Maximum elapsed time

@@ -33,11 +33,12 @@ use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind};
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::PeerAddrMerger;
 use otel_arrow_dfe_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, Interests};
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension, PeerAddrMerger};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
@@ -143,7 +144,9 @@ pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Proc
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
-    context_declarations: None,
+    context_declarations: Some(
+        otel_arrow_dfe_engine::pdata_context::ContextDeclarationProvider::merging(),
+    ),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };

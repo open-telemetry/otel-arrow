@@ -9,12 +9,6 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
-use crate::otlp::common::BoundedBuf;
-use crate::otlp::common::{
-    BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
-    proto_encode_instrumentation_scope, proto_encode_resource,
-};
 use crate::otlp::metrics::data_points::exp_histogram::{
     ExpHistogramDpArrays, proto_encode_exp_hist_data_point,
 };
@@ -27,6 +21,13 @@ use crate::otlp::metrics::data_points::summary::{
 };
 use crate::otlp::metrics::exemplar::ExemplarArrays;
 use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
+use crate::otlp::{
+    attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value},
+    common::{
+        BatchSorter, BoundedBuf, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
+        proto_encode_instrumentation_scope, proto_encode_resource,
+    },
+};
 use crate::proto::consts::field_num::metrics::{
     EXPONENTIAL_HISTOGRAM_DATA_POINTS, GAUGE_DATA_POINTS, HISTOGRAM_AGGREGATION_TEMPORALITY,
     HISTOGRAM_DATA_POINTS, METRIC_DESCRIPTION, METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE,
@@ -687,7 +688,7 @@ impl MetricsProtoBytesEncoder {
                             metrics_data_arrays,
                             result_buf,
                         )
-                    })?
+                    })?;
                 }
             }
         }
@@ -700,7 +701,7 @@ impl MetricsProtoBytesEncoder {
             for attr_index in attrs_index_iter {
                 result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
                     encode_key_value(metrics_attrs, attr_index, result_buf)
-                })?
+                })?;
             }
         }
 

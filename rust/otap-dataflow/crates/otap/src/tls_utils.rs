@@ -637,6 +637,85 @@ pub(crate) async fn build_tonic_client_tls(
     Ok(tls)
 }
 
+/// Builds a [`rustls::ClientConfig`] from a validated material snapshot.
+///
+/// This is the rustls counterpart to [`build_tonic_client_tls`], intended for
+/// HTTP clients (hyper, reqwest) and other transports that accept a raw
+/// `ClientConfig` rather than tonic's transport-level wrapper.
+///
+/// Returns `Ok(None)` when TLS settings are empty and the endpoint URI does not
+/// use `https://`, meaning the connection should remain plaintext.
+///
+/// # Server name override
+///
+/// The returned `Option<String>` is the `server_name` from the TLS config,
+/// if set. Unlike tonic's `ClientTlsConfig` (which carries domain info
+/// internally), `rustls::ClientConfig` does not carry SNI configuration --
+/// callers must apply it at the connector level (e.g. via
+/// `hyper_rustls::FixedServerNameResolver`). Ignoring this value will cause
+/// certificate verification to use the hostname from the endpoint URL instead.
+pub async fn build_rustls_client_config(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+) -> Result<Option<(rustls::ClientConfig, Option<String>)>, io::Error> {
+    let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
+        return Ok(None);
+    };
+    let server_name = material.server_name.clone();
+    let client_config = build_rustls_client_config_from_material(&material).await?;
+    Ok(Some((client_config, server_name)))
+}
+
+/// Builds a [`rustls::ClientConfig`] from already-loaded client TLS material.
+///
+/// Consumes only the captured bytes in `material`; it does not read any files.
+pub(crate) async fn build_rustls_client_config_from_material(
+    material: &LoadedClientTlsMaterial,
+) -> Result<rustls::ClientConfig, io::Error> {
+    let mut root_store = RootCertStore::empty();
+
+    if material.include_system_ca {
+        add_system_trust_anchors_to_root_cert_store(&mut root_store).await?;
+    }
+
+    for ca_pem in &material.ca_pems {
+        let _ = add_pem_certificates_to_root_store(&mut root_store, ca_pem, "ca_file/ca_pem")?;
+    }
+
+    let builder = rustls::ClientConfig::builder().with_root_certificates(root_store);
+
+    let client_config = if let Some(identity) = &material.client_identity {
+        let cert_chain = CertificateDer::pem_slice_iter(&identity.cert_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to parse client certificate PEM: {e}"),
+                )
+            })?;
+
+        let key_der = PrivateKeyDer::from_pem_slice(&identity.key_pem).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse client private key PEM: {e}"),
+            )
+        })?;
+
+        builder
+            .with_client_auth_cert(cert_chain, key_der)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to build mTLS client config: {e}"),
+                )
+            })?
+    } else {
+        builder.with_no_client_auth()
+    };
+
+    Ok(client_config)
+}
+
 /// Validates that a client certificate and private key form a matching pair.
 ///
 /// The check first uses rustls's direct public-key comparison. For providers
@@ -3666,5 +3745,110 @@ mod tests {
         );
         assert!(state.retry_at.is_some_and(|at| at > due));
         assert!(Arc::ptr_eq(&inner.load_full(), &loaded));
+    }
+
+    // -- build_rustls_client_config_from_material tests --
+
+    /// Scenario: build a rustls ClientConfig from material that contains only a
+    /// custom CA bundle (no client identity, no system trust store).
+    /// Guarantees: the function succeeds and produces a usable ClientConfig when
+    /// the CA PEM is valid and no client auth is requested.
+    #[tokio::test]
+    async fn build_config_from_material_with_custom_ca_only() {
+        crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_ca("Test CA");
+
+        let material = LoadedClientTlsMaterial {
+            server_name: None,
+            include_system_ca: false,
+            ca_pems: vec![ca.cert_pem.into_bytes()],
+            client_identity: None,
+        };
+
+        let result = build_rustls_client_config_from_material(&material).await;
+        assert!(
+            result.is_ok(),
+            "custom-CA-only material must produce a valid ClientConfig: {result:?}",
+        );
+    }
+
+    /// Scenario: build a rustls ClientConfig from material that includes a valid
+    /// mTLS identity (client certificate + matching private key) alongside a
+    /// custom CA.
+    /// Guarantees: the function succeeds and the resulting ClientConfig carries
+    /// client authentication material.
+    #[tokio::test]
+    async fn build_config_from_material_with_mtls_identity() {
+        crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_ca("Test CA");
+        let leaf = ca.issue_leaf(
+            "client",
+            Some("client"),
+            Some(tls_certs::ExtendedKeyUsage::ClientAuth),
+        );
+
+        let material = LoadedClientTlsMaterial {
+            server_name: None,
+            include_system_ca: false,
+            ca_pems: vec![ca.cert_pem.into_bytes()],
+            client_identity: Some(ClientIdentityMaterial {
+                cert_pem: leaf.cert_pem.into_bytes(),
+                key_pem: leaf.key_pem.into_bytes(),
+            }),
+        };
+
+        let result = build_rustls_client_config_from_material(&material).await;
+        assert!(
+            result.is_ok(),
+            "valid mTLS material must produce a ClientConfig: {result:?}",
+        );
+    }
+
+    /// Scenario: build a rustls ClientConfig from material whose client
+    /// certificate PEM is not valid.
+    /// Guarantees: the function returns an error with `InvalidData` kind so the
+    /// caller can distinguish parse failures from I/O errors.
+    #[tokio::test]
+    async fn build_config_from_material_rejects_invalid_client_cert() {
+        crate::crypto::ensure_crypto_provider();
+        let ca = tls_certs::generate_ca("Test CA");
+
+        let material = LoadedClientTlsMaterial {
+            server_name: None,
+            include_system_ca: false,
+            ca_pems: vec![ca.cert_pem.into_bytes()],
+            client_identity: Some(ClientIdentityMaterial {
+                cert_pem: b"-----BEGIN CERTIFICATE-----\nnot-valid\n-----END CERTIFICATE-----\n"
+                    .to_vec(),
+                key_pem: b"bogus-key".to_vec(),
+            }),
+        };
+
+        let err = build_rustls_client_config_from_material(&material)
+            .await
+            .expect_err("invalid client cert PEM must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// Scenario: build a rustls ClientConfig from minimal material with no
+    /// custom CAs, no system trust store, and no client identity.
+    /// Guarantees: the function succeeds without panicking even when the root
+    /// store is empty and no client auth is configured.
+    #[tokio::test]
+    async fn build_config_from_material_with_empty_material() {
+        crate::crypto::ensure_crypto_provider();
+
+        let material = LoadedClientTlsMaterial {
+            server_name: None,
+            include_system_ca: false,
+            ca_pems: vec![],
+            client_identity: None,
+        };
+
+        let result = build_rustls_client_config_from_material(&material).await;
+        assert!(
+            result.is_ok(),
+            "empty material must still produce a ClientConfig: {result:?}",
+        );
     }
 }

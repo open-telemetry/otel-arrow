@@ -39,6 +39,9 @@ pub const ID_COLUMN_PATHS: &[&str] = &["id", "resource.id", "scope.id", "parent_
 /// );
 /// let records: OtapArrowRecords = logs.into();
 /// ```
+///
+/// [`Logs`]: crate::otap::Logs
+/// [`OtapArrowRecords`]: crate::otap::OtapArrowRecords
 #[macro_export]
 macro_rules! logs {
     ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
@@ -62,6 +65,9 @@ pub use logs;
 /// Missing required columns are automatically filled in using the schema spec.
 /// Use `.into()` to convert to [`OtapArrowRecords`], or `.into_batches()` to
 /// get the raw `[Option<RecordBatch>; Traces::COUNT]` array.
+///
+/// [`Traces`]: crate::otap::Traces
+/// [`OtapArrowRecords`]: crate::otap::OtapArrowRecords
 #[macro_export]
 macro_rules! traces {
     ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
@@ -85,6 +91,9 @@ pub use traces;
 /// Missing required columns are automatically filled in using the schema spec.
 /// Use `.into()` to convert to [`OtapArrowRecords`], or `.into_batches()` to
 /// get the raw `[Option<RecordBatch>; Metrics::COUNT]` array.
+///
+/// [`Metrics`]: crate::otap::Metrics
+/// [`OtapArrowRecords`]: crate::otap::OtapArrowRecords
 #[macro_export]
 macro_rules! metrics {
     ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {

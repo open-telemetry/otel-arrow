@@ -18,11 +18,11 @@ use crate::common::kafka::security::build_aws_msk_context;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
+#[cfg(test)]
+use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
-#[cfg(test)]
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::capability::auth::SaslCredential;
 use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{

@@ -6,12 +6,11 @@ use crate::arrays::{
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
-use crate::otlp::common::BoundedBuf;
-use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
+use crate::otlp::common::{BoundedBuf, ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::data_points::histogram::ListValueAccessor;
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
+use crate::otlp::{EncodeFailure, ProtoBuffer};
 use crate::proto::consts::field_num::metrics::{
     EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES,
     EXP_HISTOGRAM_DP_COUNT, EXP_HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_FLAGS,
@@ -230,7 +229,7 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_positive.as_ref() {
         result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_POSITIVE, |result_buf| {
             proto_encode_buckets(index, bucket_arrays, result_buf)
-        })?
+        })?;
     }
 
     if let Some(bucket_arrays) = exp_hist_dp_arrays.exp_histogram_negative.as_ref() {
@@ -308,10 +307,10 @@ fn proto_encode_buckets(
         // https://protobuf.dev/programming-guides/encoding/#repeated
 
         result_buf.encode_len_delimited(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, |result_buf| {
-            values
-                .iter()
-                .flatten()
-                .try_for_each(|val| result_buf.encode_varint(val))
+            for value in values.iter().flatten() {
+                result_buf.encode_varint(value)?;
+            }
+            Ok::<_, EncodeFailure>(())
         })?;
     }
 

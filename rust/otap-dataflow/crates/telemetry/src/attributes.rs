@@ -248,6 +248,7 @@ pub trait MeasurementAttributeSet: Copy {
 }
 
 /// Represents a single attribute value that can be of different types.
+/// TODO(4453) Consolidate with otel_arrow_dfe_config::pipeline::AttributeValue.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeValue {
     /// String attribute value

@@ -46,10 +46,12 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::num::{NonZeroU16, NonZeroU64};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader, ReadBuf};
 
 use otel_arrow_dfe_config::tls::TlsServerConfig;
 use otel_arrow_dfe_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
@@ -209,6 +211,8 @@ impl Config {
 /// Result of a bounded line read operation.
 #[derive(Debug, Clone, Copy)]
 enum BoundedReadResult {
+    /// A complete newline frame remains borrowed from the reader until consumed.
+    Buffered { length: usize },
     /// A complete line was read (ending with `\n`, which is included in the buffer).
     Complete,
     /// The buffer reached [`MAX_MESSAGE_SIZE`] before a newline was found.
@@ -224,6 +228,83 @@ enum BoundedReadResult {
     /// EOF was reached. The buffer may contain a partial message without trailing
     /// `\n`, or may be empty if no data was available.
     Eof,
+}
+
+/// Captures one receipt year per nonempty TCP buffer refill, not per message.
+///
+/// Messages completed from the same read share its immutable receipt context.
+/// A fragmented message uses the read supplying its final bytes. Cancellation,
+/// flushing, and downstream backpressure cannot resample buffered bytes. This
+/// retains no clock or timezone cache across reads; clock corrections and year
+/// changes are observed by the next nonempty refill, including partial EOF input.
+struct ReceiptReader<R, C> {
+    inner: BufReader<R>,
+    clock: C,
+    received_local_year: Option<i32>,
+}
+
+impl<R: AsyncRead, C: FnMut() -> i32> ReceiptReader<R, C> {
+    fn new(inner: BufReader<R>, clock: C) -> Self {
+        Self {
+            inner,
+            clock,
+            received_local_year: None,
+        }
+    }
+
+    fn receipt_year(&self) -> Option<i32> {
+        self.received_local_year
+    }
+
+    fn buffer(&self) -> &[u8] {
+        self.inner.buffer()
+    }
+}
+
+impl<R: AsyncRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncBufRead for ReceiptReader<R, C> {
+    fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
+        let this = self.get_mut();
+        let refill = this.inner.buffer().is_empty();
+        match Pin::new(&mut this.inner).poll_fill_buf(cx) {
+            Poll::Ready(Ok(bytes)) => {
+                if refill && !bytes.is_empty() {
+                    this.received_local_year = Some((this.clock)());
+                }
+                Poll::Ready(Ok(bytes))
+            }
+            other => other,
+        }
+    }
+
+    fn consume(self: Pin<&mut Self>, amount: usize) {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).consume(amount);
+    }
+}
+
+impl<R: AsyncRead + Unpin, C: FnMut() -> i32 + Unpin> AsyncRead for ReceiptReader<R, C> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        let available = match self.as_mut().poll_fill_buf(cx) {
+            Poll::Ready(Ok(bytes)) => bytes,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Pending => return Poll::Pending,
+        };
+        let count = available.len().min(buf.remaining());
+        buf.put_slice(&available[..count]);
+        self.consume(count);
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn current_receipt_year() -> i32 {
+    codec::receipt_local_year(Utc::now(), &chrono::Local)
 }
 
 /// Per-connection state used while reading a TCP frame.
@@ -338,6 +419,26 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin + ?Sized>(
         _ if buf.len() >= max_size => Ok(BoundedReadResult::Truncated),
         _ => Ok(BoundedReadResult::Eof), // partial data before connection close
     }
+}
+
+/// Borrows complete buffered newline frames instead of copying through scratch.
+///
+/// The returned length includes the delimiter. The caller must synchronously
+/// process the reader's buffer and consume that length before another read or
+/// suspension. Partial, oversized, and octet-counted input keeps the existing
+/// cancellation-safe scratch path and all its truncation/error behavior.
+async fn read_tcp_frame_borrowed<R: AsyncBufRead + Unpin + ?Sized>(
+    reader: &mut R,
+    state: &mut TcpFrameState,
+    max_size: usize,
+) -> Result<BoundedReadResult, TcpFrameReadError> {
+    if matches!(state.progress, TcpFrameProgress::Newline) && state.message.is_empty() {
+        let available = reader.fill_buf().await.map_err(TcpFrameReadError::Io)?;
+        if let Some(end) = memchr::memchr(b'\n', &available[..available.len().min(max_size)]) {
+            return Ok(BoundedReadResult::Buffered { length: end + 1 });
+        }
+    }
+    read_tcp_frame(reader, state, max_size).await
 }
 
 /// Reads one TCP-framed syslog message.
@@ -504,6 +605,7 @@ fn process_syslog_message(
     metrics: &Rc<RefCell<SyslogCefReceiverMetrics>>,
     protocol: SyslogCefProtocol,
     message: &[u8],
+    received_local_year: Option<i32>,
     admission_state: &LocalReceiverAdmissionState,
     rate_limiter: &Option<LocalAdmissionGate>,
     batch_builder: &mut SyslogBatchBuilder,
@@ -526,7 +628,11 @@ fn process_syslog_message(
         }
         // Retain the transport-framed bytes. Parsing belongs to the codec and is
         // deferred until a consumer requests record contents.
-        batch_builder.append(message).map_err(|_| {
+        let appended = match received_local_year {
+            Some(year) => batch_builder.append_with_year(message, year),
+            None => batch_builder.append(message),
+        };
+        appended.map_err(|_| {
             processing.refused(SignalType::Logs, ReceiverRejectionErrorType::InvalidRequest)
         })?;
         Ok((SignalType::Logs, ()))
@@ -778,7 +884,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         metrics.borrow_mut().record_connection_active(true);
 
                                         // Perform TLS handshake if configured, creating a unified reader type
-                                        let mut reader: Box<dyn AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
+                                        let reader: Box<dyn AsyncRead + Unpin> = if let Some(acceptor) = tls_acceptor {
                                             // Use configured timeout or fall back to 10 seconds (the serde default)
                                             let timeout = tls_handshake_timeout
                                                 .unwrap_or(Duration::from_secs(10));
@@ -789,7 +895,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
-                                                    Box::new(BufReader::new(tls_stream))
+                                                    Box::new(tls_stream)
                                                 }
                                                 Err(e) => {
                                                     otel_warn!(
@@ -805,9 +911,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                             }
                                         } else {
-                                            Box::new(BufReader::new(socket))
+                                            Box::new(socket)
                                         };
 
+                                        let mut reader = ReceiptReader::new(BufReader::new(reader), current_receipt_year);
                                         let mut frame_state = TcpFrameState::new(tcp_framing);
                                         let mut discard_until_newline = false;
                                         let mut warned_rate_limit_drop = false;
@@ -857,8 +964,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 biased; // Prioritize incoming data over timeout
 
                                                 // Handle incoming data
-                                                read_result = read_tcp_frame(
-                                                    &mut *reader,
+                                                read_result = read_tcp_frame_borrowed(
+                                                    &mut reader,
                                                     &mut frame_state,
                                                     MAX_MESSAGE_SIZE,
                                                 ) => {
@@ -873,6 +980,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     &metrics,
                                                                     SyslogCefProtocol::Tcp,
                                                                     frame_state.message_for_processing(),
+                                                                    reader.receipt_year(),
                                                                     &admission_state,
                                                                     &rate_limiter,
                                                                     &mut batch_builder,
@@ -930,8 +1038,15 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 } => Some((declared_length, maximum)),
                                                                 _ => None,
                                                             };
+                                                            let borrowed_length = match bounded_result {
+                                                                BoundedReadResult::Buffered { length } => Some(length),
+                                                                _ => None,
+                                                            };
                                                             if discard_until_newline {
-                                                                if matches!(bounded_result, BoundedReadResult::Complete) {
+                                                                if let Some(length) = borrowed_length {
+                                                                    reader.consume(length);
+                                                                }
+                                                                if matches!(bounded_result, BoundedReadResult::Complete | BoundedReadResult::Buffered { .. }) {
                                                                     discard_until_newline = false;
                                                                 }
                                                                 frame_state.clear_message();
@@ -954,14 +1069,24 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // the continuation fragment so downstream consumers can associate the
                                                             // pieces. See https://github.com/open-telemetry/otel-arrow/pull/2452#discussion_r3004024837
 
+                                                            // Borrow only during synchronous admission: the codec copies
+                                                            // into its owned batch before the socket buffer is consumed.
+                                                            let message = match borrowed_length {
+                                                                Some(length) => &reader.buffer()[..length - 1],
+                                                                None => frame_state.message_for_processing(),
+                                                            };
                                                             let processing_result = process_syslog_message(
                                                                 &metrics,
                                                                 SyslogCefProtocol::Tcp,
-                                                                frame_state.message_for_processing(),
+                                                                message,
+                                                                reader.receipt_year(),
                                                                 &admission_state,
                                                                 &rate_limiter,
                                                                 &mut batch_builder,
                                                             );
+                                                            if let Some(length) = borrowed_length {
+                                                                reader.consume(length);
+                                                            }
                                                             if let Some((declared_length, maximum)) = oversized_frame {
                                                                 let processing_outcome = match &processing_result {
                                                                     Ok(()) => "success",
@@ -1277,6 +1402,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         &self.metrics,
                                         SyslogCefProtocol::Udp,
                                         &buf[..n],
+                                        None,
                                         &self.admission_state,
                                         &self.rate_limiter,
                                         &mut batch_builder,
@@ -1812,11 +1938,12 @@ mod tests {
             let message = vec![b'x'; MAX_MESSAGE_SIZE];
             let codec = resolve_syslog().unwrap();
             let mut counts = Vec::new();
-            for _ in 0..32 {
+            for _ in 0..(codec::full_sized_test_message_capacity() * 2 + 2) {
                 process_syslog_message(
                     &receiver.metrics,
                     protocol,
                     &message,
+                    None,
                     &receiver.admission_state,
                     &receiver.rate_limiter,
                     &mut builder,
@@ -1825,7 +1952,10 @@ mod tests {
                 if builder.should_flush(usize::from(receiver.config.max_batch_size())) {
                     let pdata = seal_syslog_batch(&mut builder, codec).unwrap();
                     counts.push(pdata.payload_ref().known_item_count().unwrap());
-                    assert!(pdata.payload_ref().encoded_bytes().unwrap().len() <= 256 * 1024);
+                    assert!(
+                        pdata.payload_ref().encoded_bytes().unwrap().len()
+                            <= codec::MAX_BATCH_BYTES
+                    );
                 }
             }
             if !builder.is_empty() {
@@ -1837,7 +1967,14 @@ mod tests {
                         .unwrap(),
                 );
             }
-            assert_eq!(counts, [15, 15, 2]);
+            assert_eq!(
+                counts,
+                [
+                    codec::full_sized_test_message_capacity(),
+                    codec::full_sized_test_message_capacity(),
+                    2
+                ]
+            );
         }
     }
 
@@ -1853,6 +1990,7 @@ mod tests {
             &receiver.metrics,
             SyslogCefProtocol::Tcp,
             b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg",
+            None,
             &receiver.admission_state,
             &receiver.rate_limiter,
             &mut batch_builder,
@@ -3055,6 +3193,219 @@ mod tcp_frame_reader_tests {
         writer_half.write_all(data).await.unwrap();
         drop(writer_half);
         BufReader::new(reader_half)
+    }
+
+    /// Scenario: Two messages share a TCP refill before the next read crosses New Year.
+    /// Guarantees: Receipt time is sampled once per nonempty refill, not per message,
+    /// and a backward wall-clock correction is observed on the following refill.
+    #[tokio::test]
+    async fn tcp_receipt_context_follows_reads_not_messages() {
+        let calls = Cell::new(0);
+        let years = [2024, 2025, 2023];
+        let mut reader =
+            ReceiptReader::new(BufReader::with_capacity(4, &b"a\nb\nc\nd\ne\n"[..]), || {
+                let index = calls.get();
+                calls.set(index + 1);
+                years[index]
+            });
+        for (index, year) in [2024, 2024, 2025, 2025, 2023].into_iter().enumerate() {
+            let mut line = Vec::new();
+            assert!(matches!(
+                read_line_bounded(&mut reader, &mut line, 64).await.unwrap(),
+                BoundedReadResult::Complete
+            ));
+            assert_eq!(reader.receipt_year(), Some(year));
+            assert_eq!(calls.get(), index / 2 + 1);
+        }
+        let mut empty = Vec::new();
+        assert!(matches!(
+            read_line_bounded(&mut reader, &mut empty, 64)
+                .await
+                .unwrap(),
+            BoundedReadResult::Eof
+        ));
+        assert_eq!(calls.get(), 3);
+    }
+
+    /// Scenario: A TCP line is canceled after its first bytes, then completes after New Year.
+    /// Guarantees: Cancellation preserves the prefix and the completing read supplies
+    /// the receipt year; EOF on a partial last line does not sample a later clock.
+    #[tokio::test]
+    async fn tcp_receipt_context_survives_cancellation_and_partial_eof() {
+        let (socket, mut writer) = tokio::io::duplex(128);
+        let year = Cell::new(2024);
+        let calls = Cell::new(0);
+        let mut reader = ReceiptReader::new(BufReader::new(socket), || {
+            calls.set(calls.get() + 1);
+            year.get()
+        });
+        writer.write_all(b"Dec 31 ").await.unwrap();
+        let mut line = Vec::new();
+        {
+            let pending = read_line_bounded(&mut reader, &mut line, 64);
+            tokio::pin!(pending);
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+        }
+        assert_eq!(line, b"Dec 31 ");
+        assert_eq!(reader.receipt_year(), Some(2024));
+        year.set(2025);
+        writer
+            .write_all(b"23:59:59 host msg\npartial")
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_line_bounded(&mut reader, &mut line, 64).await.unwrap(),
+            BoundedReadResult::Complete
+        ));
+        assert_eq!(line, b"Dec 31 23:59:59 host msg\n");
+        assert_eq!(reader.receipt_year(), Some(2025));
+        year.set(2026);
+        drop(writer);
+        line.clear();
+        assert!(matches!(
+            read_line_bounded(&mut reader, &mut line, 64).await.unwrap(),
+            BoundedReadResult::Eof
+        ));
+        assert_eq!(line, b"partial");
+        assert_eq!(reader.receipt_year(), Some(2025));
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// Scenario: Direct async reads cross two refills, including zero-length reads and empty EOF.
+    /// Guarantees: AsyncRead cannot bypass receipt sampling or resample already buffered bytes and empty reads.
+    #[tokio::test]
+    async fn tcp_receipt_context_tracks_direct_async_reads() {
+        let calls = Cell::new(0);
+        let mut reader = ReceiptReader::new(BufReader::with_capacity(4, &b"abcdEFGH"[..]), || {
+            calls.set(calls.get() + 1);
+            2023 + calls.get()
+        });
+        assert_eq!(reader.read(&mut []).await.unwrap(), 0);
+        assert_eq!(reader.receipt_year(), None);
+        assert_eq!(calls.get(), 0);
+        for (expected, year) in [(b"ab".as_slice(), 2024), (b"cd", 2024), (b"EFGH", 2025)] {
+            let mut bytes = vec![0; expected.len()];
+            let _ = reader.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(bytes, expected);
+            assert_eq!(reader.receipt_year(), Some(year));
+        }
+        assert_eq!(calls.get(), 2);
+        assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
+        assert_eq!(reader.read(&mut []).await.unwrap(), 0);
+        assert_eq!(reader.receipt_year(), Some(2025));
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// Scenario: Complete newline frames, including CRLF and an empty line, share one read.
+    /// Guarantees: Admission borrows the original buffer without scratch copies, strips
+    /// only LF, and consumes each frame exactly once before the next read.
+    #[tokio::test]
+    async fn borrowed_tcp_frames_preserve_bytes_without_scratch_copies() {
+        let mut reader = BufReader::new(&b"first\nsecond\r\n\n"[..]);
+        let mut state = TcpFrameState::new(TcpFraming::Newline);
+        let pointer = reader.fill_buf().await.unwrap().as_ptr();
+        let capacity = state.message.capacity();
+        let mut consumed = 0;
+        for expected in [b"first".as_slice(), b"second\r", b""] {
+            let BoundedReadResult::Buffered { length } =
+                read_tcp_frame_borrowed(&mut reader, &mut state, 64)
+                    .await
+                    .unwrap()
+            else {
+                panic!("complete buffered frame must be borrowed");
+            };
+            assert_eq!(&reader.buffer()[..length - 1], expected);
+            assert_eq!(reader.buffer().as_ptr(), pointer.wrapping_add(consumed));
+            assert!(state.message.is_empty());
+            assert_eq!(state.message.capacity(), capacity);
+            reader.consume(length);
+            consumed += length;
+        }
+        assert!(matches!(
+            read_tcp_frame_borrowed(&mut reader, &mut state, 64)
+                .await
+                .unwrap(),
+            BoundedReadResult::Eof
+        ));
+    }
+
+    /// Scenario: A newline frame is split across reads and a canceled read future.
+    /// Guarantees: The scratch fallback preserves its prefix and final receipt year;
+    /// the subsequent complete frame resumes borrowing without repeating either frame.
+    #[tokio::test]
+    async fn borrowed_tcp_frames_resume_fragmented_input_after_cancellation() {
+        let (socket, mut writer) = tokio::io::duplex(128);
+        let year = Cell::new(2024);
+        let mut reader = ReceiptReader::new(BufReader::new(socket), || year.get());
+        let mut state = TcpFrameState::new(TcpFraming::Newline);
+        writer.write_all(b"part").await.unwrap();
+        {
+            let pending = read_tcp_frame_borrowed(&mut reader, &mut state, 64);
+            tokio::pin!(pending);
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+        }
+        assert_eq!(state.message, b"part");
+        year.set(2025);
+        writer.write_all(b"ial\nnext\n").await.unwrap();
+        assert!(matches!(
+            read_tcp_frame_borrowed(&mut reader, &mut state, 64)
+                .await
+                .unwrap(),
+            BoundedReadResult::Complete
+        ));
+        assert_eq!(state.message_for_processing(), b"partial");
+        assert_eq!(reader.receipt_year(), Some(2025));
+        state.clear_message();
+        let BoundedReadResult::Buffered { length } =
+            read_tcp_frame_borrowed(&mut reader, &mut state, 64)
+                .await
+                .unwrap()
+        else {
+            panic!("next complete frame must be borrowed");
+        };
+        assert_eq!(&reader.buffer()[..length - 1], b"next");
+        reader.consume(length);
+    }
+
+    /// Scenario: A newline appears exactly at the configured limit or one byte past it.
+    /// Guarantees: Borrowing accepts the same bounded frame as the scratch path;
+    /// oversized input retains truncation and leaves the delimiter for the next read.
+    #[tokio::test]
+    async fn borrowed_tcp_frames_preserve_size_boundary_and_octet_fallback() {
+        let mut state = TcpFrameState::new(TcpFraming::Newline);
+        let mut reader = BufReader::new(&b"abc\n"[..]);
+        assert!(matches!(
+            read_tcp_frame_borrowed(&mut reader, &mut state, 4)
+                .await
+                .unwrap(),
+            BoundedReadResult::Buffered { length: 4 }
+        ));
+        reader.consume(4);
+        let mut reader = BufReader::new(&b"abcd\n"[..]);
+        assert!(matches!(
+            read_tcp_frame_borrowed(&mut reader, &mut state, 4)
+                .await
+                .unwrap(),
+            BoundedReadResult::Truncated
+        ));
+        assert_eq!(state.message, b"abcd");
+        state.clear_message();
+        assert!(matches!(
+            read_tcp_frame_borrowed(&mut reader, &mut state, 4)
+                .await
+                .unwrap(),
+            BoundedReadResult::Buffered { length: 1 }
+        ));
+        reader.consume(1);
+        let mut reader = BufReader::new(&b"3 a\nb"[..]);
+        let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
+        assert!(matches!(
+            read_tcp_frame_borrowed(&mut reader, &mut state, 4)
+                .await
+                .unwrap(),
+            BoundedReadResult::Complete
+        ));
+        assert_eq!(state.message, b"a\nb");
     }
 
     fn octet_frame(payload: &[u8]) -> Vec<u8> {

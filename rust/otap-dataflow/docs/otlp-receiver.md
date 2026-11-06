@@ -295,7 +295,7 @@ protocols:
 - `receiver.otlp.requests.rejected` uses `protocol` and `error.type`.
 - `receiver.received.messages` and `receiver.received.payload.size` use
   `signal` and `outcome`.
-- `receiver.processing.duration` uses `signal`.
+- `receiver.processing.duration`
 - `receiver.otlp.acknowledgements.responses` uses `signal` and `outcome`.
 - `receiver.otlp.transport.errors` uses `protocol`.
 

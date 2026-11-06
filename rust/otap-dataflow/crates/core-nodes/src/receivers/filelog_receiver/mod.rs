@@ -8,6 +8,7 @@
 pub mod config;
 pub mod decoder;
 pub mod framer;
+pub mod metadata;
 pub mod multiline;
 pub mod multiline_pattern;
 
@@ -15,6 +16,10 @@ pub mod multiline_pattern;
 #[cfg(target_os = "linux")]
 pub mod source;
 
-/// Bounded Linux discovery without reconciliation or receiver wiring.
+/// Bounded Linux scanning and reconciliation without receiver wiring.
 #[cfg(target_os = "linux")]
 pub mod discovery;
+
+/// Linux file identity and local ownership admission.
+#[cfg(target_os = "linux")]
+pub mod identity;

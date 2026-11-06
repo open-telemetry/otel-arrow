@@ -259,16 +259,30 @@ metrics.
 | --- | --- |
 | `receiver.received.messages` | Record one classified external message when receiver-local handling reaches its terminal local outcome. |
 | `receiver.received.payload.size` | Record the encoded application payload bytes observed at the receiver boundary. |
-| `receiver.processing.duration` | Measure the receiver's documented local processing boundary, ending before downstream handoff or channel wait. |
+| `receiver.processing.duration` | Measure one receiver-local message-processing or collection operation, ending before batching or downstream handoff. |
+| `receiver.pulled.attempts` | Record one accepted collection attempt when it reaches its terminal local outcome. |
 | `exporter.attempted.messages` | Record each node-local delivery attempt, including preparation failures and retries represented as attempts. |
 | `exporter.attempted.duration` | Measure from attempt start through the terminal local or backend result, excluding Ack/Nack notification delivery. |
 | `exporter.attempted.payload.size` | Record the encoded application payload bytes produced or submitted by the attempt when available. |
 | `exporter.attempted.items` | Record the signal items handled by the attempt. |
 
-### Choose the boundary from external work
+### Choose the boundary from the work being measured
 
-Do not assume that one PData message corresponds to one external request. First
-identify how external work maps to PData:
+Choose the receiver contract by the source work, not by whether the
+implementation uses polling, timers, or callbacks:
+
+| Receiver work | Contract | Unit counted |
+| --- | --- | --- |
+| Independently classifiable external messages | `receiver.received` | One external message. |
+| Receiver-initiated source collection | `receiver.pulled` | One accepted bounded collection attempt, including a valid empty result. |
+| Synthetic generation | Node-specific diagnostics | No external-message or source-collection count. |
+
+All three use `node.output` for emitted PData. Polling does not turn message
+ingress into collection; producing a batch does not turn a scrape into ingress.
+
+Do not assume that one PData message corresponds to one external request or
+collection attempt. For message ingress and export delivery, identify how
+external work maps to PData:
 
 ```text
 receiver ratio: external messages : emitted PData messages
@@ -280,14 +294,9 @@ N:1   several inputs aggregate into one output
 N:M   inputs and outputs are regrouped across independently owned batches
 ```
 
-Receiver metrics count classified external messages. Exporter metrics count
-node-local attempts, including work that ends before submission. Node metrics
-count PData. Do not force their cardinalities to match.
-
-`receiver.received` applies to ingress receivers with independently
-classifiable external messages. Scrapers, generators, and similar receivers
-without one use `node.output` plus node-specific collection metrics. A future
-`receiver.pulled` contract could cover receiver-initiated collection.
+Do not force external-work and PData cardinalities to match. The following
+table describes message ingress and export delivery; collection has its own
+[attempt population](#receiver-initiated-collection).
 
 | Work shape | Receiver boundary | Exporter boundary |
 | --- | --- | --- |
@@ -301,14 +310,73 @@ Document stable external, PData, and batch identities where ownership is not
 covers attempt-owned preparation and backend work, but excludes batch buildup,
 retry backoff, and Ack/Nack notification.
 
-Shared helpers own optional-measurement policy checks. `runtime_metrics:
-detailed` enables all optional measurements; per-node `policies.telemetry`
-flags enable them individually. Compose the helper under a `boundary` field
-when the node also has diagnostic metrics.
+Existing ingress and exporter helpers own optional-measurement policy checks.
+`runtime_metrics: detailed` enables all optional measurements; per-node
+`policies.telemetry` flags enable them individually. Compose the helper under a
+`boundary` field when the node also has diagnostic metrics.
 
-### Receiver implementation
+### Receiver metrics
 
-Every receiver implementation should follow this shape:
+Both receiver contracts measure local work, not downstream delivery:
+
+```text
+external message --> receiver.received --+
+                                        +--> batching/handoff --> node.output
+source collection --> receiver.pulled ---+
+```
+
+Both use `receiver.processing.duration`: one sample per local operation,
+without `signal` or `outcome` attributes. An operation may yield zero, one, or
+several signals; duration includes failures before signal classification.
+Node entity context is preserved.
+
+> [!IMPORTANT]
+> An outcome reports whether the work owned by that metric completed.
+> `receiver.received` success means the external message was locally accepted;
+> `receiver.pulled` success means collection and required preparation completed.
+> Neither guarantees handoff, downstream delivery, or checkpoint advancement.
+> Record the outcome before handoff to avoid duplicating `node.output` or
+> retaining per-message metric state through batching. Channel handoff can
+> still fail after local success; use node-specific diagnostics for that failure.
+> `node.output` covers emitted PData.
+
+#### External-message ingress
+
+Use `receiver.received` for independently classifiable external messages.
+
+##### Ingress metrics
+
+| Metric | Kind | Unit | Attributes |
+| --- | --- | --- | --- |
+| `receiver.received.messages` | Counter | `{message}` | `signal`, `outcome` |
+| `receiver.received.payload.size` | Counter | `By` | `signal`, `outcome` |
+| `receiver.processing.duration` | Distribution | `s` | None |
+
+Payload size counts encoded application bytes observed before decoding.
+
+##### Ingress outcomes
+
+| `outcome` | Terminal ingress meaning |
+| --- | --- |
+| `success` | Classification, processing, and local admission completed; the message is eligible for handoff. |
+| `failure` | Decoding or other receiver-local processing failed. |
+| `refused` | Validation, policy, admission, or capacity explicitly rejected the message. |
+
+For request protocols, classify by protocol semantics, not status-code class
+alone. Failures before signal classification contribute duration but no
+`receiver.received` counters; retain node-specific error diagnostics.
+
+##### Ingress population and timing
+
+Record one terminal outcome per classified external message, before downstream
+handoff. Measure the documented local processing boundary in seconds, excluding
+batch buildup and channel wait. With asynchronous batching, record success when
+the message enters the node-owned batch, not when it flushes. Later handoff
+failures remain node-specific diagnostics.
+
+##### Ingress instrumentation
+
+The shared `ReceiverMetrics` helper records completed observations:
 
 ```rust
 let completed = self.metrics.boundary.processing().run(|processing| {
@@ -334,32 +402,107 @@ let decoded = result?;
 effect_handler.send_message(decoded).await?;
 ```
 
-Receiver outcomes describe receiver-local work:
+#### Receiver-initiated collection
 
-- `success` means classification, processing, and local admission completed and
-  the message became eligible for downstream handoff.
-- `refused` means validation, policy, admission, or capacity explicitly
-  rejected the message.
-- `failure` means decoding or other receiver-local processing was attempted but
-  did not complete because of an internal error.
+Use `receiver.pulled` for one accepted, bounded source-collection attempt,
+independent of rows, signals, or emitted PData. A valid empty result still
+counts.
 
-For request protocols, classify by protocol semantics rather than status-code
-class alone.
+##### Collection metrics
 
-> [!IMPORTANT]
-> An outcome reports whether the work owned by that metric completed.
-> `receiver.received` success means the receiver accepted the external message,
-> not that the resulting PData completed downstream handoff or delivery. This
-> avoids duplicating `node.output` and retaining per-message metric state
-> through batching. Channel handoff can therefore fail after receiver success.
-> `node.output` covers emitted PData; use node-specific diagnostics for failed
-> handoff.
+| Metric | Kind | Unit | Attributes |
+| --- | --- | --- | --- |
+| `receiver.pulled.attempts` | Counter | `{attempt}` | `outcome` |
+| `receiver.processing.duration` | Distribution | `s` | None |
 
-Record the completed observation before downstream handoff. Return classified
-errors through `processing.failed` or `processing.refused`; failures before
-signal classification require node-specific diagnostics. For asynchronous
-batching, record success when the external message enters the node-owned batch,
-not when the batch flushes.
+Reuse node entity context; do not add dynamic source labels or a required
+`signal` dimension, since attempts may fail before classification or yield
+several signals.
+
+##### Collection outcomes
+
+| `outcome` | Terminal collection meaning |
+| --- | --- |
+| `success` | Source work and required preparation completed, including valid empty or policy-permitted partial results. |
+| `failure` | Accepted work did not complete: source/preparation error, worker loss, timeout, or cancellation. |
+| `refused` | Not emitted: pre-acceptance rejection is outside the attempt population. |
+
+Keep timeout/cancellation reasons and skips in source diagnostics.
+
+##### Collection population and timing
+
+```text
+accept bounded slot --> dispatch/read/query --> validate/convert/encode
+|<--------------- duration in seconds ------------------------------>|
+                                                    terminal outcome
+                                                          |
+                                                  batching/handoff
+```
+
+Acceptance reserves a bounded slot before attempt-owned setup or source work.
+Record exactly one terminal outcome, including during controlled drain:
+over the lifecycle, `accepted = success + failure + in_flight`, not necessarily
+within one reporting interval. Pre-acceptance waits, skips, and worker-start
+errors are outside this population.
+
+Measure with a monotonic clock, ending at local readiness or the
+failure/timeout/cancellation decision. Exclude scheduling delay, batching,
+channel wait, Ack/Nack, checkpoints, and retry backoff. Enabled duration records
+the same terminal population as counts.
+
+Late results after timeout/cancellation MUST NOT record again or emit abandoned
+data. Logical termination does not prove native work stopped; preserve worker
+bounds and cleanup. Downstream full/closed channels cannot change collection
+success, nor does success authorize a
+[checkpoint](../source-receiver-shared-contract.md). A new query, including
+replay, is a new attempt.
+
+##### Collection instrumentation
+
+Register `ReceiverPullMetrics::register(&pipeline)` as the node's `boundary`
+helper; it owns count/duration policy checks and duration-tier selection:
+
+```rust
+// Node-specific: accept bounded work before starting the attempt.
+let output = self.metrics.boundary.processing()
+    .run(async |attempt| {
+        // Node-specific: collect, validate, and encode while servicing controls.
+        self.collect_with_controls(attempt.cancellation_handle()).await
+    })
+    .await?; // Ok records success; Err or a dropped future records failure.
+
+// Node-specific: handoff cannot change the collection outcome.
+effect_handler.send_message(output).await?;
+```
+
+When controls can terminate collection, retain `attempt.cancellation_handle()`
+in the node's control handler and end accounting before cleanup:
+
+```rust
+cancellation.cancel(); // This attempt only; late completion cannot recount.
+self.cancel_and_join_source_work().await?; // Discard abandoned output; retain capacity until joined.
+```
+
+The handle ends metric accounting; it is not a cancellation token and does not
+expose `is_cancelled()`. Use receiver-owned cancellation state to skip expensive
+validation/encoding and suppress abandoned output. Metric accounting state is
+absent when instrumentation is disabled, so it must not drive receiver behavior.
+
+For externally driven work, retain the guard from `processing()` and call `success()`
+before handoff instead of using `run()`.
+
+Before final snapshots, stop admission and finish, cancel, or drop **all**
+outstanding attempts, including owning `run()` futures (not just pinned
+references). Return expressions run before locals drop; an unfinished guard
+would record failure too late to export.
+
+```rust
+attempt.cancellation_handle().cancel(); // Before cleanup.
+self.cancel_and_join_source_work().await?;
+drop(attempt);
+let snapshots = self.metrics.boundary.terminal_snapshots();
+Ok(TerminalState::new(deadline, snapshots))
+```
 
 ### Exporter implementation
 

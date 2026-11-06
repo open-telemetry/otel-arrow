@@ -4,8 +4,9 @@
 include directories, applies exclusions, and delivers small batches of
 observations. Each call to `scan` is one pass and returns a `ScanCompletion`.
 
-Reconciliation owns file identity, candidate selection, bindings, and reader
-finalization. The scanner only supplies observations. Linux file access is
+[Reconciliation](reconciliation.md) owns bounded evidence, candidate selection and
+binding proposals. Identity and lifecycle owners decide admission and finalization.
+The scanner only supplies observations. Linux file access is
 separate from the observation and batching contracts for future platform reuse.
 
 ## Complete and incomplete passes

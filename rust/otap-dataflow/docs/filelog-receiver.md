@@ -218,6 +218,9 @@ accepted compromises:
 | D18 | Require a nonempty, ready required-subscriber snapshot before a publication can Ack | Zero required membership is backpressure or explicit non-success, never vacuous Ack; this is an engine/topic release dependency |
 | D19 | Map the exact raw checkpoint ID into a versioned lowercase-hex filesystem namespace | `${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/` is injective on case-insensitive filesystems, avoids reserved-name and path-normalization hazards, and keeps the raw ID unchanged in namespace digests and administrative records |
 
+Discovery policies and their operator costs are summarized in the
+[trade-off table](#discovery-policies-and-trade-offs).
+
 ## Responsibility boundaries
 
 ### Receiver, processor, and exporter
@@ -555,8 +558,14 @@ implementation:
   matched-path binding from its old locator to its replacement locator. The
   old locator may remain independently eligible under another matched name;
   the replacement target's own existing lifecycle state still wins.
-- Incomplete discovery cannot prove absence, uniqueness, replacement, or
-  eligibility for destructive cleanup.
+- Discovery separates coverage, presence, policy eligibility, and identity
+  evidence. Missing observations do not prove permanent absence. Still-linked
+  resident files require a later qualifying pass and EOF inactivity before
+  permanent EOF; validated reappearance can cancel before that cutoff.
+- Required exclusion checks fail closed. Root changes or persistent coverage
+  failures can stall finalization and admission. Verify the intended filesystem
+  environment before restarting to establish a new discovery baseline; restart
+  does not clear checkpoints or bypass terminal sync-failure handling.
 - The checkpoint namespace lock prevents concurrent in-process or local
   cross-process writers sharing one effective checkpoint namespace.
   Process-local locator leases prevent duplicate in-process readers. Neither
@@ -631,6 +640,14 @@ implementation:
 - Phase 1 release qualification is Linux-first. Portable macOS and Windows
   identity and durable representations remain fixed, while enabling either
   platform requires separate conformance and durability evidence.
+
+The Linux scanner requires Linux 5.6 or newer and a container security profile
+that permits `openat2`; blocked or unavailable verification prevents admission.
+Native directory resumption is enabled for ext4, XFS, and btrfs. Tmpfs and other
+unqualified backends use conservative replay: resumed scans remain incomplete,
+so discovery-based cleanup can stall even while positive discovery continues.
+Repeated exhaustion of the fixed-order scan work budget can leave the same tail
+of files or roots undiscovered.
 
 Exact behavior is defined by the
 [Phase 1 behavioral specification](filelog-receiver-phase1-spec.md), with its
@@ -716,8 +733,8 @@ observable capacity backpressure, not permission to invent a record boundary.
 administration after detected truncation; operators that knowingly prefer
 continued collection with an explicit gap select `read_new`.
 `checkpoint.retention: 7d` makes inactive durable state eligible for removal
-only after a continuous runtime-proven absence interval. Restart or incomplete
-discovery resets that proof, so repeated restarts can defer reclamation
+only after a continuous runtime-observed absence interval. Restart or incomplete
+discovery resets that evidence, so repeated restarts can defer reclamation
 indefinitely; retention is not a wall-clock upper bound across downtime. After
 removal, a returning source is unrelated and can have existing contents
 intentionally excluded by `start_at: end`.
@@ -837,6 +854,43 @@ follow_symlinks: false
 
 Resolved-target exclusions still apply in the symlink form, so an exclusion
 matching the corresponding `/var/log/pods/...` target prevents admission.
+
+### Discovery policies and trade-offs
+
+The following policies govern discovery and rotation:
+
+| Policy | Why | Operator cost or limitation |
+| --- | --- | --- |
+| Later qualifying pass plus EOF inactivity before still-linked finalization; cancellation ends before D17 | Avoid irreversible finalization from one missed scan | Handles and framing state can remain pinned indefinitely; repeated moves or undetected outages can still cause false finalization and replay/skip on rediscovery |
+| Pass-wide blocking for missing roots, replaced directories, or required traversal/policy failures | Missing coverage cannot establish absence | Cleanup can stall across the receiver, exhausting resident or tracked capacity; positive reading and qualified resident unlink remain available |
+| Binding-check exclusion fast path, with complete-pass fallback for uncertain bindings | Revoke confirmed exclusions without waiting for unrelated scanning | Wrong revocation can lose unread source bytes; uncertain bindings can delay revocation indefinitely |
+| Bounded alias inspection and point-in-time target evidence | Keep scanning bounded without claiming an atomic namespace snapshot | Uninspected excluded aliases and later namespace changes may escape detection; exclusions are not an instantaneous privacy boundary |
+
+For late-write capture and terminal framing, prefer include patterns that stop
+matching rotated names. Explicit exclusion of an inspected rotated name instead
+requests revocation without D17, preserving Active checkpoint state. Moving an
+already tracked file into an uninspected excluded subtree may not stop reading
+new bytes and may eventually lose its checkpoint association through retention.
+A separate eligible alias prevents revocation under the specified binding rules.
+
+Use node-appropriate includes; absent optional roots also block negative
+conclusions. Directory removal/recreation, persistent loops under followed
+recursive includes, or unavailable exclusion mappings can stall cleanup. Emit
+bounded diagnostics naming the reason and relevant path, and report pinned-handle
+pressure and delayed admission. Pinned readers are never evicted to hide a stall.
+Qualified unlink handling bypasses discovery stalls, but writes, framing,
+delivery, or checkpoint failure can still delay disk-space release.
+
+After a detected environment change, restore or verify the intended storage,
+then restart or use supported reconfiguration that recreates the receiver.
+Checkpoints and progress remain intact, and restart does not bypass sync-failure
+handling. Automatic startup can baseline an unexpected environment; root
+identity checks do not detect every mount change. Deployment must provide the
+expected storage before startup.
+
+Qualification must measure both Kubernetes path
+layouts under pod churn: confirmation delay, incomplete-pass frequency,
+pinned-handle pressure, and delayed admission.
 
 ## Normative architecture examples
 
