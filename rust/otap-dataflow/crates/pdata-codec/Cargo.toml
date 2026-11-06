@@ -14,19 +14,26 @@ rust-version.workspace = true
 
 [dependencies]
 bytes.workspace = true
+chrono = { workspace = true, optional = true }
 linkme.workspace = true
 otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-pdata.workspace = true
 otel-arrow-dfe-pdata-views.workspace = true
 prost.workspace = true
+rand = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 serde_yaml.workspace = true
+arrow.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]
+syslog-cef = ["dep:chrono", "dep:rand"]
+bench = []
 testing = []
 # Registers fixture codecs. Enable only from dev-dependencies, never runtime dependencies.
 test-codecs = ["testing"]

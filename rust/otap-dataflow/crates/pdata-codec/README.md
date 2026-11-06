@@ -607,10 +607,16 @@ decoding, encoding, borrowed views, stateless item counting, reusable buffers,
 native batching, and all three telemetry signals.
 
 The
-[syslog/CEF codec](../core-nodes/src/receivers/syslog_cef_receiver/codec.rs)
+[syslog/CEF codec](src/codecs/syslog/codec.rs)
 is a decode-only example. Its receiver emits independently decodable framed
 batches, its decoder materializes native log records only when required, and
 its native batcher merges frames without parsing their syslog contents.
+
+Enable `syslog-cef` to link the shared codec, parsers, Arrow builders, and
+synthetic generator through `builtins::syslog`. The core receiver forwards its
+existing feature and retains socket handling, admission, flushing, and telemetry.
+See [Syslog Parsing Behavior](src/codecs/syslog/syslog-parsing-behavior.md)
+for format detection, edge cases, and output mappings.
 
 ## Cooperative syslog decoding
 

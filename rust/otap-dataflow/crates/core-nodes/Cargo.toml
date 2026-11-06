@@ -119,7 +119,7 @@ topic = []
 # Receivers.
 host-metrics = []
 journald = []
-syslog-cef = []
+syslog-cef = ["otel-arrow-dfe-pdata-codec/syslog-cef"]
 
 # Processors.
 durable-buffer = ["dep:otel-arrow-dfe-quiver"]
@@ -145,7 +145,7 @@ parquet = [
 # own; for example, Azure storage implies the Parquet exporter.
 # Azure Blob Storage backend for the Parquet exporter.
 azure = ["parquet", "otel-arrow-dfe-otap/azure"]
-bench = []
+bench = ["otel-arrow-dfe-pdata-codec/bench"]
 # Enables Weaver-backed semantic-convention assertions in core-node tests.
 # Weaver remains a dev-dependency and is not part of the published crate graph.
 dev-tools = []

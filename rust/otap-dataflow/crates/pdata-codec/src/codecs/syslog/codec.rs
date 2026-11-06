@@ -29,15 +29,15 @@
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
-use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
-use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata_codec::{
+use crate::{
     BatchSettings, BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecBatches, CodecError,
     CodecMetadata, CodecOperation, CodecRegistration, CodecRegistry, EncodedPdataBatch,
     PdataBatcher, PdataDecoder, PdataEncoding, RegistryError, ResolvedCodec, register_pdata_codec,
 };
+use bytes::{BufMut, Bytes, BytesMut};
+use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use super::arrow_records_encoder::ReceivedArrowRecordsBuilder;
 use super::{MAX_MESSAGE_SIZE, parser};
@@ -51,8 +51,10 @@ pub(super) const RUN_HEADER_LEN: usize = 16;
 pub(super) const FRAME_HEADER_LEN: usize = 4;
 // Hard admission limits bound each complete input independently of configurable
 // batch targets and the per-step cooperative decode budget.
-pub(super) const MAX_BATCH_ITEMS: usize = 8192;
-pub(super) const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum number of messages in one encoded batch.
+pub const MAX_BATCH_ITEMS: usize = 8192;
+/// Maximum size of the complete encoded batch framing.
+pub const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024;
 // Small inputs avoid allocating a resumable decode job.
 const MAX_SYNC_BATCH_ITEMS: usize = 256;
 const MAX_SYNC_BATCH_BYTES: usize = 256 * 1024;
@@ -74,7 +76,7 @@ const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
 /// A malformed syslog batch frame.
 #[derive(Debug, thiserror::Error)]
 #[error("{reason}")]
-pub(super) struct SyslogFramingError {
+pub struct SyslogFramingError {
     reason: String,
 }
 
@@ -104,7 +106,8 @@ fn predicted_frame_capacity(max_items: usize, message_len: usize) -> usize {
 // days 1 and 365/366 through the timezone (including December 30 in leap years).
 // This caches neither timestamps nor offsets and handles each clock sample
 // independently, including wall-clock corrections and local timezone changes.
-pub(super) fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
+/// Resolves the local receipt year without unnecessary timezone lookups.
+pub fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz) -> i32 {
     if (2..365).contains(&now.ordinal()) {
         now.year()
     } else {
@@ -113,7 +116,7 @@ pub(super) fn receipt_local_year<Tz: TimeZone>(now: DateTime<Utc>, timezone: &Tz
 }
 
 /// Accumulates framed syslog messages without parsing them.
-pub(super) struct SyslogBatchBuilder {
+pub struct SyslogBatchBuilder {
     bytes: BytesMut,
     item_count: u32,
     max_items_hint: usize,
@@ -131,7 +134,7 @@ pub(super) struct SyslogBatchBuilder {
 /// Only the codec builder can construct this value. Its bytes and count cannot
 /// be replaced independently. Cloning shares the bytes and preserves the count.
 #[derive(Clone)]
-pub(super) struct SyslogBatch {
+pub struct SyslogBatch {
     bytes: Bytes,
     item_count: usize,
 }
@@ -157,13 +160,13 @@ impl Default for SyslogBatchBuilder {
 impl SyslogBatchBuilder {
     /// Creates an empty batch with space for its header.
     #[must_use]
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self::with_max_items(1)
     }
 
     /// Creates an empty batch using a bounded first-message capacity estimate.
     #[must_use]
-    pub(super) fn with_max_items(max_items_hint: usize) -> Self {
+    pub fn with_max_items(max_items_hint: usize) -> Self {
         let mut bytes = BytesMut::with_capacity(BATCH_HEADER_LEN + RUN_HEADER_LEN);
         bytes.extend_from_slice(MAGIC);
         bytes.put_u32(0);
@@ -181,33 +184,35 @@ impl SyslogBatchBuilder {
 
     /// Number of framed messages currently buffered.
     #[must_use]
-    pub(super) const fn len(&self) -> u32 {
+    pub const fn len(&self) -> u32 {
         self.item_count
     }
 
     /// Returns true when no messages have been appended.
     #[must_use]
-    pub(super) const fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.item_count == 0
     }
 
     /// Flushes before another maximum-sized message or a new year run could exceed
     /// the hard byte limit. The caller also applies its configured item target.
-    pub(super) fn should_flush(&self, max_items: usize) -> bool {
+    #[must_use]
+    pub fn should_flush(&self, max_items: usize) -> bool {
         self.len() as usize >= max_items.min(MAX_BATCH_ITEMS)
             || self.bytes.len()
                 > MAX_BATCH_BYTES - MAX_MESSAGE_SIZE - FRAME_HEADER_LEN - RUN_HEADER_LEN
     }
 
     /// Copies a socket-backed message and captures its local receipt year.
-    pub(super) fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
+    pub fn append(&mut self, message: &[u8]) -> Result<(), SyslogFramingError> {
         self.append_with_year(message, receipt_local_year(Utc::now(), &Local))
     }
 
     // Retain the transport receipt context; decoding must never infer the year
     // from its own clock or the later batch-seal timestamp. TCP supplies the
     // completing read's year; UDP captures it independently for each message.
-    pub(super) fn append_with_year(
+    /// Appends a message with its transport-captured local receipt year.
+    pub fn append_with_year(
         &mut self,
         message: &[u8],
         received_local_year: i32,
@@ -258,24 +263,26 @@ impl SyslogBatchBuilder {
 
     /// Replaces this builder while retaining its configured item-count hint.
     #[must_use]
-    pub(super) fn take(&mut self) -> Self {
+    pub fn take(&mut self) -> Self {
         let mut replacement = Self::with_max_items(self.max_items_hint);
         replacement.reservation_hint = self.bytes.len().min(MAX_LEARNED_BATCH_CAPACITY);
         std::mem::replace(self, replacement)
     }
 
     /// Discards buffered messages and releases their allocation.
-    pub(super) fn discard(&mut self) {
+    pub fn discard(&mut self) {
         *self = Self::with_max_items(self.max_items_hint);
     }
 
-    #[cfg(test)]
-    pub(super) fn capacity(&self) -> usize {
+    /// Allocated framing capacity, exposed for bounded-allocation tests.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn capacity(&self) -> usize {
         self.bytes.capacity()
     }
 
     /// Seals a non-empty batch, assigning the flush timestamp to every year run.
-    pub(super) fn finish(mut self, observed_time: i64) -> Result<SyslogBatch, SyslogFramingError> {
+    pub fn finish(mut self, observed_time: i64) -> Result<SyslogBatch, SyslogFramingError> {
         if self.is_empty() {
             return Err(framing_error("cannot seal an empty syslog batch"));
         }
@@ -523,8 +530,8 @@ impl PdataDecoder for SyslogDecoder {
         &mut self,
         signal: SignalType,
         bytes: &Bytes,
-    ) -> Result<otel_arrow_dfe_pdata_codec::DecodeTask, CodecError> {
-        use otel_arrow_dfe_pdata_codec::DecodeTask;
+    ) -> Result<crate::DecodeTask, CodecError> {
+        use crate::DecodeTask;
         if signal != SignalType::Logs {
             return self.decode(signal, bytes).map(DecodeTask::Ready);
         }
@@ -550,10 +557,10 @@ struct SyslogDecodeJob {
     builder: Option<ReceivedArrowRecordsBuilder>,
 }
 
-impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
+impl crate::PdataDecodeJob for SyslogDecodeJob {
     fn step(
         &mut self,
-        budget: otel_arrow_dfe_pdata_codec::DecodeBudget,
+        budget: crate::DecodeBudget,
     ) -> Result<Option<OtapArrowRecords>, CodecError> {
         let started = std::time::Instant::now();
         let mut records = 0;
@@ -591,7 +598,7 @@ impl otel_arrow_dfe_pdata_codec::PdataDecodeJob for SyslogDecodeJob {
     }
 }
 
-fn create_decoder(_: otel_arrow_dfe_pdata_codec::DecodePolicy) -> Box<dyn PdataDecoder> {
+fn create_decoder(_: crate::DecodePolicy) -> Box<dyn PdataDecoder> {
     Box::<SyslogDecoder>::default()
 }
 
@@ -890,7 +897,7 @@ const fn codec_registration() -> CodecRegistration {
 }
 
 /// Resolves the linked syslog codec from the validated production registry.
-pub(super) fn resolve_syslog() -> Result<ResolvedCodec, RegistryError> {
+pub fn resolve_syslog() -> Result<ResolvedCodec, RegistryError> {
     static RESOLVED: LazyLock<Result<ResolvedCodec, RegistryError>> =
         LazyLock::new(|| CodecRegistry::global()?.resolve(&SYSLOG_CEF_ENCODING));
     RESOLVED.as_ref().copied().map_err(Clone::clone)
@@ -899,9 +906,9 @@ pub(super) fn resolve_syslog() -> Result<ResolvedCodec, RegistryError> {
 /// Helpers exposing the receiver codec path to the workspace benchmarks.
 #[cfg(feature = "bench")]
 pub mod bench_support {
+    use crate::{CodecService, OtapPayload, ResolvedCodec};
     use chrono::Utc;
     use otel_arrow_dfe_pdata::OtapArrowRecords;
-    use otel_arrow_dfe_pdata_codec::{CodecService, OtapPayload, ResolvedCodec};
 
     use super::*;
 
@@ -984,19 +991,19 @@ pub mod bench_support {
     }
 }
 
-#[cfg(test)]
-pub(super) const fn full_sized_test_message_capacity() -> usize {
+/// Number of maximum-sized messages that fit in one timestamp run.
+#[cfg(any(test, feature = "testing"))]
+#[must_use]
+pub const fn full_sized_test_message_capacity() -> usize {
     (MAX_BATCH_BYTES - BATCH_HEADER_LEN - RUN_HEADER_LEN) / (MAX_MESSAGE_SIZE + FRAME_HEADER_LEN)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::{CodecServiceBuilder, DecodePolicy, DecodeValidation, OtapPayload};
     use arrow::array::TimestampNanosecondArray;
     use chrono::TimeZone;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otel_arrow_dfe_pdata_codec::{
-        CodecServiceBuilder, DecodePolicy, DecodeValidation, OtapPayload,
-    };
 
     use super::*;
 
@@ -1226,7 +1233,7 @@ mod tests {
     /// Guarantees: Decode errors recover the same identity, cached count, and buffer; reuse succeeds.
     #[test]
     fn oversized_decoding_recovers_input_and_keeps_decoder_reusable() {
-        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        let service = crate::CodecService::new().unwrap();
         let codec = resolve_syslog().unwrap();
         let large = vec![b'x'; MAX_MESSAGE_SIZE];
         let too_large = vec![b'x'; MAX_MESSAGE_SIZE + 1];
@@ -1493,7 +1500,7 @@ mod tests {
                 ]),
             ),
         ];
-        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        let service = crate::CodecService::new().unwrap();
         let codec = resolve_syslog().unwrap();
         for (name, bytes) in cases {
             let mut max_decode = Duration::ZERO;
@@ -1610,9 +1617,9 @@ mod tests {
                 ),
             )
             .expect("admit valid syslog batch");
-        otel_arrow_dfe_pdata_codec::testing::assert_decode_conformance(
+        crate::testing::assert_decode_conformance(
             &service,
-            otel_arrow_dfe_pdata_codec::testing::DecodeConformanceCase {
+            crate::testing::DecodeConformanceCase {
                 valid,
                 malformed: Some(Bytes::from_static(b"invalid-frame")),
                 signal: SignalType::Logs,
@@ -2422,27 +2429,8 @@ mod tests {
     }
 
     mod cooperative_tests {
-        use std::future::Future;
-        use std::task::{Context as TaskContext, Poll, Waker};
-
-        use otel_arrow_dfe_engine::local::exporter::EffectHandler;
-        use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
-        use otel_arrow_dfe_pdata_codec::{
-            AcceptedEncodings, CodecService, DecodeBudget, DecodeTask, EncodePolicy, EncodingPlan,
-            PdataDecodeJob, PdataEncoding, PdataView,
-        };
-        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-
         use super::*;
-
-        fn handler() -> EffectHandler<OtapPdata> {
-            let (_, metrics) = MetricsReporter::create_new_and_receiver(1);
-            EffectHandler::new(
-                otel_arrow_dfe_engine::testing::test_node("cooperative-codec"),
-                metrics,
-                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-        }
+        use crate::{DecodeBudget, DecodeTask, PdataDecodeJob};
 
         /// Scenario: The registered decoder receives inputs around its synchronous item and byte thresholds.
         /// Guarantees: Both decode policies select immediate small-batch conversion or owned cooperative work without feature flags or runtime switches.
@@ -2563,188 +2551,6 @@ mod tests {
             assert!(
                 (1..=DecodeBudget::default().max_bytes() / MAX_MESSAGE_SIZE).contains(&consumed)
             );
-        }
-
-        /// Scenario: Corruption appears after several completed parse steps while another node uses the same service.
-        /// Guarantees: Mutable service access is released before suspension; failure returns exact bytes, count and delivery context, then valid work still succeeds.
-        #[tokio::test(flavor = "current_thread")]
-        async fn cooperative_failure_recovers_after_partial_progress() {
-            let handler = handler();
-            let codec = resolve_syslog().unwrap();
-            let complete = unchecked_batch(&vec![b"SECRET_TELEMETRY".as_slice(); 512]);
-            let bytes = complete.slice(..complete.len() - 1);
-            let pointer = bytes.as_ptr();
-            let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
-            let payload = otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(payload, 512);
-            let peer = "127.0.0.1:1234".parse().unwrap();
-            let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
-            let mut conversion = Box::pin(handler.materialize_otap(pdata));
-            assert!(matches!(
-                conversion
-                    .as_mut()
-                    .poll(&mut TaskContext::from_waker(Waker::noop())),
-                Poll::Pending
-            ));
-            let other = OtapPdata::new_default(
-                codec
-                    .admit(SignalType::Logs, batch(&[b"valid"], 42))
-                    .unwrap()
-                    .into(),
-            );
-            assert!(handler.materialize_otap(other).await.is_ok());
-            let error = conversion.await.unwrap_err();
-            assert!(!format!("{error:?}").contains("SECRET_TELEMETRY"));
-            let (_, recovered) = error.into_parts();
-            assert_eq!(recovered.peer_addr(), Some(peer));
-            assert_eq!(recovered.signal_type(), SignalType::Logs);
-            assert_eq!(
-                recovered.payload_ref().encoding(),
-                Some(&SYSLOG_CEF_ENCODING)
-            );
-            assert_eq!(recovered.payload_ref().known_item_count(), Some(512));
-            let recovered_bytes = recovered.payload_ref().encoded_bytes().unwrap();
-            assert_eq!(recovered_bytes.as_ptr(), pointer);
-            assert_eq!(recovered_bytes, &bytes);
-            let next = OtapPdata::new_default(
-                codec
-                    .admit(SignalType::Logs, batch(&[b"next"], 43))
-                    .unwrap()
-                    .into(),
-            );
-            assert!(handler.materialize_otap(next).await.is_ok());
-        }
-
-        /// Scenario: A conversion future is dropped after yielding with a partially built batch.
-        /// Guarantees: Input sharing and partial state are released, and cancellation neither leases nor poisons the reusable codec instance.
-        #[tokio::test(flavor = "current_thread")]
-        async fn cooperative_cancellation_releases_owned_progress() {
-            let handler = handler();
-            let codec = resolve_syslog().unwrap();
-            let bytes = unchecked_batch(&vec![b"message".as_slice(); 512]);
-            let pdata = OtapPdata::new_default(
-                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into(),
-            );
-            let mut conversion = Box::pin(handler.materialize_otap(pdata));
-            assert!(matches!(
-                conversion
-                    .as_mut()
-                    .poll(&mut TaskContext::from_waker(Waker::noop())),
-                Poll::Pending
-            ));
-            assert!(!bytes.is_unique());
-            drop(conversion);
-            assert!(bytes.is_unique());
-            let next = OtapPdata::new_default(
-                codec.admit(SignalType::Logs, bytes.clone()).unwrap().into(),
-            );
-            assert!(handler.materialize_otap(next).await.is_ok());
-        }
-
-        /// Scenario: Batch preparation and finishing convert large syslog input to native OTAP or OTLP.
-        /// Guarantees: Both paths yield; cancellation and late decode failure preserve original bytes, identity and cached counts, and successful conversion remains reusable.
-        #[tokio::test(flavor = "current_thread")]
-        async fn batch_plan_conversions_preserve_input_across_yields() {
-            use otel_arrow_dfe_pdata_codec::{BatchPlan, PdataFormat};
-
-            let handler = handler();
-            let codec = resolve_syslog().unwrap();
-            let complete = unchecked_batch(&vec![b"message".as_slice(); 512]);
-            let truncated = complete.slice(..complete.len() - 1);
-            let otlp = CodecService::new()
-                .unwrap()
-                .registry()
-                .resolve(&PdataEncoding::OTLP)
-                .unwrap();
-            let encoded_otlp = PdataFormat::encoded(otlp);
-            for (output, settings, working) in [
-                (PdataFormat::OTAP, BatchSettings::otap(), PdataFormat::OTAP),
-                (encoded_otlp, BatchSettings::otlp(), encoded_otlp),
-                (encoded_otlp, BatchSettings::otap(), PdataFormat::OTAP),
-            ] {
-                let plan = BatchPlan::new(output, settings, false).unwrap();
-                for prepare in [true, false] {
-                    for bytes in [&complete, &truncated] {
-                        let payload = codec.admit(SignalType::Logs, bytes.clone()).unwrap().into();
-                        let mut payload =
-                            otel_arrow_dfe_pdata_codec::testing::with_cached_item_count(
-                                payload, 512,
-                            );
-                        let convert = async |payload: &mut OtapPayload| {
-                            if prepare {
-                                handler.prepare_batch(&plan, payload).await
-                            } else {
-                                handler.finish_batch(&plan, payload).await
-                            }
-                        };
-                        let mut conversion = Box::pin(convert(&mut payload));
-                        assert!(matches!(
-                            conversion
-                                .as_mut()
-                                .poll(&mut TaskContext::from_waker(Waker::noop())),
-                            Poll::Pending
-                        ));
-                        drop(conversion);
-                        assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
-                        assert_eq!(payload.encoded_bytes().unwrap(), bytes);
-                        assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
-                        assert_eq!(payload.known_item_count(), Some(512));
-
-                        let result = convert(&mut payload).await;
-                        if bytes.len() == complete.len() {
-                            result.unwrap();
-                            assert_eq!(payload.format(), if prepare { working } else { output });
-                            assert_eq!(
-                                handler
-                                    .materialize_otap_payload(payload)
-                                    .await
-                                    .unwrap()
-                                    .num_items(),
-                                512
-                            );
-                        } else {
-                            assert!(result.is_err());
-                            assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
-                            assert_eq!(payload.encoded_bytes().unwrap(), bytes);
-                            assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
-                            assert_eq!(payload.known_item_count(), Some(512));
-                        }
-                    }
-                }
-            }
-        }
-
-        /// Scenario: Read-only views accept encoded syslog or require native records, then export to OTLP.
-        /// Guarantees: Direct borrowing creates no codec or buffer copy; fallback and cross-codec output use the cooperative boundary without changing the input.
-        #[tokio::test(flavor = "current_thread")]
-        async fn cooperative_views_and_cross_encoding_preserve_input() {
-            let handler = handler();
-            let codec = resolve_syslog().unwrap();
-            let bytes = unchecked_batch(&vec![b"message".as_slice(); 512]);
-            let pointer = bytes.as_ptr();
-            let mut payload: OtapPayload = codec.admit(SignalType::Logs, bytes).unwrap().into();
-            let accepted = AcceptedEncodings::accept_encoded([codec]);
-            let view = handler.view(&payload, &accepted).await.unwrap();
-            let PdataView::Encoded(view) = view else {
-                panic!("accepted input must remain borrowed");
-            };
-            assert_eq!(view.bytes().as_ptr(), pointer);
-            use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
-            assert_eq!(handler.codec_service().test_instance_count().unwrap(), 0);
-            let view = handler
-                .view(&payload, &AcceptedEncodings::native())
-                .await
-                .unwrap();
-            assert!(matches!(view, PdataView::Native(_)));
-            let plan = EncodingPlan::resolve(
-                CodecService::new().unwrap().registry(),
-                &PdataEncoding::OTLP,
-                EncodePolicy::default(),
-            )
-            .unwrap();
-            let encoded = handler.encode_owned(&mut payload, &plan).await.unwrap();
-            assert!(!encoded.is_empty());
-            assert_eq!(payload.encoded_bytes().unwrap().as_ptr(), pointer);
-            assert_eq!(payload.encoding(), Some(&SYSLOG_CEF_ENCODING));
         }
     }
 }

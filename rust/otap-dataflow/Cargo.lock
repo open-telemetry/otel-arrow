@@ -8110,15 +8110,20 @@ dependencies = [
 name = "otel-arrow-dfe-pdata-codec"
 version = "0.64.0"
 dependencies = [
+ "arrow",
  "bytes",
+ "chrono",
+ "futures",
  "linkme",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
+ "rand 0.10.3",
  "serde",
  "serde_yaml",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
