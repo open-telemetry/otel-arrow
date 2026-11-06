@@ -266,17 +266,15 @@ async fn once_reuses_value_acquired_before_start() {
     }
 
     impl BackgroundProviderMetrics for MetricSet<Metrics> {
-        fn record_acquisition(&mut self, outcome: Outcome) {
+        fn record_acquisition(&mut self, outcome: Outcome, duration_secs: f64) {
             match outcome {
                 Outcome::Success => self.successes.inc(),
                 Outcome::Failure | Outcome::Refused => self.failures.inc(),
             }
+            self.latency.record(duration_secs);
         }
         fn record_publish(&mut self) {
             self.publishes.inc();
-        }
-        fn record_success_latency(&mut self, latency_ms: f64) {
-            self.latency.record(latency_ms);
         }
         fn report(
             &mut self,

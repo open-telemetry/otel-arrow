@@ -88,7 +88,7 @@ fn create(
 
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metric_set = ext_ctx.register_metric_set_for_entity::<GcpAuthMetrics>(entity_key);
+    let metric_set = GcpAuthMetrics::register(ext_ctx, entity_key);
     let tracker = BackgroundProviderMetricsTracker::new(metric_set);
 
     // Empty token cache; the background refresh loop publishes the first token.

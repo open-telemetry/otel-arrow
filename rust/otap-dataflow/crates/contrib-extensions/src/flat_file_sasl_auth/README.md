@@ -115,8 +115,8 @@ The `extension.auth` telemetry scope records:
   unit `{acquisition}`.
 - `publishes`: Counter of published credentials partitioned by `outcome`,
   unit `{publication}`.
-- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
-  (`ms`, min/max/sum/count).
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
 
 These describe credential acquisition and publication, not Kafka login success.
 

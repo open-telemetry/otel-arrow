@@ -466,7 +466,7 @@ Metrics are recorded in the background refresh loop and the slow-path
 | --- | --- | --- | --- |
 | `acquisitions` | `extension.auth` | Counter | Token acquisitions partitioned by outcome. |
 | `publishes` | `extension.auth` | Counter | Tokens published to consumers via the watch channel partitioned by outcome. |
-| `duration` | `extension.auth` | Mmsc (ms) | Acquisition duration in milliseconds partitioned by outcome (min/max/sum/count). |
+| `duration` | `extension.auth` | Mmsc (s) | Acquisition duration in seconds partitioned by outcome (min/max/sum/count). |
 
 ## Lifecycle
 

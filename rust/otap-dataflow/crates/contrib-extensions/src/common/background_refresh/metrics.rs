@@ -11,10 +11,7 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Shared credential or token acquisition metrics partitioned by outcome.
-#[metric_set(
-    name = "extension.auth",
-    measurement_attributes = OutcomeAttributes
-)]
+#[metric_set(name = "extension.auth", measurement_attributes = OutcomeAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct AuthExtensionAcquisitionMetrics {
     /// Number of credential or token acquisitions partitioned by outcome.
@@ -23,22 +20,17 @@ pub struct AuthExtensionAcquisitionMetrics {
     /// Number of credentials or tokens published to consumers via the watch channel.
     #[metric(unit = "{publication}")]
     pub publishes: Counter<u64>,
-    /// Duration of acquisitions in milliseconds.
-    #[metric(unit = "ms")]
+    /// Acquisition duration in seconds.
+    #[metric(unit = "s")]
     pub duration: Mmsc,
 }
 
-/// Type alias for [`AuthExtensionAcquisitionMetrics`].
-pub type AuthExtensionMetrics = AuthExtensionAcquisitionMetrics;
-
 /// The metrics operations a background provider metric set must expose.
 pub trait BackgroundProviderMetrics: Send + 'static {
-    /// Records an acquisition outcome (Success or Failure).
-    fn record_acquisition(&mut self, outcome: Outcome);
+    /// Records an acquisition outcome with its elapsed duration in seconds.
+    fn record_acquisition(&mut self, outcome: Outcome, duration_secs: f64);
     /// Records a credential or token publication to consumers.
     fn record_publish(&mut self);
-    /// Records the latency of a successful acquisition in milliseconds.
-    fn record_success_latency(&mut self, latency_ms: f64);
     /// Flushes metric sets to the telemetry reporter.
     fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError>;
     /// Takes terminal snapshots of all metric sets.
@@ -46,8 +38,10 @@ pub trait BackgroundProviderMetrics: Send + 'static {
 }
 
 impl BackgroundProviderMetrics for MeasurementMetricSet<AuthExtensionAcquisitionMetrics> {
-    fn record_acquisition(&mut self, outcome: Outcome) {
-        self.with(OutcomeAttributes { outcome }).acquisitions.inc();
+    fn record_acquisition(&mut self, outcome: Outcome, duration_secs: f64) {
+        let metrics = self.with(OutcomeAttributes { outcome });
+        metrics.acquisitions.inc();
+        metrics.duration.record(duration_secs);
     }
 
     fn record_publish(&mut self) {
@@ -56,14 +50,6 @@ impl BackgroundProviderMetrics for MeasurementMetricSet<AuthExtensionAcquisition
         })
         .publishes
         .inc();
-    }
-
-    fn record_success_latency(&mut self, latency_ms: f64) {
-        self.with(OutcomeAttributes {
-            outcome: Outcome::Success,
-        })
-        .duration
-        .record(latency_ms);
     }
 
     fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
@@ -105,15 +91,21 @@ impl<M: BackgroundProviderMetrics> BackgroundProviderMetricsTracker<M> {
         self.metrics.terminal_snapshots()
     }
 
-    /// Records a successful acquisition with its latency in milliseconds.
-    pub fn record_success(&mut self, latency_ms: f64) {
-        self.metrics.record_acquisition(Outcome::Success);
-        self.metrics.record_success_latency(latency_ms);
+    /// Records an acquisition outcome with its elapsed duration in seconds.
+    pub fn record_acquisition(&mut self, outcome: Outcome, duration_secs: f64) {
+        self.metrics.record_acquisition(outcome, duration_secs);
     }
 
-    /// Records a failed acquisition.
-    pub fn record_failure(&mut self) {
-        self.metrics.record_acquisition(Outcome::Failure);
+    /// Records a successful acquisition with its elapsed duration in seconds.
+    pub fn record_success(&mut self, duration_secs: f64) {
+        self.metrics
+            .record_acquisition(Outcome::Success, duration_secs);
+    }
+
+    /// Records a failed acquisition with its elapsed duration in seconds.
+    pub fn record_failure(&mut self, duration_secs: f64) {
+        self.metrics
+            .record_acquisition(Outcome::Failure, duration_secs);
     }
 
     /// Records a token publication to consumers.
@@ -135,10 +127,9 @@ mod tests {
                 otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
             );
 
-        metrics.record_acquisition(Outcome::Success);
+        metrics.record_acquisition(Outcome::Success, 0.0125);
         metrics.record_publish();
-        metrics.record_success_latency(12.5);
-        metrics.record_acquisition(Outcome::Failure);
+        metrics.record_acquisition(Outcome::Failure, 0.005);
 
         let success = metrics.get(OutcomeAttributes {
             outcome: Outcome::Success,
@@ -146,14 +137,15 @@ mod tests {
         assert_eq!(success.acquisitions.get(), 1);
         assert_eq!(success.publishes.get(), 1);
         assert_eq!(success.duration.count, 1);
-        assert_eq!(success.duration.sum, 12.5);
+        assert_eq!(success.duration.sum, 0.0125);
 
         let failure = metrics.get(OutcomeAttributes {
             outcome: Outcome::Failure,
         });
         assert_eq!(failure.acquisitions.get(), 1);
         assert_eq!(failure.publishes.get(), 0);
-        assert_eq!(failure.duration.count, 0);
+        assert_eq!(failure.duration.count, 1);
+        assert_eq!(failure.duration.sum, 0.005);
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);
@@ -168,16 +160,16 @@ mod tests {
             );
         let mut tracker = BackgroundProviderMetricsTracker::new(metrics);
 
-        tracker.record_success(25.0);
+        tracker.record_success(0.025);
         tracker.record_publish();
-        tracker.record_failure();
+        tracker.record_failure(0.01);
 
         let snapshots = tracker.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);
 
         let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(4);
-        tracker.record_success(10.0);
-        tracker.record_failure();
+        tracker.record_success(0.01);
+        tracker.record_failure(0.005);
         tracker.record_publish();
         tracker.report(&mut reporter).expect("report succeeds");
         assert_eq!(rx.try_iter().count(), 2);
