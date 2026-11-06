@@ -219,7 +219,9 @@ async fn once_reuses_value_acquired_before_start() {
     use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
     use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
     use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+    use otel_arrow_dfe_telemetry::common_attributes::Outcome;
     use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+    use otel_arrow_dfe_telemetry::metrics::MetricSet;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
     use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -263,18 +265,27 @@ async fn once_reuses_value_acquired_before_start() {
         latency: Mmsc,
     }
 
-    impl BackgroundProviderMetrics for Metrics {
-        fn successes(&mut self) -> &mut Counter<u64> {
-            &mut self.successes
+    impl BackgroundProviderMetrics for MetricSet<Metrics> {
+        fn record_acquisition(&mut self, outcome: Outcome, duration_secs: f64) {
+            match outcome {
+                Outcome::Success => self.successes.inc(),
+                Outcome::Failure | Outcome::Refused => self.failures.inc(),
+            }
+            self.latency.record(duration_secs);
         }
-        fn failures(&mut self) -> &mut Counter<u64> {
-            &mut self.failures
+        fn record_publish(&mut self) {
+            self.publishes.inc();
         }
-        fn publishes(&mut self) -> &mut Counter<u64> {
-            &mut self.publishes
+        fn report(
+            &mut self,
+            reporter: &mut otel_arrow_dfe_telemetry::reporter::MetricsReporter,
+        ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
+            reporter.report(self)
         }
-        fn success_latency(&mut self) -> &mut Mmsc {
-            &mut self.latency
+        fn terminal_snapshots(
+            &mut self,
+        ) -> Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
+            MetricSet::terminal_snapshots(self)
         }
     }
 

@@ -56,6 +56,17 @@ Duration fields accept human-readable values such as `5m`, `1h`, or `1d`.
 If a poll fails, the last successfully read key remains available and the
 extension retries with bounded backoff.
 
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+- `publishes`: Counter of published API keys partitioned by `outcome`,
+  unit `{publication}`.
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
+
 ## Building
 
 From the `otap-dataflow` directory:

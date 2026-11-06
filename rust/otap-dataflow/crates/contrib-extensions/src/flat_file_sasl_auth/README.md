@@ -109,8 +109,15 @@ it does not expose a Basic Auth capability or add separate synchronization.
 
 ## Metrics
 
-The `extension.flat_file_sasl_auth` metric set records `auth_successes`,
-`auth_failures`, `auth_publishes`, and `auth_success_latency` (milliseconds).
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+- `publishes`: Counter of published credentials partitioned by `outcome`,
+  unit `{publication}`.
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
+
 These describe credential acquisition and publication, not Kafka login success.
 
 ## Kafka integration

@@ -1148,6 +1148,19 @@ impl ExtensionContext {
             .telemetry_registry_handle
             .register_metric_set_for_entity::<T>(entity_key)
     }
+
+    /// Registers a measurement metric set for the given entity key.
+    #[must_use]
+    pub fn register_measurement_metric_set_for_entity<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        entity_key: EntityKey,
+    ) -> MeasurementMetricSet<T> {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key)
+    }
 }
 
 #[cfg(test)]

@@ -167,11 +167,11 @@ impl OtelDataflowSpec {
                 pipeline_group
                     .policies
                     .as_ref()
-                    .is_some_and(&has_rate_limiters)
+                    .is_some_and(has_rate_limiters)
                     || pipeline_group
                         .pipelines
                         .values()
-                        .any(|pipeline| pipeline.policies().is_some_and(&has_rate_limiters))
+                        .any(|pipeline| pipeline.policies().is_some_and(has_rate_limiters))
             });
         if any_regular_rate_limiter
             && self

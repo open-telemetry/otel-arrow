@@ -12,7 +12,6 @@ use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicA
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
 use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 
 use super::error::{FailureKind, Stage};
 use super::*;
@@ -33,8 +32,7 @@ fn extension(
         RetryOptions::none(),
     );
     let registry = TelemetryRegistryHandle::new();
-    let metrics =
-        registry.register_metric_set::<AzureKeyVaultUserPassAuthMetrics>(EmptyAttributes());
+    let metrics = AzureKeyVaultUserPassAuthMetrics::new_test(&registry);
     let (tx, _rx) = watch::channel(None);
     AzureKeyVaultUserPassAuthExtension::new(
         "vault-test",

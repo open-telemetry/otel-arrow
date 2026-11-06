@@ -206,9 +206,10 @@ Only two things are OAuth-specific:
   the configured grant type (client credentials or JWT bearer), and
   `log_refresh_failure()` emits the `oauth2_client_auth.token_refresh_failed`
   event.
-- `OAuth2ClientAuthMetrics` (metric set `extension.oauth2_client_auth`)
-  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
-  latency histogram to the generic tracker.
+- `OAuth2ClientAuthMetrics` (telemetry scope `extension.auth`)
+  implements `BackgroundProviderMetrics`, exposing its dimensioned acquisition
+  counter (`outcome`), publish counter, and duration histogram to the
+  generic tracker.
 
 ## Configuration
 
@@ -461,12 +462,11 @@ withholds export rather than sending unauthenticated data. Any other
 Metrics are recorded in the background refresh loop and the slow-path
 `get_token()` branch, and flushed via `ExtensionControlMsg::CollectTelemetry`.
 
-| Metric (set: `extension.oauth2_client_auth`) | Type | Description |
-| --- | --- | --- |
-| `auth_successes` | Counter | Successful token acquisitions. |
-| `auth_failures` | Counter | Failed token acquisitions. |
-| `auth_token_publish` | Counter | Tokens published to consumers via the watch channel. |
-| `auth_success_latency` | Mmsc (ms) | Latency of successful acquisitions (min/max/sum/count). |
+| Metric | Set | Type | Description |
+| --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | Token acquisitions partitioned by outcome. |
+| `publishes` | `extension.auth` | Counter | Tokens published to consumers via the watch channel partitioned by outcome. |
+| `duration` | `extension.auth` | Mmsc (s) | Acquisition duration in seconds partitioned by outcome (min/max/sum/count). |
 
 ## Lifecycle
 
@@ -649,7 +649,7 @@ OAuth-specific coverage:
 
 - **Client-credentials happy path.** A `client_credentials` config against a test
   token endpoint publishes a token, the bound OTLP exporter only exports once a
-  token exists, and `auth_successes` / `auth_token_publish` increment.
+  token exists, and `acquisitions` (with `outcome: success`) / `publishes` increment.
 - **JWT-bearer grant.** A `jwt-bearer` config signs a JWT assertion with the
   configured key/algorithm and obtains a token; `client_credentials`-only fields
   are rejected for this grant and vice versa.
@@ -659,7 +659,7 @@ OAuth-specific coverage:
 - **Credential rotation.** Updating a `client_secret_file` (or key file) causes
   the next acquisition to use the new value with no restart.
 - **Endpoint errors.** A 4xx/5xx or timeout from the token endpoint increments
-  `auth_failures`, the loop reschedules with bounded exponential backoff plus
+  `acquisitions` with `outcome: failure`, the loop reschedules with bounded exponential backoff plus
   jitter, and a subsequent success recovers without restarting the extension.
 
 ## Open Questions
