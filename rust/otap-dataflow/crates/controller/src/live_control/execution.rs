@@ -979,6 +979,9 @@ impl<
         // Switched cores whose previous instance could not be restored keep
         // serving the candidate instead of being left with no instance at all.
         let mut kept_candidate_cores = Vec::new();
+        // Set once a switched core may run both its candidate and a restored
+        // predecessor. Further restores would widen that overlap beyond one core.
+        let mut overlap_unresolved = false;
 
         // Rollback must restore the exact pre-rollout generation for each core.
         // previous.baseline_generation only identifies the committed deployment and can
@@ -1042,9 +1045,24 @@ impl<
                 kept_candidate_cores.push(*core_id);
                 continue;
             };
+            if overlap_unresolved {
+                self.record_rollback_core_failure(
+                    plan,
+                    *core_id,
+                    format!(
+                        "previous instance on core {core_id} not restored: an earlier core still overlaps"
+                    ),
+                    &mut rollback_errors,
+                );
+                kept_candidate_cores.push(*core_id);
+                continue;
+            }
             if let Err(error) =
                 self.relaunch_previous_instance(plan, previous, *core_id, previous_generation)
             {
+                // The relaunched predecessor may still be running without
+                // having become ready.
+                overlap_unresolved = true;
                 self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
                 kept_candidate_cores.push(*core_id);
                 continue;
@@ -1059,6 +1077,7 @@ impl<
             if let Err(error) =
                 self.cleanup_instance(&new_key, plan.drain_timeout_secs, "rollback drain")
             {
+                overlap_unresolved = true;
                 self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
                 continue;
             }
@@ -1108,6 +1127,7 @@ impl<
                     error,
                     &mut rollback_errors,
                 );
+                kept_candidate_cores.push(new_key.core_id);
                 continue;
             }
             self.observed_state_store

@@ -120,8 +120,10 @@ all active instances.
 - Rollbacks are best effort. Every affected core is attempted even when an
   earlier core fails to roll back. Candidates with no previous instance to
   restore are stopped together under one drain deadline; cores that restore a
-  previous instance roll back one at a time to keep the overlap guarantee. If
-  the target state is not reached within the startup and drain deadlines, the
+  previous instance roll back one at a time to keep the overlap guarantee.
+  Once a core cannot confirm that only one of its instances is running, the
+  remaining cores keep their candidate instead of being restored. If the
+  target state is not reached within the startup and drain deadlines, the
   operation records `rollback_failed`, preserves diagnostics, and does not
   guarantee further convergence.
 - Full-config reconciliation runs desired rollouts concurrently and waits for

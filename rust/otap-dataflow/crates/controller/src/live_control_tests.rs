@@ -4435,6 +4435,129 @@ fn replace_rollback_fails_when_undesired_instance_remains_active() {
     ));
 }
 
+/// Scenario: replace rollback cannot confirm that an added-core candidate stopped.
+/// Guarantees: that core keeps the target generation selected after rollback, so
+/// its still-running candidate stays visible in observed status.
+#[test]
+fn replace_rollback_keeps_failed_added_core_candidate_visible() {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _existing =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, true), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let core_id = plan.added_assigned_cores[0];
+    let target_generation = plan.target_deployment.baseline_generation;
+    let key = deployed_key("g1", "p1", core_id, target_generation);
+    let harness = install_undesired_instance(
+        &runtime,
+        &key,
+        UndesiredInstanceScenario::RemainsActive,
+        "rollback cleanup",
+    );
+
+    let result = runtime.rollback_replace_rollout(
+        &plan,
+        &[],
+        &[core_id],
+        &[],
+        "original failure".to_owned(),
+    );
+    harness.join();
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+    let status = runtime
+        .observed_state_handle
+        .pipeline_status(&plan.pipeline_key)
+        .expect("pipeline status should remain available");
+    assert_eq!(
+        status.serving_generations().get(&core_id),
+        Some(&target_generation)
+    );
+}
+
+/// Scenario: replace rollback restores two switched cores, and the previous
+/// instance relaunched on the first core never becomes ready.
+/// Guarantees: rollback does not relaunch the previous instance on the next
+/// core, so an unresolved overlap stays limited to one core; the skipped core
+/// is reported `rollback_failed` with the reason.
+#[test]
+fn replace_rollback_stops_restoring_after_unresolved_overlap() {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(2, false));
+    let runtime = test_runtime_with_factory(&config, &STARTUP_FAILING_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _core0 =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _core1 =
+        register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, true), 1, 1);
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let target_generation = plan.target_deployment.baseline_generation;
+    let mut candidates = Vec::new();
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for core_id in [0, 1] {
+            let removed = state
+                .runtime_instances
+                .remove(&deployed_key("g1", "p1", core_id, 0));
+            assert!(removed.is_some(), "replaced instance should exist");
+            state.active_instances -= 1;
+        }
+    }
+    for core_id in [0, 1] {
+        candidates.push(register_runtime_instance(
+            &runtime,
+            "g1",
+            "p1",
+            core_id,
+            target_generation,
+            RuntimeInstanceLifecycle::Active,
+        ));
+    }
+
+    // Switched cores are restored in reverse order, so core 1 goes first.
+    let result =
+        runtime.rollback_replace_rollout(&plan, &[0, 1], &[], &[], "original failure".to_owned());
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+    let status = runtime
+        .rollout_status_snapshot(&plan.rollout.rollout_id)
+        .expect("rollback status should remain queryable");
+    let core_status = |core_id: usize| {
+        status
+            .cores
+            .iter()
+            .find(|core| core.core_id == core_id)
+            .expect("core status should exist")
+    };
+    assert_eq!(core_status(1).state, "rollback_failed");
+    assert!(
+        !core_status(1)
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("earlier core still overlaps"))
+    );
+    assert_eq!(core_status(0).state, "rollback_failed");
+    assert!(
+        core_status(0)
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("earlier core still overlaps")),
+        "unexpected core 0 detail: {:?}",
+        core_status(0).detail
+    );
+}
+
 #[derive(Clone, Copy)]
 enum DesiredInstanceScenario {
     FailsAfterReadiness,
@@ -6830,6 +6953,13 @@ static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         validate_config: test_validate_config,
     },
     ReceiverFactory {
+        name: "urn:test:receiver:delayed_ready",
+        create: delayed_ready_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
         context_declarations: None,
@@ -6955,6 +7085,99 @@ fn reconcile_engine_config_isolates_failed_create() {
         assert!(live_pipelines.contains_key(&PipelineId::from("b_good")));
         assert!(!live_pipelines.contains_key(&PipelineId::from("a_bad")));
     }
+    shut_down_test_instances(&runtime);
+}
+
+/// Scenario: one reconcile creates a pipeline whose receiver is held before
+/// readiness and a healthy pipeline that sorts after it.
+/// Guarantees: the second rollout starts and commits while the first is still
+/// held, so creates are not serialized; once released, both succeed and are
+/// reported in plan order.
+#[test]
+fn reconcile_engine_config_starts_rollouts_concurrently() {
+    let _delayed_lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_delayed_ready_receiver();
+
+    let runtime = test_runtime_with_factory(
+        &reconcile_create_config(&[]),
+        &RECONCILE_CREATE_TEST_PIPELINE_FACTORY,
+    );
+    let desired = reconcile_create_config(&[
+        (
+            "a_held",
+            reconcile_create_pipeline_yaml("urn:test:receiver:delayed_ready"),
+        ),
+        (
+            "b_ready",
+            reconcile_create_pipeline_yaml("urn:test:receiver:example"),
+        ),
+    ]);
+    let reconcile_runtime = Arc::clone(&runtime);
+    let reconcile = thread::spawn(move || {
+        reconcile_runtime
+            .reconcile_engine_config(reconcile_request(desired, true))
+            .expect("reconcile should run every create")
+    });
+
+    let held_key = PipelineKey::new("g1".into(), "a_held".into());
+    let ready_key = PipelineKey::new("g1".into(), "b_ready".into());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let committed = {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.logical_pipelines.contains_key(&ready_key)
+        };
+        if committed && DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "second rollout must commit while the first is held before readiness"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .logical_pipelines
+            .contains_key(&held_key),
+        "held pipeline must not commit before readiness"
+    );
+    assert!(
+        !reconcile.is_finished(),
+        "reconcile must wait for the held rollout"
+    );
+
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    let status = reconcile.join().expect("reconcile thread should not panic");
+
+    assert_eq!(
+        status.state,
+        EngineConfigReconcileState::Succeeded,
+        "unexpected reconcile result: {:?}",
+        status.failure_reason
+    );
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| (
+                change.pipeline_id.as_ref().map(|id| id.as_ref()),
+                change.state.as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("a_held"), "succeeded"),
+            (Some("b_ready"), "succeeded")
+        ]
+    );
     shut_down_test_instances(&runtime);
 }
 
