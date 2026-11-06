@@ -53,6 +53,12 @@ impl<
     ) {
         let report = PanicReport::capture("rollout worker", panic, Some(thread_name), None, None);
         let failure_reason = report.summary_message();
+        if let Some(hosts) = self.work_coordinators_for(pipeline_key) {
+            let committed = hosts.committed();
+            if let Err(error) = hosts.finish(committed, Instant::now() + Duration::from_secs(30)) {
+                otel_error!("work_coordinator.panic_cleanup.failed", error = error);
+            }
+        }
         self.request_rollout_panic_candidate_cleanup(pipeline_key, rollout_id);
         self.update_rollout(pipeline_key, rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Failed;
@@ -150,12 +156,55 @@ impl<
             rollout.state = RolloutLifecycleState::Running;
         });
 
-        let result = match plan.action {
-            RolloutAction::Create => self.run_create_rollout(&plan),
-            RolloutAction::NoOp => Ok(()),
-            RolloutAction::Replace => self.run_replace_rollout(&plan),
-            RolloutAction::Resize => self.run_resize_rollout(&plan),
+        let coordinators = plan
+            .current_deployment
+            .as_ref()
+            .and_then(|deployment| deployment.work_coordinators.get())
+            .and_then(|result| result.as_ref().ok())
+            .filter(|hosts| hosts.is_cooperative())
+            .cloned();
+        let prepare = if !matches!(plan.action, RolloutAction::NoOp) {
+            if let Some(hosts) = &coordinators {
+                hosts
+                    .prepare(
+                        self.pipeline_factory,
+                        &plan.target_deployment.resolved.pipeline,
+                        Instant::now() + Duration::from_secs(plan.step_timeout_secs),
+                    )
+                    .map(|revisions| {
+                        let _ = plan
+                            .target_deployment
+                            .work_coordinator_revisions
+                            .set(revisions);
+                    })
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
         };
+        let mut result = match prepare {
+            Err(error) => Err(RolloutExecutionError::Failed(error)),
+            Ok(()) => match plan.action {
+                RolloutAction::Create => self.run_create_rollout(&plan),
+                RolloutAction::NoOp => Ok(()),
+                RolloutAction::Replace => self.run_replace_rollout(&plan),
+                RolloutAction::Resize => self.run_resize_rollout(&plan),
+            },
+        };
+        if let Some(hosts) = &coordinators {
+            let committed = hosts.committed();
+            let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+            if committed {
+                // Configuration is already committed. Lost final receipts are
+                // queried/retried; they can never trigger rollback.
+                if let Err(error) = hosts.finish(true, deadline) {
+                    otel_warn!("work_coordinator.finalization.pending", error = error);
+                }
+            } else if let Err(error) = hosts.finish(false, deadline) {
+                result = Err(RolloutExecutionError::RollbackFailed(error));
+            }
+        }
 
         match result {
             Ok(()) => {

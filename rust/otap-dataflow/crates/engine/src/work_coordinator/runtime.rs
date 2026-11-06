@@ -1,11 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::lifecycle::ReceiptCompleter;
 use super::{
     authority::{AdmissionState, Lease},
     *,
 };
 use futures::{Future, future::LocalBoxFuture};
+use std::sync::atomic::AtomicU64;
+use tokio::sync::Notify;
+mod fleet;
+use fleet::Fleet;
 use parking_lot::Mutex;
 use std::{
     any::Any,
@@ -22,6 +27,8 @@ pub(super) type PrepareFn = Box<
             CoordinatorKey,
             Vec<ParticipantSession>,
             CoordinatorLimits,
+            CapabilityProfile,
+            Arc<serde_json::Value>,
             Arc<dyn Fn(String) + Send + Sync>,
         ) -> Result<(CoordinatorBinding, CoordinatorTask), CoordinatorError>
         + Send,
@@ -46,7 +53,26 @@ impl CoordinatorTask {
     }
 }
 
+struct Member {
+    session: ParticipantSession,
+    revision: u64,
+    alive: AtomicBool,
+    bound: AtomicBool,
+    owned: AtomicUsize,
+}
+
 struct Domain {
+    profile: CapabilityProfile,
+    members: Mutex<BTreeMap<ParticipantSession, Arc<Member>>>,
+    nonce: AtomicU64,
+    operation: AtomicU64,
+    active_operation: AtomicU64,
+    commit_decision: AtomicU64,
+    current_revision: AtomicU64,
+    revision_counter: AtomicU64,
+    revisions: Mutex<BTreeMap<u64, Arc<serde_json::Value>>>,
+    exits: Notify,
+    limits: CoordinatorLimits,
     status: Mutex<CoordinatorStatus>,
     admission: Arc<Mutex<AdmissionState>>,
     stopping: AtomicBool,
@@ -150,18 +176,258 @@ fn charged<T: RetainedBytes>(domain: &Domain, value: T) -> Result<Envelope<T>, C
 trait ErasedBinding: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn domain(&self) -> &Arc<Domain>;
+    fn prepare(
+        &self,
+        settings: Arc<serde_json::Value>,
+    ) -> Result<ReconciliationReceipt, CoordinatorError>;
+    fn register(
+        &self,
+        spec: ParticipantSpec,
+        revision: u64,
+    ) -> Result<ReconciliationReceipt, CoordinatorError>;
+    fn activate(
+        &self,
+        spec: ParticipantSpec,
+        departing: bool,
+    ) -> Result<ReconciliationReceipt, CoordinatorError>;
+    fn finish(
+        &self,
+        operation: OperationId,
+        commit: bool,
+    ) -> Result<ReconciliationReceipt, CoordinatorError>;
+    fn confirm_exit(&self, spec: ParticipantSpec) -> bool;
 }
 
 struct Binding<P: WorkProtocol> {
-    participants: Mutex<HashMap<usize, WorkParticipant<P>>>,
+    participants: Arc<Mutex<HashMap<(usize, u64), WorkParticipant<P>>>>,
     domain: Arc<Domain>,
+    controls: mpsc::Sender<HostControl<P>>,
+    requests: mpsc::Sender<(ParticipantSession, Envelope<P::ParticipantRequest>)>,
+    notices: Notices<P>,
+    final_receipt: Mutex<Option<(OperationId, bool, ReconciliationReceipt)>>,
 }
+type Notices<P> = Arc<
+    Mutex<
+        HashMap<ParticipantSession, mpsc::Sender<Envelope<<P as WorkProtocol>::CoordinatorNotice>>>,
+    >,
+>;
+
+struct Port<P: WorkProtocol> {
+    member: Arc<Member>,
+    assignments: watch::Sender<Arc<AssignmentSnapshot<P>>>,
+}
+
+enum HostControl<P: WorkProtocol> {
+    Participant(Control),
+    Register(Port<P>, ReceiptCompleter),
+    Prepare(Arc<serde_json::Value>, ReceiptCompleter),
+    Activate(ParticipantSpec, bool, ReceiptCompleter),
+    Finish(OperationId, bool, ReceiptCompleter),
+}
+
+fn next_operation(domain: &Domain) -> Result<OperationId, CoordinatorError> {
+    domain.check()?;
+    domain
+        .operation
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map(|value| OperationId(value + 1))
+        .map_err(|_| CoordinatorError::Failed("coordinator operation overflow".into()))
+}
+
 impl<P: WorkProtocol> ErasedBinding for Binding<P> {
     fn as_any(&self) -> &dyn Any {
         self
     }
     fn domain(&self) -> &Arc<Domain> {
         &self.domain
+    }
+    fn prepare(
+        &self,
+        settings: Arc<serde_json::Value>,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.domain.check()?;
+        let _ = lifecycle::settings_bytes(&settings)?;
+        let permit = self
+            .controls
+            .try_reserve()
+            .map_err(|_| CoordinatorError::Capacity)?;
+        let mut status = self.domain.status.lock();
+        if self.domain.profile != CapabilityProfile::Cooperative
+            || status.reconciliation.is_some_and(|(_, phase)| {
+                !matches!(
+                    phase,
+                    ReconciliationPhase::Committed | ReconciliationPhase::Aborted
+                )
+            })
+        {
+            return Err(CoordinatorError::Invalid(
+                "coordinator reconciliation already pending or unsupported",
+            ));
+        }
+        let operation = next_operation(&self.domain)?;
+        self.domain
+            .active_operation
+            .store(operation.0, Ordering::Release);
+        self.domain.commit_decision.store(0, Ordering::Release);
+        status.reconciliation = Some((operation, ReconciliationPhase::Preparing));
+        let (receipt, completer) = ReconciliationReceipt::pair(operation);
+        permit.send(HostControl::Prepare(settings, completer));
+        Ok(receipt)
+    }
+    fn register(
+        &self,
+        spec: ParticipantSpec,
+        revision: u64,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.domain.check()?;
+        if self.domain.profile != CapabilityProfile::Cooperative
+            || self.domain.stopping.load(Ordering::Acquire)
+            || !self.domain.revisions.lock().contains_key(&revision)
+        {
+            return Err(CoordinatorError::Invalid(
+                "cannot register this coordinator revision",
+            ));
+        }
+        let permit = self
+            .controls
+            .try_reserve()
+            .map_err(|_| CoordinatorError::Capacity)?;
+        let mut members = self.domain.members.lock();
+        let mut participants = self.participants.lock();
+        if members.values().any(|member| {
+            member.session.core_id == spec.core_id
+                && member.session.generation == spec.generation
+                && member.alive.load(Ordering::Acquire)
+        }) {
+            return Err(CoordinatorError::Invalid(
+                "participant instance already registered",
+            ));
+        }
+        if members.len() >= self.domain.limits.participants * 2 {
+            return Err(CoordinatorError::Capacity);
+        }
+        let nonce = self
+            .domain
+            .nonce
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| CoordinatorError::Failed("participant nonce overflow".into()))?
+            + 1;
+        let session = ParticipantSession {
+            core_id: spec.core_id,
+            generation: spec.generation,
+            nonce,
+        };
+        let (participant, port) = endpoint(
+            session,
+            revision,
+            &self.domain,
+            &self.controls,
+            &self.requests,
+            &self.notices,
+        );
+        let _ = members.insert(session, Arc::clone(&port.member));
+        let _ = participants.insert((spec.core_id, spec.generation), participant);
+        let (receipt, completer) = ReconciliationReceipt::pair(next_operation(&self.domain)?);
+        permit.send(HostControl::Register(port, completer));
+        Ok(receipt)
+    }
+    fn activate(
+        &self,
+        spec: ParticipantSpec,
+        departing: bool,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.domain.check()?;
+        let permit = self
+            .controls
+            .try_reserve()
+            .map_err(|_| CoordinatorError::Capacity)?;
+        let (receipt, completer) = ReconciliationReceipt::pair(next_operation(&self.domain)?);
+        permit.send(HostControl::Activate(spec, departing, completer));
+        Ok(receipt)
+    }
+    fn finish(
+        &self,
+        operation: OperationId,
+        commit: bool,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.domain.check()?;
+        let mut cached = self.final_receipt.lock();
+        if let Some((id, kind, receipt)) = &*cached
+            && *id == operation
+            && *kind == commit
+        {
+            return Ok(receipt.clone());
+        }
+        let permit = self
+            .controls
+            .try_reserve()
+            .map_err(|_| CoordinatorError::Capacity)?;
+        let mut status = self.domain.status.lock();
+        let Some((id, phase)) = status.reconciliation else {
+            return Err(CoordinatorError::Stale);
+        };
+        if id != operation {
+            return Err(CoordinatorError::Stale);
+        }
+        if commit {
+            if !matches!(
+                phase,
+                ReconciliationPhase::Activated
+                    | ReconciliationPhase::CommitDecided
+                    | ReconciliationPhase::Committed
+            ) {
+                return Err(CoordinatorError::Invalid(
+                    "commit requires acknowledged activation",
+                ));
+            }
+            self.domain
+                .commit_decision
+                .store(operation.0, Ordering::Release);
+            status.reconciliation = Some((id, ReconciliationPhase::CommitDecided));
+        } else if self.domain.commit_decision.load(Ordering::Acquire) == operation.0 {
+            return Err(CoordinatorError::Invalid(
+                "committed reconciliation cannot abort",
+            ));
+        }
+        let (receipt, completer) = ReconciliationReceipt::pair(operation);
+        *cached = Some((operation, commit, receipt.clone()));
+        permit.send(HostControl::Finish(operation, commit, completer));
+        Ok(receipt)
+    }
+    fn confirm_exit(&self, spec: ParticipantSpec) -> bool {
+        let mut members = self.domain.members.lock();
+        let sessions: Vec<_> = members
+            .iter()
+            .filter(|(session, _)| {
+                session.core_id == spec.core_id && session.generation == spec.generation
+            })
+            .map(|(session, _)| *session)
+            .collect();
+        if sessions.is_empty() {
+            return false;
+        }
+        let clean = sessions.iter().all(|session| {
+            let member = &members[session];
+            member.owned.load(Ordering::Acquire) == 0
+                && (!member.bound.load(Ordering::Acquire) || !member.alive.load(Ordering::Acquire))
+        });
+        if clean {
+            for session in sessions {
+                if let Some(member) = members.remove(&session) {
+                    member.alive.store(false, Ordering::Release);
+                }
+            }
+            let _ = self
+                .participants
+                .lock()
+                .remove(&(spec.core_id, spec.generation));
+            self.domain.exits.notify_one();
+        }
+        clean
     }
 }
 
@@ -177,6 +443,71 @@ impl Debug for CoordinatorBinding {
     }
 }
 impl CoordinatorBinding {
+    /// Declared lifecycle profile.
+    #[must_use]
+    pub fn profile(&self) -> CapabilityProfile {
+        self.inner.domain().profile
+    }
+    /// Latest committed settings revision.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.inner.domain().current_revision.load(Ordering::Acquire)
+    }
+    /// Stage compatible settings without changing committed participants.
+    pub fn prepare_reconciliation(
+        &self,
+        settings: Arc<serde_json::Value>,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.inner.prepare(settings)
+    }
+    /// Register an exact, initially ineligible instance before node construction.
+    pub fn register_instance(
+        &self,
+        spec: ParticipantSpec,
+        revision: u64,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.inner.register(spec, revision)
+    }
+    /// Transfer work to a ready instance, retiring its predecessor on the same core.
+    pub fn activate_instance(
+        &self,
+        spec: ParticipantSpec,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.inner.activate(spec, false)
+    }
+    /// Release a departing instance before draining its downstream completion path.
+    pub fn retire_instance(
+        &self,
+        spec: ParticipantSpec,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.inner.activate(spec, true)
+    }
+    /// Latch the irreversible commit decision, then finalize provider cleanup.
+    pub fn commit(
+        &self,
+        operation: OperationId,
+    ) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.inner.finish(operation, true)
+    }
+    /// Restore old eligibility/settings using fresh grants after candidate cleanup.
+    pub fn abort(&self, operation: OperationId) -> Result<ReconciliationReceipt, CoordinatorError> {
+        self.inner.finish(operation, false)
+    }
+    /// Called only after the runtime physically exited; proves all owned work was released.
+    #[must_use]
+    pub fn confirm_instance_exit(&self, spec: ParticipantSpec) -> bool {
+        self.inner.confirm_exit(spec)
+    }
+    /// Whether an unconsumed endpoint is already prepared for this instance.
+    #[must_use]
+    pub fn has_pending_instance(&self, spec: ParticipantSpec) -> bool {
+        self.inner.domain().members.lock().values().any(|member| {
+            member.session.core_id == spec.core_id
+                && member.session.generation == spec.generation
+                && member.alive.load(Ordering::Acquire)
+                && !member.bound.load(Ordering::Acquire)
+        })
+    }
     /// Read bounded diagnostics without exposing source identifiers.
     #[must_use]
     pub fn status(&self) -> CoordinatorStatus {
@@ -200,14 +531,27 @@ impl CoordinatorBinding {
             .ok_or(CoordinatorError::Invalid("coordinator protocol mismatch"))?;
         binding.domain.check()?;
         let mut participants = binding.participants.lock();
-        let participant = participants.get(&core).ok_or(CoordinatorError::Invalid(
-            "participant already bound or unknown core",
-        ))?;
+        if !participants.contains_key(&(core, generation))
+            && participants
+                .keys()
+                .any(|(known_core, _)| *known_core == core)
+        {
+            return Err(CoordinatorError::Stale);
+        }
+        let participant =
+            participants
+                .get(&(core, generation))
+                .ok_or(CoordinatorError::Invalid(
+                    "participant already bound or unknown core",
+                ))?;
         if participant.session.generation != generation {
             return Err(CoordinatorError::Stale);
         }
-        let mut participant = participants.remove(&core).expect("checked participant");
+        let mut participant = participants
+            .remove(&(core, generation))
+            .expect("checked participant");
         participant.bound = true;
+        participant.member.bound.store(true, Ordering::Release);
         Ok(participant)
     }
 
@@ -232,6 +576,11 @@ pub struct CoordinatorBindings {
     entries: HashMap<(NodeId, String), CoordinatorBinding>,
 }
 impl CoordinatorBindings {
+    /// Iterate declared bindings during controller lifecycle operations.
+    pub fn iter(&self) -> impl Iterator<Item = (&(NodeId, String), &CoordinatorBinding)> {
+        self.entries.iter()
+    }
+
     /// Insert a prepared host binding; duplicate node/role pairs fail preparation.
     pub fn insert(
         &mut self,
@@ -337,6 +686,7 @@ struct Control {
     receipt: oneshot::Sender<Result<(), CoordinatorError>>,
 }
 struct Catalog<P: WorkProtocol> {
+    revision: u64,
     works: Box<[WorkSpec<P>]>,
     receipt: oneshot::Sender<Result<(), CoordinatorError>>,
 }
@@ -345,7 +695,8 @@ struct Catalog<P: WorkProtocol> {
 pub struct WorkParticipant<P: WorkProtocol> {
     session: ParticipantSession,
     domain: Arc<Domain>,
-    controls: mpsc::Sender<Control>,
+    controls: mpsc::Sender<HostControl<P>>,
+    member: Arc<Member>,
     requests: mpsc::Sender<(ParticipantSession, Envelope<P::ParticipantRequest>)>,
     notices: mpsc::Receiver<Envelope<P::CoordinatorNotice>>,
     assignments: watch::Receiver<Arc<AssignmentSnapshot<P>>>,
@@ -364,6 +715,9 @@ impl<P: WorkProtocol> WorkParticipant<P> {
     /// become valid again merely because an older view is retained by the node.
     pub fn resynchronize(&mut self) -> Result<Arc<AssignmentSnapshot<P>>, CoordinatorError> {
         self.domain.check()?;
+        if !self.member.alive.load(Ordering::Acquire) {
+            return Err(CoordinatorError::Stale);
+        }
         Ok(self.assignments.borrow_and_update().clone())
     }
     /// This binding's fresh registration identity.
@@ -377,6 +731,9 @@ impl<P: WorkProtocol> WorkParticipant<P> {
         grant: Option<&GrantIdentity>,
     ) -> Result<(), CoordinatorError> {
         self.domain.check()?;
+        if !self.member.alive.load(Ordering::Acquire) {
+            return Err(CoordinatorError::Stale);
+        }
         if grant.is_some_and(|identity| {
             identity.session != self.session || identity.work_id.0.len() > 1024
         }) {
@@ -385,12 +742,12 @@ impl<P: WorkProtocol> WorkParticipant<P> {
         let (tx, rx) = oneshot::channel();
         available(&self.domain, async {
             self.controls
-                .send(Control {
+                .send(HostControl::Participant(Control {
                     session: self.session,
                     kind,
                     grant: grant.cloned(),
                     receipt: tx,
-                })
+                }))
                 .await
                 .map_err(|_| CoordinatorError::Unavailable)?;
             rx.await.map_err(|_| CoordinatorError::Unavailable)?
@@ -418,6 +775,9 @@ impl<P: WorkProtocol> WorkParticipant<P> {
     /// Send bounded custom metadata without blocking lifecycle control.
     pub fn request(&self, request: P::ParticipantRequest) -> Result<(), CoordinatorError> {
         self.domain.check()?;
+        if !self.member.alive.load(Ordering::Acquire) {
+            return Err(CoordinatorError::Stale);
+        }
         let envelope = charged(&self.domain, request)?;
         self.requests
             .try_send((self.session, envelope))
@@ -432,6 +792,9 @@ impl<P: WorkProtocol> WorkParticipant<P> {
     /// Wait for assignment state or a custom notice. Authority loss has priority.
     pub async fn recv(&mut self) -> Result<ParticipantEvent<P>, CoordinatorError> {
         self.domain.check()?;
+        if !self.member.alive.load(Ordering::Acquire) {
+            return Err(CoordinatorError::Stale);
+        }
         tokio::select! {
             biased;
             _ = self.stopped.changed() => Err(CoordinatorError::Unavailable),
@@ -449,11 +812,18 @@ impl<P: WorkProtocol> Drop for WorkParticipant<P> {
         if !self.bound {
             return;
         }
-        if !self.domain.stopping.load(Ordering::Acquire) {
+        self.member.alive.store(false, Ordering::Release);
+        if !self.domain.stopping.load(Ordering::Acquire)
+            && (self.domain.profile == CapabilityProfile::Basic
+                || self.member.owned.load(Ordering::Acquire) != 0)
+        {
             self.domain
-                .fail("work participant exited unexpectedly".into());
+                .fail("work participant exited without acknowledged release".into());
         }
-        if self.domain.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+        self.domain.exits.notify_one();
+        if self.domain.profile == CapabilityProfile::Basic
+            && self.domain.remaining.fetch_sub(1, Ordering::AcqRel) == 1
+        {
             self.domain.stop();
         }
     }
@@ -467,12 +837,30 @@ pub struct CoordinatorRuntime<P: WorkProtocol> {
     ready: Option<std_mpsc::SyncSender<Result<(), String>>>,
     catalogs: mpsc::Sender<Catalog<P>>,
     requests: mpsc::Receiver<(ParticipantSession, Envelope<P::ParticipantRequest>)>,
-    notices: HashMap<ParticipantSession, mpsc::Sender<Envelope<P::CoordinatorNotice>>>,
+    notices: Notices<P>,
+    lifecycle: Option<mpsc::Receiver<CoordinatorLifecycleEvent>>,
     registry: watch::Receiver<Arc<ParticipantRegistry>>,
     limits: CoordinatorLimits,
 }
 
 impl<P: WorkProtocol> CoordinatorRuntime<P> {
+    /// Take the dedicated lifecycle stream once, independently of custom requests.
+    pub fn lifecycle_events(
+        &mut self,
+    ) -> Result<mpsc::Receiver<CoordinatorLifecycleEvent>, CoordinatorError> {
+        self.lifecycle
+            .take()
+            .ok_or(CoordinatorError::Invalid("lifecycle stream already taken"))
+    }
+    /// Read immutable settings for a live or staged revision.
+    pub fn settings(&self, revision: u64) -> Result<Arc<serde_json::Value>, CoordinatorError> {
+        self.domain
+            .revisions
+            .lock()
+            .get(&revision)
+            .cloned()
+            .ok_or(CoordinatorError::Stale)
+    }
     /// Out-of-band final shutdown signal, suitable for selecting alongside `recv`.
     #[must_use]
     pub fn shutdown_signal(&self) -> watch::Receiver<bool> {
@@ -497,12 +885,22 @@ impl<P: WorkProtocol> CoordinatorRuntime<P> {
     /// Atomically propose a bounded catalog. Existing work metadata is immutable
     /// until removal/release completes. Receipt means accepted, not fully drained.
     pub async fn replace_catalog(&self, works: Vec<WorkSpec<P>>) -> Result<(), CoordinatorError> {
+        self.replace_catalog_for(0, works).await
+    }
+    /// Publish a catalog for one immutable settings revision. Old and candidate
+    /// catalogs coexist until commit or abort is acknowledged.
+    pub async fn replace_catalog_for(
+        &self,
+        revision: u64,
+        works: Vec<WorkSpec<P>>,
+    ) -> Result<(), CoordinatorError> {
         self.domain.check()?;
         validate_catalog(&works, self.limits)?;
         let (tx, rx) = oneshot::channel();
         available(&self.domain, async {
             self.catalogs
                 .send(Catalog {
+                    revision,
                     works: works.into_boxed_slice(),
                     receipt: tx,
                 })
@@ -555,7 +953,8 @@ impl<P: WorkProtocol> CoordinatorRuntime<P> {
         notice: P::CoordinatorNotice,
     ) -> Result<(), CoordinatorError> {
         self.domain.check()?;
-        let tx = self.notices.get(&session).ok_or(CoordinatorError::Stale)?;
+        let notices = self.notices.lock();
+        let tx = notices.get(&session).ok_or(CoordinatorError::Stale)?;
         tx.try_send(charged(&self.domain, notice)?).map_err(|e| {
             if matches!(e, mpsc::error::TrySendError::Full(_)) {
                 CoordinatorError::Capacity
@@ -596,297 +995,6 @@ fn validate_catalog<P: WorkProtocol>(
     Ok(())
 }
 
-struct Entry<P: WorkProtocol> {
-    work: Arc<WorkSpec<P>>,
-    desired: bool,
-    phase: Option<AssignmentPhase>,
-}
-struct Fleet<P: WorkProtocol> {
-    incarnation: uuid::Uuid,
-    domain: Arc<Domain>,
-    catalog: BTreeMap<WorkId, Entry<P>>,
-    sessions:
-        BTreeMap<ParticipantSession, (ParticipantState, watch::Sender<Arc<AssignmentSnapshot<P>>>)>,
-    registry: watch::Sender<Arc<ParticipantRegistry>>,
-    backend: InMemoryBackend,
-    term: u64,
-    operation: u64,
-    revision: u64,
-    limits: CoordinatorLimits,
-}
-
-impl<P: WorkProtocol> Fleet<P> {
-    fn next_operation(&mut self) -> Result<OperationId, CoordinatorError> {
-        self.operation = self
-            .operation
-            .checked_add(1)
-            .ok_or(CoordinatorError::Invalid("operation ID overflow"))?;
-        Ok(OperationId(self.operation))
-    }
-    fn publish(&mut self) -> Result<(), CoordinatorError> {
-        *self.domain.status.lock() = CoordinatorStatus {
-            participants: self.sessions.len(),
-            ready_participants: self
-                .sessions
-                .values()
-                .filter(|(state, _)| *state == ParticipantState::ReadyForAssignments)
-                .count(),
-            catalog_items: self.catalog.len(),
-            active_assignments: self
-                .catalog
-                .values()
-                .filter(|entry| matches!(entry.phase, Some(AssignmentPhase::Active(_))))
-                .count(),
-            revoking_assignments: self
-                .catalog
-                .values()
-                .filter(|entry| matches!(entry.phase, Some(AssignmentPhase::Revoking(_))))
-                .count(),
-            ..CoordinatorStatus::default()
-        };
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .ok_or(CoordinatorError::Invalid("assignment revision overflow"))?;
-        let mut snapshots: BTreeMap<_, Vec<_>> = self
-            .sessions
-            .keys()
-            .map(|session| (*session, Vec::new()))
-            .collect();
-        for entry in self.catalog.values() {
-            if let Some(phase) = &entry.phase {
-                let session = match phase {
-                    AssignmentPhase::Offered(id) => id.session,
-                    AssignmentPhase::Active(grant) | AssignmentPhase::Revoking(grant) => {
-                        grant.identity().session
-                    }
-                };
-                snapshots
-                    .get_mut(&session)
-                    .ok_or(CoordinatorError::Stale)?
-                    .push(WorkAssignment {
-                        work: Arc::clone(&entry.work),
-                        phase: phase.clone(),
-                    });
-            }
-        }
-        for (session, (_, tx)) in &self.sessions {
-            let _ = tx.send_replace(Arc::new(AssignmentSnapshot {
-                revision: self.revision,
-                assignments: snapshots.remove(session).expect("session snapshot"),
-            }));
-        }
-        let _ = self.registry.send_replace(Arc::new(ParticipantRegistry {
-            participants: self
-                .sessions
-                .iter()
-                .map(|(session, (state, _))| (*session, *state))
-                .collect(),
-        }));
-        Ok(())
-    }
-    fn allocate(&mut self) -> Result<(), CoordinatorError> {
-        if self.domain.stopping.load(Ordering::Acquire)
-            || self
-                .sessions
-                .values()
-                .any(|(state, _)| *state != ParticipantState::ReadyForAssignments)
-        {
-            return self.publish();
-        }
-        let mut loads: BTreeMap<_, usize> =
-            self.sessions.keys().map(|session| (*session, 0)).collect();
-        for entry in self.catalog.values() {
-            if let Some(phase) = &entry.phase {
-                let session = match phase {
-                    AssignmentPhase::Offered(id) => id.session,
-                    AssignmentPhase::Active(grant) | AssignmentPhase::Revoking(grant) => {
-                        grant.identity().session
-                    }
-                };
-                *loads.get_mut(&session).ok_or(CoordinatorError::Stale)? += 1;
-            }
-        }
-        for entry in self
-            .catalog
-            .values_mut()
-            .filter(|entry| entry.desired && entry.phase.is_none())
-        {
-            let (session, load) = loads
-                .iter_mut()
-                .min_by_key(|(session, load)| (**load, **session))
-                .ok_or(CoordinatorError::Unavailable)?;
-            self.term = self
-                .term
-                .checked_add(1)
-                .ok_or(CoordinatorError::Invalid("assignment term overflow"))?;
-            entry.phase = Some(AssignmentPhase::Offered(GrantIdentity {
-                incarnation: self.incarnation,
-                work_id: entry.work.id.clone(),
-                session: *session,
-                revision: 0,
-                term: self.term,
-            }));
-            *load += 1;
-        }
-        self.publish()
-    }
-    fn catalog(&mut self, works: Vec<WorkSpec<P>>) -> Result<(), CoordinatorError> {
-        validate_catalog(&works, self.limits)?;
-        // Validate the union before mutating: removed active entries must remain
-        // retained until cooperative release, even under catalog churn.
-        let mut items = self.catalog.len();
-        let mut bytes = self
-            .catalog
-            .values()
-            .map(|entry| work_bytes(&entry.work))
-            .sum::<usize>();
-        for work in &works {
-            if let Some(current) = self.catalog.get(&work.id) {
-                if current.work.work != work.work {
-                    return Err(CoordinatorError::Invalid(
-                        "work metadata changed before retirement",
-                    ));
-                }
-            } else {
-                items += 1;
-                bytes = bytes.saturating_add(work_bytes(work));
-            }
-        }
-        if items > self.limits.catalog_items || bytes > self.limits.catalog_bytes {
-            return Err(CoordinatorError::Capacity);
-        }
-        let desired: HashSet<_> = works.iter().map(|work| work.id.clone()).collect();
-        for entry in self.catalog.values_mut() {
-            entry.desired = desired.contains(&entry.work.id);
-            if !entry.desired {
-                match entry.phase.take() {
-                    Some(AssignmentPhase::Offered(_)) => {}
-                    Some(AssignmentPhase::Active(grant) | AssignmentPhase::Revoking(grant)) => {
-                        if let Some(lease) = self
-                            .domain
-                            .admission
-                            .lock()
-                            .grants
-                            .get_mut(&grant.identity.term)
-                        {
-                            lease.accepting = false;
-                        }
-                        entry.phase = Some(AssignmentPhase::Revoking(grant));
-                    }
-                    None => {}
-                }
-            }
-        }
-        self.catalog
-            .retain(|_, entry| entry.desired || entry.phase.is_some());
-        for work in works {
-            let _ = self
-                .catalog
-                .entry(work.id.clone())
-                .or_insert_with(|| Entry {
-                    work: Arc::new(work),
-                    desired: true,
-                    phase: None,
-                });
-        }
-        self.allocate()
-    }
-    async fn control(&mut self, control: &Control) -> Result<(), CoordinatorError> {
-        self.domain.check()?;
-        let (state, _) = self
-            .sessions
-            .get_mut(&control.session)
-            .ok_or(CoordinatorError::Stale)?;
-        if matches!(control.kind, AckKind::Ready) {
-            *state = ParticipantState::ReadyForAssignments;
-            return self.allocate();
-        }
-        let identity = control.grant.as_ref().ok_or(CoordinatorError::Stale)?;
-        if identity.session != control.session || identity.incarnation != self.incarnation {
-            return Err(CoordinatorError::Stale);
-        }
-        let phase = self
-            .catalog
-            .get(&identity.work_id)
-            .and_then(|entry| entry.phase.clone())
-            .ok_or(CoordinatorError::Stale)?;
-        match (control.kind, phase) {
-            (AckKind::Accept, AssignmentPhase::Offered(offer)) if offer == *identity => {
-                if self.domain.stopping.load(Ordering::Acquire) {
-                    return Err(CoordinatorError::Unavailable);
-                }
-                let operation = self.next_operation()?;
-                if self.backend.activate(operation, identity).await? != BackendOutcome::Confirmed {
-                    return Err(CoordinatorError::Failed(
-                        "activation was not confirmed".into(),
-                    ));
-                }
-                let _ = self
-                    .domain
-                    .admission
-                    .lock()
-                    .grants
-                    .insert(identity.term, Lease::default());
-                self.catalog
-                    .get_mut(&identity.work_id)
-                    .expect("checked entry")
-                    .phase = Some(AssignmentPhase::Active(AssignmentGrant {
-                    identity: identity.clone(),
-                    admission: Arc::clone(&self.domain.admission),
-                }));
-            }
-            (AckKind::Activated, AssignmentPhase::Active(grant))
-                if grant.identity() == identity =>
-            {
-                let mut state = self.domain.admission.lock();
-                if self.domain.stopping.load(Ordering::Acquire) {
-                    return Err(CoordinatorError::Unavailable);
-                }
-                let lease = state
-                    .grants
-                    .get_mut(&identity.term)
-                    .ok_or(CoordinatorError::Stale)?;
-                if lease.accepting {
-                    return Ok(());
-                }
-                lease.accepting = true;
-            }
-            (AckKind::Released, AssignmentPhase::Revoking(grant))
-                if grant.identity() == identity =>
-            {
-                if self
-                    .domain
-                    .admission
-                    .lock()
-                    .grants
-                    .get(&identity.term)
-                    .is_none_or(|lease| lease.tickets != 0)
-                {
-                    return Err(CoordinatorError::Invalid(
-                        "release requires settled tickets and joined workers",
-                    ));
-                }
-                let operation = self.next_operation()?;
-                if self.backend.retire(operation, identity).await? != BackendOutcome::Confirmed {
-                    return Err(CoordinatorError::Failed(
-                        "retirement was not confirmed".into(),
-                    ));
-                }
-                let _ = self.domain.admission.lock().grants.remove(&identity.term);
-                self.catalog
-                    .get_mut(&identity.work_id)
-                    .expect("checked entry")
-                    .phase = None;
-                self.catalog
-                    .retain(|_, entry| entry.desired || entry.phase.is_some());
-            }
-            _ => return Err(CoordinatorError::Stale),
-        }
-        self.allocate()
-    }
-}
-
 struct HostGuard {
     domain: Arc<Domain>,
 }
@@ -896,10 +1004,53 @@ impl Drop for HostGuard {
     }
 }
 
+fn endpoint<P: WorkProtocol>(
+    session: ParticipantSession,
+    revision: u64,
+    domain: &Arc<Domain>,
+    controls: &mpsc::Sender<HostControl<P>>,
+    requests: &mpsc::Sender<(ParticipantSession, Envelope<P::ParticipantRequest>)>,
+    notices: &Notices<P>,
+) -> (WorkParticipant<P>, Port<P>) {
+    let member = Arc::new(Member {
+        session,
+        revision,
+        alive: AtomicBool::new(true),
+        bound: AtomicBool::new(false),
+        owned: AtomicUsize::new(0),
+    });
+    let (assignments_tx, assignments) = watch::channel(Arc::new(AssignmentSnapshot {
+        revision: 0,
+        assignments: Vec::new(),
+    }));
+    let (notice_tx, notice_rx) = mpsc::channel(domain.limits.message_items);
+    let _ = notices.lock().insert(session, notice_tx);
+    let participant = WorkParticipant {
+        session,
+        member: Arc::clone(&member),
+        domain: Arc::clone(domain),
+        controls: controls.clone(),
+        requests: requests.clone(),
+        notices: notice_rx,
+        assignments,
+        stopped: domain.stopped.subscribe(),
+        bound: false,
+    };
+    (
+        participant,
+        Port {
+            member,
+            assignments: assignments_tx,
+        },
+    )
+}
+
 pub(super) fn prepare<P, F>(
     key: CoordinatorKey,
     sessions: Vec<ParticipantSession>,
     limits: CoordinatorLimits,
+    profile: CapabilityProfile,
+    settings: Arc<serde_json::Value>,
     factory: F,
     failure: Arc<dyn Fn(String) + Send + Sync>,
 ) -> Result<(CoordinatorBinding, CoordinatorTask), CoordinatorError>
@@ -920,17 +1071,27 @@ where
             "invalid initial coordinator fleet",
         ));
     }
-    let admission = Arc::new(Mutex::new(AdmissionState {
-        running: true,
-        grants: HashMap::new(),
-    }));
     let (stopped, mut stop_rx) = watch::channel(false);
     let domain = Arc::new(Domain {
+        profile,
+        members: Mutex::new(BTreeMap::new()),
+        nonce: AtomicU64::new(sessions.iter().map(|s| s.nonce).max().unwrap_or(0)),
+        operation: AtomicU64::new(0),
+        active_operation: AtomicU64::new(0),
+        commit_decision: AtomicU64::new(0),
+        current_revision: AtomicU64::new(0),
+        revision_counter: AtomicU64::new(0),
+        revisions: Mutex::new(BTreeMap::from([(0, settings)])),
+        exits: Notify::new(),
+        limits,
         status: Mutex::new(CoordinatorStatus {
             participants: sessions.len(),
             ..CoordinatorStatus::default()
         }),
-        admission,
+        admission: Arc::new(Mutex::new(AdmissionState {
+            running: true,
+            grants: HashMap::new(),
+        })),
         stopping: AtomicBool::new(false),
         stopped,
         remaining: AtomicUsize::new(sessions.len()),
@@ -938,46 +1099,41 @@ where
         bytes: Arc::new(AtomicUsize::new(0)),
         byte_limit: limits.message_bytes,
     });
-    let (control_tx, mut controls) = mpsc::channel(sessions.len() * 2);
+    let (control_tx, mut controls) = mpsc::channel(limits.participants * 4);
     let (request_tx, requests) = mpsc::channel(limits.message_items);
     let (catalog_tx, mut catalogs) = mpsc::channel::<Catalog<P>>(1);
     let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
+    let (lifecycle_tx, lifecycle_rx) = mpsc::channel(2);
     let (registry, registry_rx) = watch::channel(Arc::new(ParticipantRegistry {
+        revision: 0,
         participants: sessions
             .iter()
             .map(|s| (*s, ParticipantState::Initializing))
             .collect(),
     }));
-    let mut participants = HashMap::new();
-    let mut fleet_sessions = BTreeMap::new();
-    let mut notices = HashMap::new();
+    let participants = Arc::new(Mutex::new(HashMap::new()));
+    let notices = Arc::new(Mutex::new(HashMap::new()));
+    let mut ports = Vec::new();
     for session in sessions {
-        let (assign_tx, assignments) = watch::channel(Arc::new(AssignmentSnapshot {
-            revision: 0,
-            assignments: Vec::new(),
-        }));
-        let (notice_tx, notice_rx) = mpsc::channel(limits.message_items);
-        let _ = notices.insert(session, notice_tx);
-        let _ = fleet_sessions.insert(session, (ParticipantState::Initializing, assign_tx));
-        let _ = participants.insert(
-            session.core_id,
-            WorkParticipant {
-                session,
-                domain: Arc::clone(&domain),
-                controls: control_tx.clone(),
-                requests: request_tx.clone(),
-                notices: notice_rx,
-                assignments,
-                stopped: domain.stopped.subscribe(),
-                bound: false,
-            },
-        );
+        let (participant, port) = endpoint(session, 0, &domain, &control_tx, &request_tx, &notices);
+        let _ = domain
+            .members
+            .lock()
+            .insert(session, Arc::clone(&port.member));
+        let _ = participants
+            .lock()
+            .insert((session.core_id, session.generation), participant);
+        ports.push(port);
     }
     let binding = CoordinatorBinding {
         key: key.clone(),
         inner: Arc::new(Binding::<P> {
-            participants: Mutex::new(participants),
+            participants: Arc::clone(&participants),
             domain: Arc::clone(&domain),
+            controls: control_tx,
+            requests: request_tx,
+            notices: Arc::clone(&notices),
+            final_receipt: Mutex::new(None),
         }),
     };
     let guard = HostGuard {
@@ -994,50 +1150,41 @@ where
                     ready: Some(ready_tx),
                     catalogs: catalog_tx,
                     requests,
-                    notices,
+                    notices: Arc::clone(&notices),
+                    lifecycle: Some(lifecycle_rx),
                     registry: registry_rx,
                     limits,
                 };
-                let mut fleet = Fleet::<P> {
-                    incarnation: uuid::Uuid::new_v4(),
-                    domain: Arc::clone(&domain),
-                    catalog: BTreeMap::new(),
-                    sessions: fleet_sessions,
+                let mut fleet = Fleet::new(
+                    Arc::clone(&domain),
+                    ports,
                     registry,
-                    backend: InMemoryBackend::new(limits.catalog_items),
-                    term: 0,
-                    operation: 0,
-                    revision: 0,
-                    limits,
-                };
+                    lifecycle_tx,
+                    notices,
+                    participants,
+                );
                 let provider = factory().run(runtime);
                 tokio::pin!(provider);
                 loop {
                     tokio::select! {
                         biased;
-                        _ = stop_rx.changed() => return match provider.await {
-                            Err(CoordinatorError::Unavailable) if domain.stopping.load(Ordering::Acquire) => Ok(()),
-                            result => result,
-                        },
+                        _ = stop_rx.changed() => return match provider.await { Err(CoordinatorError::Unavailable) if domain.stopping.load(Ordering::Acquire) => Ok(()), result => result },
+                        _ = domain.exits.notified() => { fleet.sweep_exits()?; }
+                        control = controls.recv() => { fleet.command(control.ok_or(CoordinatorError::Unavailable)?).await?; }
+                        result = async { match &mut fleet.provider_pending { Some(pending) => pending.await, None => std::future::pending().await } } => { fleet.provider_completed(result)?; }
                         result = &mut provider => return match result {
                             Ok(()) | Err(CoordinatorError::Unavailable)
                                 if domain.stopping.load(Ordering::Acquire) && *stop_rx.borrow() => Ok(()),
                             Ok(()) => Err(CoordinatorError::Failed("provider returned before shutdown".into())),
                             Err(error) => Err(error),
                         },
-                        control = controls.recv() => {
-                            let control = control.ok_or(CoordinatorError::Unavailable)?;
-                            let result = fleet.control(&control).await;
-                            if matches!(result, Err(CoordinatorError::Failed(_))) { return result; }
-                            let _ = control.receipt.send(result);
-                        }
                         catalog = catalogs.recv() => {
                             let catalog = catalog.ok_or(CoordinatorError::Unavailable)?;
-                            let result = fleet.catalog(catalog.works.into_vec());
+                            let result = fleet.catalog(catalog.revision, catalog.works.into_vec());
                             let _ = catalog.receipt.send(result);
                         }
                     }
-                    // Bounded control/catalog processing must leave discovery and I/O runnable.
+                    fleet.progress()?;
                     tokio::task::yield_now().await;
                 }
             })

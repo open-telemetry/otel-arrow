@@ -178,6 +178,8 @@ impl Fixture {
                 failure: None,
             }),
             _supervisor: Arc::clone(&supervisor),
+            descriptors: Mutex::default(),
+            pending: Mutex::default(),
         };
         let fixture = Self {
             supervisor,

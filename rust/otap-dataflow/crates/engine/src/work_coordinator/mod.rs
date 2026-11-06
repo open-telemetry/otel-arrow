@@ -10,7 +10,13 @@
 //! fleet. See `docs/work-coordinator.md` for the receiver integration contract.
 
 mod authority;
+mod lifecycle;
 mod runtime;
+
+pub use lifecycle::{
+    CoordinatorLifecycleEvent, CoordinatorRevision, ParticipantSpec, ProviderReceipt,
+    ReconciliationOutcome, ReconciliationPhase, ReconciliationReceipt, SettingsCompatibility,
+};
 
 pub use authority::{
     AdmissionTicket, AssignmentBackend, AssignmentGrant, BackendOutcome, GrantIdentity,
@@ -23,7 +29,7 @@ pub use runtime::{
 
 use async_trait::async_trait;
 use otel_arrow_dfe_config::{NodeId, PipelineGroupId, PipelineId, node::NodeUserConfig};
-use std::{fmt::Debug, sync::Arc};
+use std::{any::TypeId, fmt::Debug, sync::Arc};
 
 /// A protocol's metadata and custom message types. They never contain PData.
 pub trait WorkProtocol: Send + Sync + 'static {
@@ -92,6 +98,8 @@ pub enum ParticipantState {
 /// Bounded, complete view of the Basic fleet. No administrative polling is used.
 #[derive(Clone, Debug)]
 pub struct ParticipantRegistry {
+    /// Monotonic revision of this complete registry snapshot.
+    pub revision: u64,
     /// Sessions and their readiness state, ordered by core.
     pub participants: Vec<(ParticipantSession, ParticipantState)>,
 }
@@ -99,6 +107,8 @@ pub struct ParticipantRegistry {
 /// Bounded diagnostics without source IDs, paths or URLs.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CoordinatorStatus {
+    /// Current lifecycle operation and phase, if any.
+    pub reconciliation: Option<(OperationId, ReconciliationPhase)>,
     /// Initial fleet size.
     pub participants: usize,
     /// Ready participants, including idle instances.
@@ -155,7 +165,7 @@ pub enum ProgressRequirement {
 }
 
 /// Resource limits for a single coordinator. All fields must be nonzero.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoordinatorLimits {
     /// Maximum retained catalog entries, including entries awaiting release.
     pub catalog_items: usize,
@@ -204,8 +214,11 @@ impl CoordinatorLimits {
 }
 
 /// Failure from binding, authority, capacity or a provider.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum CoordinatorError {
+    /// The deadline expired; the operation may still complete.
+    #[error("coordinator acknowledgement timed out; outcome remains unknown")]
+    Timeout,
     /// Invalid declaration or protocol operation.
     #[error("{0}")]
     Invalid(&'static str),
@@ -248,7 +261,41 @@ pub struct CoordinatorDeclaration {
     pub progress: ProgressRequirement,
     /// Bounded resources for this host.
     pub limits: CoordinatorLimits,
+    descriptor: CoordinatorDescriptor,
     factory: runtime::PrepareFn,
+}
+
+/// Validated declaration identity/settings for controller reconciliation.
+#[derive(Clone)]
+pub struct CoordinatorDescriptor {
+    protocol: TypeId,
+    provider: TypeId,
+    /// Required profile.
+    pub profile: CapabilityProfile,
+    /// Fixed host limits.
+    pub limits: CoordinatorLimits,
+    /// Immutable node-specific settings.
+    pub settings: Arc<serde_json::Value>,
+    compatible: Option<SettingsCompatibility>,
+}
+impl CoordinatorDescriptor {
+    /// Check compatibility without constructing a provider or changing live state.
+    pub fn validate_update(&self, next: &Self) -> Result<(), CoordinatorError> {
+        if self.profile != CapabilityProfile::Cooperative
+            || next.profile != self.profile
+            || self.protocol != next.protocol
+            || self.provider != next.provider
+            || self.limits != next.limits
+            || !self
+                .compatible
+                .is_some_and(|compatible| compatible(&self.settings, &next.settings))
+        {
+            return Err(CoordinatorError::Invalid(
+                "incompatible coordinator declaration; restart required",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CoordinatorDeclaration {
@@ -263,10 +310,42 @@ impl CoordinatorDeclaration {
             profile: CapabilityProfile::Basic,
             progress: ProgressRequirement::None,
             limits: CoordinatorLimits::default(),
-            factory: Box::new(move |key, sessions, limits, failure| {
-                runtime::prepare::<P, F>(key, sessions, limits, factory, failure)
+            descriptor: CoordinatorDescriptor {
+                protocol: TypeId::of::<P>(),
+                provider: TypeId::of::<F>(),
+                profile: CapabilityProfile::Basic,
+                limits: CoordinatorLimits::default(),
+                settings: Arc::new(serde_json::Value::Null),
+                compatible: None,
+            },
+            factory: Box::new(move |key, sessions, limits, profile, settings, failure| {
+                runtime::prepare::<P, F>(key, sessions, limits, profile, settings, factory, failure)
             }),
         }
+    }
+
+    /// Opt into cooperative membership and explicitly declare the settings whose
+    /// revisions discovery can stage. Equal-only compatibility supports resize
+    /// and downstream updates without requiring a provider settings handler.
+    #[must_use]
+    pub fn with_reconciliation(
+        mut self,
+        settings: serde_json::Value,
+        compatible: SettingsCompatibility,
+    ) -> Self {
+        self.profile = CapabilityProfile::Cooperative;
+        self.descriptor.settings = Arc::new(settings);
+        self.descriptor.compatible = Some(compatible);
+        self
+    }
+
+    /// Obtain validated controller metadata, without constructing the provider.
+    pub fn descriptor(&self) -> Result<CoordinatorDescriptor, CoordinatorError> {
+        self.validate()?;
+        let mut descriptor = self.descriptor.clone();
+        descriptor.profile = self.profile;
+        descriptor.limits = self.limits;
+        Ok(descriptor)
     }
 
     /// Check admission requirements without starting a host or opening resources.
@@ -275,11 +354,16 @@ impl CoordinatorDeclaration {
         if self.role.is_empty() || self.role.len() > 128 {
             return Err(CoordinatorError::Invalid("invalid coordinator role"));
         }
-        if self.profile != CapabilityProfile::Basic || self.progress != ProgressRequirement::None {
+        if self.profile == CapabilityProfile::FencedProgress
+            || self.progress != ProgressRequirement::None
+            || (self.profile == CapabilityProfile::Cooperative
+                && self.descriptor.compatible.is_none())
+        {
             return Err(CoordinatorError::Invalid(
                 "unsupported coordinator capabilities",
             ));
         }
+        let _ = lifecycle::settings_bytes(&self.descriptor.settings)?;
         Ok(())
     }
 
@@ -294,7 +378,14 @@ impl CoordinatorDeclaration {
         if key.role != self.role {
             return Err(CoordinatorError::Invalid("coordinator role mismatch"));
         }
-        (self.factory)(key, sessions, self.limits, failure)
+        (self.factory)(
+            key,
+            sessions,
+            self.limits,
+            self.profile,
+            self.descriptor.settings,
+            failure,
+        )
     }
 }
 

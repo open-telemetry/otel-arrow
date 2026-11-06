@@ -72,6 +72,19 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    pub(super) fn work_coordinators_for(
+        &self,
+        key: &PipelineKey,
+    ) -> Option<Arc<work_coordinator::PipelineCoordinators>> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .logical_pipelines
+            .get(key)
+            .and_then(|deployment| deployment.work_coordinators.get())
+            .and_then(|result| result.as_ref().ok())
+            .cloned()
+    }
+
     fn quiesce_work_coordinators(&self, key: Option<&PipelineKey>) {
         let deployments: Vec<_> = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -172,6 +185,18 @@ impl<
             .as_ref()
             .map_err(|error| Error::PipelineRuntimeError {
                 source: Box::new(io::Error::other(error.clone())),
+            })?;
+        coordinators
+            .ensure_instance(
+                otel_arrow_dfe_engine::work_coordinator::ParticipantSpec {
+                    core_id,
+                    generation: deployment_generation,
+                },
+                deployment.work_coordinator_revisions.get(),
+                Instant::now() + Duration::from_secs(30),
+            )
+            .map_err(|message| Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(message)),
             })?;
         let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
@@ -400,6 +425,20 @@ impl<
         pipeline_key: DeployedPipelineKey,
         exit: RuntimeInstanceExit,
     ) {
+        let key = PipelineKey::new(
+            pipeline_key.pipeline_group_id.clone(),
+            pipeline_key.pipeline_id.clone(),
+        );
+        let cleanup = self.work_coordinators_for(&key).is_some_and(|hosts| {
+            hosts.confirm_exit(otel_arrow_dfe_engine::work_coordinator::ParticipantSpec {
+                core_id: pipeline_key.core_id,
+                generation: pipeline_key.deployment_generation,
+            })
+        });
+        let mut exit = exit;
+        if let RuntimeInstanceExit::Error(error) = &mut exit {
+            error.coordinator_cleanup_proven = cleanup;
+        }
         match &exit {
             RuntimeInstanceExit::Success => {
                 self.engine_event_reporter
@@ -591,7 +630,7 @@ impl<
         if !self
             .pipeline_factory
             .work_coordinator_declarations(&current_deployment.resolved.pipeline)
-            .is_ok_and(|declarations| declarations.is_empty())
+            .is_ok_and(|declarations| declarations.is_empty() || declarations.iter().all(|(_, declaration)| declaration.profile == otel_arrow_dfe_engine::work_coordinator::CapabilityProfile::Cooperative))
         {
             if let Some(Ok(hosts)) = current_deployment.work_coordinators.get() {
                 hosts.bindings.stop();
@@ -695,6 +734,21 @@ impl<
             (worker_id, restart_count)
         };
 
+        let coordinated = self
+            .work_coordinators_for(&pipeline_key)
+            .is_some_and(|hosts| hosts.is_cooperative());
+        if coordinated && !error.coordinator_cleanup_proven {
+            self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
+            self.fail_runtime_recovery(
+                &pipeline_key,
+                failed_key.core_id,
+                failed_key.deployment_generation,
+                restart_count,
+                policy.max_restarts,
+                format!("coordinator worker cleanup is unproven: {}", error.message),
+            );
+            return;
+        }
         if !policy.enabled {
             self.clear_runtime_recovery_worker(&pipeline_key, failed_key.core_id, worker_id);
             self.fail_runtime_recovery(
@@ -1462,18 +1516,27 @@ impl<
             deployed_key.pipeline_id.clone(),
         );
         loop {
-            if self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .runtime_instances
-                .get(deployed_key)
-                .is_some_and(|instance| {
-                    instance
-                        .startup_ready
-                        .load(std::sync::atomic::Ordering::Acquire)
-                })
-            {
+            let ready = {
+                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                state
+                    .runtime_instances
+                    .get(deployed_key)
+                    .is_some_and(|instance| {
+                        instance
+                            .startup_ready
+                            .load(std::sync::atomic::Ordering::Acquire)
+                    })
+            };
+            if ready {
+                if let Some(hosts) = self.work_coordinators_for(&pipeline_key) {
+                    hosts.activate(
+                        otel_arrow_dfe_engine::work_coordinator::ParticipantSpec {
+                            core_id: deployed_key.core_id,
+                            generation: deployed_key.deployment_generation,
+                        },
+                        deadline,
+                    )?;
+                }
                 return Ok(());
             }
 
@@ -1588,10 +1651,16 @@ impl<
             })?
         };
 
-        self.quiesce_work_coordinators(Some(&PipelineKey::new(
+        let logical_key = PipelineKey::new(
             deployed_key.pipeline_group_id.clone(),
             deployed_key.pipeline_id.clone(),
-        )));
+        );
+        if self
+            .work_coordinators_for(&logical_key)
+            .is_some_and(|hosts| !hosts.is_cooperative())
+        {
+            self.quiesce_work_coordinators(Some(&logical_key));
+        }
         if let Err(err) = sender.try_send_shutdown(drain_deadline, reason.to_owned()) {
             return match self.instance_exit(deployed_key) {
                 Some(RuntimeInstanceExit::Success) => Ok(()),
@@ -1698,6 +1767,23 @@ impl<
         reason: &str,
     ) -> Result<(), String> {
         let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        let key = PipelineKey::new(
+            deployed_key.pipeline_group_id.clone(),
+            deployed_key.pipeline_id.clone(),
+        );
+        let global_or_pipeline_shutdown = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.global_shutdown_requested || state.active_shutdowns.contains_key(&key)
+        };
+        if !global_or_pipeline_shutdown && let Some(hosts) = self.work_coordinators_for(&key) {
+            hosts.retire(
+                otel_arrow_dfe_engine::work_coordinator::ParticipantSpec {
+                    core_id: deployed_key.core_id,
+                    generation: deployed_key.deployment_generation,
+                },
+                drain_deadline,
+            )?;
+        }
         self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)?;
         self.wait_for_instance_exit(
             deployed_key,

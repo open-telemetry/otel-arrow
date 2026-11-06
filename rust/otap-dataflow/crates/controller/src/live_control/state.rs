@@ -104,6 +104,7 @@ pub(crate) struct RuntimeInstanceError {
     pub(super) error_kind: String,
     pub(super) message: String,
     pub(super) detail: Option<String>,
+    pub(super) coordinator_cleanup_proven: bool,
 }
 
 impl RuntimeInstanceError {
@@ -113,6 +114,7 @@ impl RuntimeInstanceError {
             error_kind: "runtime".into(),
             message,
             detail: None,
+            coordinator_cleanup_proven: false,
         }
     }
 
@@ -122,6 +124,7 @@ impl RuntimeInstanceError {
             error_kind: "panic".into(),
             message: report.summary_message(),
             detail: Some(report.detail_message()),
+            coordinator_cleanup_proven: false,
         }
     }
 
@@ -496,6 +499,8 @@ pub(crate) struct LogicalPipelineDeployment {
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
     pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    pub(super) work_coordinator_revisions:
+        Arc<std::sync::OnceLock<work_coordinator::CoordinatorRevisions>>,
     pub(super) work_coordinators:
         Arc<std::sync::OnceLock<Result<Arc<work_coordinator::PipelineCoordinators>, String>>>,
 }
@@ -516,6 +521,7 @@ impl LogicalPipelineDeployment {
             placement_generation: listener_group_snapshot.generation,
             listener_group_snapshot,
             work_coordinators: Arc::default(),
+            work_coordinator_revisions: Arc::default(),
         }
     }
 

@@ -996,7 +996,12 @@ impl<
                     || active.has_foreign_active_generations
                     || !current.resolved.runtime_matches(&resolved_pipeline)
                 {
-                    return Err(ControlPlaneError::InvalidRequest { message: "Basic work coordination requires stop/delete and create for configuration or fleet changes".into() });
+                    let _ = work_coordinator::validate_update(
+                        self.pipeline_factory,
+                        &current.resolved.pipeline,
+                        &resolved_pipeline.pipeline,
+                    )
+                    .map_err(|message| ControlPlaneError::InvalidRequest { message })?;
                 }
             }
         }
@@ -1155,12 +1160,30 @@ impl<
             target_listener_group_snapshot,
         );
 
-        if matches!(action, RolloutAction::NoOp) {
+        if matches!(action, RolloutAction::NoOp)
+            || current_deployment.as_ref().is_some_and(|current| {
+                work_coordinator::validate_update(
+                    self.pipeline_factory,
+                    &current.resolved.pipeline,
+                    &target_deployment.resolved.pipeline,
+                )
+                .is_ok_and(|coordinated| coordinated)
+            })
+        {
             target_deployment.work_coordinators = Arc::clone(
                 &current_deployment
                     .as_ref()
                     .expect("no-op deployment")
                     .work_coordinators,
+            );
+        }
+
+        if matches!(action, RolloutAction::NoOp) {
+            target_deployment.work_coordinator_revisions = Arc::clone(
+                &current_deployment
+                    .as_ref()
+                    .expect("no-op deployment")
+                    .work_coordinator_revisions,
             );
         }
 
@@ -1435,6 +1458,9 @@ impl<
             state
                 .runtime_recoveries
                 .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
+        }
+        if let Some(Ok(hosts)) = plan.target_deployment.work_coordinators.get() {
+            hosts.mark_decision();
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),

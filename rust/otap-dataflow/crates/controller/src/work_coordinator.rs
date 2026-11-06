@@ -7,12 +7,20 @@ use crate::error::Error;
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
 use otel_arrow_dfe_engine::{
     PipelineFactory,
-    work_coordinator::{CoordinatorBindings, CoordinatorKey, ParticipantSession},
+    work_coordinator::{
+        CapabilityProfile, CoordinatorBinding, CoordinatorBindings, CoordinatorDescriptor,
+        CoordinatorKey, OperationId, ParticipantSession, ParticipantSpec, ReconciliationOutcome,
+        ReconciliationReceipt,
+    },
 };
 use otel_arrow_dfe_telemetry::TracingSetup;
 use std::{
+    collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 mod supervision;
@@ -24,6 +32,58 @@ pub(crate) struct PipelineCoordinators {
     pub(crate) bindings: Arc<CoordinatorBindings>,
     hosts: Mutex<HostState>,
     _supervisor: Arc<HostSupervisor>,
+    descriptors: Mutex<BTreeMap<BindingKey, CoordinatorDescriptor>>,
+    pending: Mutex<Option<Arc<PendingReconciliation>>>,
+}
+
+type BindingKey = (otel_arrow_dfe_config::NodeId, String);
+pub(crate) type CoordinatorRevisions = BTreeMap<BindingKey, u64>;
+struct PendingReconciliation {
+    operations: Mutex<Vec<(BindingKey, CoordinatorBinding, ReconciliationReceipt)>>,
+    descriptors: BTreeMap<BindingKey, CoordinatorDescriptor>,
+    decided: AtomicBool,
+    final_receipts: Mutex<Vec<ReconciliationReceipt>>,
+}
+
+fn descriptors<PData: 'static + Clone + fmt::Debug>(
+    factory: &PipelineFactory<PData>,
+    config: &PipelineConfig,
+) -> Result<BTreeMap<BindingKey, CoordinatorDescriptor>, String> {
+    factory
+        .work_coordinator_declarations(config)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(node, declaration)| {
+            let descriptor = declaration.descriptor().map_err(|e| e.to_string())?;
+            Ok(((node, declaration.role), descriptor))
+        })
+        .collect()
+}
+
+pub(crate) fn validate_update<PData: 'static + Clone + fmt::Debug>(
+    factory: &PipelineFactory<PData>,
+    current: &PipelineConfig,
+    target: &PipelineConfig,
+) -> Result<bool, String> {
+    let old = descriptors(factory, current)?;
+    let next = descriptors(factory, target)?;
+    if old.is_empty() && next.is_empty() {
+        return Ok(false);
+    }
+    if old.keys().ne(next.keys()) {
+        return Err("coordinator identities changed; restart required".into());
+    }
+    for (key, descriptor) in &old {
+        let old_node = &current.nodes()[&key.0];
+        let new_node = &target.nodes()[&key.0];
+        if old_node.kind() != new_node.kind() || old_node.r#type != new_node.r#type {
+            return Err("coordinator node provider changed; restart required".into());
+        }
+        descriptor
+            .validate_update(&next[key])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(true)
 }
 
 #[derive(Default)]
@@ -61,6 +121,7 @@ impl PipelineCoordinators {
         let declarations = factory
             .work_coordinator_declarations(config)
             .map_err(|e| e.to_string())?;
+        let metadata = descriptors(factory, config)?;
         let sessions: Vec<_> = cores
             .enumerate()
             .map(|(index, core_id)| ParticipantSession {
@@ -97,6 +158,8 @@ impl PipelineCoordinators {
                 failure: None,
             }),
             _supervisor: budget,
+            descriptors: Mutex::new(metadata),
+            pending: Mutex::new(None),
         };
         let result: Result<(), String> = (|| {
             for ((node, declaration), host) in declarations.into_iter().zip(hosts) {
@@ -132,6 +195,206 @@ impl PipelineCoordinators {
         owner.bindings = Arc::new(bindings);
         result?;
         Ok(Arc::new(owner))
+    }
+
+    pub(crate) fn is_cooperative(&self) -> bool {
+        let descriptors = self.descriptors.lock().unwrap_or_else(|e| e.into_inner());
+        !descriptors.is_empty()
+            && descriptors
+                .values()
+                .all(|descriptor| descriptor.profile == CapabilityProfile::Cooperative)
+    }
+
+    pub(crate) fn prepare<PData: 'static + Clone + fmt::Debug>(
+        &self,
+        factory: &PipelineFactory<PData>,
+        target: &PipelineConfig,
+        deadline: Instant,
+    ) -> Result<CoordinatorRevisions, String> {
+        let next = descriptors(factory, target)?;
+        let old = self
+            .descriptors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if old.keys().ne(next.keys()) {
+            return Err("coordinator identities changed; restart required".into());
+        }
+        for (key, descriptor) in &old {
+            descriptor
+                .validate_update(&next[key])
+                .map_err(|e| e.to_string())?;
+        }
+        if self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return Err("coordinator finalization or abort is still pending".into());
+        }
+        let pending = Arc::new(PendingReconciliation {
+            operations: Mutex::new(Vec::new()),
+            descriptors: next.clone(),
+            decided: AtomicBool::new(false),
+            final_receipts: Mutex::new(Vec::new()),
+        });
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&pending));
+        for (key, binding) in self.bindings.iter() {
+            let receipt = binding
+                .prepare_reconciliation(Arc::clone(&next[key].settings))
+                .map_err(|e| e.to_string())?;
+            pending
+                .operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((key.clone(), binding.clone(), receipt));
+        }
+        let operations = pending
+            .operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut revisions = CoordinatorRevisions::new();
+        for (key, _, receipt) in operations {
+            let result = receipt.wait_until(deadline).map_err(|e| e.to_string())?;
+            let ReconciliationOutcome::Prepared(revision) = result else {
+                return Err("unexpected coordinator preparation receipt".into());
+            };
+            let _ = revisions.insert(key, revision);
+        }
+        Ok(revisions)
+    }
+
+    pub(crate) fn ensure_instance(
+        &self,
+        spec: ParticipantSpec,
+        revisions: Option<&CoordinatorRevisions>,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        for (key, binding) in self.bindings.iter() {
+            if binding.profile() != CapabilityProfile::Cooperative
+                || binding.has_pending_instance(spec)
+            {
+                continue;
+            }
+            let revision = revisions
+                .and_then(|revisions| revisions.get(key).copied())
+                .unwrap_or(0);
+            let _ = binding
+                .register_instance(spec, revision)
+                .map_err(|e| e.to_string())?
+                .wait_until(deadline)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn activate(&self, spec: ParticipantSpec, deadline: Instant) -> Result<(), String> {
+        let mut receipts = Vec::new();
+        for (_, binding) in self.bindings.iter() {
+            if binding.profile() == CapabilityProfile::Cooperative {
+                receipts.push(binding.activate_instance(spec).map_err(|e| e.to_string())?);
+            }
+        }
+        for receipt in receipts {
+            let _ = receipt.wait_until(deadline).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retire(&self, spec: ParticipantSpec, deadline: Instant) -> Result<(), String> {
+        let mut receipts = Vec::new();
+        for (_, binding) in self.bindings.iter() {
+            if binding.profile() == CapabilityProfile::Cooperative {
+                receipts.push(binding.retire_instance(spec).map_err(|e| e.to_string())?);
+            }
+        }
+        for receipt in receipts {
+            let _ = receipt.wait_until(deadline).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn confirm_exit(&self, spec: ParticipantSpec) -> bool {
+        self.is_cooperative()
+            && self
+                .bindings
+                .iter()
+                .all(|(_, binding)| binding.confirm_instance_exit(spec))
+    }
+
+    pub(crate) fn mark_decision(&self) {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(pending) = pending {
+            pending.decided.store(true, Ordering::Release);
+            *self.descriptors.lock().unwrap_or_else(|e| e.into_inner()) =
+                pending.descriptors.clone();
+        }
+    }
+
+    pub(crate) fn finish(&self, commit: bool, deadline: Instant) -> Result<(), String> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        if !commit && pending.decided.load(Ordering::Acquire) {
+            return Err("controller already committed the coordinator revision".into());
+        }
+        let operations = pending
+            .operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let cached = pending
+            .final_receipts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let receipts = if commit && !cached.is_empty() {
+            cached
+        } else {
+            let mut receipts = Vec::new();
+            for (_, binding, prepared) in operations {
+                let operation: OperationId = prepared.operation();
+                receipts.push(
+                    if commit {
+                        binding.commit(operation)
+                    } else {
+                        binding.abort(operation)
+                    }
+                    .map_err(|e| e.to_string())?,
+                );
+            }
+            if commit {
+                *pending
+                    .final_receipts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = receipts.clone();
+            }
+            receipts
+        };
+        for receipt in receipts {
+            let _ = receipt.wait_until(deadline).map_err(|e| e.to_string())?;
+        }
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
+    }
+
+    pub(crate) fn committed(&self) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|pending| pending.decided.load(Ordering::Acquire))
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), Error> {
