@@ -39,6 +39,28 @@ The receiver automatically detects and parses the following message formats:
 | **CEF** | ArcSight Common Event Format for security events |
 | **CEF over Syslog** | CEF messages wrapped in RFC 3164 or RFC 5424 headers |
 
+This codec also provides `rfc3164`, `rfc5424`,
+`cef`, `cef_rfc3164`, and `cef_rfc5424`
+synthetic generation profiles for the
+[traffic generator](../../../../dev-nodes/src/receivers/traffic_generator/README.md#codec-owned-generation).
+These create internal `syslog-batch` payloads without network transport.
+CEF profiles cover raw CEF and both syslog wrappers, including escaped extension
+values. All profiles preserve the configured observed timestamp; raw CEF has
+no event timestamp.
+
+Trafficgen supplies current time per generated batch unless
+`codec.timestamp_unix_nano` fixes it explicitly. RFC 5424 event timestamps
+truncate to microseconds; observed timestamps retain nanoseconds. RFC 3164
+headers use UTC calendar fields without a timezone, so the decoder interprets
+their event timestamps in its local timezone.
+
+Profiles vary IPs, ports, users, and session IDs; syslog headers also vary
+hostnames, priorities, and process IDs. CEF profiles vary severity while retaining
+fixed vendor/product headers and an escaped `msg` extension containing
+`event=<sequence> request completed`. Decoding stores headers in `cef.*`
+attributes and extensions under their original names, such as `src` and `msg`.
+Generation permits at most 8,192 messages and 2 MiB per batch, including framing.
+
 ## Configuration
 
 ```yaml
