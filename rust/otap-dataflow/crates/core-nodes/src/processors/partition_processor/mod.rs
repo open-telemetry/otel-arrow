@@ -309,17 +309,17 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (delivery, mut otap_batch) =
-                    match effect_handler.prepare_otap_work(pdata).await {
-                        Ok(prepared) => prepared,
-                        Err(error) => {
-                            let (error, pdata) = error.into_parts();
-                            effect_handler
-                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                                .await?;
-                            return Ok(());
-                        }
-                    };
+                let (delivery, mut otap_batch) = match effect_handler.prepare_otap_work(pdata).await
+                {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
                 let signal_type = delivery.signal_type();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
@@ -412,7 +412,6 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                 return Ok(());
                             }
                         };
-                        let outbound_context = delivery.context().clone_detached();
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
@@ -460,10 +459,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                 }
                             })?;
 
-                            let pdata_context =
-                                outbound_context.clone_detached().with_metadata(metadata);
                             let outbound_batch_num_items = batch.num_items();
-                            let mut pdata = OtapPdata::new(pdata_context, batch.into());
+                            let mut pdata = OtapPdata::new(metadata.into(), batch.into());
                             if let Some(flow_metrics_counter) = flow_metrics_counter {
                                 pdata.start_flow_metric();
 
