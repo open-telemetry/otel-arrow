@@ -54,7 +54,7 @@ use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
 };
 use otel_arrow_dfe_config::context::transport_policy::{
-    CompiledHeaderCapturePolicy, HeaderCapturePolicy, TransportHeadersPolicy,
+    HeaderCapturePolicy, TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
@@ -956,35 +956,6 @@ impl CompiledContextBindings {
         Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
     }
 
-    /// Returns the node's compiled header capture policy.
-    pub(crate) fn header_capture_policy(
-        &self,
-        pipeline: &PipelineKey,
-        node: &ConfigNodeId,
-    ) -> Option<&CompiledHeaderCapturePolicy> {
-        self.node_bindings(pipeline, node)?.header_capture_policy()
-    }
-
-    /// Returns the node's header propagation policy.
-    pub(crate) fn header_propagation_policy(
-        &self,
-        pipeline: &PipelineKey,
-        node: &ConfigNodeId,
-    ) -> Option<&CompiledHeaderPropagationPolicy> {
-        self.node_bindings(pipeline, node)?
-            .header_propagation_policy()
-    }
-
-    /// Returns the node's authorized identity claim projection policy.
-    pub(crate) fn authorized_identity_policy(
-        &self,
-        pipeline: &PipelineKey,
-        node: &ConfigNodeId,
-    ) -> Option<&AuthorizedIdentityPolicy> {
-        self.node_bindings(pipeline, node)?
-            .authorized_identity_policy()
-    }
-
     /// Conservatively checks one pipeline's contribution to live-update context compatibility.
     ///
     /// Compares nodes that have component- or engine-owned context declarations.
@@ -1628,10 +1599,10 @@ groups:
             .expect("test bindings compile")
     }
 
-    /// Scenario: compiled policies are accessed through a node binding and a cloned compiler snapshot.
-    /// Guarantees: existing policy accessors borrow the same stored policies and snapshot clones share them.
+    /// Scenario: a compiler snapshot containing node policies is cloned.
+    /// Guarantees: snapshot clones share the same node bindings instead of copying their policies.
     #[test]
-    fn node_bindings_share_existing_policies() {
+    fn compiler_snapshot_clones_share_node_bindings() {
         let compiled = compiled_bindings(
             [
                 ContextDeclaration::HeaderCapture {
@@ -1661,34 +1632,6 @@ groups:
             cloned
                 .node_bindings(&pipeline, &node)
                 .expect("cloned bindings"),
-        ));
-        assert!(std::ptr::eq(
-            compiled
-                .header_capture_policy(&pipeline, &node)
-                .expect("capture accessor"),
-            bindings
-                .arrival()
-                .expect("arrival")
-                .header_capture
-                .as_ref()
-                .expect("stored capture policy"),
-        ));
-        assert!(std::ptr::eq(
-            compiled
-                .header_propagation_policy(&pipeline, &node)
-                .expect("propagation accessor"),
-            &bindings.sink().expect("sink").policy,
-        ));
-        assert!(std::ptr::eq(
-            compiled
-                .authorized_identity_policy(&pipeline, &node)
-                .expect("identity accessor"),
-            bindings
-                .arrival()
-                .expect("arrival")
-                .authorized_identity_capture
-                .as_ref()
-                .expect("stored identity policy"),
         ));
     }
 
@@ -1754,8 +1697,14 @@ groups:
         let key = pipeline("group", "pipeline");
         let node = ConfigNodeId::from("node");
         assert_eq!(
-            current.header_capture_policy(&key, &node),
-            candidate.header_capture_policy(&key, &node)
+            current
+                .node_bindings(&key, &node)
+                .expect("current node bindings")
+                .header_capture_policy(),
+            candidate
+                .node_bindings(&key, &node)
+                .expect("candidate node bindings")
+                .header_capture_policy()
         );
         assert!(!current.pipeline_context_compatible(&candidate, &key));
         assert!(!candidate.pipeline_context_compatible(&current, &key));
@@ -2734,7 +2683,9 @@ groups:
             .collect(),
         );
         let capture = bindings
-            .header_capture_policy(&pipeline("group", "pipeline"), &ConfigNodeId::from("node"))
+            .node_bindings(&pipeline("group", "pipeline"), &ConfigNodeId::from("node"))
+            .expect("node bindings")
+            .header_capture_policy()
             .expect("compiled capture policy");
         let mut headers = TransportHeaders::new();
 
@@ -2973,10 +2924,11 @@ groups:
             .bind(&ContextMaterializationPlan::default())
             .expect("prepared policy binds");
         assert_eq!(
-            compiled.header_propagation_policy(
-                &pipeline("group", "pipeline"),
-                &ConfigNodeId::from("node")
-            ),
+            compiled
+                .node_bindings(&pipeline("group", "pipeline"), &ConfigNodeId::from("node"))
+                .expect("node bindings")
+                .sink()
+                .map(SinkBinding::policy),
             Some(&expected),
         );
     }
@@ -3164,8 +3116,11 @@ default:
         let exporter = ConfigNodeId::from("exporter");
         let policy = installed
             .bindings
-            .header_propagation_policy(&pipeline, &exporter)
-            .expect("compiled exporter propagation policy");
+            .node_bindings(&pipeline, &exporter)
+            .expect("exporter bindings")
+            .sink()
+            .expect("compiled exporter sink")
+            .policy();
         assert!(!policy.materialization_plan().is_empty());
         assert_eq!(
             installed.bindings.context_materialization_plan(&pipeline),
@@ -3281,14 +3236,7 @@ default:
                 .and_then(|nodes| nodes.get(&ConfigNodeId::from("node")))
                 .expect("compiled node binding");
             assert!(node.is_empty());
-            assert!(
-                compiled
-                    .authorized_identity_policy(
-                        &pipeline("group", "pipeline"),
-                        &ConfigNodeId::from("node"),
-                    )
-                    .is_none()
-            );
+            assert!(node.bindings.authorized_identity_policy().is_none());
         }
     }
 
@@ -3320,7 +3268,10 @@ default:
         let pipeline = pipeline("group", "pipeline");
 
         assert_eq!(
-            compiled.authorized_identity_policy(&pipeline, &ConfigNodeId::from("node")),
+            compiled
+                .node_bindings(&pipeline, &ConfigNodeId::from("node"))
+                .expect("node bindings")
+                .authorized_identity_policy(),
             Some(&policy),
         );
         assert!(!compiled.pipeline_context_compatible(&changed, &pipeline));
@@ -3393,7 +3344,11 @@ default:
             .bind(&ContextMaterializationPlan::default())
             .expect("prepared policy binds");
         assert_eq!(
-            bindings.header_propagation_policy(&pipeline, &node),
+            bindings
+                .node_bindings(&pipeline, &node)
+                .expect("node bindings")
+                .sink()
+                .map(SinkBinding::policy),
             Some(&expected)
         );
     }
