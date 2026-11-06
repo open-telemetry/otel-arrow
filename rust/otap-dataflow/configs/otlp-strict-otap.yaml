@@ -1,0 +1,33 @@
+# Named codec configuration with validation when OTLP is converted to OTAP.
+# Strict decoding adds CPU and allocation cost; it is not an admission barrier.
+version: otel_dataflow/v1
+codecs:
+  configurations:
+    checked_otlp:
+      implementation: otel.otlp
+      decode:
+        validation: strict
+groups:
+  default:
+    pipelines:
+      main:
+        # Bind only this pipeline; observability keeps its default codec settings.
+        codecs:
+          bindings:
+            otlp-bytes:
+              configuration: checked_otlp
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          exporter:
+            type: exporter:otap
+            config:
+              # Start an OTAP backend on a different port from the OTLP input.
+              grpc_endpoint: "http://127.0.0.1:4319"
+        connections:
+          - from: receiver
+            to: exporter

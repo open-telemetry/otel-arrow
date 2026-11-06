@@ -434,7 +434,8 @@ mod tests {
                 let selected = bindings
                     .value(&selector)
                     .expect("declared presence read")
-                    .read(&metadata);
+                    .read(&metadata)
+                    .expect("read succeeds");
                 let present = selected.is_some();
                 if let Some(selected) = selected {
                     selected.visit_members(|member| assert_eq!(member.values().count(), 0));
@@ -463,6 +464,7 @@ mod tests {
                 .value(&selector)
                 .expect("declared value read")
                 .read(&metadata)
+                .expect("read succeeds")
             {
                 selected.visit_members(|member| {
                     matches_value |= member.values().any(|value| value.bytes == b"acme");

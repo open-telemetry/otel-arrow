@@ -45,6 +45,7 @@ use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
+use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
 use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
@@ -1460,7 +1461,11 @@ impl<
             .transpose()?;
 
         let num_pipeline_groups = engine_config.groups.len();
-        let resolved_config = engine_config.resolve();
+        let resolved_config =
+            startup::resolve_and_validate_engine_components(&engine_config, self.pipeline_factory)
+                .map_err(|source| Error::PipelineRuntimeError {
+                    source: Box::new(std::io::Error::other(source.to_string())),
+                })?;
         let context = self
             .pipeline_factory
             .compile_initial_context(&resolved_config)
@@ -2769,6 +2774,7 @@ impl<
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        codecs_config: ResolvedCodecsConfig,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
@@ -2829,6 +2835,7 @@ impl<
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
+                    codecs_config,
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,
@@ -4300,6 +4307,7 @@ groups: {{}}
                 },
                 ..Default::default()
             },
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         }
     }

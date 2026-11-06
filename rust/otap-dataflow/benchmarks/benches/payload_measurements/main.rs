@@ -384,7 +384,8 @@ fn direct_codec_paths(c: &mut Criterion) {
         let strict_service = CodecServiceBuilder::from_global_registry()
             .expect("valid codec registry")
             .with_decode_policy(DecodePolicy::new(DecodeValidation::Strict))
-            .build();
+            .build()
+            .expect("valid strict benchmark codec configuration");
         let codec = service
             .registry()
             .resolve_decoder(&PdataEncoding::OTLP, SignalType::Logs)

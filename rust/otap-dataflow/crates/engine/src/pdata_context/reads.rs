@@ -7,7 +7,7 @@ use super::metadata::{
     AuthorizedClaimValue, AuthorizedIdentityEntriesIter, AuthorizedIdentityEntry,
 };
 use super::{
-    ContextDomain, ContextEntrySelector, ContextEntryTake, ContextEntryTarget,
+    ContextDomain, ContextEntrySelector, ContextEntryTake, ContextEntryTarget, ContextError,
     ContextMaterializationPlan, ContextNameMatching, ContextProjection, ContextValueCardinality,
     ContextValueKind, MaterializedContextProjection, MaterializedContextValue, Metadata,
 };
@@ -103,11 +103,14 @@ impl ValueRead {
     /// member yields at most the number of values the selector's `take` requests.
     /// Identity `All` reads visit every matching claim in capture-policy order;
     /// `Exists` and `First` stop at the first matching claim.
-    #[must_use]
-    pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Option<Read<'a>> {
+    ///
+    /// May fail with [`ContextError::ContextMismatch`].
+    pub fn read<'a>(&'a self, metadata: &'a Metadata) -> Result<Option<Read<'a>>, ContextError> {
         let backend = match &self.backend {
             ValueReadBackend::TransportHeader { name, matching } => {
-                let headers = metadata.transport_headers()?;
+                let Some(headers) = metadata.transport_headers() else {
+                    return Ok(None);
+                };
                 let name = name.as_str();
                 let mut remaining = match matching {
                     ContextNameMatching::Exact => HeaderMatches::Exact(headers.find_by_name(name)),
@@ -118,30 +121,27 @@ impl ValueRead {
                         }
                     }
                 };
-                ReadBackend::Headers {
-                    first: remaining.next()?,
-                    remaining,
-                }
+                remaining
+                    .next()
+                    .map(|first| ReadBackend::Headers { first, remaining })
             }
             ValueReadBackend::AuthorizedIdentity { name, matching } => {
-                let mut remaining = IdentityMatches::new(
-                    metadata.authorized_identity_entries()?.iter(),
-                    name.as_str(),
-                    *matching,
-                );
-                ReadBackend::AuthorizedIdentity {
-                    first: remaining.next()?,
-                    remaining,
-                }
+                let Some(entries) = metadata.authorized_identity_entries() else {
+                    return Ok(None);
+                };
+                let mut remaining = IdentityMatches::new(entries.iter(), name.as_str(), *matching);
+                remaining
+                    .next()
+                    .map(|first| ReadBackend::AuthorizedIdentity { first, remaining })
             }
-            ValueReadBackend::Composite { plan, projection } => {
-                ReadBackend::Composite(metadata.resolve_materialized_context(plan, projection)?)
-            }
+            ValueReadBackend::Composite { plan, projection } => metadata
+                .resolve_materialized_context(plan, projection)?
+                .map(ReadBackend::Composite),
         };
-        Some(Read {
+        Ok(backend.map(|backend| Read {
             backend,
             take: self.selector.take,
-        })
+        }))
     }
 }
 
@@ -425,6 +425,7 @@ mod tests {
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::node::NodeKind;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -454,7 +455,7 @@ mod tests {
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(declarations, composites)
+                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, composites)
                     .expect("valid declarations"),
             )]),
         )]);
@@ -516,9 +517,13 @@ mod tests {
         let expected: [&[&[u8]]; 3] = [&[], &[b"first"], &[b"first", b"second"]];
         for (take, expected) in takes.into_iter().zip(expected) {
             let read = bindings.value(&selector(take)).expect("declared read");
-            assert!(read.read(&Metadata::default()).is_none());
-            assert!(read.read(&metadata).is_some());
-            let bytes = values(read.read(&metadata))
+            assert!(
+                read.read(&Metadata::default())
+                    .expect("read succeeds")
+                    .is_none()
+            );
+            assert!(read.read(&metadata).expect("read succeeds").is_some());
+            let bytes = values(read.read(&metadata).expect("read succeeds"))
                 .into_iter()
                 .map(|value| value.bytes)
                 .collect::<Vec<_>>();
@@ -592,19 +597,26 @@ mod tests {
         for roles in [vec![], vec!["a".to_owned(), "b".to_owned()]] {
             let identity =
                 AuthorizedIdentity::new().with_claim("roles", ClaimValue::Many(roles.clone()));
-            let (metadata, _) = arrival.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
-                identity: Some(&identity),
-                peer: None,
-            });
-            let (mismatch, _) = arrival.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
-                identity: Some(&identity),
-                peer: None,
-            });
+            let (metadata, _) = arrival
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
+            let (mismatch, _) = arrival
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
             for selector in &selectors {
                 let read = bindings.value(selector).expect("declared read");
-                let selected = read.read(&metadata).expect("present even for empty claims");
+                let selected = read
+                    .read(&metadata)
+                    .expect("read succeeds")
+                    .expect("present even for empty claims");
                 selected.visit_members(|member| {
                     assert_eq!(member.cardinality, ContextValueCardinality::Many);
                     let mut actual = member.values();
@@ -628,9 +640,13 @@ mod tests {
                     assert!(actual.next().is_none());
                     assert!(actual.next().is_none());
                 });
-                assert!(read.read(&Metadata::default()).is_none());
+                assert!(
+                    read.read(&Metadata::default())
+                        .expect("read succeeds")
+                        .is_none()
+                );
                 assert_eq!(
-                    read.read(&mismatch).is_some(),
+                    read.read(&mismatch).expect("read succeeds").is_some(),
                     matches!(selector.target, ContextEntryTarget::Primitive { .. }),
                 );
             }
@@ -687,9 +703,19 @@ mod tests {
                     .map(Into::into)
                     .collect(),
             };
-            assert_eq!(values(read.read(&metadata)), expected);
-            assert_eq!(read.read(&metadata).is_some(), !expected.is_empty());
-            assert!(read.read(&Metadata::default()).is_none());
+            assert_eq!(
+                values(read.read(&metadata).expect("read succeeds")),
+                expected
+            );
+            assert_eq!(
+                read.read(&metadata).expect("read succeeds").is_some(),
+                !expected.is_empty()
+            );
+            assert!(
+                read.read(&Metadata::default())
+                    .expect("read succeeds")
+                    .is_none()
+            );
         }
     }
 
@@ -718,15 +744,19 @@ mod tests {
             .collect(),
             &[],
         );
-        let (mut metadata, _) = bindings.arrival().expect("arrival").form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[
-                ("x-tenant", b"first"),
-                ("x-token-bin", b"\xff\0"),
-                ("x-tenant", b"last"),
-            ]),
-            identity: None,
-            peer: None,
-        });
+        let (mut metadata, _) = bindings
+            .arrival()
+            .expect("arrival")
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[
+                    ("x-tenant", b"first"),
+                    ("x-token-bin", b"\xff\0"),
+                    ("x-tenant", b"last"),
+                ]),
+                identity: None,
+                peer: None,
+            })
+            .expect("arrival forms");
         let mut headers = metadata.take_transport_headers().expect("captured headers");
         headers.push(TransportHeader::text(name("partition"), b"produced"));
         metadata.set_transport_headers(headers);
@@ -818,7 +848,7 @@ mod tests {
             peer: None,
         };
         let binding = bindings.arrival().expect("arrival");
-        let (metadata, _) = binding.form(&arrival);
+        let (metadata, _) = binding.form(&arrival).expect("arrival forms");
         for selector in &selectors {
             let read = bindings.value(selector).expect("declared read");
             let projection = match &selector.target {
@@ -835,6 +865,7 @@ mod tests {
             let mut expected = Vec::new();
             metadata
                 .resolve_materialized_context(&binding.materialization, &projection)
+                .expect("legacy read matches")
                 .expect("legacy read")
                 .visit_members(|member| {
                     expected.push((
@@ -855,6 +886,7 @@ mod tests {
                 });
             let mut actual = Vec::new();
             read.read(&metadata)
+                .expect("read succeeds")
                 .expect("adapter read")
                 .visit_members(|member| {
                     actual.push((
@@ -877,30 +909,36 @@ mod tests {
                 );
             }
 
-            let (missing, _) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[
-                    ("x-tenant", b"acme"),
-                    ("environment", b"production"),
-                ]),
-                identity: None,
-                peer: None,
-            });
-            assert!(read.read(&missing).is_none());
-            let (missing, _) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[]),
-                identity: Some(&identity),
-                peer: None,
-            });
-            assert!(read.read(&missing).is_none());
-            let (mismatch, _) = binding.form(&Arrival {
-                headers: ArrivalHeaders::Pairs(&[
-                    ("x-tenant", b"acme"),
-                    ("environment", b"development"),
-                ]),
-                identity: Some(&identity),
-                peer: None,
-            });
-            assert!(read.read(&mismatch).is_none());
+            let (missing, _) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[
+                        ("x-tenant", b"acme"),
+                        ("environment", b"production"),
+                    ]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
+            assert!(read.read(&missing).expect("read succeeds").is_none());
+            let (missing, _) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
+            assert!(read.read(&missing).expect("read succeeds").is_none());
+            let (mismatch, _) = binding
+                .form(&Arrival {
+                    headers: ArrivalHeaders::Pairs(&[
+                        ("x-tenant", b"acme"),
+                        ("environment", b"development"),
+                    ]),
+                    identity: Some(&identity),
+                    peer: None,
+                })
+                .expect("arrival forms");
+            assert!(read.read(&mismatch).expect("read succeeds").is_none());
 
             let mut changed = composite.clone();
             changed.definition.0.push(ContextEntryPart::Constant {
@@ -911,7 +949,10 @@ mod tests {
                 ContextMaterializationPlan::compile(&[changed]).expect("changed materialization");
             let changed_read =
                 ValueRead::compile(read.selector(), &changed_plan).expect("changed read");
-            assert!(changed_read.read(&metadata).is_none());
+            assert!(matches!(
+                changed_read.read(&metadata),
+                Err(ContextError::ContextMismatch)
+            ));
         }
     }
 
@@ -997,21 +1038,38 @@ mod tests {
                 .expect("declared read")
         };
         let exact = read("subject", ContextNameMatching::Exact);
-        assert_eq!(members(exact.read(&metadata)), subject);
         assert_eq!(
-            members(read("Subject", ContextNameMatching::AsciiCaseInsensitive).read(&metadata)),
+            members(exact.read(&metadata).expect("read succeeds")),
+            subject
+        );
+        assert_eq!(
+            members(
+                read("Subject", ContextNameMatching::AsciiCaseInsensitive)
+                    .read(&metadata)
+                    .expect("read succeeds")
+            ),
             subject
         );
         assert!(
             read("Subject", ContextNameMatching::Exact)
                 .read(&metadata)
+                .expect("read succeeds")
                 .is_none()
         );
         assert_eq!(
-            members(read("roles", ContextNameMatching::Exact).read(&metadata)),
+            members(
+                read("roles", ContextNameMatching::Exact)
+                    .read(&metadata)
+                    .expect("read succeeds")
+            ),
             vec![("roles", ContextValueCardinality::Many, vec![])]
         );
-        assert!(exact.read(&Metadata::default()).is_none());
+        assert!(
+            exact
+                .read(&Metadata::default())
+                .expect("read succeeds")
+                .is_none()
+        );
 
         assert_eq!(
             bindings
@@ -1089,6 +1147,7 @@ mod tests {
                         .value(&selector(matching, take))
                         .expect("declared read")
                         .read(&metadata)
+                        .expect("read succeeds")
                         .expect("present even when the first claim is empty")
                         .visit_members(|member| {
                             let member_name = member.name;
@@ -1180,17 +1239,22 @@ mod tests {
         );
         let secret = "private-subject";
         let identity = AuthorizedIdentity::new().with_subject(secret);
-        let (metadata, _) = bindings.arrival().expect("arrival").form(&Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: Some(&identity),
-            peer: None,
-        });
+        let (metadata, _) = bindings
+            .arrival()
+            .expect("arrival")
+            .form(&Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: Some(&identity),
+                peer: None,
+            })
+            .expect("arrival forms");
         for (selector, member_name) in selectors.iter().zip(["subject", "account"]) {
             let selected = values(
                 bindings
                     .value(selector)
                     .expect("declared read")
-                    .read(&metadata),
+                    .read(&metadata)
+                    .expect("read succeeds"),
             );
             assert_eq!(selected.len(), 1);
             assert_eq!(selected[0].bytes, secret.as_bytes());
