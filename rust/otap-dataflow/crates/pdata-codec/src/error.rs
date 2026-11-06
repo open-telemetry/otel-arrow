@@ -37,11 +37,31 @@ pub enum RegistryError {
         /// Validation failure.
         reason: &'static str,
     },
-    /// More than one extension registered the same identity.
-    #[error("duplicate pdata encoding registration `{encoding}`")]
-    Duplicate {
+    /// More than one implementation declares itself the default for an encoding.
+    #[error("multiple default pdata implementations for `{encoding}`")]
+    DuplicateDefault {
         /// Duplicated identity.
         encoding: PdataEncoding,
+    },
+    /// An implementation identifier is invalid or registered more than once.
+    #[error("invalid pdata implementation `{implementation}`: {reason}")]
+    InvalidImplementation {
+        /// Registered implementation ID.
+        implementation: String,
+        /// Registration error, without configuration values.
+        reason: &'static str,
+    },
+    /// Several implementations exist without a unique declared default.
+    #[error("pdata encoding `{encoding}` requires an explicit implementation selection")]
+    AmbiguousImplementation {
+        /// Encoding requiring selection.
+        encoding: PdataEncoding,
+    },
+    /// No linked implementation has the requested ID.
+    #[error("no pdata implementation registered as `{implementation}`")]
+    ImplementationNotFound {
+        /// Missing implementation ID.
+        implementation: String,
     },
     /// A registration cannot perform any operation.
     #[error("pdata encoding `{encoding}` has no decoder or encoder")]
@@ -82,6 +102,12 @@ pub enum RegistryError {
 /// Codec resolution or execution failure.
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
+    /// Invalid startup configuration, without option values or telemetry.
+    #[error("invalid pdata codec configuration: {reason}")]
+    Configuration {
+        /// Configuration path and validation failure.
+        reason: String,
+    },
     /// Registry validation or lookup failed.
     #[error(transparent)]
     Registry(#[from] RegistryError),
@@ -159,6 +185,13 @@ pub enum CodecError {
 }
 
 impl CodecError {
+    /// Reports a startup configuration error. Do not include option values.
+    pub fn configuration(reason: impl Into<String>) -> Self {
+        Self::Configuration {
+            reason: reason.into(),
+        }
+    }
+
     /// Creates a representation-independent batching error.
     pub fn invalid_batch(reason: impl Into<String>) -> Self {
         Self::InvalidBatch {

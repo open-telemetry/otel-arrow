@@ -286,7 +286,7 @@ mod tests {
             ]),
         ] {
             let mut values = Vec::new();
-            if let Some(selected) = read.read(context.metadata()) {
+            if let Some(selected) = read.read(context.metadata()).unwrap() {
                 selected.visit_members(|member| values.extend(member.values()));
             }
             assert_eq!(
