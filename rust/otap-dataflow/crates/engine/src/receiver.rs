@@ -1126,6 +1126,7 @@ connections:
                 policies,
                 pipeline,
                 topic_scope: TopicScope::GLOBAL,
+                codecs: Default::default(),
                 role: ResolvedPipelineRole::Regular,
             }],
         };

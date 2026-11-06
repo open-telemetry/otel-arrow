@@ -35,6 +35,7 @@ use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otel_arrow_dfe_config::MetricLevel;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
 use otel_arrow_dfe_config::{
     PipelineGroupId, PipelineId, PortName,
     engine::INTERNAL_TELEMETRY_RECEIVER_URN,
@@ -812,6 +813,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     }
 
     /// Builds a runtime pipeline from the given pipeline configuration.
+    /// `codecs_config` must be the effective snapshot from configuration resolution,
+    /// including inherited bindings; this method does not resolve parent scopes.
     ///
     /// Main phases:
     /// 1) Create runtime nodes and register telemetry.
@@ -831,6 +834,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         mut config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        codecs_config: ResolvedCodecsConfig,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
@@ -838,6 +842,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     where
         PData: Unwindable,
     {
+        // Resolve implementation selection before node factories build capability plans.
+        // Mutable instances remain lazy and are owned by this runtime's services.
+        let runtime_services = runtime_services::PipelineRuntimeServices::new(codecs_config)?;
+        pipeline_ctx.set_codec_registry(Arc::new(runtime_services.codecs().registry().clone()));
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
@@ -1315,6 +1323,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             extension_wrappers,
             nodes,
             telemetry_policy,
+            runtime_services,
         );
         let wirings = edges
             .into_iter()
