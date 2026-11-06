@@ -459,8 +459,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_collector_removes_unregistered_metric_sets_after_grace() {
         let config = create_test_config(100);
-        let telemetry_registry = create_test_registry();
-        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(30));
+        let telemetry_registry =
+            TelemetryRegistryHandle::with_unregister_grace(Duration::from_secs(30));
         let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let cancel = CancellationToken::new();
         let handle = tokio::spawn(Arc::new(collector).run(cancel.clone()));
@@ -490,8 +490,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_restarted_collector_resumes_unregister_sweeps() {
         let config = create_test_config(100);
-        let telemetry_registry = create_test_registry();
-        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(30));
+        let telemetry_registry =
+            TelemetryRegistryHandle::with_unregister_grace(Duration::from_secs(30));
         let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let collector = Arc::new(collector);
 

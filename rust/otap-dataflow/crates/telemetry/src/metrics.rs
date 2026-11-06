@@ -873,7 +873,8 @@ pub struct MetricSetRegistry {
     pub(crate) metrics: SlotMap<MetricSetKey, MetricsEntry>,
     identity_counts: HashMap<(usize, EntityKey), usize>,
     duplicate_identity_count: usize,
-    /// How long an unregistered metric set stays readable before removal.
+    /// How long an unregistered metric set stays readable before removal. Fixed
+    /// at construction so queued grace deadlines stay in a single, stable order.
     unregister_grace: Duration,
     /// Metric sets retained for the grace period, in deadline order. Deadlines
     /// are `unregister time + unregister_grace` with a fixed grace, so pushing
@@ -901,12 +902,13 @@ impl Debug for MetricSetRegistry {
 }
 
 impl MetricSetRegistry {
-    pub(crate) fn set_unregister_grace(&mut self, grace: Duration) {
-        debug_assert!(
-            self.pending_unregisters.is_empty(),
-            "the grace period must be fixed before any unregister so deadlines stay ordered"
-        );
-        self.unregister_grace = grace;
+    /// Creates a registry with a fixed unregister grace period. `Duration::ZERO`
+    /// disables grace retention and matches [`Self::default`].
+    pub(crate) fn with_unregister_grace(grace: Duration) -> Self {
+        Self {
+            unregister_grace: grace,
+            ..Default::default()
+        }
     }
 
     /// Returns the configured unregister grace period (`Duration::ZERO` when

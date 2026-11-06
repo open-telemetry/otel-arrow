@@ -111,11 +111,31 @@ impl Default for TelemetryRegistryHandle {
 }
 
 impl TelemetryRegistryHandle {
-    /// Creates a new `TelemetryRegistryHandle`.
+    /// Creates a new `TelemetryRegistryHandle` with grace retention disabled.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_unregister_grace(Duration::ZERO)
+    }
+
+    /// Creates a new `TelemetryRegistryHandle` with a fixed unregister grace
+    /// period.
+    ///
+    /// During the grace period an unregistered metric set keeps its entity and
+    /// final values, still accepts late snapshots, and is still reported by
+    /// scrapes. This gives a scraper time to observe the final values of
+    /// components that shut down. `Duration::ZERO` removes metric sets as soon as
+    /// any pending export completes.
+    ///
+    /// The grace period is fixed for the life of the registry so that queued
+    /// grace deadlines stay ordered and the collector can pick its collection
+    /// loop once at startup.
+    #[must_use]
+    pub fn with_unregister_grace(grace: Duration) -> Self {
         Self {
-            registry: Arc::new(Mutex::new(TelemetryRegistry::default())),
+            registry: Arc::new(Mutex::new(TelemetryRegistry {
+                metrics: MetricSetRegistry::with_unregister_grace(grace),
+                ..Default::default()
+            })),
             metrics_flusher: Arc::new(Mutex::new(None)),
             unregister_notify: Arc::new(Notify::new()),
         }
@@ -319,21 +339,6 @@ impl TelemetryRegistryHandle {
                 registration_attributes,
             )
         })
-    }
-
-    /// Sets how long unregistered metric sets stay visible to readers.
-    ///
-    /// During the grace period an unregistered metric set keeps its entity and
-    /// final values, still accepts late snapshots, and is still reported by
-    /// scrapes. This gives a scraper time to observe the final values of
-    /// components that shut down. `Duration::ZERO` (the default) removes metric
-    /// sets as soon as any pending export completes.
-    ///
-    /// Set this before the internal collector starts: the collection loop reads
-    /// the grace once at startup to choose between a plain receive loop and the
-    /// loop that also sweeps expired grace deadlines.
-    pub fn set_metric_unregister_grace(&self, grace: Duration) {
-        self.registry.lock().metrics.set_unregister_grace(grace);
     }
 
     /// Returns the configured unregister grace period (`Duration::ZERO` when
@@ -841,8 +846,8 @@ mod tests {
     /// period ends.
     #[test]
     fn test_unregistration_grace_keeps_final_values_scrapeable() {
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(3600));
+        let telemetry_registry =
+            TelemetryRegistryHandle::with_unregister_grace(Duration::from_secs(3600));
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("grace".to_owned()));
         let metrics_key = metric_set.metric_set_key();
@@ -867,8 +872,8 @@ mod tests {
     /// Guarantees: the late snapshot is counted instead of silently dropped.
     #[test]
     fn test_unregistration_grace_accepts_late_snapshots() {
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(3600));
+        let telemetry_registry =
+            TelemetryRegistryHandle::with_unregister_grace(Duration::from_secs(3600));
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("late".to_owned()));
         let metrics_key = metric_set.metric_set_key();
@@ -897,8 +902,7 @@ mod tests {
     #[test]
     fn test_unregistration_grace_expires() {
         let grace = Duration::from_secs(30);
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        telemetry_registry.set_metric_unregister_grace(grace);
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(grace);
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("expired".to_owned()));
         let metrics_key = metric_set.metric_set_key();
@@ -937,8 +941,7 @@ mod tests {
     #[test]
     fn test_unregistration_grace_sweeps_in_deadline_order() {
         let grace = Duration::from_secs(30);
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        telemetry_registry.set_metric_unregister_grace(grace);
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(grace);
         let first: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("first".to_owned()));
         let second: MetricSet<MockMetricSet> =
@@ -970,13 +973,12 @@ mod tests {
     #[test]
     fn test_unregistration_grace_expired_dirty_waits_for_export() {
         let grace = Duration::from_secs(30);
-        let telemetry_registry = TelemetryRegistryHandle::new();
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(grace);
         telemetry_registry
             .registry
             .lock()
             .metrics
             .set_has_metric_exporter();
-        telemetry_registry.set_metric_unregister_grace(grace);
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("dirty".to_owned()));
         let metrics_key = metric_set.metric_set_key();
@@ -1012,13 +1014,12 @@ mod tests {
     #[test]
     fn test_unregistration_grace_sweep_skips_entries_removed_by_export() {
         let grace = Duration::from_secs(30);
-        let telemetry_registry = TelemetryRegistryHandle::new();
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(grace);
         telemetry_registry
             .registry
             .lock()
             .metrics
             .set_has_metric_exporter();
-        telemetry_registry.set_metric_unregister_grace(grace);
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("stale".to_owned()));
         let metrics_key = metric_set.metric_set_key();
@@ -1051,8 +1052,8 @@ mod tests {
     /// Guarantees: only the first queued deadline notifies the collector.
     #[tokio::test]
     async fn test_unregistration_grace_notifies_on_first_deadline_only() {
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(30));
+        let telemetry_registry =
+            TelemetryRegistryHandle::with_unregister_grace(Duration::from_secs(30));
         let notify = telemetry_registry.unregister_notify();
         let first: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("first".to_owned()));
@@ -1078,13 +1079,13 @@ mod tests {
     /// period ends, and the values are exported exactly once.
     #[test]
     fn test_unregistration_grace_outlives_final_its_export() {
-        let telemetry_registry = TelemetryRegistryHandle::new();
+        let telemetry_registry =
+            TelemetryRegistryHandle::with_unregister_grace(Duration::from_secs(3600));
         telemetry_registry
             .registry
             .lock()
             .metrics
             .set_has_metric_exporter();
-        telemetry_registry.set_metric_unregister_grace(Duration::from_secs(3600));
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("its".to_owned()));
         let metrics_key = metric_set.metric_set_key();
@@ -1199,8 +1200,7 @@ mod tests {
     #[test]
     fn test_unregistration_grace_export_during_grace_keeps_late_snapshot() {
         let grace = Duration::from_secs(30);
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        telemetry_registry.set_metric_unregister_grace(grace);
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(grace);
         let metric_set: MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("grace".to_owned()));
         let metrics_key = metric_set.metric_set_key();
