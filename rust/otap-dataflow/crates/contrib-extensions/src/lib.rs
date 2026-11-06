@@ -25,6 +25,9 @@ pub mod flat_file_sasl_auth;
 #[cfg(feature = "flat-file-user-pass-auth")]
 pub mod flat_file_user_pass_auth;
 
+#[cfg(feature = "gcp-auth")]
+pub mod gcp_auth;
+
 #[cfg(feature = "k8s-service-account-token-auth")]
 pub mod k8s_service_account_token_auth;
 
