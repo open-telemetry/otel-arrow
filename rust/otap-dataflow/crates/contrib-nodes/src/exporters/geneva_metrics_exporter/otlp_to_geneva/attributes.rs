@@ -3,8 +3,10 @@
 
 //! OTLP attribute selection and Geneva metric context construction.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::str::{self, Utf8Error};
 
 use otel_arrow_dfe_pdata_views::views::common::{
@@ -23,9 +25,29 @@ pub(super) const NAMESPACE_ATTRIBUTE: &str = "_microsoft_metrics_namespace";
 const PREVIOUS_NAMESPACE_ATTRIBUTE: &str = "microsoft_metrics_namespace";
 const CARDINALITY_OVERFLOW_ATTRIBUTE: &str = "otel.metric.overflow";
 
-pub(super) fn default_resource_context(config: &Config) -> ResourceContext {
+/// Request-wide namespace strings, so repeated routing values share one allocation even when
+/// OTAP dictionary encoding lets many points reference the same large value.
+#[derive(Default)]
+pub(super) struct Namespaces(RefCell<HashSet<Rc<str>>>);
+
+impl Namespaces {
+    fn intern(&self, value: &str) -> Rc<str> {
+        let mut namespaces = self.0.borrow_mut();
+        if let Some(namespace) = namespaces.get(value) {
+            return Rc::clone(namespace);
+        }
+        let namespace: Rc<str> = value.into();
+        let _ = namespaces.insert(Rc::clone(&namespace));
+        namespace
+    }
+}
+
+pub(super) fn default_resource_context(
+    config: &Config,
+    namespaces: &Namespaces,
+) -> ResourceContext {
     ResourceContext {
-        namespace: config.metric_namespace.clone(),
+        namespace: namespaces.intern(&config.metric_namespace),
         original_dimensions: Vec::new(),
         dimensions: Vec::new(),
     }
@@ -34,6 +56,7 @@ pub(super) fn default_resource_context(config: &Config) -> ResourceContext {
 pub(super) fn resource_context<A>(
     attributes: impl IntoIterator<Item = A>,
     config: &Config,
+    namespaces: &Namespaces,
 ) -> Result<ResourceContext, Utf8Error>
 where
     A: AttributeView,
@@ -43,7 +66,7 @@ where
     for attribute in attributes {
         match str::from_utf8(attribute.key())? {
             NAMESPACE_ATTRIBUTE | PREVIOUS_NAMESPACE_ATTRIBUTE => {
-                namespace = Some(routing_value(&attribute)?);
+                namespace = Some(routing_value(&attribute, namespaces)?);
             }
             key if selected_attribute(key, &config.resource_attributes) => {
                 dimensions.push(attribute_dimension(&attribute, true)?);
@@ -52,7 +75,7 @@ where
         }
     }
     Ok(ResourceContext {
-        namespace: non_empty_or(namespace, &config.metric_namespace),
+        namespace: non_empty_or(namespace, &config.metric_namespace, namespaces),
         original_dimensions: dimensions.clone(),
         dimensions,
     })
@@ -73,7 +96,7 @@ where
     for attribute in attributes {
         match str::from_utf8(attribute.key())? {
             NAMESPACE_ATTRIBUTE => {
-                namespace = Some(routing_value(&attribute)?);
+                namespace = Some(routing_value(&attribute, scope.namespaces)?);
             }
             CARDINALITY_OVERFLOW_ATTRIBUTE => {
                 cardinality_overflow = attribute
@@ -110,7 +133,7 @@ where
         return Ok((None, None));
     }
 
-    let namespace = namespace.unwrap_or_else(|| scope.namespace.to_string());
+    let namespace = namespace.unwrap_or_else(|| Rc::clone(scope.namespace));
     if let Some(dimensions) = dimensions {
         let overflow = cardinality_overflow
             .then(|| overflow_diagnostic(scope, namespace.clone(), metric_name));
@@ -128,15 +151,15 @@ where
     ))
 }
 
-fn non_empty_or(value: Option<String>, default: &str) -> String {
+fn non_empty_or(value: Option<Rc<str>>, default: &str, namespaces: &Namespaces) -> Rc<str> {
     value
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default.to_string())
+        .unwrap_or_else(|| namespaces.intern(default))
 }
 
 fn overflow_diagnostic(
     scope: &ScopeContext<'_>,
-    namespace: String,
+    namespace: Rc<str>,
     metric_name: Option<&str>,
 ) -> CardinalityOverflow {
     CardinalityOverflow {
@@ -163,28 +186,28 @@ fn attribute_dimension<A>(attribute: &A, string_only: bool) -> Result<Dimension,
 where
     A: AttributeView,
 {
-    let value = attribute.value().map_or_else(
-        || Ok(String::new()),
+    let value: Rc<str> = attribute.value().map_or_else(
+        || Ok("".into()),
         |value| {
             if let Some(value) = value.as_string() {
-                return Ok(str::from_utf8(value)?.to_string());
+                return Ok(str::from_utf8(value)?.into());
             }
             if !string_only {
                 if let Some(value) = value.as_bool() {
-                    return Ok(if value { "True" } else { "False" }.to_string());
+                    return Ok(if value { "True" } else { "False" }.into());
                 }
                 if let Some(value) = value.as_int64() {
-                    return Ok(value.to_string());
+                    return Ok(value.to_string().into());
                 }
                 if let Some(value) = value.as_double() {
-                    return Ok(format_double_dimension(value));
+                    return Ok(format_double_dimension(value).into());
                 }
             }
-            Ok(String::new())
+            Ok("".into())
         },
     )?;
     Ok(Dimension {
-        name: str::from_utf8(attribute.key())?.to_string(),
+        name: str::from_utf8(attribute.key())?.into(),
         value,
     })
 }
@@ -260,10 +283,10 @@ pub(super) fn apply_scope_resource_overrides(
     }
     let mut first_index = HashMap::with_capacity(original_resource_dimensions.len());
     for (index, dimension) in original_resource_dimensions.iter().enumerate() {
-        let _ = first_index.entry(dimension.name.as_str()).or_insert(index);
+        let _ = first_index.entry(dimension.name.as_ref()).or_insert(index);
     }
     for scope_dimension in scope_dimensions {
-        let Some(&index) = first_index.get(scope_dimension.name.as_str()) else {
+        let Some(&index) = first_index.get(scope_dimension.name.as_ref()) else {
             continue;
         };
         let original = &original_resource_dimensions[index];
@@ -364,37 +387,31 @@ fn ascii_lowercase_utf16(code_unit: u16) -> u16 {
 pub(super) fn attribute_string<A>(
     attributes: impl IntoIterator<Item = A>,
     key: &str,
-) -> Result<Option<String>, Utf8Error>
+    namespaces: &Namespaces,
+) -> Result<Option<Rc<str>>, Utf8Error>
 where
     A: AttributeView,
 {
     let mut matched = None;
     for attribute in attributes {
         if str::from_utf8(attribute.key())? == key {
-            matched = Some(routing_value(&attribute)?);
+            matched = Some(routing_value(&attribute, namespaces)?);
         }
     }
     Ok(matched.filter(|value| !value.is_empty()))
 }
 
-fn string_value<A>(attribute: &A) -> Result<Option<String>, Utf8Error>
+fn routing_value<A>(attribute: &A, namespaces: &Namespaces) -> Result<Rc<str>, Utf8Error>
 where
     A: AttributeView,
 {
     let Some(value) = attribute.value() else {
-        return Ok(None);
+        return Ok(Rc::default());
     };
     let Some(value) = value.as_string() else {
-        return Ok(None);
+        return Ok(Rc::default());
     };
-    Ok(Some(str::from_utf8(value)?.to_string()))
-}
-
-fn routing_value<A>(attribute: &A) -> Result<String, Utf8Error>
-where
-    A: AttributeView,
-{
-    Ok(string_value(attribute)?.unwrap_or_default())
+    Ok(namespaces.intern(str::from_utf8(value)?))
 }
 
 #[cfg(test)]
@@ -412,8 +429,12 @@ mod tests {
     use crate::exporters::geneva_metrics_exporter::{Config, ScopeAttributes, encoder::Dimension};
 
     fn resource_context(attributes: &[KeyValue], config: &Config) -> ResourceContext {
-        super::resource_context(KeyValueIter::new(attributes.iter()), config)
-            .expect("test attributes should contain valid UTF-8")
+        super::resource_context(
+            KeyValueIter::new(attributes.iter()),
+            config,
+            &Namespaces::default(),
+        )
+        .expect("test attributes should contain valid UTF-8")
     }
 
     fn point_context(
@@ -423,11 +444,14 @@ mod tests {
         scope_dimensions: &[Dimension],
         config: &Config,
     ) -> Option<PointContext> {
+        let scope_namespace = scope_namespace.into();
+        let namespaces = Namespaces::default();
         let scope = ScopeContext {
             resource,
-            namespace: scope_namespace,
+            namespace: &scope_namespace,
             dimensions: scope_dimensions,
             config,
+            namespaces: &namespaces,
         };
         super::point_context(KeyValueIter::new(attributes.iter()), &scope, Some("metric"))
             .expect("test attributes should contain valid UTF-8")
@@ -441,11 +465,14 @@ mod tests {
         metric_name: &str,
     ) -> Option<CardinalityOverflow> {
         let config = config();
+        let scope_namespace = scope_namespace.into();
+        let namespaces = Namespaces::default();
         let scope = ScopeContext {
             resource,
-            namespace: scope_namespace,
+            namespace: &scope_namespace,
             dimensions: &[],
             config: &config,
+            namespaces: &namespaces,
         };
         super::point_context(
             KeyValueIter::new(attributes.iter()),
@@ -461,9 +488,13 @@ mod tests {
             .expect("test attributes should contain valid UTF-8")
     }
 
-    fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<String> {
-        super::attribute_string(KeyValueIter::new(attributes.iter()), key)
-            .expect("test attributes should contain valid UTF-8")
+    fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<Rc<str>> {
+        super::attribute_string(
+            KeyValueIter::new(attributes.iter()),
+            key,
+            &Namespaces::default(),
+        )
+        .expect("test attributes should contain valid UTF-8")
     }
 
     fn config() -> Config {
@@ -495,14 +526,14 @@ mod tests {
 
     fn dimension(name: &str, value: &str) -> Dimension {
         Dimension {
-            name: name.to_string(),
-            value: value.to_string(),
+            name: name.into(),
+            value: value.into(),
         }
     }
 
     fn resource_with_dimensions(dimensions: Vec<Dimension>) -> ResourceContext {
         ResourceContext {
-            namespace: "resource-namespace".to_string(),
+            namespace: "resource-namespace".into(),
             original_dimensions: dimensions.clone(),
             dimensions,
         }
@@ -527,7 +558,7 @@ mod tests {
     fn uses_configured_resource_defaults() {
         let context = resource_context(&[], &config());
 
-        assert_eq!(context.namespace, "default-namespace");
+        assert_eq!(&*context.namespace, "default-namespace");
         assert!(context.dimensions.is_empty());
     }
 
@@ -548,8 +579,8 @@ mod tests {
             &mapping_config,
         );
 
-        assert_eq!(legacy.namespace, "legacy-namespace");
-        assert_eq!(current.namespace, "current-namespace");
+        assert_eq!(&*legacy.namespace, "legacy-namespace");
+        assert_eq!(&*current.namespace, "current-namespace");
     }
 
     /// Scenario: Final resource namespace attributes are empty or non-string after earlier non-empty values.
@@ -565,7 +596,7 @@ mod tests {
             &mapping_config,
         );
 
-        assert_eq!(context.namespace, "default-namespace");
+        assert_eq!(&*context.namespace, "default-namespace");
     }
 
     /// Scenario: Resource attributes contain selected and unselected string dimensions.
@@ -602,7 +633,7 @@ mod tests {
         )
         .expect("point context should be valid");
 
-        assert_eq!(point.namespace, "point-namespace");
+        assert_eq!(&*point.namespace, "point-namespace");
         assert_eq!(point.dimensions, vec![dimension("region", "west")]);
     }
 
@@ -662,8 +693,8 @@ mod tests {
             .expect("one merged dimension should be valid");
 
             assert_eq!(merged.len(), 1);
-            assert_eq!(merged[0].name, "SHARED");
-            assert_eq!(merged[0].value, expected);
+            assert_eq!(merged[0].name.as_ref(), "SHARED");
+            assert_eq!(merged[0].value.as_ref(), expected);
         }
     }
 
@@ -1009,7 +1040,7 @@ mod tests {
             dimension("DIMENSION-0", "second"),
             true,
         ));
-        assert_eq!(dimensions[0].value, "second");
+        assert_eq!(dimensions[0].value.as_ref(), "second");
         assert!(!set_dimension(
             &mut dimensions,
             dimension("dimension-overflow", "value"),
@@ -1257,8 +1288,8 @@ mod tests {
         ];
 
         assert_eq!(
-            attribute_string(&attributes, NAMESPACE_ATTRIBUTE),
-            Some("last".to_string())
+            attribute_string(&attributes, NAMESPACE_ATTRIBUTE).as_deref(),
+            Some("last")
         );
     }
 }
