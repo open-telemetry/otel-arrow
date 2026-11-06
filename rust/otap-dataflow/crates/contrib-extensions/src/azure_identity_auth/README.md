@@ -183,13 +183,13 @@ Config validation rejects:
 
 ## Telemetry
 
-Metric sets: `extension.auth` (shared acquisitions), `extension.azure_identity_auth` (operational).
+Metric set: `extension.auth` (shared).
 
 | Metric | Metric set | Type | Unit | Description |
 | --- | --- | --- | --- | --- |
 | `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Credential acquisitions partitioned by `outcome` (`success`, `failure`). |
-| `publishes` | `extension.azure_identity_auth` | Counter | `{token}` | Tokens published to consumers. |
-| `latency` | `extension.azure_identity_auth` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
+| `publishes` | `extension.auth` | Counter | `{publication}` | Credentials or tokens published to consumers via the watch channel partitioned by `outcome`. |
+| `duration` | `extension.auth` | Mmsc | `ms` | Acquisition duration in milliseconds partitioned by `outcome` (min/max/sum/count). |
 
 Events:
 
@@ -213,11 +213,10 @@ The `extension.auth` telemetry scope records:
 
 - `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
   unit `{acquisition}`.
-
-The `extension.azure_identity_auth` telemetry scope records:
-
-- `publishes`: Counter of published tokens, unit `{token}`.
-- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).
+- `publishes`: Counter of credentials or tokens published to consumers via the
+  watch channel partitioned by `outcome`, unit `{publication}`.
+- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
+  (`ms`, min/max/sum/count).
 
 ## Related Docs
 

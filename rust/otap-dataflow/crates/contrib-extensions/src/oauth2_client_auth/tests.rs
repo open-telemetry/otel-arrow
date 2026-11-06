@@ -901,25 +901,17 @@ async fn client_secret_file_rotation_takes_effect() {
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
-    // A fresh tracker yields no touched measurement snapshots and zero operational metrics.
+    // A fresh tracker yields no touched measurement snapshots.
     let before = tracker.terminal_snapshots();
-    assert_eq!(before.len(), 1, "only operational metrics initially");
-    assert!(
-        before[0].get_metrics().iter().all(|m| m.is_zero()),
-        "a new tracker starts at zero"
-    );
+    assert!(before.is_empty(), "a fresh tracker has no touched buckets");
 
     tracker.record_success(12.5);
     tracker.record_failure();
     tracker.record_publish();
 
-    // Both acquisition outcomes (success, failure) and operational metrics snapshot.
+    // Both acquisition outcomes (success, failure) snapshot.
     let after = tracker.terminal_snapshots();
-    assert_eq!(
-        after.len(),
-        3,
-        "2 outcome snapshots + 1 operational snapshot"
-    );
+    assert_eq!(after.len(), 2, "2 outcome snapshots (success and failure)");
     assert!(
         after
             .iter()
@@ -931,6 +923,7 @@ fn metrics_tracker_records_snapshots_and_reports() {
     let (rx, mut reporter) =
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
     tracker.record_success(10.0);
+    tracker.record_failure();
     tracker.record_publish();
     tracker.report(&mut reporter).expect("report succeeds");
     assert_eq!(

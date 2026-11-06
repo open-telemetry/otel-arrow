@@ -277,9 +277,9 @@ Only two things are Azure-specific:
   `azure_identity` credential for the configured scope, and
   `log_refresh_failure()` emits the `azure_identity_auth.token_refresh_failed`
   event.
-- `AzureIdentityAuthMetrics` (telemetry scopes `extension.auth`, `extension.azure_identity_auth`)
+- `AzureIdentityAuthMetrics` (telemetry scope `extension.auth`)
   implements `BackgroundProviderMetrics`, exposing its dimensioned acquisition
-  counter (`outcome`), publish counter, and latency histogram to the
+  counter (`outcome`), publish counter, and duration histogram to the
   generic tracker.
 
 The `expiry_buffer` is fixed at `TOKEN_EXPIRY_BUFFER_SECS` (299 s) for this
@@ -455,8 +455,8 @@ Metrics are recorded in both the background refresh loop and the slow-path
 | Metric | Set | Type | Description |
 | --- | --- | --- | --- |
 | `acquisitions` | `extension.auth` | Counter | Credential acquisitions partitioned by outcome. |
-| `publishes` | `extension.azure_identity_auth` | Counter | Tokens published to consumers via the watch channel. |
-| `latency` | `extension.azure_identity_auth` | Mmsc (ms) | Latency of successful acquisitions (min/max/sum/count). |
+| `publishes` | `extension.auth` | Counter | Credentials or tokens published to consumers via the watch channel partitioned by outcome. |
+| `duration` | `extension.auth` | Mmsc (ms) | Acquisition duration in milliseconds partitioned by outcome (min/max/sum/count). |
 
 ## Lifecycle
 

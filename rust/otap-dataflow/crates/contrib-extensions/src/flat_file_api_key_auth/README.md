@@ -62,11 +62,10 @@ The `extension.auth` telemetry scope records:
 
 - `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
   unit `{acquisition}`.
-
-The `extension.flat_file_api_key_auth` telemetry scope records:
-
-- `publishes`: Counter of published API keys, unit `{credential}`.
-- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).
+- `publishes`: Counter of published API keys partitioned by `outcome`,
+  unit `{publication}`.
+- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
+  (`ms`, min/max/sum/count).
 
 ## Building
 

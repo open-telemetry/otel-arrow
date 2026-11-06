@@ -206,9 +206,9 @@ Only two things are OAuth-specific:
   the configured grant type (client credentials or JWT bearer), and
   `log_refresh_failure()` emits the `oauth2_client_auth.token_refresh_failed`
   event.
-- `OAuth2ClientAuthMetrics` (telemetry scopes `extension.auth`, `extension.oauth2_client_auth`)
+- `OAuth2ClientAuthMetrics` (telemetry scope `extension.auth`)
   implements `BackgroundProviderMetrics`, exposing its dimensioned acquisition
-  counter (`outcome`), publish counter, and latency histogram to the
+  counter (`outcome`), publish counter, and duration histogram to the
   generic tracker.
 
 ## Configuration
@@ -465,8 +465,8 @@ Metrics are recorded in the background refresh loop and the slow-path
 | Metric | Set | Type | Description |
 | --- | --- | --- | --- |
 | `acquisitions` | `extension.auth` | Counter | Token acquisitions partitioned by outcome. |
-| `publishes` | `extension.oauth2_client_auth` | Counter | Tokens published to consumers via the watch channel. |
-| `latency` | `extension.oauth2_client_auth` | Mmsc (ms) | Latency of successful acquisitions (min/max/sum/count). |
+| `publishes` | `extension.auth` | Counter | Tokens published to consumers via the watch channel partitioned by outcome. |
+| `duration` | `extension.auth` | Mmsc (ms) | Acquisition duration in milliseconds partitioned by outcome (min/max/sum/count). |
 
 ## Lifecycle
 

@@ -216,8 +216,7 @@ The `extension.auth` telemetry scope records:
 
 - `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
   unit `{acquisition}`.
-
-The `extension.azure_key_vault_user_pass_auth` telemetry scope records:
-
-- `publishes`: Counter of complete credentials published, unit `{credential}`.
-- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).
+- `publishes`: Counter of complete credentials published partitioned by
+  `outcome`, unit `{publication}`.
+- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
+  (`ms`, min/max/sum/count).

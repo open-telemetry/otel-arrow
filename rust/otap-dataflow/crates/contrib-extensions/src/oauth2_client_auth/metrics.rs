@@ -1,37 +1,22 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Telemetry for the OAuth 2.0 Client Auth extension.
+//! Telemetry for the OAuth2 Client Auth extension.
 
 use otel_arrow_dfe_engine::context::ExtensionContext;
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::registry::EntityKey;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
 
 use crate::common::background_refresh::{
     AuthExtensionAcquisitionMetrics, BackgroundProviderMetrics,
 };
 
-/// Operational metrics for OAuth 2.0 Client Auth.
-#[metric_set(name = "extension.oauth2_client_auth")]
-#[derive(Debug, Default, Clone)]
-pub struct OAuth2ClientAuthOperationalMetrics {
-    /// Number of tokens published to consumers via the watch channel.
-    #[metric(unit = "{token}")]
-    pub publishes: Counter<u64>,
-    /// Latency of successful acquisitions in milliseconds (min/max/sum/count).
-    #[metric(unit = "ms")]
-    pub latency: Mmsc,
-}
-
-/// Telemetry metrics for the OAuth 2.0 Client Auth extension.
+/// Telemetry metrics for the OAuth2 Client Auth extension.
 pub struct OAuth2ClientAuthMetrics {
     pub(crate) acquisition_metrics: MeasurementMetricSet<AuthExtensionAcquisitionMetrics>,
-    pub(crate) operational_metrics: MetricSet<OAuth2ClientAuthOperationalMetrics>,
 }
 
 impl std::fmt::Debug for OAuth2ClientAuthMetrics {
@@ -49,8 +34,6 @@ impl OAuth2ClientAuthMetrics {
                 .register_measurement_metric_set_for_entity::<AuthExtensionAcquisitionMetrics>(
                     entity_key,
                 ),
-            operational_metrics: ext_ctx
-                .register_metric_set_for_entity::<OAuth2ClientAuthOperationalMetrics>(entity_key),
         }
     }
 
@@ -65,45 +48,36 @@ impl OAuth2ClientAuthMetrics {
                 .register_metric_set_with_measurement_attributes::<AuthExtensionAcquisitionMetrics>(
                     otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
                 ),
-            operational_metrics: registry
-                .register_metric_set::<OAuth2ClientAuthOperationalMetrics>(
-                    otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
-                ),
         }
     }
 }
 
 impl BackgroundProviderMetrics for OAuth2ClientAuthMetrics {
     fn record_acquisition(&mut self, outcome: Outcome) {
-        self.acquisition_metrics
-            .with(OutcomeAttributes { outcome })
-            .acquisitions
-            .inc();
+        self.acquisition_metrics.record_acquisition(outcome);
     }
 
     fn record_publish(&mut self) {
-        self.operational_metrics.publishes.inc();
+        self.acquisition_metrics.record_publish();
     }
 
     fn record_success_latency(&mut self, latency_ms: f64) {
-        self.operational_metrics.latency.record(latency_ms);
+        self.acquisition_metrics.record_success_latency(latency_ms);
     }
 
     fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter.report_measurement(&mut self.acquisition_metrics)?;
-        reporter.report(&mut self.operational_metrics)
+        self.acquisition_metrics.report(reporter)
     }
 
     fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.acquisition_metrics.terminal_snapshots();
-        snapshots.extend(self.operational_metrics.terminal_snapshots());
-        snapshots
+        self.acquisition_metrics.terminal_snapshots()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     #[test]
@@ -138,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn operational_metrics_record_publish_and_latency() {
+    fn shared_metrics_record_publish_and_duration() {
         let registry = TelemetryRegistryHandle::new();
         let mut metrics = OAuth2ClientAuthMetrics::new_test(&registry);
 
@@ -146,9 +120,14 @@ mod tests {
         metrics.record_publish();
         metrics.record_success_latency(15.0);
 
-        assert_eq!(metrics.operational_metrics.publishes.get(), 2);
-        assert_eq!(metrics.operational_metrics.latency.count, 1);
-        assert_eq!(metrics.operational_metrics.latency.sum, 15.0);
+        let success = metrics
+            .acquisition_metrics
+            .get(OutcomeAttributes {
+                outcome: Outcome::Success,
+            });
+        assert_eq!(success.publishes.get(), 2);
+        assert_eq!(success.duration.count, 1);
+        assert_eq!(success.duration.sum, 15.0);
     }
 
     #[test]
@@ -160,7 +139,7 @@ mod tests {
         metrics.record_publish();
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots.len(), 1);
 
         let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(4);
         metrics.record_acquisition(Outcome::Failure);

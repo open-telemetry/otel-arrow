@@ -238,13 +238,13 @@ Config validation rejects:
 
 ## Telemetry
 
-Metric sets: `extension.auth` (shared acquisitions), `extension.oauth2_client_auth` (operational).
+Metric set: `extension.auth` (shared).
 
 | Metric | Metric set | Type | Unit | Description |
 | --- | --- | --- | --- | --- |
 | `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Token acquisitions partitioned by `outcome` (`success`, `failure`). |
-| `publishes` | `extension.oauth2_client_auth` | Counter | `{token}` | Tokens published to consumers. |
-| `latency` | `extension.oauth2_client_auth` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
+| `publishes` | `extension.auth` | Counter | `{publication}` | Tokens published to consumers via the watch channel partitioned by `outcome`. |
+| `duration` | `extension.auth` | Mmsc | `ms` | Acquisition duration in milliseconds partitioned by `outcome` (min/max/sum/count). |
 
 Events:
 
@@ -269,11 +269,10 @@ The `extension.auth` telemetry scope records:
 
 - `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
   unit `{acquisition}`.
-
-The `extension.oauth2_client_auth` telemetry scope records:
-
-- `publishes`: Counter of published tokens, unit `{token}`.
-- `latency`: Acquisition latency in milliseconds (`ms`, min/max/sum/count).
+- `publishes`: Counter of tokens published to consumers via the watch channel
+  partitioned by `outcome`, unit `{publication}`.
+- `duration`: Acquisition duration in milliseconds partitioned by `outcome`
+  (`ms`, min/max/sum/count).
 
 ## Related Docs
 
