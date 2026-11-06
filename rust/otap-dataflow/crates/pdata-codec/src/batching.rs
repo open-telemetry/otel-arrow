@@ -6,15 +6,15 @@
 //! This layer owns conversion, sizing, and in-line merge/split operations.
 //! Scheduling, bounded request tracking, and Ack/Nack routing belong to the node.
 
-use std::num::NonZeroU64;
+use std::{future::Future, num::NonZeroU64};
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CodecError, CodecRegistry, CodecService, EncodePolicy, EncodedPdata, EncodingPlan,
-    PdataEncoding, PdataFormat, PdataPayload,
+    CodecError, CodecRegistry, CodecService, EncodePolicy, EncodedPdata, EncodingPlan, PdataFormat,
+    PdataPayload,
 };
 
 /// Reusable encoded batching implementation owned by one pipeline runtime.
@@ -197,12 +197,8 @@ impl PdataFormat {
     pub fn resolve(registry: &CodecRegistry, name: &str) -> Result<Self, CodecError> {
         match name {
             "otap" => Ok(Self::OTAP),
-            "otlp" => registry
-                .resolve(&PdataEncoding::OTLP)
-                .map(Self::encoded)
-                .map_err(Into::into),
             name => registry
-                .resolve(&PdataEncoding::from(name.to_owned()))
+                .resolve(registry.resolve_encoding(name)?)
                 .map(Self::encoded)
                 .map_err(Into::into),
         }
@@ -253,7 +249,12 @@ impl PdataFormat {
         service: &CodecService,
         encoding: Option<&EncodingPlan>,
     ) -> Result<(), CodecError> {
-        if payload.format() == self {
+        if payload.format() == self
+            && match encoding {
+                Some(plan) => service.allows_encoded_forwarding(plan, payload.signal_type())?,
+                None => true,
+            }
+        {
             return Ok(());
         }
         match self.codec() {
@@ -304,7 +305,12 @@ impl PdataFormat {
         encoding: Option<&EncodingPlan>,
         yield_to_runtime: impl FnMut() -> Y,
     ) -> Result<(), CodecError> {
-        if payload.format() == self {
+        if payload.format() == self
+            && match encoding {
+                Some(plan) => service.allows_encoded_forwarding(plan, payload.signal_type())?,
+                None => true,
+            }
+        {
             return Ok(());
         }
         match self.codec() {
@@ -637,7 +643,7 @@ fn format_error(error: impl Into<String>) -> CodecError {
 mod tests {
     use super::*;
     use crate::testing::{DECODE_ONLY_ENCODING, ENCODE_ONLY_ENCODING};
-    use crate::{CodecServiceBuilder, DecodePolicy, DecodeValidation};
+    use crate::{CodecServiceBuilder, DecodePolicy, DecodeValidation, PdataEncoding};
     use otel_arrow_dfe_pdata::OtapPayloadHelpers;
     use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
@@ -650,6 +656,7 @@ mod tests {
             .unwrap()
             .with_decode_policy(DecodePolicy::new(DecodeValidation::Strict))
             .build()
+            .unwrap()
     }
 
     /// Scenario: Repeated OTLP byte batching processes multiple logs, metrics, and traces requests.
@@ -765,7 +772,8 @@ mod tests {
         let service = CodecServiceBuilder::from_registry(Arc::new(
             CodecRegistry::validate(&REGISTRATIONS).unwrap(),
         ))
-        .build();
+        .build()
+        .unwrap();
         let codec = service.registry().resolve(METADATA.encoding()).unwrap();
         let plan = BatchPlan::new(
             PdataFormat::encoded(codec),

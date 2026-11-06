@@ -3,6 +3,7 @@
 
 //! The configuration for a pipeline group.
 
+use crate::codecs::CodecsConfig;
 use crate::error::Error;
 use crate::pipeline::PipelineConfig;
 use crate::policy::Policies;
@@ -21,6 +22,10 @@ pub struct PipelineGroupConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policies: Option<Policies>,
 
+    /// Codec settings inherited by pipelines in this group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codecs: Option<CodecsConfig>,
+
     /// Group-local topic declarations visible only to pipelines in this group.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub topics: HashMap<TopicName, TopicSpec>,
@@ -36,6 +41,7 @@ impl PipelineGroupConfig {
     pub fn new() -> Self {
         Self {
             policies: None,
+            codecs: None,
             topics: HashMap::new(),
             pipelines: HashMap::new(),
         }
