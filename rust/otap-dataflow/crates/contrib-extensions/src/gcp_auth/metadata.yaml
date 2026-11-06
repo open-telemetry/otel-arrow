@@ -1,0 +1,6 @@
+type: gcp_auth
+status:
+  class: extension
+  codeowners:
+    active:
+      - bwplotka
