@@ -34,8 +34,7 @@ durable fencing and advanced source guarantees.
 
 Cross-process ownership, coordination across logical pipelines, transparent
 coordinator restart, and exactly-once delivery are outside this proposal.
-Complete receiver implementations and delivery sequencing are tracked separately
-in the [delivery plan](../docs/work-coordinator-delivery-plan.md).
+Complete receiver implementations are separate work.
 
 ## Guide-level explanation
 
