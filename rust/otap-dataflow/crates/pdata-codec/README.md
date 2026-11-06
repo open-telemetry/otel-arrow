@@ -45,7 +45,8 @@ service that lazily creates and reuses decoder, encoder, and batcher instances.
 Nodes access that service through effect handlers; stateless item counters do
 not require an instance.
 
-The `syslog-batch` codec is available when the syslog/CEF receiver is linked.
+The `syslog-batch` and `syslog-json` codecs are available when the
+syslog/CEF receiver is linked.
 Native OTAP is the common processing representation, not a registered byte codec.
 
 ## Design model
@@ -57,7 +58,9 @@ Native OTAP is the common processing representation, not a registered byte codec
   descriptive metadata.
 - `CodecRegistration` supplies decoder, encoder, item-counter, and native
   batching capabilities. A codec may be decode-only or encode-only. A decoder
-  must provide an item counter so requested flow metrics remain available.
+  must provide an item-counter capability. If counting needs prepared
+  configuration, it may return `None` to retain an unknown count until
+  materialization; never substitute document count for selected-record count.
   Native item batching also requires a counter, including for encode-only codecs.
 - `CodecRegistry` distinguishes encoding identities from implementation IDs.
   Duplicate implementation IDs and conflicting distribution defaults fail
@@ -75,6 +78,20 @@ Native OTAP is the common processing representation, not a registered byte codec
 Every encoded payload must be independently decodable. Stream-relative state,
 such as a dictionary shared across batches, is not a pdata encoding unless each
 payload contains everything needed to reconstruct that state.
+
+Receivers may attach `DecodeContext` through
+`EncodedPdata::with_decode_context`. It currently preserves the local receipt
+year for deferred yearless timestamps without growing the 64-byte payload.
+Clones, failure recovery, native fallback views, and cooperative materialization
+retain this context. Implementations needing it override `decode_with_context`
+and `start_decode_with_context`; legacy decoders continue using their existing
+methods. Byte-only `decode_parts` and `view_parts` have no receipt context.
+An `EncodedView` exposes the context separately from its unchanged bytes.
+
+`selector::CompiledSelector` provides a format-independent, bounded subset of
+root, nested-field, and array-iteration selectors. Format adapters enforce
+container types and typed extraction while traversing; the JSON syslog adapter
+does so incrementally without building an intermediate document tree.
 
 ```mermaid
 flowchart LR

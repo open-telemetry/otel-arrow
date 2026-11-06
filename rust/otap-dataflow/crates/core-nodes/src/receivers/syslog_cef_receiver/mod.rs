@@ -60,9 +60,11 @@ use otel_arrow_dfe_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 pub mod arrow_records_encoder;
 /// Independently decodable syslog batch codec and framing.
 mod codec;
+mod json;
 /// Benchmark-only access to syslog framing and lazy materialization.
 #[cfg(feature = "bench")]
 pub use codec::bench_support;
+pub use json::{MAX_JSON_INPUT_BYTES, SYSLOG_JSON_ENCODING};
 /// Parser module for syslog message parsing
 pub mod parser;
 

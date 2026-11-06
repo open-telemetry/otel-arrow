@@ -22,7 +22,7 @@ use std::borrow::Cow;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
-use crate::PdataEncoding;
+use crate::{DecodeContext, PdataEncoding};
 
 /// Borrowed encoding identity, signal, and bytes of an encoded representation.
 ///
@@ -36,6 +36,7 @@ pub struct EncodedView<'a> {
     encoding: &'a PdataEncoding,
     signal: SignalType,
     bytes: &'a [u8],
+    context: DecodeContext,
 }
 
 impl<'a> EncodedView<'a> {
@@ -44,7 +45,19 @@ impl<'a> EncodedView<'a> {
             encoding,
             signal,
             bytes,
+            context: DecodeContext::default(),
         }
+    }
+
+    pub(crate) const fn with_decode_context(mut self, context: DecodeContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Receipt metadata required by formats with yearless timestamps.
+    #[must_use]
+    pub const fn decode_context(&self) -> DecodeContext {
+        self.context
     }
 
     /// Encoded representation identity.

@@ -662,6 +662,7 @@ fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
     let unsupported_encoding = match signal.encoding {
         MessageFormat::Plaintext => Some("plaintext"),
         MessageFormat::Syslog => Some("syslog"),
+        MessageFormat::Json => Some("json"),
         MessageFormat::OtlpProto | MessageFormat::OtapProto => None,
     };
     if let Some(encoding) = unsupported_encoding {

@@ -37,7 +37,9 @@ use crate::{
 ///
 /// Registrations with a decoder or native item batching must provide this
 /// capability. `None` means the bytes are malformed or otherwise cannot be
-/// counted; it is distinct from a valid empty batch.
+/// counted, including when counting depends on prepared configuration. It is
+/// distinct from a valid empty batch; such payloads retain an unknown count
+/// until materialization.
 pub type ItemCounter = fn(SignalType, &[u8]) -> Option<usize>;
 
 /// Creates independent decoder state for one pipeline runtime.

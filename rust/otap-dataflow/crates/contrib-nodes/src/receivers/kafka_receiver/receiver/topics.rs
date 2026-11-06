@@ -9,7 +9,8 @@
 //! IDs to topic names for CallData routing.
 
 use crate::common::kafka::{
-    MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG, MessageFormat,
+    MSG_FORMAT_JSON, MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG,
+    MessageFormat,
 };
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use rdkafka::Message as _;
@@ -94,6 +95,7 @@ pub(super) fn detect_message_format(
         value if value == Some(MSG_FORMAT_OTAP) => MessageFormat::OtapProto,
         value if value == Some(MSG_FORMAT_PLAINTEXT) => MessageFormat::Plaintext,
         value if value == Some(MSG_FORMAT_SYSLOG) => MessageFormat::Syslog,
+        value if value == Some(MSG_FORMAT_JSON) => MessageFormat::Json,
         _ => default,
     }
 }

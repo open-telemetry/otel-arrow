@@ -23,6 +23,7 @@ is the common processing representation, not a registered byte encoding.
 | --- | --- | --- | --- | --- |
 | `otlp-bytes` | Logs, metrics, traces | Yes | Yes | Encoded bytes |
 | `syslog-batch` | Logs | Yes | No | Framed message items |
+| `syslog-json` | Logs | Yes, selected syslog/CEF strings | No | OTAP fallback |
 
 The syslog/CEF receiver creates independently decodable framed batches. This
 internal representation is not raw syslog TCP/UDP framing. A syslog batch can
@@ -39,8 +40,10 @@ There is no global `defaults` section and no node-level codec configuration.
 
 A **binding** selects one configuration per encoding per pipeline. An
 **implementation** identifies registered code, independently of the bytes it
-supports. Built-in IDs are `otel.otlp` and `otel.syslog_cef`. The latter is
-available only when the syslog receiver is linked.
+supports. Built-in IDs are `otel.otlp`, `otel.syslog_cef`, and
+`otel.syslog_cef_json`.
+The latter two are available when the syslog/CEF receiver is linked, including
+through the Kafka feature.
 
 Configure just OTLP, leaving other encodings unchanged:
 
@@ -54,7 +57,7 @@ codecs:
 
 An inline binding may also specify `implementation` and implementation-owned
 `options`. Omitting the implementation uses the distribution default for that
-encoding. Built-in implementations currently accept no custom `options`.
+encoding. The OTLP and syslog-batch implementations accept no custom `options`.
 A distribution with multiple implementations for an encoding must declare a
 unique default or the user must select one explicitly. Link order never selects
 an implementation. Duplicate implementation IDs and conflicting defaults fail.
@@ -98,6 +101,76 @@ It defines a named configuration at root scope and binds it only in the ingest
 pipeline, leaving the observability pipeline on its defaults. OTAP export
 requires decoding, so this example exercises strict validation rather than
 opaque forwarding.
+
+### JSON-selected syslog records
+
+The `otel.syslog_cef_json` implementation of the `syslog-json` encoding extracts
+strings from a JSON document and uses the existing syslog/CEF parser and Arrow
+mapping. It does not interpret JSON as OTLP JSON or put the whole document in a
+log body. Other JSON representations can use separate codec identities.
+
+Configure a named selection and bind it to the pipeline's `syslog-json` encoding:
+
+```yaml
+codecs:
+  configurations:
+    syslog_from_json:
+      implementation: otel.syslog_cef_json
+      options:
+        records: "$.events[*]"
+        record_decoder:
+          type: syslog
+          from: "$.message"
+  bindings:
+    syslog-json:
+      configuration: syslog_from_json
+```
+
+For `{"events":[{"message":"..."}]}`, this emits one log per event.
+Selectors are compiled at startup and support
+nested dot-separated ASCII alphanumeric/underscore field names and `[*]`
+array iteration. Unsupported syntax fails startup. `from` is relative to each
+selected record and must select exactly one string; array iteration belongs in
+`records`, not `from`.
+
+| Document shape | `records` | `record_decoder.from` |
+| --- | --- | --- |
+| `{"events":[{"message":"..."}]}` | `$.events[*]` | `$.message` |
+| `[{"message":"..."},{"message":"..."}]` | `$[*]` | `$.message` |
+| `{"message":"..."}` | `$` (default) | `$.message` (default) |
+
+Omitting all `otel.syslog_cef_json` options uses the single-object defaults.
+When specifying `record_decoder`, supply both `type: syslog` and `from`.
+
+Kafka accepts `logs.encoding: json` or a `MessageFormat: json` header. This
+transport format currently resolves the pipeline's `syslog-json` codec binding;
+the registered implementation and its options define the JSON payload shape
+and interpretation, not the Kafka transport. With `otel.syslog_cef_json`,
+Kafka retains owned JSON bytes until a consumer requests native records.
+All logs derived from one document retain the same Kafka offset's delivery
+ownership. Matching `resource_attrs_from_headers` rules explicitly request
+materialization in the receiver so attributes can be applied to every derived
+log.
+
+Decoding validates the complete JSON document in both validation modes,
+including unselected values. Missing or duplicate selected fields, wrong
+container types, non-string messages, malformed JSON, syslog parse errors, and
+limit violations fail the entire document without emitting partial logs.
+An empty selected array produces zero logs. Counts remain unknown until
+materialization; a JSON document is not counted as one log.
+
+Hard limits are 2 MiB per document, 8,192 selected records, 32 container levels,
+and 16 KiB per decoded JSON string or scalar token, including unselected fields.
+Escaped string tokens may occupy at most 98,306 encoded bytes. Selectors are
+limited to 1,024 bytes each and 32 combined steps. Larger documents use
+cooperative traversal and syslog parsing; one bounded token and Arrow
+finalization remain synchronous, so step budgets are not latency guarantees.
+
+Kafka captures the local receipt year in the encoded envelope for RFC 3164
+messages, including syslog-wrapped CEF. Deferred decoding does not infer a new
+year from its own clock. Other receivers admitting yearless JSON messages must
+also supply this decode context; missing receipt years fail decoding. Observed
+timestamps for JSON-derived logs are sampled once when decoding starts.
 
 ### Scope and inheritance
 

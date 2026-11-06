@@ -13,6 +13,7 @@ mod payload;
 mod plan;
 mod registry;
 mod runtime;
+pub mod selector;
 mod view;
 
 mod codecs;
@@ -23,7 +24,8 @@ pub use batching::{
 };
 pub use configuration::{CodecPreparer, PreparedCodecFactory};
 pub use decoder::{
-    DecodeBudget, DecodePolicy, DecodeTask, DecodeValidation, PdataDecodeJob, PdataDecoder,
+    DecodeBudget, DecodeContext, DecodePolicy, DecodeTask, DecodeValidation, PdataDecodeJob,
+    PdataDecoder,
 };
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};

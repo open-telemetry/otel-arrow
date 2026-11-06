@@ -8,14 +8,18 @@
 
 use super::config::KafkaReceiverConfig;
 use super::error::KafkaReceiverError;
+use super::headers::HeaderExtractions;
 use super::identity::OwnershipGeneration;
 use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
 use super::rebalance::{RebalanceState, RebalancingConsumerContext};
 use super::retry::RetryManager;
+use crate::common::kafka::MessageFormat;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
 use async_trait::async_trait;
+use bytes::Bytes;
+use chrono::{Datelike, Local};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
@@ -24,6 +28,7 @@ use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::SYSLOG_JSON_ENCODING;
 use otel_arrow_dfe_engine::capability::auth::SaslCredential;
 use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
     SASL_CREDENTIAL_USABLE_MARGIN, SaslCredentialProvider as SaslCredentialProviderCapability,
@@ -39,7 +44,8 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata_codec::{DecodeContext, ResolvedCodec};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
 use rdkafka::Message as _;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -92,6 +98,7 @@ enum InitialSaslCredentialOutcome {
 /// offset skipping when acknowledgements arrive out-of-order from the downstream pipeline.
 pub struct KafkaReceiver {
     config: KafkaReceiverConfig,
+    json_codec: ResolvedCodec,
     sasl_credential_provider: Option<Box<dyn SaslCredentialProvider>>,
     metrics: KafkaReceiverMetrics,
     /// Per-offset tracker. Only active when auto-commit is disabled.
@@ -227,11 +234,21 @@ impl KafkaReceiver {
         let logs_exclude_regexes = compile_exclude_regexes(config.logs_exclude_topics())?;
 
         let metrics = KafkaReceiverMetrics::register(&pipeline_ctx);
+        let json_codec = pipeline_ctx
+            .codec_registry()
+            .map_err(|error| ConfigError::InvalidUserConfig {
+                error: error.to_string(),
+            })?
+            .resolve_decoder(&SYSLOG_JSON_ENCODING, SignalType::Logs)
+            .map_err(|error| ConfigError::InvalidUserConfig {
+                error: error.to_string(),
+            })?;
 
         let rebalance_state = Arc::new(RebalanceState::new(config.is_auto_commit()));
 
         Ok(Self {
             config,
+            json_codec,
             sasl_credential_provider: None,
             metrics,
             offset_tracker: OffsetTracker::new(),
@@ -404,10 +421,11 @@ impl KafkaReceiver {
     /// The caller tracks offsets, including decode failures.
     /// A capture policy attaches matching headers to the returned context.
     /// `resource_attrs_from_headers` separately controls resource attributes.
-    fn process_kafka(
+    async fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,
         capture_policy: Option<&CompiledHeaderCapturePolicy>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
@@ -431,14 +449,18 @@ impl KafkaReceiver {
                     self.config.message_format_header(),
                     self.config.encoding_for(signal),
                 );
-                SignalDecoder::decode_signal_with_extractions(
-                    signal,
-                    &kafka_message,
-                    extractors,
-                    data,
-                    message_format,
-                )
-                .map_err(|source| KafkaReceiverError::SignalDecode { signal, source })
+                let result = if message_format == MessageFormat::Json {
+                    self.process_json(signal, &kafka_message, data, effect_handler).await
+                } else {
+                    SignalDecoder::decode_signal_with_extractions(
+                        signal,
+                        &kafka_message,
+                        extractors,
+                        data,
+                        message_format,
+                    )
+                };
+                result.map_err(|source| KafkaReceiverError::SignalDecode { signal, source })
             }
             None => Err(KafkaReceiverError::UnknownTopicDecode(
                 EngineError::PdataConversionError {
@@ -451,6 +473,48 @@ impl KafkaReceiver {
         capture_transport_headers(&kafka_message, capture_policy, &mut pdata);
 
         Ok(pdata)
+    }
+
+    async fn process_json(
+        &self,
+        signal: SignalType,
+        kafka_message: &BorrowedMessage<'_>,
+        data: &[u8],
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<OtapPdata, EngineError> {
+        if data.len()
+            > otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::MAX_JSON_INPUT_BYTES
+        {
+            return Err(EngineError::PdataConversionError {
+                error: "JSON payload exceeds 2 MiB".to_owned(),
+            });
+        }
+        let to_conversion_error =
+            |error: otel_arrow_dfe_pdata_codec::CodecError| EngineError::PdataConversionError {
+                error: error.to_string(),
+            };
+        let context = DecodeContext::with_received_local_year(Local::now().year())
+            .map_err(to_conversion_error)?;
+        let encoded = self
+            .json_codec
+            .admit(signal, Bytes::copy_from_slice(data))
+            .map_err(to_conversion_error)?
+            .with_decode_context(context);
+        let payload = encoded.into();
+        let extractions =
+            HeaderExtractions::otap(kafka_message, self.config.resource_attrs_from_headers());
+        if extractions.has_any() {
+            // Resource mutation explicitly requests materialization. Otherwise
+            // retain the document and its receipt year for downstream decoding.
+            let records = effect_handler
+                .materialize_otap_payload(payload)
+                .await
+                .map_err(|error| EngineError::PdataConversionError {
+                    error: error.to_string(),
+                })?;
+            return extractions.apply_otap_resource_attrs(records);
+        }
+        Ok(OtapPdata::new(Context::default(), payload))
     }
 
     /// Drain partitions revoked by the rebalance callbacks and purge them from
@@ -935,7 +999,7 @@ impl KafkaReceiver {
                                 continue;
                             }
 
-                            match self.process_kafka(data, capture_policy) {
+                            match self.process_kafka(data, capture_policy, &effect_handler).await {
                                 Ok(mut otap_data) => {
                                     let signal = otap_data.signal_type();
                                     self.metrics
