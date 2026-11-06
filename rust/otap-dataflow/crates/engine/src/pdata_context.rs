@@ -1228,6 +1228,17 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 "node factory `{urn}` declared more than one context edit or merge"
             )));
         }
+        if declarations
+            .iter()
+            .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
+            && declarations
+                .iter()
+                .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }))
+        {
+            return Err(config_error(format!(
+                "node factory `{urn}` declared both arrival and synthetic context production"
+            )));
+        }
         Ok(declarations)
     }
 }
@@ -1285,33 +1296,35 @@ mod tests {
         }
     }
 
-    /// Typed component configuration that declares one produced entry.
+    /// Typed component configuration that declares a produced entry and/or arrival.
     #[derive(serde::Deserialize)]
     struct TestProducerConfig {
         /// Produced entry name.
-        entry: ContextEntryName,
+        #[serde(default)]
+        entry: Option<ContextEntryName>,
         /// Whether the entry is declared in the authorized-identity domain.
         #[serde(default)]
         identity: bool,
-        /// Whether the node also declares arrival.
+        /// Whether the node declares arrival.
         #[serde(default)]
         arrival: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
-        /// Declares the configured produced entry and an optional arrival.
+        /// Declares the configured produced entry and arrival, when present.
         fn context_declarations(&self) -> NodeContextDeclarations {
-            [ContextDeclaration::Produces {
-                domain: if self.identity {
-                    ContextDomain::AuthorizedIdentity
-                } else {
-                    ContextDomain::TransportHeader
-                },
-                entry: self.entry.clone(),
-            }]
-            .into_iter()
-            .chain(self.arrival.then_some(ContextDeclaration::Arrival))
-            .collect()
+            self.entry
+                .iter()
+                .map(|entry| ContextDeclaration::Produces {
+                    domain: if self.identity {
+                        ContextDomain::AuthorizedIdentity
+                    } else {
+                        ContextDomain::TransportHeader
+                    },
+                    entry: entry.clone(),
+                })
+                .chain(self.arrival.then_some(ContextDeclaration::Arrival))
+                .collect()
         }
     }
 
@@ -1833,7 +1846,7 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:produce"
-            config: {entry: generated, arrival: true}
+            config: {arrival: true}
           edit:
             type: "urn:test:processor:edit"
             config: {entry: partition}
@@ -1910,7 +1923,8 @@ groups:
         }
     }
 
-    /// Scenario: factories violate node-kind restrictions or declare both Edits and Merges.
+    /// Scenario: factories violate node-kind restrictions, declare both Edits and Merges, or
+    /// declare both Arrival and Produces.
     /// Guarantees: each declaration set is rejected with the factory URN and violated restriction.
     #[test]
     fn invalid_node_context_declarations_are_rejected() {
@@ -1931,8 +1945,14 @@ groups:
             (
                 NodeKind::Exporter,
                 "urn:test:exporter:produces",
-                serde_json::json!({"entry": "tenant", "arrival": true}),
+                serde_json::json!({"arrival": true}),
                 "`Arrival` context declaration, which is only supported by receivers",
+            ),
+            (
+                NodeKind::Receiver,
+                "urn:test:receiver:produce",
+                serde_json::json!({"entry": "tenant", "arrival": true}),
+                "declared both arrival and synthetic context production",
             ),
             (
                 NodeKind::Exporter,

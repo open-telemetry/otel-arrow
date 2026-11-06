@@ -101,21 +101,22 @@ fn wait_for_context_bindings_test_capture() -> std::sync::Weak<CompiledContextBi
 
 #[derive(Deserialize)]
 struct ContextBindingsTestConfig {
-    produces: ContextEntryName,
+    /// Statically produced entry; when absent, the receiver forms contexts at arrival.
+    #[serde(default)]
+    produces: Option<ContextEntryName>,
     #[serde(default)]
     probe_controller_lock: bool,
 }
 
 impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        [
-            ContextDeclaration::Arrival,
-            ContextDeclaration::Produces {
+        std::iter::once(match &self.produces {
+            Some(entry) => ContextDeclaration::Produces {
                 domain: ContextDomain::TransportHeader,
-                entry: self.produces.clone(),
+                entry: entry.clone(),
             },
-        ]
-        .into_iter()
+            None => ContextDeclaration::Arrival,
+        })
         .collect()
     }
 }
@@ -5497,8 +5498,7 @@ groups:
               headers:
                 - match_names: ["x-tenant-id"]
                   store_as: tenant
-            config:
-              produces: capture-marker
+            config: {}
           exporter:
             type: "urn:test:exporter:example"
             config: null
@@ -5597,8 +5597,7 @@ groups:
               headers:
                 - match_names: ["x-tenant-id"]
                   store_as: tenant
-            config:
-              produces: capture-marker
+            config: {}
           exporter:
             type: "urn:test:exporter:example"
             config: null
