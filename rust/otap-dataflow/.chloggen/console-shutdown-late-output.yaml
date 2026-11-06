@@ -1,0 +1,9 @@
+change_type: bug_fix
+
+component: pipeline
+
+note: Write console output submitted after the writers stop directly instead of dropping it, and report frames refused during shutdown in the exit status.
+
+issues: [4255]
+
+subtext:

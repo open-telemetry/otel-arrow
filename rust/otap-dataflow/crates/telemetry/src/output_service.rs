@@ -18,7 +18,9 @@
 //!
 //! The service is optional. When [`OutputService::init`] was never called the
 //! stream handles fall back to direct, locked writes so unit tests and
-//! standalone binaries keep their current behavior.
+//! standalone binaries keep their current behavior. The same fallback takes
+//! over once shutdown has retired a writer cleanly, so lines logged while the
+//! process exits still reach the console.
 //!
 //! The integrity guarantee covers frames submitted through this service only.
 //! Writers that bypass it -- raw file descriptors, inherited child processes,
@@ -169,7 +171,7 @@ impl Frame {
 /// Reasons a frame could not be accepted by an output stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SubmitError {
-    /// The stream is shutting down or its writer thread has exited.
+    /// The stream is shutting down and its writer is still draining the queue.
     #[error("console output queue is closed")]
     QueueClosed,
     /// The writer thread stopped after an unrecoverable write error.
@@ -308,6 +310,8 @@ pub struct ShutdownOutcome {
     pub deadline_expired: bool,
     /// Accepted frames still unwritten when the operation returned.
     pub frames_pending: u64,
+    /// Frames refused because shutdown had already closed the queue.
+    pub frames_refused: u64,
 }
 
 impl Default for ShutdownOutcome {
@@ -317,6 +321,7 @@ impl Default for ShutdownOutcome {
             writer_failed: false,
             deadline_expired: false,
             frames_pending: 0,
+            frames_refused: 0,
         }
     }
 }
@@ -328,6 +333,7 @@ impl ShutdownOutcome {
         self.writer_failed |= other.writer_failed;
         self.deadline_expired |= other.deadline_expired;
         self.frames_pending = self.frames_pending.saturating_add(other.frames_pending);
+        self.frames_refused = self.frames_refused.saturating_add(other.frames_refused);
     }
 }
 
@@ -397,9 +403,13 @@ enum WriterExit {
 struct StreamShared {
     /// Set when the writer stopped on an I/O error or a panic, never on a clean exit.
     writer_failed: AtomicBool,
+    /// Set when the writer exited after draining, so late frames are written directly.
+    writer_drained: AtomicBool,
     queue_depth_high_water: AtomicU64,
     frames_submitted: AtomicU64,
     frames_enqueue_failed: AtomicU64,
+    /// Frames refused with [`SubmitError::QueueClosed`], reported by shutdown.
+    frames_refused: AtomicU64,
     frames_written: AtomicU64,
     bytes_written: AtomicU64,
     write_errors: AtomicU64,
@@ -500,6 +510,9 @@ impl QueuedHandle {
             .shared
             .frames_enqueue_failed
             .fetch_add(1, Ordering::Relaxed);
+        if error == SubmitError::QueueClosed {
+            let _ = self.shared.frames_refused.fetch_add(1, Ordering::Relaxed);
+        }
         error
     }
 
@@ -550,6 +563,16 @@ impl StreamHandle {
         self.queued.is_none()
     }
 
+    /// Returns the queue while its writer runs.
+    ///
+    /// Once the writer retired after draining, the stream lock is free and late
+    /// frames are written directly, as when the service was never started.
+    fn queue(&self) -> Option<&QueuedHandle> {
+        self.queued
+            .as_ref()
+            .filter(|queued| !queued.shared.writer_drained.load(Ordering::Acquire))
+    }
+
     /// Submits a frame, awaiting queue capacity when the queue is full.
     ///
     /// This is the backpressure path: a queue that is full by frame count or by
@@ -561,7 +584,7 @@ impl StreamHandle {
     /// the frame exceeds the stream byte budget, or a direct fallback write
     /// failed.
     pub async fn submit(&self, frame: Frame) -> Result<(), SubmitError> {
-        let Some(queued) = self.queued.as_ref() else {
+        let Some(queued) = self.queue() else {
             return write_direct(self.id, &frame);
         };
         let reservation = queued
@@ -595,7 +618,7 @@ impl StreamHandle {
     /// never fit, or the other [`SubmitError`] variants when the stream no
     /// longer accepts frames.
     pub fn try_submit(&self, frame: Frame) -> Result<(), SubmitError> {
-        let Some(queued) = self.queued.as_ref() else {
+        let Some(queued) = self.queue() else {
             return write_direct(self.id, &frame);
         };
         let reservation = queued
@@ -623,7 +646,7 @@ impl StreamHandle {
     }
 }
 
-/// Writes a frame straight to the standard stream, used when the service is not initialized.
+/// Writes a frame straight to the standard stream, used when no writer thread serves it.
 fn write_direct(id: StreamId, frame: &Frame) -> Result<(), SubmitError> {
     let mut sink = id.std_sink();
     sink.write_frame(frame.as_bytes())
@@ -634,7 +657,8 @@ fn write_direct(id: StreamId, frame: &Frame) -> Result<(), SubmitError> {
 /// Retires the stream once its writer thread exits, including on panic.
 ///
 /// The queue closes, byte and queue-slot waiters fail, and the frames left in
-/// the queue are dropped, returning their bytes.
+/// the queue are dropped, returning their bytes. After a clean exit the
+/// stream's handles switch to direct writes.
 struct TeardownGuard {
     shared: Arc<StreamShared>,
     bytes: Arc<Semaphore>,
@@ -647,7 +671,9 @@ struct TeardownGuard {
 impl Drop for TeardownGuard {
     fn drop(&mut self) {
         // Recorded before the queue closes; see `StreamShared::closed_error`.
-        if !self.drained {
+        if self.drained {
+            self.shared.writer_drained.store(true, Ordering::Release);
+        } else {
             self.shared.writer_failed.store(true, Ordering::Release);
         }
         let _ = self.receiver.close();
@@ -778,7 +804,7 @@ impl OutputStream {
         }
         let remaining = deadline.saturating_sub(started.elapsed());
         match ack_rx.recv_timeout(remaining) {
-            Ok(()) => ShutdownOutcome::default(),
+            Ok(()) => self.drained_outcome(),
             Err(flume::RecvTimeoutError::Timeout) => self.pending_outcome(true),
             Err(flume::RecvTimeoutError::Disconnected) => self.pending_outcome(false),
         }
@@ -789,7 +815,9 @@ impl OutputStream {
     /// Returns once the writer finishes or the deadline expires, whichever comes
     /// first, so a stalled console pipe cannot block the caller indefinitely. A
     /// submit that has not reached the queue when shutdown starts, including one
-    /// still waiting for capacity, fails with [`SubmitError::QueueClosed`].
+    /// still waiting for capacity, fails with [`SubmitError::QueueClosed`] and is
+    /// counted in [`ShutdownOutcome::frames_refused`]. Once the writer has
+    /// retired cleanly, late frames are written directly instead.
     pub fn shutdown(&self, deadline: Duration) -> ShutdownOutcome {
         // Closed on this thread, so producers are refused at once even behind a stalled
         // writer, which still receives everything queued before the close.
@@ -811,7 +839,7 @@ impl OutputStream {
         }
 
         if exit == Ok(WriterExit::Drained) {
-            return ShutdownOutcome::default();
+            return self.drained_outcome();
         }
 
         let outcome = self.pending_outcome(deadline_expired);
@@ -822,6 +850,14 @@ impl OutputStream {
         outcome
     }
 
+    /// Reports a completed drain, keeping the frames shutdown refused visible.
+    fn drained_outcome(&self) -> ShutdownOutcome {
+        ShutdownOutcome {
+            frames_refused: self.shared.frames_refused.load(Ordering::Relaxed),
+            ..ShutdownOutcome::default()
+        }
+    }
+
     /// Reports the frames that were accepted but are not on the stream yet.
     fn pending_outcome(&self, deadline_expired: bool) -> ShutdownOutcome {
         ShutdownOutcome {
@@ -829,6 +865,7 @@ impl OutputStream {
             writer_failed: self.shared.writer_failed.load(Ordering::Acquire),
             deadline_expired,
             frames_pending: self.shared.frames_pending(),
+            frames_refused: self.shared.frames_refused.load(Ordering::Relaxed),
         }
     }
 
@@ -1109,8 +1146,9 @@ impl OutputService {
     ///
     /// This is the terminal operation: it closes both queues, waits for the queued
     /// frames, and joins the writer threads. Only the process host may call it,
-    /// because the streams do not accept frames afterwards. An engine run that
-    /// shares the process with later runs uses [`OutputService::drain`] instead.
+    /// because the writers never restart: frames submitted afterwards are written
+    /// directly on the calling thread. An engine run that shares the process with
+    /// later runs uses [`OutputService::drain`] instead.
     pub fn shutdown(deadline: Duration) -> ShutdownOutcome {
         let Some(service) = SERVICE.get() else {
             return ShutdownOutcome::default();
@@ -2191,23 +2229,30 @@ mod tests {
         stalled.store(false, Ordering::Release);
     }
 
-    /// Scenario: `try_submit` is called after shutdown closed a healthy stream, and after
-    /// shutdown of a stream whose writer failed.
+    /// Scenario: `try_submit` is called after shutdown closed a healthy stream whose writer
+    /// is still busy, and after shutdown of a stream whose writer failed.
     /// Guarantees: the frame is refused with `QueueClosed` or `WriterUnavailable` and counted
     /// as a failed enqueue, never as a dropped diagnostic, so a closed stream is not reported
     /// as a full one.
     #[test]
     fn try_submit_after_shutdown_counts_a_failed_enqueue() {
-        let sink = TestSink::new();
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
         let stream = start(&sink, 4);
-        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+        let handle = stream.handle();
+        handle
+            .try_submit(Frame::line("in-writer"))
+            .expect("frame is accepted");
+        assert!(stream.shutdown(Duration::from_millis(100)).deadline_expired);
         assert_eq!(
-            stream.handle().try_submit(Frame::line("late")),
+            handle.try_submit(Frame::line("late")),
             Err(SubmitError::QueueClosed)
         );
         let stats = stream.stats();
         assert_eq!(stats.frames_enqueue_failed, 1);
         assert_eq!(stats.diagnostics_dropped, 0);
+        stalled.store(false, Ordering::Release);
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
 
         // stderr keeps the failure report away from the stream under test.
         let failing = TestSink::new().failing_after(0);
@@ -2681,10 +2726,9 @@ mod tests {
         assert_eq!(stream.stats().frames_written, 1);
     }
 
-    /// Scenario: a stream shuts down cleanly, then is drained, shut down again, and sent a
-    /// late frame through both submit paths.
-    /// Guarantees: none of the later outcomes reports a writer failure and the late frame is
-    /// refused as a closed queue, so a clean exit is never mistaken for a failed writer.
+    /// Scenario: a stream shuts down cleanly, then is drained and shut down again.
+    /// Guarantees: none of the later outcomes reports a writer failure, so a clean exit is
+    /// never mistaken for a failed writer.
     #[tokio::test]
     async fn clean_shutdown_is_not_reported_as_a_writer_failure() {
         let sink = TestSink::new();
@@ -2699,15 +2743,76 @@ mod tests {
 
         assert!(!stream.drain(Duration::from_secs(1)).writer_failed);
         assert!(!stream.shutdown(Duration::from_secs(1)).writer_failed);
-        assert_eq!(
-            handle.submit(Frame::line("late")).await,
-            Err(SubmitError::QueueClosed)
-        );
-        assert_eq!(
-            handle.try_submit(Frame::line("late")),
-            Err(SubmitError::QueueClosed)
-        );
         assert_eq!(stream.stats().write_errors, 0);
+    }
+
+    /// Scenario: a stream shut down cleanly, then a producer submits through both paths.
+    /// Guarantees: the writer has released the stream, so late frames are written directly
+    /// instead of refused and are counted neither as accepted nor as failed, so nothing
+    /// logged while the process exits is lost.
+    #[tokio::test]
+    async fn late_frames_are_written_directly_after_a_clean_shutdown() {
+        let sink = TestSink::new();
+        let stream = start(&sink, 4);
+        let handle = stream.handle();
+
+        handle
+            .submit(Frame::line("before shutdown"))
+            .await
+            .expect("frame is accepted");
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+        assert!(!handle.is_direct());
+
+        // Empty frames exercise the direct path without emitting output.
+        handle
+            .submit(Frame::new(Vec::new()))
+            .await
+            .expect("late frame is written directly");
+        handle
+            .try_submit(Frame::new(Vec::new()))
+            .expect("late frame is written directly");
+        let stats = stream.stats();
+        assert_eq!(stats.frames_submitted, 1);
+        assert_eq!(stats.frames_enqueue_failed, 0);
+        assert_eq!(sink.contents(), b"before shutdown\n");
+    }
+
+    /// Scenario: shutdown waits on a stalled writer while a producer submits a frame, and
+    /// the writer recovers only after that producer was refused.
+    /// Guarantees: the outcome reports the refused frame even though every accepted frame
+    /// drained, so a host can tell that console output was lost at shutdown.
+    #[test]
+    fn shutdown_reports_frames_refused_while_it_waited() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        let stream = start(&sink, 4);
+        let handle = stream.handle();
+
+        handle
+            .try_submit(Frame::line("in-writer"))
+            .expect("frame is accepted");
+        let producer = thread::spawn({
+            let handle = handle.clone();
+            let stalled = Arc::clone(&stalled);
+            move || {
+                let queued = handle.queued.as_ref().expect("queued handle");
+                assert!(wait_until(|| queued.sender.is_closed()));
+                let refused = handle.try_submit(Frame::line("late"));
+                stalled.store(false, Ordering::Release);
+                refused
+            }
+        });
+
+        let outcome = stream.shutdown(Duration::from_secs(5));
+        assert_eq!(
+            producer.join().expect("producer finishes"),
+            Err(SubmitError::QueueClosed)
+        );
+        assert!(outcome.drained);
+        assert_eq!(outcome.frames_pending, 0);
+        assert_eq!(outcome.frames_refused, 1);
+        assert_eq!(stream.stats().frames_enqueue_failed, 1);
+        assert_eq!(sink.contents(), b"in-writer\n");
     }
 
     /// Scenario: a writer stops on a write error, then the stream is shut down, drained, shut
