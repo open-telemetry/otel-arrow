@@ -45,7 +45,11 @@ impl<T, E> ThreadLocalTaskHandle<T, E> {
             Ok(Err(e)) => Err(e.into()),
             Err(panic) => Err(crate::error::Error::ThreadJoinPanic {
                 thread_name: self.name.clone(),
-                panic_message: format!("{panic:?}"),
+                panic_message: panic
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_owned())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "non-string panic payload".into()),
             }),
         }
     }

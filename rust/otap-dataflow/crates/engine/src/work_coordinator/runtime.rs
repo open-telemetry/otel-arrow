@@ -1020,6 +1020,8 @@ where
                             result => result,
                         },
                         result = &mut provider => return match result {
+                            Ok(()) | Err(CoordinatorError::Unavailable)
+                                if domain.stopping.load(Ordering::Acquire) && *stop_rx.borrow() => Ok(()),
                             Ok(()) => Err(CoordinatorError::Failed("provider returned before shutdown".into())),
                             Err(error) => Err(error),
                         },

@@ -107,7 +107,10 @@ retry. Lifecycle acknowledgements have their own bounded queue; assignment and
 authority-loss watches cannot be blocked by custom notices.
 
 The controller caps hosts at 32 per logical pipeline and 128 per engine. Provider
-startup has a 30-second fleet deadline. `CoordinatorBinding::status` exposes
+startup has a 30-second fleet deadline. Final host shutdown shares one 30-second
+deadline across the engine. At most one cleanup worker per reserved host performs
+the native join, including runtime and thread-local destruction. Controller state
+locks are released before waiting. `CoordinatorBinding::status` exposes
 bounded counts and queue bytes without source identifiers. It is an API
 diagnostic; admin/metric presentation can be added with receiver integration.
 
@@ -117,6 +120,13 @@ automatic per-core recovery or silently restarts a coordinator. Normal drain
 stops admission first, keeps admitted completion paths alive, and joins hosts
 after pipeline shutdown. Providers must cooperate with shutdown; the framework
 cannot terminate a blocked OS worker safely.
+
+Timed-out or abandoned startup cleanup keeps the coordinator identity, binding,
+and host permit reserved. Reusing that identity is rejected until the native join
+finishes. Failure remains observable on repeated shutdown calls. Deployment Drop
+signals shutdown without waiting; the engine supervisor and cleanup worker retain
+unfinished ownership. If cleanup never finishes, or OS resource exhaustion
+prevents creating a cleanup worker, process restart may be required.
 
 Initial creation, unchanged no-op reconciliation, catalog updates, shutdown, and
 deletion are supported. Live resize and configuration replacement involving a
