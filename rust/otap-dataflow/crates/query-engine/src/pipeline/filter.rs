@@ -30,6 +30,7 @@ use otel_arrow_dfe_pdata::arrays::MaybeDictArrayAccessor;
 use otel_arrow_dfe_pdata::otap::filter::{
     ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch,
 };
+use otel_arrow_dfe_pdata::otap::{Logs, Metrics, Traces};
 
 pub(crate) mod compare;
 pub(crate) mod data_points;
@@ -73,11 +74,11 @@ impl PipelineStage for FilterPipelineStage {
             .predicate
             .execute_as_value(&otap_batch, &eval_context)?;
 
-        // Convert the result to a root-aligned BooleanArray selection vector.
-        let selection_vec = match result {
+        // Determine which root rows pass the filter.
+        let selection = match result {
             None => {
                 // expression data was absent -- no rows pass the filter
-                BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)
+                RowSelection::Empty
             }
             Some(scoped_value) => {
                 // if not root-scoped, align to root
@@ -85,24 +86,37 @@ impl PipelineStage for FilterPipelineStage {
                     && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
                     && scoped_value.scope != DataScope::StaticScalar
                 {
-                    align_selection_to_root(Some(scoped_value), &otap_batch, &eval_context)?
+                    RowSelection::Rows(align_selection_to_root(
+                        Some(scoped_value),
+                        &otap_batch,
+                        &eval_context,
+                    )?)
                 } else {
-                    // extract the BooleanArray from the ScopedValue
-                    scoped_value_to_boolean_array(scoped_value.values, num_rows)?
+                    RowSelection::from_aligned_values(scoped_value.values, num_rows)?
                 }
             }
         };
 
         // Record the number of root records removed by this filter so callers
         // can observe genuine drops without inferring them from batch sizes.
-        // Rows whose predicate result is null are treated as not passing (see
-        // `scoped_value_to_boolean_array`), so `true_count` is exactly the rows
-        // kept.
-        exec_state.add_filtered(num_rows.saturating_sub(selection_vec.true_count()));
+        match selection {
+            RowSelection::All => Ok(otap_batch),
+            RowSelection::Empty => {
+                exec_state.add_filtered(num_rows);
+                Ok(empty_otap_batch_like(&otap_batch))
+            }
+            RowSelection::Rows(selection_vec) => {
+                // Rows whose predicate result is null are treated as not passing (see
+                // `scoped_value_to_boolean_array`), so `true_count` is exactly the rows
+                // kept.
+                exec_state.add_filtered(num_rows.saturating_sub(selection_vec.true_count()));
 
-        let otap_batch = filter_otap_batch(&selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
+                let otap_batch =
+                    filter_otap_batch(&selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
-        Ok(otap_batch)
+                Ok(otap_batch)
+            }
+        }
     }
 
     async fn execute_on_attributes(
@@ -275,6 +289,60 @@ impl FilterPipelineStage {
     }
 }
 
+/// The rows of a batch that pass a predicate.
+#[derive(Debug)]
+pub(crate) enum RowSelection {
+    /// Every row passes the predicate.
+    All,
+    /// No row passes the predicate.
+    Empty,
+    /// The rows for which the selection vector is `true` pass the predicate.
+    Rows(BooleanArray),
+}
+
+impl RowSelection {
+    /// Determine which rows pass a predicate from its result, which must already be aligned to
+    /// the `num_rows` rows being selected.
+    ///
+    /// A scalar result applies to every row, so it selects all or none of the rows without
+    /// materializing a selection vector. Other results are converted with
+    /// [`scoped_value_to_boolean_array`].
+    pub(crate) fn from_aligned_values(values: ColumnarValue, num_rows: usize) -> Result<Self> {
+        match values {
+            ColumnarValue::Scalar(scalar) => Ok(if scalar_predicate_passes(&scalar)? {
+                Self::All
+            } else {
+                Self::Empty
+            }),
+            values => scoped_value_to_boolean_array(values, num_rows).map(Self::Rows),
+        }
+    }
+}
+
+/// Returns whether the rows for which a predicate evaluated to the scalar `value` pass the
+/// predicate. A null result is treated as not passing.
+fn scalar_predicate_passes(value: &ScalarValue) -> Result<bool> {
+    match value {
+        ScalarValue::Boolean(Some(passes)) => Ok(*passes),
+        ScalarValue::Boolean(None) | ScalarValue::Null => Ok(false),
+        other => Err(Error::ExecutionError {
+            cause: format!(
+                "expected boolean scalar for filter selection, found {:?}",
+                other.data_type()
+            ),
+        }),
+    }
+}
+
+/// Returns an OTAP batch with the same signal type as `otap_batch` that contains no records.
+fn empty_otap_batch_like(otap_batch: &OtapArrowRecords) -> OtapArrowRecords {
+    match otap_batch {
+        OtapArrowRecords::Logs(_) => OtapArrowRecords::Logs(Logs::default()),
+        OtapArrowRecords::Metrics(_) => OtapArrowRecords::Metrics(Metrics::default()),
+        OtapArrowRecords::Traces(_) => OtapArrowRecords::Traces(Traces::default()),
+    }
+}
+
 /// Convert a `ColumnarValue` into a `BooleanArray` selection vector of the given number of rows.
 ///
 /// Handles:
@@ -282,25 +350,22 @@ impl FilterPipelineStage {
 ///   the null buffer (null predicate results are treated as false)
 /// - `ColumnarValue::Scalar(Boolean(true))` -- all-true array
 /// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` -- all-false array
+///
+/// Callers that can handle a scalar result without a selection vector should use
+/// [`RowSelection::from_aligned_values`] instead.
 pub(crate) fn scoped_value_to_boolean_array(
     values: ColumnarValue,
     num_rows: usize,
 ) -> Result<BooleanArray> {
     match values {
-        ColumnarValue::Scalar(scalar) => match scalar {
-            ScalarValue::Boolean(Some(true)) => {
-                Ok(BooleanArray::new(BooleanBuffer::new_set(num_rows), None))
-            }
-            ScalarValue::Boolean(Some(false)) | ScalarValue::Boolean(None) | ScalarValue::Null => {
-                Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None))
-            }
-            other => Err(Error::ExecutionError {
-                cause: format!(
-                    "expected boolean scalar for filter selection, found {:?}",
-                    other.data_type()
-                ),
-            }),
-        },
+        ColumnarValue::Scalar(scalar) => {
+            let selected = if scalar_predicate_passes(&scalar)? {
+                BooleanBuffer::new_set(num_rows)
+            } else {
+                BooleanBuffer::new_unset(num_rows)
+            };
+            Ok(BooleanArray::new(selected, None))
+        }
         ColumnarValue::Array(arr) => {
             let boolean_arr = as_boolean_array(&arr).map_err(|_| Error::ExecutionError {
                 cause: format!(
@@ -799,6 +864,160 @@ mod test {
         assert_eq!(exec_state.counters().filtered, 2);
         exec_state.reset_counters();
         assert_eq!(exec_state.counters().filtered, 0);
+    }
+
+    /// Scenario: A filter predicate evaluates to the same scalar for every record of logs,
+    /// traces, and metrics batches that have child attribute batches.
+    /// Guarantees: `true` returns the input batch unchanged without counting dropped records,
+    /// and `false` returns an empty batch of the input's signal type while counting every root
+    /// record as dropped.
+    #[tokio::test]
+    async fn test_filter_scalar_predicate_keeps_or_drops_whole_batch() {
+        let attrs = || vec![KeyValue::new("key", AnyValue::new_string("val"))];
+        let inputs = [
+            (
+                otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build()
+                        .event_name("1")
+                        .attributes(attrs())
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("2")
+                        .attributes(attrs())
+                        .finish(),
+                ]))),
+                OtapArrowRecords::Logs(Logs::default()),
+            ),
+            (
+                otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+                    Span::build().name("1").attributes(attrs()).finish(),
+                    Span::build().name("2").attributes(attrs()).finish(),
+                ]))),
+                OtapArrowRecords::Traces(Traces::default()),
+            ),
+            (
+                otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(vec![
+                    Metric::build()
+                        .name("1")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build().attributes(attrs()).finish(),
+                            ],
+                        })
+                        .finish(),
+                    Metric::build()
+                        .name("2")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build().attributes(attrs()).finish(),
+                            ],
+                        })
+                        .finish(),
+                ]))),
+                OtapArrowRecords::Metrics(Metrics::default()),
+            ),
+        ];
+
+        for (input, empty) in inputs {
+            let num_records = input.root_record_batch().unwrap().num_rows();
+            for (query, expected, expected_dropped) in [
+                ("signals | where true", &input, 0),
+                ("signals | where false", &empty, num_records),
+            ] {
+                let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+                let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+                let mut exec_state = ExecutionState::new();
+                let result = pipeline
+                    .execute_with_state(input.clone(), &mut exec_state)
+                    .await
+                    .unwrap();
+
+                assert_eq!(&result, expected, "{query}");
+                assert_eq!(exec_state.counters().filtered, expected_dropped, "{query}");
+            }
+        }
+    }
+
+    /// Scenario: A predicate result aligned to the rows being filtered is a boolean, typed null,
+    /// or untyped null scalar.
+    /// Guarantees: `true` selects every row and `false` or null selects no rows, without
+    /// materializing a selection vector the length of the batch.
+    #[test]
+    fn test_row_selection_from_scalar_predicate_result() {
+        let selection = RowSelection::from_aligned_values(
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
+            3,
+        )
+        .unwrap();
+        assert!(matches!(selection, RowSelection::All), "{selection:?}");
+
+        for scalar in [
+            ScalarValue::Boolean(Some(false)),
+            ScalarValue::Boolean(None),
+            ScalarValue::Null,
+        ] {
+            let selection =
+                RowSelection::from_aligned_values(ColumnarValue::Scalar(scalar), 3).unwrap();
+            assert!(matches!(selection, RowSelection::Empty), "{selection:?}");
+        }
+    }
+
+    /// Scenario: A predicate result aligned to the rows being filtered is a non-boolean scalar.
+    /// Guarantees: Determining the selected rows fails with an execution error instead of
+    /// selecting all or no rows.
+    #[test]
+    fn test_row_selection_rejects_non_boolean_scalar_predicate_result() {
+        let result = RowSelection::from_aligned_values(
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+            3,
+        );
+        assert!(
+            matches!(result, Err(Error::ExecutionError { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// Scenario: A predicate result aligned to the rows being filtered is a boolean array
+    /// containing true, false, and null values.
+    /// Guarantees: The selection vector selects exactly the rows whose result is true, treating
+    /// null as not passing.
+    #[test]
+    fn test_row_selection_from_array_predicate_result() {
+        let values = ColumnarValue::Array(Arc::new(BooleanArray::from(vec![
+            Some(true),
+            Some(false),
+            None,
+        ])));
+        let selection = RowSelection::from_aligned_values(values, 3).unwrap();
+        let expected = BooleanArray::from(vec![true, false, false]);
+        assert!(
+            matches!(&selection, RowSelection::Rows(selection_vec) if *selection_vec == expected),
+            "{selection:?}"
+        );
+    }
+
+    /// Scenario: `scoped_value_to_boolean_array` receives a boolean, typed null, or untyped null
+    /// scalar, as it does for scalar predicate results on the attribute and data point paths.
+    /// Guarantees: `true` produces an all-true selection vector and `false` or null produces an
+    /// all-false one, each with one entry per row and no null buffer.
+    #[test]
+    fn test_scoped_value_to_boolean_array_from_scalar() {
+        let cases = [
+            (ScalarValue::Boolean(Some(true)), true),
+            (ScalarValue::Boolean(Some(false)), false),
+            (ScalarValue::Boolean(None), false),
+            (ScalarValue::Null, false),
+        ];
+        for (scalar, passes) in cases {
+            let selection_vec =
+                scoped_value_to_boolean_array(ColumnarValue::Scalar(scalar.clone()), 3).unwrap();
+            assert_eq!(
+                selection_vec,
+                BooleanArray::from(vec![passes; 3]),
+                "{scalar:?}"
+            );
+            assert!(selection_vec.nulls().is_none(), "{scalar:?}");
+        }
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
