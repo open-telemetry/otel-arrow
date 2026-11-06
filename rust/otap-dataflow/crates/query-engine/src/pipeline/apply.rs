@@ -1429,6 +1429,41 @@ mod test {
         assert_eq!(log_attrs.num_columns(), 3);
     }
 
+    /// Scenario: assign value computed from the default placeholder column
+    /// when the type is integer
+    /// Guarantees: there is not an error during execution (regression test)
+    #[tokio::test]
+    async fn test_pipeline_set_value_from_default_ints() {
+        let input = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(0)),
+                    KeyValue::new("k2", AnyValue::new_int(0)),
+                ])
+                .finish(),
+        ]);
+
+        let input_otap = otlp_to_otap(&OtlpProtoMessage::Logs(input.clone()));
+
+        // this should filter out all the attributes before calling the set operation
+        let query = r#"
+            logs | apply attributes {
+                set value = value
+            }"#;
+
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        let result = pipeline.execute(input_otap).await.unwrap();
+        let OtlpProtoMessage::Logs(result_otlp) = otap_to_otlp(&result) else {
+            panic!("bad signal type")
+        };
+
+        assert_eq!(
+            input.resource_logs[0].scope_logs[0].log_records,
+            result_otlp.resource_logs[0].scope_logs[0].log_records
+        );
+    }
+
     #[tokio::test]
     async fn test_pipeline_set_empty_attrs_batch() {
         let input = to_logs_data(vec![
