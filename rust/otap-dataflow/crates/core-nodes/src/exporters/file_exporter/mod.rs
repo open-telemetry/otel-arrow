@@ -101,6 +101,7 @@ pub static FILE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 exporter_config,
             ))
         },
+    work_coordinators: None,
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |value| FileExporterConfig::parse(value).map(|_| ()),

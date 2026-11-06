@@ -83,6 +83,7 @@ fn create_partition_processor(
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
+    work_coordinators: None,
     context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: |value| {

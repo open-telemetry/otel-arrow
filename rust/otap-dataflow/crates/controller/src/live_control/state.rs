@@ -496,6 +496,8 @@ pub(crate) struct LogicalPipelineDeployment {
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
     pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    pub(super) work_coordinators:
+        Arc<std::sync::OnceLock<Result<Arc<work_coordinator::PipelineCoordinators>, String>>>,
 }
 
 impl LogicalPipelineDeployment {
@@ -513,6 +515,7 @@ impl LogicalPipelineDeployment {
             placement,
             placement_generation: listener_group_snapshot.generation,
             listener_group_snapshot,
+            work_coordinators: Arc::default(),
         }
     }
 

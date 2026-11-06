@@ -138,6 +138,7 @@ mod placement;
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
+mod work_coordinator;
 
 pub use controller_monitor::{
     CONTROLLER_MONITOR_EXTENSION_URN, ControllerMonitorConfig,
@@ -2049,6 +2050,7 @@ impl<
 
         // All telemetry producers and pipelines have finished; shut down the
         // remaining support tasks and the metric aggregator gracefully.
+        let coordinator_result = runtime.shutdown_work_coordinators();
         let admin_server_result = admin_server_handle.shutdown_and_join();
         let metrics_agg_result = metrics_agg_handle.shutdown_and_join();
         let obs_state_result = obs_state_join_handle.shutdown_and_join();
@@ -2060,6 +2062,7 @@ impl<
         if let Some(err) = memory_limiter_error {
             return Err(err);
         }
+        coordinator_result?;
         admin_server_result?;
         metrics_agg_result?;
         obs_state_result?;
@@ -3954,6 +3957,7 @@ connections:
         ReceiverFactory {
             name: "urn:otel:receiver:internal_telemetry",
             create: create_test_observability_receiver,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
@@ -3961,6 +3965,7 @@ connections:
         ReceiverFactory {
             name: "urn:test:receiver:example",
             create: create_test_observability_receiver,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
@@ -3970,6 +3975,7 @@ connections:
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
         name: "urn:otel:processor:type_router",
         create: create_test_observability_processor,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: accept_any_test_config,
@@ -3979,6 +3985,7 @@ connections:
         ExporterFactory {
             name: "urn:otel:exporter:console",
             create: create_test_observability_exporter,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
@@ -3986,6 +3993,7 @@ connections:
         ExporterFactory {
             name: "urn:otel:exporter:noop",
             create: create_test_observability_exporter,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
@@ -3993,6 +4001,7 @@ connections:
         ExporterFactory {
             name: "urn:test:exporter:example",
             create: create_test_observability_exporter,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
@@ -4049,6 +4058,7 @@ connections:
                 ReceiverFactory {
                     name: "urn:test:receiver:state_directory",
                     create: create_receiver,
+                    work_coordinators: None,
                     context_declarations: None,
                     wiring_contract: WiringContract::UNRESTRICTED,
                     validate_config: accept_any_test_config,
@@ -4056,6 +4066,7 @@ connections:
                 ReceiverFactory {
                     name: "urn:otel:receiver:internal_telemetry",
                     create: create_test_observability_receiver,
+                    work_coordinators: None,
                     context_declarations: None,
                     wiring_contract: WiringContract::UNRESTRICTED,
                     validate_config: accept_any_test_config,

@@ -72,6 +72,39 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    fn quiesce_work_coordinators(&self, key: Option<&PipelineKey>) {
+        let deployments: Vec<_> = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .logical_pipelines
+                .iter()
+                .filter(|(candidate, _)| key.is_none_or(|key| key == *candidate))
+                .map(|(_, deployment)| deployment.clone())
+                .collect()
+        };
+        for deployment in deployments {
+            if let Some(Ok(hosts)) = deployment.work_coordinators.get() {
+                hosts.bindings.begin_shutdown();
+            }
+        }
+    }
+
+    pub(crate) fn shutdown_work_coordinators(&self) -> Result<(), Error> {
+        let deployments: Vec<_> = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.logical_pipelines.values().cloned().collect()
+        };
+        let mut first = None;
+        for deployment in deployments {
+            if let Some(Ok(hosts)) = deployment.work_coordinators.get()
+                && let Err(error) = hosts.shutdown()
+            {
+                let _ = first.get_or_insert(error);
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
     /// Launches one pipeline OS thread and wires its terminal exit back into the controller.
     ///
     /// The deployment supplies all pipeline-wide configuration. Core id, runtime generation,
@@ -106,6 +139,39 @@ impl<
             core_id,
             deployment_generation,
         };
+        let coordinators = deployment
+            .work_coordinators
+            .get_or_init(|| {
+                let runtime = Arc::downgrade(self);
+                let key = PipelineKey::new(
+                    deployment.resolved.pipeline_group_id.clone(),
+                    deployment.resolved.pipeline_id.clone(),
+                );
+                let generation = deployment.baseline_generation;
+                work_coordinator::PipelineCoordinators::start(
+                    self.pipeline_factory,
+                    &deployment.resolved.pipeline,
+                    deployment.resolved.pipeline_group_id.clone(),
+                    deployment.resolved.pipeline_id.clone(),
+                    generation,
+                    deployment
+                        .placement
+                        .cores
+                        .iter()
+                        .map(|core| core.core_id.id),
+                    Arc::clone(&self.work_coordinator_budget),
+                    tracing_setup.clone(),
+                    Arc::new(move |error| {
+                        if let Some(runtime) = runtime.upgrade() {
+                            runtime.fail_runtime_recovery(&key, 0, generation, 0, 0, error);
+                        }
+                    }),
+                )
+            })
+            .as_ref()
+            .map_err(|error| Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(error.clone())),
+            })?;
         let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -123,6 +189,7 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
+        pipeline_ctx.set_work_coordinators(Arc::clone(&coordinators.bindings));
         pipeline_ctx
             .set_listener_group_snapshot_arc(Arc::clone(&deployment.listener_group_snapshot));
         pipeline_ctx.set_compiled_context_bindings(Arc::clone(&deployment.context_bindings));
@@ -520,6 +587,27 @@ impl<
             }
             return;
         };
+        if !self
+            .pipeline_factory
+            .work_coordinator_declarations(&current_deployment.resolved.pipeline)
+            .is_ok_and(|declarations| declarations.is_empty())
+        {
+            if let Some(Ok(hosts)) = current_deployment.work_coordinators.get() {
+                hosts.bindings.stop();
+            }
+            self.fail_runtime_recovery(
+                &pipeline_key,
+                failed_key.core_id,
+                failed_key.deployment_generation,
+                0,
+                0,
+                format!(
+                    "Basic work coordination cannot recover a single participant: {}",
+                    error.message
+                ),
+            );
+            return;
+        }
         let policy = current_deployment
             .resolved
             .policies
@@ -1499,6 +1587,10 @@ impl<
             })?
         };
 
+        self.quiesce_work_coordinators(Some(&PipelineKey::new(
+            deployed_key.pipeline_group_id.clone(),
+            deployed_key.pipeline_id.clone(),
+        )));
         if let Err(err) = sender.try_send_shutdown(drain_deadline, reason.to_owned()) {
             return match self.instance_exit(deployed_key) {
                 Some(RuntimeInstanceExit::Success) => Ok(()),
@@ -1641,6 +1733,7 @@ impl<
         self: &Arc<Self>,
         timeout_secs: u64,
     ) -> Result<(), ControlPlaneError> {
+        self.quiesce_work_coordinators(None);
         self.cancel_all_runtime_recoveries();
         let shutdown_timeout = Duration::from_secs(timeout_secs.max(1));
         let deadline = Instant::now() + shutdown_timeout;
@@ -2134,6 +2227,10 @@ impl<
             engine_operation_id,
             initiator,
         )?;
+        self.quiesce_work_coordinators(Some(&PipelineKey::new(
+            pipeline_group_id.to_owned().into(),
+            pipeline_id.to_owned().into(),
+        )));
         self.spawn_shutdown_for_engine_operation(plan, engine_operation_id)
     }
 

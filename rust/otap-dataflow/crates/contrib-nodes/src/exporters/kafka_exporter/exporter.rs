@@ -352,6 +352,7 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
             ))
         },
     validate_config: validate_typed_config::<KafkaExporterConfig>,
+    work_coordinators: None,
     context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
         KafkaExporterConfig,
     >()),

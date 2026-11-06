@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+#[path = "work_coordinator_tests.rs"]
+mod work_coordinator_tests;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
@@ -422,6 +424,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -429,6 +432,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -436,6 +440,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:otlp",
         create: test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -443,6 +448,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -452,6 +458,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
     name: "urn:otel:processor:type_router",
     create: test_processor_create,
+    work_coordinators: None,
     context_declarations: None,
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: test_validate_config,
@@ -461,6 +468,7 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -468,6 +476,7 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:topic",
         create: test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -475,6 +484,7 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -482,6 +492,7 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -499,6 +510,7 @@ static CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: CONTEXT_BINDINGS_TEST_RECEIVER_URN,
         create: context_bindings_test_receiver_create,
+        work_coordinators: None,
         context_declarations: Some(ContextDeclarationProvider {
             declarations: context_bindings_test_declarations,
         }),
@@ -510,6 +522,7 @@ static CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -520,6 +533,7 @@ static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -527,6 +541,7 @@ static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:context-reads",
         create: recovery_test_exporter_create,
+        work_coordinators: None,
         context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
             ContextReadTestConfig,
         >()),
@@ -538,6 +553,7 @@ static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -545,6 +561,7 @@ static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -562,6 +579,7 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: recovery_test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -569,6 +587,7 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -579,6 +598,7 @@ static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -586,6 +606,7 @@ static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: recovery_test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -593,6 +614,7 @@ static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: recovery_test_exporter_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -610,6 +632,7 @@ static STARTUP_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: startup_failing_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -617,6 +640,7 @@ static STARTUP_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -634,6 +658,7 @@ static READY_THEN_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: ready_then_failing_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -641,6 +666,7 @@ static READY_THEN_FAILING_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -658,6 +684,7 @@ static DELAYED_READY_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: delayed_ready_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -665,6 +692,7 @@ static DELAYED_READY_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        work_coordinators: None,
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -8728,6 +8756,7 @@ async fn has_active_instances_checks_multiple_state_fields() {
             create: blocking_create,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: test_validate_config,
+            work_coordinators: None,
             context_declarations: None,
         },
         ReceiverFactory {
@@ -8735,6 +8764,7 @@ async fn has_active_instances_checks_multiple_state_fields() {
             create: test_receiver_create,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: test_validate_config,
+            work_coordinators: None,
             context_declarations: None,
         },
     ]));

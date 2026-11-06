@@ -149,6 +149,7 @@ pub struct PipelineContext {
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
     /// Compiled context bindings shared by this runtime's nodes.
     compiled_context_bindings: Arc<CompiledContextBindings>,
+    work_coordinators: Arc<crate::work_coordinator::CoordinatorBindings>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -331,6 +332,32 @@ impl From<&PipelineContextParams> for PipelineKey {
 }
 
 impl PipelineContext {
+    /// Install controller-prepared bindings before constructing nodes.
+    pub fn set_work_coordinators(
+        &mut self,
+        bindings: Arc<crate::work_coordinator::CoordinatorBindings>,
+    ) {
+        self.work_coordinators = bindings;
+    }
+
+    /// Bind this node's declared coordinator once during initialization.
+    pub fn work_coordinator<P: crate::work_coordinator::WorkProtocol>(
+        &self,
+        role: &str,
+    ) -> Result<
+        crate::work_coordinator::WorkParticipant<P>,
+        crate::work_coordinator::CoordinatorError,
+    > {
+        self.work_coordinators.take::<P>(
+            &self.pipeline_group_id(),
+            &self.pipeline_id(),
+            &self.node_id,
+            role,
+            self.core_id(),
+            self.deployment_generation,
+        )
+    }
+
     /// Returns the engine [StateDirectory](crate::state_dir::StateDirectory),
     /// or `None` when no state root is configured.
     #[must_use]
@@ -370,6 +397,7 @@ impl PipelineContext {
             topic_set: None,
             listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
             compiled_context_bindings: Arc::new(CompiledContextBindings::empty()),
+            work_coordinators: Arc::default(),
         }
     }
 
@@ -852,6 +880,7 @@ impl PipelineContext {
             topic_set: self.topic_set.clone(),
             listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
             compiled_context_bindings: self.compiled_context_bindings.clone(),
+            work_coordinators: Arc::clone(&self.work_coordinators),
         }
     }
 }

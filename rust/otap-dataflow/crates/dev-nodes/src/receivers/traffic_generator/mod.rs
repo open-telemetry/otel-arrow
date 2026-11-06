@@ -122,6 +122,7 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
                 receiver_config,
             ))
         },
+    work_coordinators: None,
     context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config,
