@@ -77,13 +77,6 @@ Other shared gRPC server fields (for example `max_decoding_message_size` and the
 TCP/HTTP2 tuning fields) are also accepted; see the
 [OTLP receiver](../otlp_receiver/README.md) for the full list.
 
-### Deprecated fields
-
-- `compression_method`: deprecated alias that applies a single method (or
-  `"none"`) to both `request_compression` and `response_compression`. It cannot
-  be combined with either new field. Prefer `request_compression` and
-  `response_compression`.
-
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine
