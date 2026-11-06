@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793937628390,
+  "lastUpdate": 1793990189254,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -81021,6 +81021,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 108.65,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "246c671ee02e23f69576a0763964712e1762bf8c",
+          "message": "feat(engine): Add engine.telemetry.metric_unregister_grace_period setting (#4582)\n\n# Change summary\n\nThis PR is the first in a series attempting to solve #2731. It replaces\nthe push-based approach from #4229. #4229 hit an issue with networking\non our bare metal runner, and the complexity of adding a running a\nseparate metrics server into the cluster and trying to merge its results\ninto the other scrape based metrics collection was just not worth it.\nThese changes would also have to be ported to anybody running suites\noutside of docker.\n\nInstead I want to solve this problem by adding a configurable grace\nperiod forunregistered metrics sets to remain available for scraping\ninside the DFE. When a pipeline is stopped, its metric sets keep their\nfinal values for the grace period, which allows scrapers to pick up the\nfinal values.\n\nThe rest of the series moves the benchmark reports to whole-run loss\nusing this setting, and then remove the push-based metrics capabilities\nfrom the orchestrator.\n\n## Related issue\n\n* Part of #2731\n\n## Validation\n\n  | Test | Before (0s grace) | After (5s grace) |\n  |---|---:|---:|\n  | OTLP-ATTR-OTLP (saturation-max-throughput) | -5.29% | 0 |\n  | OTAP-ATTR-OTAP (saturation-max-throughput-otap) | -5.26% | 0 |\n\nThe remaining data loss is I think related to #3870.\n\n## User-facing changes\n\nA new DFE setting called `metric_unregister_grace_period`.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-11-06T17:58:00Z",
+          "tree_id": "66b2891ba1f2fcd2a5ca712d317252eaceca10d6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/246c671ee02e23f69576a0763964712e1762bf8c"
+        },
+        "date": 1793990173919,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.71,
             "unit": "MB"
           }
         ]
