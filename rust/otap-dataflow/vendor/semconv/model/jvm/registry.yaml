@@ -52,6 +52,10 @@ groups:
           Pool names are generally obtained via
           [MemoryPoolMXBean#getName()](https://docs.oracle.com/en/java/javase/11/docs/api/java.management/java/lang/management/MemoryPoolMXBean.html#getName()).
       - id: jvm.thread.daemon
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [3, 1]
         stability: stable
         type: boolean
         brief: "Whether the thread is daemon or not."

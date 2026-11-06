@@ -7,12 +7,12 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::EncodeError;
-use weaver_forge::v1::registry::ResolvedRegistry;
 
 use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
     build_rotation_table,
 };
+use super::semconv_model::SemconvModel;
 use super::{semconv_signal, synthetic_signal};
 
 /// A SignalProducer yields the signals that need to be exported in a given
@@ -48,11 +48,11 @@ impl TrafficProducer {
         // Build the concrete SignalGenerator based on the data source.
         let mut generator: Box<dyn SignalGenerator> = match config.data_source() {
             DataSource::SemanticConventions => {
-                let registry = config
-                    .get_registry()
+                let model = config
+                    .get_semconv_model()
                     .map_err(GenerateError::Configuration)?
-                    .expect("SemanticConventions data source should return Some registry");
-                Box::new(WeaverGenerator { registry })
+                    .expect("SemanticConventions data source should return Some model");
+                Box::new(WeaverGenerator { model })
             }
             DataSource::Synthetic => {
                 let entries = config.resource_attributes().to_vec();
@@ -450,26 +450,29 @@ pub trait SignalGenerator {
 /// Signal generator backed by the Weaver semantic conventions registry.
 ///
 /// Produces signals whose attributes are derived from the resolved registry,
-/// giving realistic cardinality and naming.
+/// giving realistic cardinality and naming. Values are driven by the
+/// registry's `traffic-generator` annotations where present. The registry is
+/// compiled once at startup ([`SemconvModel`]), so generation never re-parses
+/// annotations or rebuilds samplers.
 pub struct WeaverGenerator {
-    registry: ResolvedRegistry,
+    model: SemconvModel,
 }
 
 impl SignalGenerator for WeaverGenerator {
     fn generate_logs(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_logs(count, &self.registry);
+        let payload = semconv_signal::semconv_otlp_logs(count, &self.model);
         let payload = OtlpProtoMessage::Logs(payload);
         Ok(payload.try_into()?)
     }
 
     fn generate_metrics(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_metrics(count, &self.registry);
+        let payload = semconv_signal::semconv_otlp_metrics(count, &self.model);
         let payload = OtlpProtoMessage::Metrics(payload);
         Ok(payload.try_into()?)
     }
 
     fn generate_traces(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_traces(count, &self.registry);
+        let payload = semconv_signal::semconv_otlp_traces(count, &self.model);
         let payload = OtlpProtoMessage::Traces(payload);
         Ok(payload.try_into()?)
     }

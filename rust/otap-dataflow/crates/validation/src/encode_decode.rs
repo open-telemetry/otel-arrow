@@ -116,7 +116,8 @@ mod test {
     fn validate_encode_decode() {
         let mut otel_proto_simulator = OtelProtoSimulator::default();
 
-        let registry = get_registry();
+        let registry = otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel::compile(&get_registry())
+            .expect("registry annotations are valid");
 
         for _ in 0..ITERATIONS {
             // generate data and simulate the protocol and compare result
