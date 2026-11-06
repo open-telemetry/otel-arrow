@@ -1,6 +1,5 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
-
 //! Task periodically collecting the internal signals emitted by the engine and the pipelines.
 
 use std::future::Future;
@@ -446,10 +445,10 @@ mod tests {
 
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
-        assert!(telemetry_registry.unregister_metric_set_at(
-            metric_set.key,
-            tokio::time::Instant::now().into_std(),
-        ));
+        assert!(
+            telemetry_registry
+                .unregister_metric_set_at(metric_set.key, tokio::time::Instant::now().into_std(),)
+        );
 
         tokio::time::sleep(Duration::from_secs(29)).await;
         assert_eq!(telemetry_registry.metric_set_count(), 1);
@@ -478,7 +477,10 @@ mod tests {
         let handle = tokio::spawn(collector.clone().run(cancel.clone()));
         let first: crate::metrics::MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("first"));
-        assert!(telemetry_registry.unregister_metric_set(first.key));
+        assert!(
+            telemetry_registry
+                .unregister_metric_set_at(first.key, tokio::time::Instant::now().into_std())
+        );
         // Let the running collector consume the notification for the first deadline.
         tokio::time::sleep(Duration::from_secs(1)).await;
         cancel.cancel();
@@ -489,7 +491,10 @@ mod tests {
         // The queue is not empty, so this unregister does not notify the collector.
         let second: crate::metrics::MetricSet<MockMetricSet> =
             telemetry_registry.register_metric_set(MockAttributeSet::new("second"));
-        assert!(telemetry_registry.unregister_metric_set(second.key));
+        assert!(
+            telemetry_registry
+                .unregister_metric_set_at(second.key, tokio::time::Instant::now().into_std())
+        );
         assert_eq!(telemetry_registry.metric_set_count(), 2);
 
         tokio::time::sleep(Duration::from_secs(32)).await;
