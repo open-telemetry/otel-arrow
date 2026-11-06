@@ -1,13 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Node-declared work coordination for a fixed fleet of pipeline instances.
+//! Node-declared work coordination across pipeline instances.
 //!
 //! A controller hosts discovery once, outside the data-plane runtimes. Nodes
 //! bind a typed participant during construction, report readiness without
 //! waiting for assignments, and execute only activated grants. Basic consumers
 //! must stop and restart the logical pipeline to change its configuration or
-//! fleet. See `docs/work-coordinator.md` for the receiver integration contract.
+//! fleet. Cooperative consumers opt into compatible settings revisions, live
+//! handoff and qualified recovery. See `docs/work-coordinator.md` for integration.
 
 mod authority;
 mod lifecycle;
@@ -33,7 +34,7 @@ use std::{any::TypeId, fmt::Debug, sync::Arc};
 
 /// A protocol's metadata and custom message types. They never contain PData.
 pub trait WorkProtocol: Send + Sync + 'static {
-    /// Immutable execution metadata for a work ID. Change the ID when this changes.
+    /// Immutable metadata for a work ID within one settings revision.
     type Work: RetainedBytes + Clone + PartialEq + Debug + Send + Sync + 'static;
     /// Participant-to-coordinator protocol messages.
     type ParticipantRequest: RetainedBytes + Send + 'static;
@@ -95,7 +96,7 @@ pub enum ParticipantState {
     ReadyForAssignments,
 }
 
-/// Bounded, complete view of the Basic fleet. No administrative polling is used.
+/// Bounded, complete view of registered sessions. No administrative polling is used.
 #[derive(Clone, Debug)]
 pub struct ParticipantRegistry {
     /// Monotonic revision of this complete registry snapshot.
@@ -109,7 +110,7 @@ pub struct ParticipantRegistry {
 pub struct CoordinatorStatus {
     /// Current lifecycle operation and phase, if any.
     pub reconciliation: Option<(OperationId, ReconciliationPhase)>,
-    /// Initial fleet size.
+    /// Registered sessions, including candidates during reconciliation.
     pub participants: usize,
     /// Ready participants, including idle instances.
     pub ready_participants: usize,
@@ -144,7 +145,7 @@ pub enum CapabilityProfile {
     /// Fixed fleet, in-memory authority and cooperative catalog removal.
     #[default]
     Basic,
-    /// Live resize and replacement; reserved for the next implementation layer.
+    /// Live resize, compatible settings replacement and qualified recovery.
     Cooperative,
     /// Durable, conditional progress; reserved for qualified backends/adapters.
     FencedProgress,
@@ -169,9 +170,9 @@ pub enum ProgressRequirement {
 pub struct CoordinatorLimits {
     /// Maximum retained catalog entries, including entries awaiting release.
     pub catalog_items: usize,
-    /// Maximum retained catalog bytes, including IDs and execution metadata.
+    /// Maximum retained catalog bytes across live settings revisions.
     pub catalog_bytes: usize,
-    /// Maximum initial participants.
+    /// Initial participant limit; at most twice this many sessions may coexist.
     pub participants: usize,
     /// Slots in the custom request queue and each custom notice queue.
     pub message_items: usize,

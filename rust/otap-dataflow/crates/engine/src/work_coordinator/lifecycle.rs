@@ -157,6 +157,8 @@ impl ProviderReceipt {
         (Self { sender }, receiver)
     }
     /// Send a definite outcome. Failed preparation must clean up its staged workers.
+    /// `Stale` means the controller stopped awaiting this receipt, for example
+    /// because abort preempted preparation. Continue handling queued cleanup events.
     pub fn acknowledge(self, result: Result<(), CoordinatorError>) -> Result<(), CoordinatorError> {
         self.sender
             .send(result)

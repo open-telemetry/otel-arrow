@@ -22,7 +22,7 @@ struct Stage {
     phase: ReconciliationPhase,
     prepare: Option<ReceiptCompleter>,
     finish: Option<ReceiptCompleter>,
-    preparation_failed: bool,
+    prepare_cleanup_confirmed: bool,
     provider_done: bool,
 }
 struct Activation {
@@ -110,6 +110,21 @@ impl<P: WorkProtocol> Fleet<P> {
     }
     fn phase(&mut self, phase: ReconciliationPhase) {
         if let Some(stage) = &mut self.stage {
+            // Recovery and rollback relaunches can activate instances after a
+            // reconciliation finishes or while its cleanup is pending. Those
+            // ownership transitions must not reopen or regress that operation.
+            if matches!(
+                stage.phase,
+                ReconciliationPhase::Committed | ReconciliationPhase::Aborted
+            ) || (matches!(
+                stage.phase,
+                ReconciliationPhase::CommitDecided | ReconciliationPhase::Aborting
+            ) && matches!(
+                phase,
+                ReconciliationPhase::Activating | ReconciliationPhase::Activated
+            )) {
+                return;
+            }
             stage.phase = phase;
             self.domain.status.lock().reconciliation = Some((stage.operation, phase));
         }
@@ -580,7 +595,7 @@ impl<P: WorkProtocol> Fleet<P> {
             phase: ReconciliationPhase::Preparing,
             prepare: Some(receipt),
             finish: None,
-            preparation_failed: false,
+            prepare_cleanup_confirmed: false,
             provider_done: !changed,
         });
         if changed {
@@ -610,19 +625,23 @@ impl<P: WorkProtocol> Fleet<P> {
                 self.provider_completed(Ok(Err(CoordinatorError::Capacity)))?;
             }
         } else {
-            self.prepared(Ok(()));
+            self.prepared(Ok(()), true);
         }
         Ok(())
     }
-    fn prepared(&mut self, result: Result<(), CoordinatorError>) {
+    fn prepared(&mut self, result: Result<(), CoordinatorError>, definite: bool) {
         if let Some(stage) = &mut self.stage {
-            stage.preparation_failed = result.is_err();
+            // An explicit failed preparation promises cleanup. Losing its
+            // receipt proves nothing about candidate workers; abort must join
+            // them before another revision can be staged.
+            stage.prepare_cleanup_confirmed = result.is_err() && definite;
             stage.provider_done = true;
+            let succeeded = result.is_ok();
             if let Some(receipt) = stage.prepare.take() {
                 receipt
                     .finish(result.map(|()| ReconciliationOutcome::Prepared(stage.new_revision)));
             }
-            if !stage.preparation_failed {
+            if succeeded {
                 self.phase(ReconciliationPhase::Prepared);
             }
         }
@@ -782,7 +801,7 @@ impl<P: WorkProtocol> Fleet<P> {
             }
             stage.finish = Some(receipt);
             stage.provider_done =
-                stage.old_revision == stage.new_revision || stage.preparation_failed;
+                stage.old_revision == stage.new_revision || stage.prepare_cleanup_confirmed;
         }
         self.phase(if commit {
             ReconciliationPhase::CommitDecided
@@ -791,7 +810,7 @@ impl<P: WorkProtocol> Fleet<P> {
         });
         let stage = self.stage.as_ref().expect("stage");
         let new_revision = stage.new_revision;
-        let changed = stage.old_revision != stage.new_revision && !stage.preparation_failed;
+        let changed = stage.old_revision != stage.new_revision && !stage.prepare_cleanup_confirmed;
         if commit {
             self.domain
                 .current_revision
@@ -850,6 +869,7 @@ impl<P: WorkProtocol> Fleet<P> {
         result: Result<Result<(), CoordinatorError>, oneshot::error::RecvError>,
     ) -> Result<(), CoordinatorError> {
         self.provider_pending = None;
+        let definite = result.is_ok();
         let result = result.unwrap_or_else(|_| {
             Err(CoordinatorError::Failed(
                 "provider receipt lost; cleanup outcome unknown".into(),
@@ -860,7 +880,7 @@ impl<P: WorkProtocol> Fleet<P> {
             .as_ref()
             .is_some_and(|stage| stage.phase == ReconciliationPhase::Preparing)
         {
-            self.prepared(result);
+            self.prepared(result, definite);
         } else if let Some(stage) = &mut self.stage {
             match result {
                 Ok(()) => stage.provider_done = true,
@@ -935,6 +955,37 @@ impl<P: WorkProtocol> Fleet<P> {
                     })
         })
     }
+    fn reclaim_unbound_candidates(&mut self) {
+        // Match the registration lock order. Binding an endpoint and discarding
+        // it must be atomic with respect to take(); a bound node owns cleanup.
+        let mut members = self.domain.members.lock();
+        let mut participants = self.participants.lock();
+        let prior = &self.stage.as_ref().expect("aborting stage").prior;
+        let abandoned: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                !session.eligible
+                    && !prior.get(&session.port.member.session.core_id).is_some_and(
+                        |(generation, revision)| {
+                            *generation == session.port.member.session.generation
+                                && *revision == session.port.member.revision
+                        },
+                    )
+                    && !session.port.member.bound.load(Ordering::Acquire)
+                    && session.port.member.owned.load(Ordering::Acquire) == 0
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in abandoned {
+            if let Some(member) = members.remove(&id) {
+                member.alive.store(false, Ordering::Release);
+            }
+            let _ = participants.remove(&(id.core_id, id.generation));
+            let _ = self.notices.lock().remove(&id);
+            let _ = self.sessions.remove(&id);
+        }
+    }
     pub fn progress(&mut self) -> Result<(), CoordinatorError> {
         if let Some(activation) = &self.activation {
             if activation.target.is_some_and(|target| !self.live(target)) {
@@ -1005,6 +1056,9 @@ impl<P: WorkProtocol> Fleet<P> {
             let _ = self.desired.remove(&discard);
         }
         self.garbage_collect();
+        if !commit {
+            self.reclaim_unbound_candidates();
+        }
         let outcome = if commit {
             ReconciliationOutcome::Committed
         } else {

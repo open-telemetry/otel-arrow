@@ -826,6 +826,11 @@ impl<
                 "internal error: resize rollback missing current deployment".to_owned(),
             ));
         };
+        if let Some(hosts) = self.work_coordinators_for(&plan.pipeline_key) {
+            hosts
+                .begin_abort()
+                .map_err(RolloutExecutionError::RollbackFailed)?;
+        }
         let previous_generation = previous.baseline_generation;
 
         for core_id in retired_cores.iter().rev() {
@@ -940,6 +945,11 @@ impl<
                 "internal error: replace rollback missing current deployment".to_owned(),
             ));
         };
+        if let Some(hosts) = self.work_coordinators_for(&plan.pipeline_key) {
+            hosts
+                .begin_abort()
+                .map_err(RolloutExecutionError::RollbackFailed)?;
+        }
 
         // Rollback must restore the exact pre-rollout generation for each core.
         // previous.baseline_generation only identifies the committed deployment and can

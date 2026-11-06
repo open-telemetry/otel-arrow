@@ -1250,6 +1250,17 @@ impl<
                 let accepted = instance.accepted_condition().status == ConditionStatus::True;
                 let ready = instance.ready_condition().status == ConditionStatus::True;
                 if accepted && ready {
+                    if let Some(hosts) = self.work_coordinators_for(pipeline_key) {
+                        hosts
+                            .activate(
+                                otel_arrow_dfe_engine::work_coordinator::ParticipantSpec {
+                                    core_id,
+                                    generation: target_key.deployment_generation,
+                                },
+                                deadline,
+                            )
+                            .map_err(RecoveryReadyError::Failed)?;
+                    }
                     return Ok(());
                 }
                 if matches!(
@@ -1540,20 +1551,10 @@ impl<
                 return Ok(());
             }
 
-            let mut observed_terminal_phase = false;
-            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
-                && let Some(instance) =
-                    status.instance_status(deployed_key.core_id, deployed_key.deployment_generation)
-            {
-                observed_terminal_phase = matches!(
-                    instance.phase(),
-                    PipelinePhase::Failed(_)
-                        | PipelinePhase::Rejected(_)
-                        | PipelinePhase::Deleted
-                        | PipelinePhase::Stopped
-                );
-            }
-
+            // A rollback can relaunch the same core and generation with a fresh
+            // runtime record. Its old observed terminal event may still be in
+            // the asynchronous store. Only this launch's readiness flag and
+            // physical exit record decide startup success or failure.
             if let Some(exit) = self.instance_exit(deployed_key) {
                 return match exit {
                     RuntimeInstanceExit::Success => Err(format!(
@@ -1562,13 +1563,6 @@ impl<
                     )),
                     RuntimeInstanceExit::Error(error) => Err(error.message),
                 };
-            }
-
-            if observed_terminal_phase {
-                return Err(format!(
-                    "pipeline failed to become ready on core {} (generation {})",
-                    deployed_key.core_id, deployed_key.deployment_generation
-                ));
             }
 
             if Instant::now() >= deadline {

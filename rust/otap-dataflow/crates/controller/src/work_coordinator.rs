@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Controller-owned Basic hosts. No coordinator runs on a pipeline thread.
+//! Controller-owned hosts and reconciliation. No coordinator runs on a pipeline thread.
 
 use crate::error::Error;
 use otel_arrow_dfe_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
@@ -337,6 +337,52 @@ impl PipelineCoordinators {
         }
     }
 
+    fn submit_finish(
+        pending: &PendingReconciliation,
+        commit: bool,
+    ) -> Result<Vec<ReconciliationReceipt>, String> {
+        if !commit && pending.decided.load(Ordering::Acquire) {
+            return Err("controller already committed the coordinator revision".into());
+        }
+        let operations = pending
+            .operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut receipts = pending
+            .final_receipts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Keep each submission immediately, including partial multi-role
+        // submission. Cleanup retries query the same operation and receipt.
+        for (_, binding, prepared) in operations.into_iter().skip(receipts.len()) {
+            let operation: OperationId = prepared.operation();
+            receipts.push(
+                if commit {
+                    binding.commit(operation)
+                } else {
+                    binding.abort(operation)
+                }
+                .map_err(|e| e.to_string())?,
+            );
+        }
+        Ok(receipts.clone())
+    }
+
+    /// Cancel ownership transitions before physical rollback starts. Waiting
+    /// here would deadlock when old instances still need to be relaunched.
+    pub(crate) fn begin_abort(&self) -> Result<(), String> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(pending) = pending {
+            let _ = Self::submit_finish(&pending, false)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn finish(&self, commit: bool, deadline: Instant) -> Result<(), String> {
         let pending = self
             .pending
@@ -346,43 +392,7 @@ impl PipelineCoordinators {
         let Some(pending) = pending else {
             return Ok(());
         };
-        if !commit && pending.decided.load(Ordering::Acquire) {
-            return Err("controller already committed the coordinator revision".into());
-        }
-        let operations = pending
-            .operations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let cached = pending
-            .final_receipts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let receipts = if commit && !cached.is_empty() {
-            cached
-        } else {
-            let mut receipts = Vec::new();
-            for (_, binding, prepared) in operations {
-                let operation: OperationId = prepared.operation();
-                receipts.push(
-                    if commit {
-                        binding.commit(operation)
-                    } else {
-                        binding.abort(operation)
-                    }
-                    .map_err(|e| e.to_string())?,
-                );
-            }
-            if commit {
-                *pending
-                    .final_receipts
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = receipts.clone();
-            }
-            receipts
-        };
-        for receipt in receipts {
+        for receipt in Self::submit_finish(&pending, commit)? {
             let _ = receipt.wait_until(deadline).map_err(|e| e.to_string())?;
         }
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
