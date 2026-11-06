@@ -30,7 +30,13 @@ mod sysinfo_impl {
     /// Gets current process memory from sysinfo.
     /// Note: This is less precise than jemalloc stats but works on Windows.
     pub fn current_allocated() -> u64 {
-        let mut sys = System::new();
+        let mut sys = match System::new() {
+            Ok(sys) => sys,
+            Err(error) => {
+                eprintln!("Cannot read process memory: {error}");
+                return 0;
+            }
+        };
         let pid = Pid::from_u32(std::process::id());
         let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
         sys.process(pid).map(|p| p.memory()).unwrap_or(0)

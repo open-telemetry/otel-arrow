@@ -57,7 +57,13 @@ fn read_process_syscalls() -> (u64, u64) {
     // We convert to estimated operation counts by dividing by typical I/O block size (4KB).
     // This provides roughly comparable metrics to Linux syscr/syscw.
     const IO_BLOCK_SIZE: u64 = 4096;
-    let mut sys = System::new();
+    let mut sys = match System::new() {
+        Ok(sys) => sys,
+        Err(error) => {
+            eprintln!("Cannot read process I/O counters: {error}");
+            return (0, 0);
+        }
+    };
     let pid = Pid::from_u32(std::process::id());
     let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     if let Some(proc) = sys.process(pid) {
@@ -139,7 +145,13 @@ fn read_process_rss_bytes() -> u64 {
 
 #[cfg(windows)]
 fn read_process_rss_bytes() -> u64 {
-    let mut sys = System::new();
+    let mut sys = match System::new() {
+        Ok(sys) => sys,
+        Err(error) => {
+            eprintln!("Cannot read process RSS: {error}");
+            return 0;
+        }
+    };
     let pid = Pid::from_u32(std::process::id());
     let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     // sysinfo's memory() on Windows returns the working set size in bytes
@@ -203,6 +215,7 @@ pub struct Dashboard {
 impl Dashboard {
     /// Creates and initializes the dashboard.
     pub fn new(target_duration: Duration) -> io::Result<Self> {
+        let system = System::new().map_err(io::Error::other)?;
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
@@ -238,7 +251,7 @@ impl Dashboard {
             minflt_history: Vec::with_capacity(max_history_len),
             majflt_history: Vec::with_capacity(max_history_len),
             buffered_history: Vec::with_capacity(max_history_len),
-            system: System::new(),
+            system,
             pid: Pid::from_u32(std::process::id()),
             last_iteration_time: Instant::now(),
             last_iteration_consumed: 0,
