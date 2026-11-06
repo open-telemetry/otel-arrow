@@ -75,3 +75,4 @@ venv
 # Syncthing
 **/~syncthing~**
 *.sync-conflict-*
+/data_analysis/.vs
