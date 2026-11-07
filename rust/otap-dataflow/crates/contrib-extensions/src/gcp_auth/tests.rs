@@ -103,6 +103,14 @@ fn normalized_endpoint_strips_trailing_slashes_and_preserves_scheme() {
         cfg.normalized_endpoint().unwrap().as_deref(),
         Some("https://metadata.example.internal:8080")
     );
+    let upper_cfg = config_from_json(serde_json::json!({
+        "endpoint": "HTTP://metadata.example.internal:8080//",
+    }))
+    .expect("valid uppercase scheme config");
+    assert_eq!(
+        upper_cfg.normalized_endpoint().unwrap().as_deref(),
+        Some("HTTP://metadata.example.internal:8080")
+    );
     assert_eq!(
         config::trim_endpoint_trailing_slashes("http://"),
         "http://",
@@ -140,6 +148,18 @@ fn config_validation_rejects_invalid_values() {
         ),
         (
             serde_json::json!({ "endpoint": "http://" }),
+            "non-empty host",
+        ),
+        (
+            serde_json::json!({ "endpoint": "https://" }),
+            "non-empty host",
+        ),
+        (
+            serde_json::json!({ "endpoint": "http:///" }),
+            "non-empty host",
+        ),
+        (
+            serde_json::json!({ "endpoint": "http://:8080" }),
             "non-empty host",
         ),
         (
@@ -381,9 +401,9 @@ async fn multiple_scopes_and_empty_scopes_are_handled_correctly() {
     .await;
 
     let multi_cfg = config_from_json(serde_json::json!({
-        "endpoint": multi_server.uri(),
+        "endpoint": format!("{}///", multi_server.uri()),
         "scopes": [
-            "https://www.googleapis.com/auth/monitoring.write",
+            "  https://www.googleapis.com/auth/monitoring.write  ",
             "https://www.googleapis.com/auth/logging.write",
         ],
     }))
@@ -448,10 +468,16 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
 
         let cfg = config_from_json(serde_json::json!({ "endpoint": server.uri() })).expect("valid");
         let auth = Auth::new(&cfg).expect("auth builds");
-        let _ = auth
+        let bad_err = auth
             .fetch()
             .await
             .expect_err("invalid token_type or access_token must be rejected");
+        assert!(
+            bad_err
+                .to_string()
+                .contains("invalid Bearer Authorization header from google-cloud-auth"),
+            "unexpected error for bad token body: {bad_err}"
+        );
     }
 
     let recovery_server = MockServer::start().await;
@@ -475,15 +501,11 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
         .and(path(
             "/computeMetadata/v1/instance/service-accounts/default/token",
         ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(Duration::from_millis(200))
-                .set_body_json(serde_json::json!({
-                    "access_token": "slow-token",
-                    "token_type": "Bearer",
-                    "expires_in": 3600,
-                })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "gcp-mac-token",
+            "token_type": "mac",
+            "expires_in": 3600,
+        })))
         .up_to_n_times(1)
         .mount(&recovery_server)
         .await;
@@ -501,19 +523,32 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
 
     let cfg = config_from_json(serde_json::json!({
         "endpoint": recovery_server.uri(),
-        "timeout": "50ms",
     }))
     .expect("valid");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err_403 = auth.fetch().await.expect_err("HTTP 403 must fail");
     auth.log_refresh_failure(&err_403);
-    assert!(err_403.to_string().contains("403") || err_403.to_string().contains("failed to fetch"));
-
-    let _ = auth.fetch().await.expect_err("malformed JSON must fail");
-    let timeout_err = auth.fetch().await.expect_err("slow response must time out");
     assert!(
-        timeout_err.to_string().contains("timed out"),
-        "expected timeout error, got {timeout_err}"
+        err_403.to_string().contains("403")
+            && err_403.to_string().contains("failed to fetch")
+            && err_403.to_string().contains("permission denied"),
+        "expected full causal error chain for 403, got: {err_403}"
+    );
+
+    let json_err = auth.fetch().await.expect_err("malformed JSON must fail");
+    assert!(
+        json_err.to_string().contains("failed to fetch"),
+        "expected malformed JSON acquisition error, got: {json_err}"
+    );
+    let mac_err = auth
+        .fetch()
+        .await
+        .expect_err("non-Bearer token_type must fail and reset cached TokenCache");
+    assert!(
+        mac_err
+            .to_string()
+            .contains("invalid Bearer Authorization header"),
+        "expected invalid Bearer error, got: {mac_err}"
     );
 
     let recovered = auth
@@ -522,6 +557,45 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
         .expect("Auth resets dead TokenCache after error and recovers");
     assert_eq!(recovered.expose_token(), "recovered-token");
     auth.shutdown_in_flight().await;
+    let shutdown_err = auth
+        .fetch()
+        .await
+        .expect_err("fetch after shutdown_in_flight must fail");
+    assert!(
+        shutdown_err.to_string().contains("shut down"),
+        "expected shut down error, got: {shutdown_err}"
+    );
+
+    let timeout_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_json(serde_json::json!({
+                    "access_token": "slow-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                })),
+        )
+        .mount(&timeout_server)
+        .await;
+    let timeout_cfg = config_from_json(serde_json::json!({
+        "endpoint": timeout_server.uri(),
+        "timeout": "50ms",
+    }))
+    .expect("valid");
+    let timeout_auth = Auth::new(&timeout_cfg).expect("auth builds");
+    let timeout_err = timeout_auth
+        .fetch()
+        .await
+        .expect_err("slow response must time out");
+    assert!(
+        timeout_err.to_string().contains("timed out"),
+        "expected timeout error, got {timeout_err}"
+    );
 }
 
 /// Scenario: Acquisition successes, failures, and token publishes are recorded on `GcpAuthMetrics`.
