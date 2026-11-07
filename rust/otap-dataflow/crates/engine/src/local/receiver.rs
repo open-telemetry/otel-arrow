@@ -150,7 +150,7 @@ pub struct EffectHandler<PData> {
     /// context, or handler-local when created by the legacy policy setters.
     node_bindings: Option<Arc<NodeBindings>>,
     /// Data-type-specific context materialization shared by local handler clones.
-    pub(crate) context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+    context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     /// Optional signal used to gate pipeline startup on receiver initialization.
     readiness: Option<ReadinessSignaller>,
     /// Shares the runtime's budget so fatal handoff cannot restart the error-path flush timeout.
@@ -175,7 +175,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            node_bindings: None,
+            node_bindings: Some(NodeBindings::implicit_arrival()),
             context_materialization_plan: None,
             readiness: None,
             terminal_metrics_deadline: TerminalMetricsDeadline::default(),

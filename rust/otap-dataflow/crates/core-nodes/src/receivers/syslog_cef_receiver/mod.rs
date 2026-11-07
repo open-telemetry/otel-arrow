@@ -4081,8 +4081,7 @@ mod telemetry_tests {
     use otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel;
     use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::testing::{
-        receiver::WithDefaultArrivalBinding, setup_test_runtime, test_node,
-        test_pipeline_ctx_with_interests,
+        setup_test_runtime, test_node, test_pipeline_ctx_with_interests,
     };
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::time::Instant;
@@ -4341,8 +4340,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -4449,8 +4447,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -4534,8 +4531,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
                 otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
@@ -4607,8 +4603,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
                 otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
@@ -4687,8 +4682,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -4780,8 +4774,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
                 otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
@@ -4880,8 +4873,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
                 otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
@@ -4985,8 +4977,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -5075,8 +5066,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -5168,8 +5158,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -5262,8 +5251,7 @@ mod telemetry_tests {
                 pipe_tx,
                 reporter.clone(),
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            )
-            .with_default_arrival_binding_for_test();
+            );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(

@@ -11,6 +11,7 @@ use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolic
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, ValueKind};
 use otel_arrow_dfe_config::context::transport_policy::{CaptureStats, CompiledHeaderCapturePolicy};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 /// A borrowed verified claim, retaining scalar or multi-valued cardinality.
 pub type ClaimRef<'a> = &'a ClaimValue;
@@ -162,6 +163,19 @@ pub struct NodeBindings {
 }
 
 impl NodeBindings {
+    /// Returns an empty arrival binding, installed by receiver effect handler
+    /// constructors so receivers built outside a compiled pipeline can form
+    /// context.
+    ///
+    /// TODO(4541): remove once every receiver declares
+    /// `ContextDeclaration::Arrival` and its binding is always compiled.
+    pub(crate) fn implicit_arrival() -> Arc<Self> {
+        Arc::new(Self {
+            arrival: Some(ArrivalBinding::default()),
+            ..Self::default()
+        })
+    }
+
     /// Returns the receiver's compiled arrival operation.
     #[must_use]
     pub fn arrival(&self) -> Option<&ArrivalBinding> {
@@ -694,8 +708,8 @@ mod tests {
         ));
     }
 
-    /// Scenario: local and shared receivers lack arrival bindings, use legacy setters, then install and clone compiled bindings.
-    /// Guarantees: legacy setters assemble the compiled arrival binding in the handler's node bindings,
+    /// Scenario: local and shared receivers start with the implicit empty arrival binding, use legacy setters, then install and clone compiled bindings.
+    /// Guarantees: new handlers form context without capture, legacy setters assemble the compiled arrival binding in the handler's node bindings,
     /// both formation paths agree, getters borrow compiled policies, and later setters do not mutate clones.
     /// Missing bindings fail explicitly rather than forming incomplete metadata.
     #[test]
@@ -741,7 +755,7 @@ mod tests {
                 let mut handler = $handler;
                 assert_eq!(
                     handler.form_context(&arrival),
-                    Err(ContextError::MissingArrivalBinding)
+                    ArrivalBinding::default().form(&arrival)
                 );
                 handler.set_capture_policy(binding.header_capture.clone());
                 handler.set_authorized_identity_policy(binding.authorized_identity_capture.clone());
