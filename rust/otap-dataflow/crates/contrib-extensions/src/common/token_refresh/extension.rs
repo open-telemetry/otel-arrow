@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Bearer token provider extension built on the shared background refresh machinery.
+#[cfg(any(feature = "azure-identity-auth", feature = "oauth2-client-auth"))]
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -24,6 +25,7 @@ pub type TokenProviderExtension<S, M> =
 
 /// Next-refresh delay used for non-expiring tokens (~1 year). The loop is still
 /// woken by control messages in the meantime.
+#[cfg(any(feature = "azure-identity-auth", feature = "oauth2-client-auth"))]
 pub const NON_EXPIRING_TOKEN_REFRESH_INTERVAL: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 #[async_trait]

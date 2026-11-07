@@ -324,3 +324,198 @@ async fn once_reuses_value_acquired_before_start() {
     drop(ctrl_tx);
     let _ = task.await.expect("join").expect("clean shutdown");
 }
+
+/// Scenario: A periodic source backed by an internal SDK cache returns `Updated` on rotation,
+/// `Unchanged` on in-memory cache hits, and `Err` with `clear_cache_on_error() == true` when
+/// its cached token expires during an outage.
+/// Guarantees: `Unchanged` polls do not emit duplicate values or inflate acquisition/publish
+/// counters, and a refresh error evicts the cached token so `get_value` fails instead of serving
+/// an expired non-expiring token.
+#[tokio::test(start_paused = true)]
+async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_error() {
+    use super::{
+        BackgroundFetchOutcome, BackgroundProviderExtension, BackgroundProviderMetrics,
+        BackgroundProviderMetricsTracker, BackgroundProviderSource,
+    };
+    use async_trait::async_trait;
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+    use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
+    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+    use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
+    use otel_arrow_dfe_telemetry_macros::metric_set;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CachedSdkSource(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl BackgroundProviderSource<BearerToken> for CachedSdkSource {
+        type Error = std::io::Error;
+
+        fn expires_on(_value: &BearerToken) -> Option<Instant> {
+            None
+        }
+
+        async fn fetch(&self) -> Result<BearerToken, Self::Error> {
+            self.fetch_outcome()
+                .await
+                .map(BackgroundFetchOutcome::into_value)
+        }
+
+        async fn fetch_outcome(&self) -> Result<BackgroundFetchOutcome<BearerToken>, Self::Error> {
+            match self.0.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(BackgroundFetchOutcome::Updated(
+                    BearerToken::without_expiry("tok-1"),
+                )),
+                1 => Ok(BackgroundFetchOutcome::Unchanged(
+                    BearerToken::without_expiry("tok-1"),
+                )),
+                2 => Ok(BackgroundFetchOutcome::Updated(
+                    BearerToken::without_expiry("tok-2"),
+                )),
+                3 => Err(std::io::Error::other("sdk token expired and mds down")),
+                _ => Ok(BackgroundFetchOutcome::Unchanged(
+                    BearerToken::without_expiry("tok-3"),
+                )),
+            }
+        }
+
+        fn clear_cache_on_error(&self) -> bool {
+            true
+        }
+
+        fn log_refresh_failure(&self, _error: &Self::Error) {}
+    }
+
+    #[metric_set(name = "test.background_cached_sdk")]
+    #[derive(Debug, Default, Clone)]
+    struct Metrics {
+        /// Successful acquisitions.
+        #[metric(unit = "{acquisition}")]
+        successes: Counter<u64>,
+        /// Failed acquisitions.
+        #[metric(unit = "{acquisition}")]
+        failures: Counter<u64>,
+        /// Publications.
+        #[metric(unit = "{publication}")]
+        publishes: Counter<u64>,
+        /// Acquisition duration.
+        #[metric(unit = "ms")]
+        latency: Mmsc,
+    }
+
+    impl BackgroundProviderMetrics for Metrics {
+        fn successes(&mut self) -> &mut Counter<u64> {
+            &mut self.successes
+        }
+        fn failures(&mut self) -> &mut Counter<u64> {
+            &mut self.failures
+        }
+        fn publishes(&mut self) -> &mut Counter<u64> {
+            &mut self.publishes
+        }
+        fn success_latency(&mut self) -> &mut Mmsc {
+            &mut self.latency
+        }
+    }
+
+    let step = Arc::new(AtomicUsize::new(0));
+    let (tx, _rx) = tokio::sync::watch::channel(None);
+    let registry = TelemetryRegistryHandle::new();
+    let metrics = registry.register_metric_set::<Metrics>(EmptyAttributes());
+    let extension = BackgroundProviderExtension::<_, _, _, BearerTokenProvider>::new(
+        "cached-sdk-test",
+        CachedSdkSource(Arc::clone(&step)),
+        BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(10)).unwrap(),
+        tx,
+        BackgroundProviderMetricsTracker::new(metrics),
+    );
+    let mut rx = extension.subscribe();
+
+    let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let ctrl = ControlChannel::new(SharedReceiver::mpsc(ctrl_rx), shutdown_rx);
+    let (effects, probe) =
+        otel_arrow_dfe_engine::testing::test_extension_effect_handler_with_readiness(
+            "cached-sdk-test".into(),
+            Duration::from_secs(30),
+        );
+    let task = tokio::spawn(Box::new(extension.clone()).start(ctrl, effects));
+
+    // Step 0: initial Updated("tok-1") is published and signals readiness.
+    probe.wait_ready().await.expect("ready");
+    assert_eq!(
+        rx.borrow_and_update().as_ref().unwrap().expose_token(),
+        "tok-1"
+    );
+
+    // Step 1 (t = 10s): Unchanged("tok-1") does not mark the watch channel as changed.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(step.load(Ordering::SeqCst), 2);
+    assert!(
+        !rx.has_changed().unwrap(),
+        "Unchanged poll must not re-publish to watch subscribers"
+    );
+
+    // Step 2 (t = 20s): Updated("tok-2") publishes the rotated token.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(step.load(Ordering::SeqCst), 3);
+    assert!(rx.has_changed().unwrap());
+    assert_eq!(
+        rx.borrow_and_update().as_ref().unwrap().expose_token(),
+        "tok-2"
+    );
+
+    // Step 3 (t = 30s): Err with clear_cache_on_error() == true evicts the cached token.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(step.load(Ordering::SeqCst), 4);
+    assert!(
+        rx.borrow_and_update().is_none(),
+        "watch channel cache must be evicted to None on error"
+    );
+    assert!(
+        extension.get_value().await.is_err(),
+        "get_value must fail after cache eviction instead of serving stale non-expiring token"
+    );
+
+    // Step 4 (after retry backoff <= 10s): Unchanged("tok-3") while watch cache is None
+    // repopulates the watch channel via the `self.inner.tx.borrow().is_none()` fallback.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(step.load(Ordering::SeqCst), 5);
+    assert!(
+        rx.has_changed().unwrap(),
+        "Unchanged outcome while watch cache is None must publish to repopulate cache"
+    );
+    assert_eq!(
+        rx.borrow_and_update().as_ref().unwrap().expose_token(),
+        "tok-3"
+    );
+    assert_eq!(extension.get_value().await.unwrap().expose_token(), "tok-3");
+
+    let (report_rx, metrics_reporter) =
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+    ctrl_tx
+        .send(
+            otel_arrow_dfe_engine::control::ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter,
+            },
+        )
+        .await
+        .unwrap();
+    let snapshot = report_rx.recv_async().await.unwrap();
+    let values = snapshot.get_metrics();
+    // Steps 0, 2, and 4 publish (3 successes/publications); step 1 (Unchanged while
+    // populated) is skipped, and step 3 counts as 1 failure.
+    assert_eq!(values[0].to_u64_lossy(), 3, "successes should be 3");
+    assert_eq!(values[1].to_u64_lossy(), 1, "failures should be 1");
+    assert_eq!(values[2].to_u64_lossy(), 3, "publishes should be 3");
+
+    drop(ctrl_tx);
+    let _ = task.await.expect("join").expect("clean shutdown");
+}
