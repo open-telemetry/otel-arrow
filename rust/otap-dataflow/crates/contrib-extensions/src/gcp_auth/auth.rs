@@ -24,13 +24,20 @@ struct CachedCredentials {
     last_token: Option<(Extensions, BearerToken)>,
 }
 
+/// Lifecycle state of the `google-cloud-auth` credential cache.
+enum CredentialState {
+    Uninitialized,
+    Active(CachedCredentials),
+    ShutDown,
+}
+
 /// A Google Cloud metadata token source backed by [`google_cloud_auth`].
 #[derive(Clone)]
 pub struct Auth {
     endpoint: Option<String>,
     scopes: Vec<String>,
     timeout: Duration,
-    state: Arc<Mutex<Option<CachedCredentials>>>,
+    state: Arc<Mutex<CredentialState>>,
 }
 
 impl Auth {
@@ -68,7 +75,7 @@ impl Auth {
             endpoint,
             scopes,
             timeout: config.timeout,
-            state: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(CredentialState::Uninitialized)),
         })
     }
 
@@ -86,8 +93,10 @@ impl Auth {
     }
 
     fn reset_cached_credentials(&self) {
-        if let Ok(mut guard) = self.state.lock() {
-            *guard = None;
+        if let Ok(mut guard) = self.state.lock()
+            && matches!(*guard, CredentialState::Active(_))
+        {
+            *guard = CredentialState::Uninitialized;
         }
     }
 }
@@ -107,14 +116,24 @@ impl BackgroundProviderSource<BearerToken> for Auth {
             let mut guard = self.state.lock().map_err(|_| Error::TokenAcquisition {
                 message: "GCP auth credential state lock poisoned".to_string(),
             })?;
-            if guard.is_none() {
-                let credentials = self.build_credentials()?;
-                *guard = Some(CachedCredentials {
-                    credentials,
-                    last_token: None,
-                });
+            match &*guard {
+                CredentialState::ShutDown => {
+                    return Err(Error::TokenAcquisition {
+                        message: "GCP auth extension is shut down".to_string(),
+                    });
+                }
+                CredentialState::Uninitialized => {
+                    let credentials = self.build_credentials()?;
+                    *guard = CredentialState::Active(CachedCredentials {
+                        credentials,
+                        last_token: None,
+                    });
+                }
+                CredentialState::Active(_) => {}
             }
-            let cached = guard.as_ref().expect("populated above");
+            let CredentialState::Active(cached) = &*guard else {
+                unreachable!("populated above");
+            };
             let (ext, last_tok) = match &cached.last_token {
                 Some((ext, tok)) => (ext.clone(), Some(tok.clone())),
                 None => (Extensions::new(), None),
@@ -169,7 +188,7 @@ impl BackgroundProviderSource<BearerToken> for Auth {
                     let mut ext = Extensions::new();
                     let _ = ext.insert(entity_tag);
                     if let Ok(mut guard) = self.state.lock()
-                        && let Some(cached) = guard.as_mut()
+                        && let CredentialState::Active(cached) = &mut *guard
                     {
                         cached.last_token = Some((ext, token.clone()));
                     }
@@ -205,7 +224,7 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
     async fn shutdown_in_flight(&self) {
         if let Ok(mut guard) = self.state.lock() {
-            *guard = None;
+            *guard = CredentialState::ShutDown;
         }
     }
 }
