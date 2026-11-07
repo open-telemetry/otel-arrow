@@ -406,6 +406,10 @@ fn bench_exporter(c: &mut Criterion) {
                                 })
                                 .await;
 
+                            // Close the pdata channel so the inbox can complete its shutdown drain
+                            // instead of waiting for the full shutdown deadline.
+                            drop(pdata_sender);
+
                             _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
@@ -484,6 +488,10 @@ fn bench_exporter(c: &mut Criterion) {
                                     reason: "shutdown".to_string(),
                                 })
                                 .await;
+
+                            // Close the pdata channel so the inbox can complete its shutdown drain
+                            // instead of waiting for the full shutdown deadline.
+                            drop(pdata_sender);
 
                             _ = run_exporter_handle.await.expect("panicked");
                         })
@@ -569,6 +577,10 @@ fn bench_exporter(c: &mut Criterion) {
                                     reason: "shutdown".to_string(),
                                 })
                                 .await;
+
+                            // Close the pdata channel so the inbox can complete its shutdown drain
+                            // instead of waiting for the full shutdown deadline.
+                            drop(pdata_sender);
 
                             _ = run_exporter_handle.await.expect("panicked");
                         })
