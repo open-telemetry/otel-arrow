@@ -84,6 +84,12 @@ impl Auth {
             reason: e.to_string(),
         })
     }
+
+    fn reset_cached_credentials(&self) {
+        if let Ok(mut guard) = self.state.lock() {
+            *guard = None;
+        }
+    }
 }
 
 #[async_trait]
@@ -97,7 +103,7 @@ impl BackgroundProviderSource<BearerToken> for Auth {
     }
 
     async fn fetch_outcome(&self) -> Result<BackgroundFetchOutcome<BearerToken>, Error> {
-        let (credentials, extensions) = {
+        let (credentials, extensions, cached_token) = {
             let mut guard = self.state.lock().map_err(|_| Error::TokenAcquisition {
                 message: "GCP auth credential state lock poisoned".to_string(),
             })?;
@@ -109,101 +115,80 @@ impl BackgroundProviderSource<BearerToken> for Auth {
                 });
             }
             let cached = guard.as_ref().expect("populated above");
-            let ext = cached
-                .last_token
-                .as_ref()
-                .map(|(ext, _)| ext.clone())
-                .unwrap_or_default();
-            (cached.credentials.clone(), ext)
+            let (ext, last_tok) = match &cached.last_token {
+                Some((ext, tok)) => (ext.clone(), Some(tok.clone())),
+                None => (Extensions::new(), None),
+            };
+            (cached.credentials.clone(), ext, last_tok)
         };
 
         // NOTE: `google-cloud-auth` constructs an untimed `reqwest::Client::new()`
         // internally, so bound `credentials.headers(extensions)` with `self.timeout`
         // to ensure a stalled metadata server cannot hold `fetch_lock` indefinitely.
-        let headers_res = match tokio::time::timeout(
-            self.timeout,
-            credentials.headers(extensions),
-        )
-        .await
-        {
-            Ok(res) => res,
-            Err(_) => {
-                if let Ok(mut guard) = self.state.lock() {
-                    *guard = None;
-                }
-                return Err(Error::TokenAcquisition {
-                    message: format!(
-                        "timed out after {:?} waiting for GCP metadata token",
-                        self.timeout
-                    ),
-                });
-            }
-        };
-        match headers_res {
-            Ok(CacheableResource::New { entity_tag, data }) => {
-                let header = data
-                    .get(http::header::AUTHORIZATION)
-                    .ok_or_else(|| Error::TokenAcquisition {
-                        message: "missing Authorization header from google-cloud-auth".to_string(),
-                    })?
-                    .to_str()
-                    .map_err(|e| Error::TokenAcquisition {
+        //
+        // `google-cloud-auth`'s `TokenCache` only surfaces an error when no valid
+        // token remains in its cache, terminates its background refresh loop
+        // permanently on non-transient errors, and retains any HTTP 200 payload
+        // that `HeaderValue::from_str` accepted (including non-ASCII bytes or
+        // non-Bearer token types). Resetting `self.state` on every error path
+        // drops the inner receiver so any poisoned or dead `TokenCache` is
+        // replaced on the next retry.
+        let outcome: Result<BackgroundFetchOutcome<BearerToken>, Error> = async {
+            let headers_res =
+                tokio::time::timeout(self.timeout, credentials.headers(extensions))
+                    .await
+                    .map_err(|_| Error::TokenAcquisition {
                         message: format!(
-                            "non-ASCII Authorization header from google-cloud-auth: {e}"
+                            "timed out after {:?} waiting for GCP metadata token",
+                            self.timeout
                         ),
                     })?;
 
-                let token = BearerToken::from_header_value(header).ok_or_else(|| {
-                    if let Ok(mut guard) = self.state.lock() {
-                        *guard = None;
-                    }
-                    Error::TokenAcquisition {
-                        message: "invalid Bearer Authorization header from google-cloud-auth"
-                            .to_string(),
-                    }
-                })?;
+            match headers_res {
+                Ok(CacheableResource::New { entity_tag, data }) => {
+                    let header = data
+                        .get(http::header::AUTHORIZATION)
+                        .ok_or_else(|| Error::TokenAcquisition {
+                            message: "missing Authorization header from google-cloud-auth"
+                                .to_string(),
+                        })?
+                        .to_str()
+                        .map_err(|e| Error::TokenAcquisition {
+                            message: format!(
+                                "non-ASCII Authorization header from google-cloud-auth: {e}"
+                            ),
+                        })?;
 
-                let mut ext = Extensions::new();
-                let _ = ext.insert(entity_tag);
-                if let Ok(mut guard) = self.state.lock()
-                    && let Some(cached) = guard.as_mut()
-                {
-                    cached.last_token = Some((ext, token.clone()));
+                    let token = BearerToken::from_header_value(header).ok_or_else(|| {
+                        Error::TokenAcquisition {
+                            message: "invalid Bearer Authorization header from google-cloud-auth"
+                                .to_string(),
+                        }
+                    })?;
+
+                    let mut ext = Extensions::new();
+                    let _ = ext.insert(entity_tag);
+                    if let Ok(mut guard) = self.state.lock()
+                        && let Some(cached) = guard.as_mut()
+                    {
+                        cached.last_token = Some((ext, token.clone()));
+                    }
+                    Ok(BackgroundFetchOutcome::Updated(token))
                 }
-                Ok(BackgroundFetchOutcome::Updated(token))
-            }
-            Ok(CacheableResource::NotModified) => {
-                let cached_token = self
-                    .state
-                    .lock()
-                    .ok()
-                    .and_then(|guard| {
-                        guard
-                            .as_ref()
-                            .and_then(|c| c.last_token.as_ref().map(|(_, token)| token.clone()))
-                    })
-                    .ok_or_else(|| Error::TokenAcquisition {
+                Ok(CacheableResource::NotModified) => {
+                    let token = cached_token.ok_or_else(|| Error::TokenAcquisition {
                         message: "received NotModified without cached token".to_string(),
                     })?;
-                Ok(BackgroundFetchOutcome::Unchanged(cached_token))
-            }
-            Err(err) => {
-                // NOTE: `google-cloud-auth`'s `TokenCache` only surfaces an
-                // error when no valid token remains in its cache (initial
-                // acquisition failed, or a previously cached token expired
-                // while refreshes were failing), and terminates its background
-                // refresh loop permanently on non-transient errors. Resetting
-                // `self.state` drops the inner receiver so any redundant SDK
-                // retry task exits and the next retry scheduled by
-                // `BackgroundProviderExtension` starts a fresh `TokenCache`.
-                if let Ok(mut guard) = self.state.lock() {
-                    *guard = None;
+                    Ok(BackgroundFetchOutcome::Unchanged(token))
                 }
-                Err(Error::TokenAcquisition {
+                Err(err) => Err(Error::TokenAcquisition {
                     message: format_error_chain(&err),
-                })
+                }),
             }
         }
+        .await;
+
+        outcome.inspect_err(|_| self.reset_cached_credentials())
     }
 
     fn clear_cache_on_error(&self) -> bool {
