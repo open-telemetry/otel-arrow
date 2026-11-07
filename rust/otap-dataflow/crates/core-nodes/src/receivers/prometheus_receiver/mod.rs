@@ -30,6 +30,7 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::{ReceiverPullCancellation, ReceiverPullMetrics};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, LiteralValue, UpsertTransform, apply_attribute_transform,
@@ -38,7 +39,7 @@ use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
-use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use reqwest::Url;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
@@ -71,6 +72,12 @@ pub struct PrometheusReceiverMetrics {
     /// Number of target scrapes that failed HTTP fetch or exposition decoding.
     #[metric(unit = "{scrape}")]
     pub scrapes_failed: Counter<u64>,
+    /// Number of scheduled scrape intervals skipped because a scrape cycle overran `scrape_interval`.
+    #[metric(unit = "{scrape}")]
+    pub scrapes_overrun: Counter<u64>,
+    /// Number of DNS service discovery lookup failures (errors, timeouts, or empty resolutions).
+    #[metric(unit = "{error}")]
+    pub dns_lookups_failed: Counter<u64>,
     /// Total number of metric data points decoded across all scrapes.
     #[metric(unit = "{data_point}")]
     pub data_points_decoded: Counter<u64>,
@@ -95,6 +102,7 @@ struct TargetDiscovery {
     static_urls: Vec<Url>,
     dns_sd_targets: Vec<String>,
     metrics_path: String,
+    dns_lookup_timeout: std::time::Duration,
 }
 
 impl TargetDiscovery {
@@ -107,28 +115,56 @@ impl TargetDiscovery {
             static_urls,
             dns_sd_targets: config.dns_sd_targets.clone(),
             metrics_path: config.metrics_path.clone(),
+            dns_lookup_timeout: config.dns_lookup_timeout.min(config.scrape_timeout),
         })
     }
 
+    #[cfg(test)]
     async fn resolve_targets(&self) -> Vec<Url> {
+        self.resolve_targets_counted().await.0
+    }
+
+    async fn resolve_targets_counted(&self) -> (Vec<Url>, u64) {
         let mut all_urls =
             Vec::with_capacity(self.static_urls.len() + self.dns_sd_targets.len() * 4);
         all_urls.extend(self.static_urls.iter().cloned());
+        let mut dns_failures = 0_u64;
 
         for dns_target in &self.dns_sd_targets {
-            match lookup_host(dns_target.as_str()).await {
-                Ok(addrs) => {
+            match tokio::time::timeout(self.dns_lookup_timeout, lookup_host(dns_target.as_str()))
+                .await
+            {
+                Ok(Ok(addrs)) => {
                     let mut sorted_addrs: Vec<_> = addrs.collect();
                     sorted_addrs.sort_unstable();
                     sorted_addrs.dedup();
+                    if sorted_addrs.is_empty() {
+                        dns_failures += 1;
+                        otel_warn!(
+                            "prometheus_receiver.dns_lookup_empty",
+                            target = dns_target.as_str(),
+                            message = "dns_sd_targets entry resolved to zero addresses"
+                        );
+                    }
                     for addr in sorted_addrs {
-                        if let Ok(url) = Url::parse(&format!("http://{addr}{}", self.metrics_path))
-                        {
-                            all_urls.push(url);
+                        let candidate = format!("http://{addr}{}", self.metrics_path);
+                        match Url::parse(&candidate) {
+                            Ok(url) => all_urls.push(url),
+                            Err(err) => {
+                                dns_failures += 1;
+                                otel_warn!(
+                                    "prometheus_receiver.dns_invalid_target_url",
+                                    target = dns_target.as_str(),
+                                    candidate = candidate.as_str(),
+                                    error = err.to_string(),
+                                    message = "failed to build scrape URL for resolved DNS address"
+                                );
+                            }
                         }
                     }
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
+                    dns_failures += 1;
                     otel_warn!(
                         "prometheus_receiver.dns_lookup_failed",
                         target = dns_target.as_str(),
@@ -136,18 +172,34 @@ impl TargetDiscovery {
                         message = "failed to resolve dns_sd_targets entry"
                     );
                 }
+                Err(_) => {
+                    dns_failures += 1;
+                    otel_warn!(
+                        "prometheus_receiver.dns_lookup_timeout",
+                        target = dns_target.as_str(),
+                        timeout_ms =
+                            u64::try_from(self.dns_lookup_timeout.as_millis()).unwrap_or(u64::MAX),
+                        message = "timed out resolving dns_sd_targets entry"
+                    );
+                }
             }
         }
 
-        all_urls
+        (all_urls, dns_failures)
     }
+}
+
+#[derive(Default)]
+struct ReceiverTelemetry {
+    metrics: Option<MetricSet<PrometheusReceiverMetrics>>,
+    pull: ReceiverPullMetrics,
 }
 
 /// Prometheus scrape receiver.
 pub struct PrometheusReceiver {
     config: Config,
     discovery: TargetDiscovery,
-    metrics: Option<MetricSet<PrometheusReceiverMetrics>>,
+    telemetry: ReceiverTelemetry,
 }
 
 #[allow(unsafe_code)]
@@ -184,7 +236,8 @@ fn create_prometheus_receiver(
         });
     }
     let mut receiver = PrometheusReceiver::from_config(&node_config.config)?;
-    receiver.metrics = Some(PrometheusReceiverMetrics::register(&pipeline));
+    receiver.telemetry.metrics = Some(PrometheusReceiverMetrics::register(&pipeline));
+    receiver.telemetry.pull = ReceiverPullMetrics::register(&pipeline);
     Ok(ReceiverWrapper::local(
         receiver,
         node,
@@ -210,7 +263,7 @@ impl PrometheusReceiver {
         Ok(Self {
             config,
             discovery,
-            metrics: None,
+            telemetry: ReceiverTelemetry::default(),
         })
     }
 
@@ -237,15 +290,12 @@ fn current_timestamp_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn terminal_state(
-    deadline: StdInstant,
-    metrics: &Option<MetricSet<PrometheusReceiverMetrics>>,
-) -> TerminalState {
-    if let Some(metrics) = metrics {
-        TerminalState::new(deadline, [metrics.snapshot()])
-    } else {
-        TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, [])
+fn terminal_state(deadline: StdInstant, telemetry: &mut ReceiverTelemetry) -> TerminalState {
+    let mut snapshots = telemetry.pull.terminal_snapshots();
+    if let Some(metrics) = &telemetry.metrics {
+        snapshots.push(metrics.snapshot());
     }
+    TerminalState::new(deadline, snapshots)
 }
 
 // TODO(bwplotka): Upstream scraper Accept header construction, text 1.0.0 handling, and fallback
@@ -653,6 +703,7 @@ struct TargetScraper {
     accept_header: &'static str,
     honor_timestamps: bool,
     max_data_points_per_batch: usize,
+    max_body_bytes: usize,
     start_timestamp_ns: i64,
     decoder: ArrowDecoder,
 }
@@ -680,6 +731,7 @@ impl TargetScraper {
             accept_header: build_accept_header(config.enable_open_metrics),
             honor_timestamps: config.honor_timestamps,
             max_data_points_per_batch: config.max_data_points_per_batch,
+            max_body_bytes: config.max_body_bytes,
             start_timestamp_ns,
             decoder: ArrowDecoder::new(),
         })
@@ -690,12 +742,14 @@ impl TargetScraper {
         target_url: &Url,
         ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
         effect_handler: &local::EffectHandler<OtapPdata>,
-        metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+        telemetry: &mut ReceiverTelemetry,
     ) -> ControlFlow<Result<TerminalState, Error>> {
         let started = StdInstant::now();
-        if let Some(metrics) = metrics.as_mut() {
+        if let Some(metrics) = telemetry.metrics.as_mut() {
             metrics.scrapes_started.add(1);
         }
+        let pull_attempt = telemetry.pull.processing();
+        let pull_cancel = pull_attempt.cancellation_handle();
 
         // TODO(bwplotka): Delegate single-target HTTP fetch, compression negotiation, and scrape
         // headers to scrape.rs once https://github.com/prometheus/scrape.rs/issues/36 lands.
@@ -706,17 +760,18 @@ impl TargetScraper {
                 .send(),
             ctrl_msg_recv,
             effect_handler,
-            metrics,
+            telemetry,
+            Some(&pull_cancel),
         )
         .await
         {
             ControlFlow::Continue(res) => res,
             ControlFlow::Break(exit) => return ControlFlow::Break(exit),
         };
-        let response = match send_res {
+        let mut response = match send_res {
             Ok(resp) => resp,
             Err(err) => {
-                if let Some(metrics) = metrics.as_mut() {
+                if let Some(metrics) = telemetry.metrics.as_mut() {
                     metrics.scrapes_failed.add(1);
                     metrics.scrape_duration_ns.record(elapsed_nanos(started));
                 }
@@ -731,7 +786,7 @@ impl TargetScraper {
         };
 
         if !response.status().is_success() {
-            if let Some(metrics) = metrics.as_mut() {
+            if let Some(metrics) = telemetry.metrics.as_mut() {
                 metrics.scrapes_failed.add(1);
                 metrics.scrape_duration_ns.record(elapsed_nanos(started));
             }
@@ -744,6 +799,24 @@ impl TargetScraper {
             return ControlFlow::Continue(());
         }
 
+        let content_length = response.content_length();
+        if let Some(len) = content_length
+            && len > u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX)
+        {
+            if let Some(metrics) = telemetry.metrics.as_mut() {
+                metrics.scrapes_failed.add(1);
+                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+            }
+            otel_warn!(
+                "prometheus_receiver.body_too_large",
+                target = target_url.as_str(),
+                content_length = len,
+                max_body_bytes = u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX),
+                message = "scrape response Content-Length exceeds max_body_bytes"
+            );
+            return ControlFlow::Continue(());
+        }
+
         let format = resolve_response_format(
             response
                 .headers()
@@ -751,151 +824,204 @@ impl TargetScraper {
                 .and_then(|val| val.to_str().ok()),
         );
 
-        let body_res =
-            match poll_with_control(response.bytes(), ctrl_msg_recv, effect_handler, metrics).await
+        let initial_cap = content_length
+            .and_then(|len| usize::try_from(len).ok())
+            .map_or(0, |len| len.min(self.max_body_bytes));
+        let mut body = Vec::with_capacity(initial_cap);
+        loop {
+            let chunk_res = match poll_with_control(
+                response.chunk(),
+                ctrl_msg_recv,
+                effect_handler,
+                telemetry,
+                Some(&pull_cancel),
+            )
+            .await
             {
                 ControlFlow::Continue(res) => res,
                 ControlFlow::Break(exit) => return ControlFlow::Break(exit),
             };
-        let body = match body_res {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                if let Some(metrics) = metrics.as_mut() {
-                    metrics.scrapes_failed.add(1);
-                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
+            match chunk_res {
+                Ok(Some(chunk)) => {
+                    if body.len().saturating_add(chunk.len()) > self.max_body_bytes {
+                        if let Some(metrics) = telemetry.metrics.as_mut() {
+                            metrics.scrapes_failed.add(1);
+                            metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                        }
+                        otel_warn!(
+                            "prometheus_receiver.body_too_large",
+                            target = target_url.as_str(),
+                            max_body_bytes = u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX),
+                            message = "scrape response body exceeds max_body_bytes"
+                        );
+                        return ControlFlow::Continue(());
+                    }
+                    body.extend_from_slice(&chunk);
                 }
-                otel_warn!(
-                    "prometheus_receiver.body_error",
-                    target = target_url.as_str(),
-                    error = err.to_string(),
-                    message = "failed to read scrape response body"
-                );
-                return ControlFlow::Continue(());
+                Ok(None) => break,
+                Err(err) => {
+                    if let Some(metrics) = telemetry.metrics.as_mut() {
+                        metrics.scrapes_failed.add(1);
+                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                    }
+                    otel_warn!(
+                        "prometheus_receiver.body_error",
+                        target = target_url.as_str(),
+                        error = err.to_string(),
+                        message = "failed to read scrape response body"
+                    );
+                    return ControlFlow::Continue(());
+                }
             }
-        };
+        }
 
         let scrape_timestamp_ms = current_timestamp_ms();
         let decode_opts = DecodeOptions::new()
             .with_timestamp_ms(scrape_timestamp_ms)
             .with_max_data_points_per_batch(self.max_data_points_per_batch);
         let resource_transform = build_target_resource_transform(&self.job_name, target_url);
-
-        let mut scrape_ok = true;
-        let mut drain_deadline: Option<StdInstant> = None;
+        let mut batches = Vec::new();
 
         // TODO(bwplotka): Switch to cooperative incremental decoding so large payloads yield to
         // the local runtime once https://github.com/prometheus/scrape.rs/issues/27 lands.
         if self.max_data_points_per_batch == 0 {
-            match self.decoder.decode(body.as_ref(), &format, &decode_opts) {
+            match self.decoder.decode(body.as_slice(), &format, &decode_opts) {
                 Ok(records) => {
-                    if let Some(metrics) = metrics.as_mut() {
+                    if let Some(metrics) = telemetry.metrics.as_mut() {
                         metrics
                             .data_points_decoded
                             .add(records.num_data_points() as u64);
                     }
                     if !records.is_empty() {
-                        match send_decoded_records(
+                        match records_to_otap_with_resource(
                             &records,
                             self.honor_timestamps,
                             scrape_timestamp_ms,
                             Some(self.start_timestamp_ns),
                             Some(&resource_transform),
-                            &mut drain_deadline,
-                            ctrl_msg_recv,
-                            effect_handler,
-                            metrics,
-                        )
-                        .await
-                        {
-                            SendOutcome::Sent => {}
-                            SendOutcome::Failed => {
-                                scrape_ok = false;
+                        ) {
+                            Ok(otap) => {
+                                batches.push(OtapPdata::new(Context::default(), otap.into()));
                             }
-                            SendOutcome::DrainTimedOut(deadline) => {
-                                scrape_ok = false;
-                                drain_deadline = Some(deadline);
+                            Err(err) => {
+                                if let Some(metrics) = telemetry.metrics.as_mut() {
+                                    metrics.scrapes_failed.add(1);
+                                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                }
+                                otel_warn!(
+                                    "prometheus_receiver.otap_conversion_error",
+                                    target = target_url.as_str(),
+                                    error = err.to_string(),
+                                    message = "failed to convert decoded Arrow batch into OtapArrowRecords"
+                                );
+                                return ControlFlow::Continue(());
                             }
-                            SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
                         }
                     }
                 }
                 Err(err) => {
-                    scrape_ok = false;
+                    if let Some(metrics) = telemetry.metrics.as_mut() {
+                        metrics.scrapes_failed.add(1);
+                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                    }
                     otel_warn!(
                         "prometheus_receiver.decode_error",
                         target = target_url.as_str(),
                         error = err.to_string(),
                         message = "failed to decode exposition payload"
                     );
+                    return ControlFlow::Continue(());
                 }
             }
         } else {
             for chunk_res in self
                 .decoder
-                .decode_stream(body.as_ref(), &format, &decode_opts)
+                .decode_stream(body.as_slice(), &format, &decode_opts)
             {
                 match chunk_res {
                     Ok(records) => {
-                        if let Some(metrics) = metrics.as_mut() {
+                        if let Some(metrics) = telemetry.metrics.as_mut() {
                             metrics
                                 .data_points_decoded
                                 .add(records.num_data_points() as u64);
                         }
                         if !records.is_empty() {
-                            match send_decoded_records(
+                            match records_to_otap_with_resource(
                                 &records,
                                 self.honor_timestamps,
                                 scrape_timestamp_ms,
                                 Some(self.start_timestamp_ns),
                                 Some(&resource_transform),
-                                &mut drain_deadline,
-                                ctrl_msg_recv,
-                                effect_handler,
-                                metrics,
-                            )
-                            .await
-                            {
-                                SendOutcome::Sent => {}
-                                SendOutcome::Failed => {
-                                    scrape_ok = false;
-                                    break;
+                            ) {
+                                Ok(otap) => {
+                                    batches.push(OtapPdata::new(Context::default(), otap.into()));
                                 }
-                                SendOutcome::DrainTimedOut(deadline) => {
-                                    scrape_ok = false;
-                                    drain_deadline = Some(deadline);
-                                    break;
+                                Err(err) => {
+                                    if let Some(metrics) = telemetry.metrics.as_mut() {
+                                        metrics.scrapes_failed.add(1);
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                                    }
+                                    otel_warn!(
+                                        "prometheus_receiver.otap_conversion_error",
+                                        target = target_url.as_str(),
+                                        error = err.to_string(),
+                                        message = "failed to convert decoded Arrow batch into OtapArrowRecords"
+                                    );
+                                    return ControlFlow::Continue(());
                                 }
-                                SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
                             }
                         }
                     }
                     Err(err) => {
-                        scrape_ok = false;
+                        if let Some(metrics) = telemetry.metrics.as_mut() {
+                            metrics.scrapes_failed.add(1);
+                            metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                        }
                         otel_warn!(
                             "prometheus_receiver.decode_error",
                             target = target_url.as_str(),
                             error = err.to_string(),
                             message = "failed to decode streaming exposition chunk"
                         );
-                        break;
+                        return ControlFlow::Continue(());
                     }
                 }
+                tokio::task::consume_budget().await;
             }
         }
 
-        if let Some(metrics) = metrics.as_mut() {
-            if scrape_ok {
-                metrics.scrapes_completed.add(1);
-            } else {
-                metrics.scrapes_failed.add(1);
-            }
+        if let Some(metrics) = telemetry.metrics.as_mut() {
+            metrics.scrapes_completed.add(1);
             metrics.scrape_duration_ns.record(elapsed_nanos(started));
         }
+        pull_attempt.success();
+
+        let mut drain_deadline: Option<StdInstant> = None;
+        for pdata in batches {
+            match send_otap_batch(
+                pdata,
+                &mut drain_deadline,
+                ctrl_msg_recv,
+                effect_handler,
+                telemetry,
+            )
+            .await
+            {
+                SendOutcome::Sent => {}
+                SendOutcome::Failed => break,
+                SendOutcome::DrainTimedOut(deadline) => {
+                    drain_deadline = Some(deadline);
+                    break;
+                }
+                SendOutcome::Exit(exit) => return ControlFlow::Break(exit),
+            }
+        }
+
         if let Some(deadline) = drain_deadline {
             if let Err(err) = effect_handler.notify_receiver_drained().await {
                 return ControlFlow::Break(Err(err));
             }
-            return ControlFlow::Break(Ok(terminal_state(deadline, metrics)));
+            return ControlFlow::Break(Ok(terminal_state(deadline, telemetry)));
         }
         ControlFlow::Continue(())
     }
@@ -904,29 +1030,42 @@ impl TargetScraper {
 async fn handle_control_msg(
     msg: Result<NodeControlMsg<OtapPdata>, RecvError>,
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+    telemetry: &mut ReceiverTelemetry,
+    cancel_on_exit: Option<&ReceiverPullCancellation>,
 ) -> ControlFlow<Result<TerminalState, Error>> {
     match msg {
         Ok(NodeControlMsg::CollectTelemetry {
             mut metrics_reporter,
         }) => {
-            if let Some(metrics) = metrics.as_mut() {
+            if let Some(metrics) = telemetry.metrics.as_mut() {
                 let _ = metrics_reporter.report(metrics);
             }
+            let _ = telemetry.pull.report(&mut metrics_reporter);
             ControlFlow::Continue(())
         }
         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
             otel_info!("prometheus_receiver.drain_ingress");
+            if let Some(cancel) = cancel_on_exit {
+                cancel.cancel();
+            }
             if let Err(err) = effect_handler.notify_receiver_drained().await {
                 return ControlFlow::Break(Err(err));
             }
-            ControlFlow::Break(Ok(terminal_state(deadline, metrics)))
+            ControlFlow::Break(Ok(terminal_state(deadline, telemetry)))
         }
         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
             otel_info!("prometheus_receiver.shutdown");
-            ControlFlow::Break(Ok(terminal_state(deadline, metrics)))
+            if let Some(cancel) = cancel_on_exit {
+                cancel.cancel();
+            }
+            ControlFlow::Break(Ok(terminal_state(deadline, telemetry)))
         }
-        Err(err) => ControlFlow::Break(Err(Error::ChannelRecvError(err))),
+        Err(err) => {
+            if let Some(cancel) = cancel_on_exit {
+                cancel.cancel();
+            }
+            ControlFlow::Break(Err(Error::ChannelRecvError(err)))
+        }
         Ok(_) => ControlFlow::Continue(()),
     }
 }
@@ -935,7 +1074,8 @@ async fn poll_with_control<F, T>(
     fut: F,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+    telemetry: &mut ReceiverTelemetry,
+    cancel_on_exit: Option<&ReceiverPullCancellation>,
 ) -> ControlFlow<Result<TerminalState, Error>, T>
 where
     F: Future<Output = T>,
@@ -947,7 +1087,7 @@ where
 
             msg = ctrl_msg_recv.recv() => {
                 if let ControlFlow::Break(exit) =
-                    handle_control_msg(msg, effect_handler, metrics).await
+                    handle_control_msg(msg, effect_handler, telemetry, cancel_on_exit).await
                 {
                     return ControlFlow::Break(exit);
                 }
@@ -968,7 +1108,7 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
         let PrometheusReceiver {
             config,
             discovery,
-            mut metrics,
+            mut telemetry,
         } = *self;
 
         let mut scraper = TargetScraper::new(&config, effect_handler.receiver_id())?;
@@ -980,7 +1120,7 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
 
                 msg = ctrl_msg_recv.recv() => {
                     if let ControlFlow::Break(exit) =
-                        handle_control_msg(msg, &effect_handler, &mut metrics).await
+                        handle_control_msg(msg, &effect_handler, &mut telemetry, None).await
                     {
                         return exit;
                     }
@@ -990,6 +1130,19 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
                     let now = Instant::now();
                     let elapsed = now.saturating_duration_since(next_due);
                     let missed_ticks = elapsed.as_nanos() / config.scrape_interval.as_nanos() + 1;
+                    if missed_ticks > 1 {
+                        let skipped = u64::try_from(missed_ticks - 1).unwrap_or(u64::MAX);
+                        if let Some(metrics) = telemetry.metrics.as_mut() {
+                            metrics.scrapes_overrun.add(skipped);
+                        }
+                        otel_warn!(
+                            "prometheus_receiver.scrape_cycle_overrun",
+                            skipped_ticks = skipped,
+                            scrape_interval_ms =
+                                u64::try_from(config.scrape_interval.as_millis()).unwrap_or(u64::MAX),
+                            message = "scrape cycle overran scrape_interval; skipping missed intervals"
+                        );
+                    }
                     let advance = config
                         .scrape_interval
                         .saturating_mul(u32::try_from(missed_ticks).unwrap_or(u32::MAX));
@@ -998,24 +1151,30 @@ impl local::Receiver<OtapPdata> for PrometheusReceiver {
                         next_due = now + config.scrape_interval;
                     }
 
-                    let targets = match poll_with_control(
-                        discovery.resolve_targets(),
+                    let (targets, dns_failures) = match poll_with_control(
+                        discovery.resolve_targets_counted(),
                         &mut ctrl_msg_recv,
                         &effect_handler,
-                        &mut metrics,
+                        &mut telemetry,
+                        None,
                     )
                     .await
                     {
-                        ControlFlow::Continue(targets) => targets,
+                        ControlFlow::Continue(resolved) => resolved,
                         ControlFlow::Break(exit) => return exit,
                     };
+                    if dns_failures > 0
+                        && let Some(metrics) = telemetry.metrics.as_mut()
+                    {
+                        metrics.dns_lookups_failed.add(dns_failures);
+                    }
                     for target_url in &targets {
                         if let ControlFlow::Break(exit) = scraper
                             .scrape_target(
                                 target_url,
                                 &mut ctrl_msg_recv,
                                 &effect_handler,
-                                &mut metrics,
+                                &mut telemetry,
                             )
                             .await
                         {
@@ -1036,44 +1195,18 @@ enum SendOutcome {
     Exit(Result<TerminalState, Error>),
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_decoded_records(
-    records: &OtapMetricRecords,
-    honor_timestamps: bool,
-    scrape_timestamp_ms: i64,
-    default_start_timestamp_ns: Option<i64>,
-    resource_transform: Option<&AttributesTransform>,
+async fn send_otap_batch(
+    pdata: OtapPdata,
     drain_deadline: &mut Option<StdInstant>,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &mut Option<MetricSet<PrometheusReceiverMetrics>>,
+    telemetry: &mut ReceiverTelemetry,
 ) -> SendOutcome {
     if let Some(deadline) = *drain_deadline
         && StdInstant::now() >= deadline
     {
         return SendOutcome::DrainTimedOut(deadline);
     }
-    let otap = match records_to_otap_with_resource(
-        records,
-        honor_timestamps,
-        scrape_timestamp_ms,
-        default_start_timestamp_ns,
-        resource_transform,
-    ) {
-        Ok(otap) => otap,
-        Err(err) => {
-            if let Some(metrics) = metrics.as_mut() {
-                metrics.send_failures.add(1);
-            }
-            otel_warn!(
-                "prometheus_receiver.otap_conversion_error",
-                error = err.to_string(),
-                message = "failed to convert decoded Arrow batch into OtapArrowRecords"
-            );
-            return SendOutcome::Failed;
-        }
-    };
-    let pdata = OtapPdata::new(Context::default(), otap.into());
     let send_result = match effect_handler.try_send_message_with_source_node(pdata) {
         Ok(()) => Ok(()),
         Err(TypedError::ChannelSendError(SendError::Full(pdata))) => {
@@ -1106,7 +1239,7 @@ async fn send_decoded_records(
                             }
                             other => {
                                 if let ControlFlow::Break(exit) =
-                                    handle_control_msg(other, effect_handler, metrics).await
+                                    handle_control_msg(other, effect_handler, telemetry, None).await
                                 {
                                     return SendOutcome::Exit(exit);
                                 }
@@ -1123,13 +1256,13 @@ async fn send_decoded_records(
 
     match send_result {
         Ok(()) => {
-            if let Some(metrics) = metrics.as_mut() {
+            if let Some(metrics) = telemetry.metrics.as_mut() {
                 metrics.batches_sent.add(1);
             }
             SendOutcome::Sent
         }
         Err(err) => {
-            if let Some(metrics) = metrics.as_mut() {
+            if let Some(metrics) = telemetry.metrics.as_mut() {
                 metrics.send_failures.add(1);
             }
             otel_warn!(
@@ -1555,13 +1688,13 @@ mod tests {
                 Box::new(receiver).start(ctrl_chan, effect_handler).await
             });
 
-            // Wait until the first chunk fills the capacity-1 channel, then yield once more so
-            // the second chunk parks on `send_message_with_source_node` without draining `out_rx`.
+            // Wait until the first chunk fills the capacity-1 channel; the receiver's send loop
+            // immediately enters `send_message_with_source_node` for the second chunk in the same
+            // poll without needing extra yield steps.
             tokio::time::timeout(Duration::from_secs(2), async {
                 while out_rx.is_empty() {
                     tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
             })
             .await
             .expect("first chunk fills downstream channel");
@@ -2126,5 +2259,147 @@ mod tests {
 
         // Row 2 belongs to Gauge (id=10) and stays null.
         assert!(start_col.is_null(2));
+    }
+
+    /// Scenario: configuration specifies a zero `dns_lookup_timeout` or zero `max_body_bytes`,
+    /// or relies on default batching and limit settings.
+    /// Guarantees: validation rejects zero `dns_lookup_timeout` and zero `max_body_bytes`, and
+    /// default configuration bounds batch size to 4096 data points and body size to 16 MiB.
+    #[test]
+    fn rejects_zero_dns_lookup_timeout_and_zero_max_body_bytes() {
+        let default_cfg = Config::default();
+        assert_eq!(default_cfg.max_data_points_per_batch, 4096);
+        assert_eq!(default_cfg.max_body_bytes, 16 * 1024 * 1024);
+        assert_eq!(default_cfg.dns_lookup_timeout, Duration::from_secs(5));
+
+        let zero_dns = Config {
+            dns_lookup_timeout: Duration::ZERO,
+            targets: vec!["127.0.0.1:9001".to_owned()],
+            ..Config::default()
+        };
+        assert!(matches!(
+            validate_config(&zero_dns),
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
+        ));
+
+        let zero_body = Config {
+            max_body_bytes: 0,
+            targets: vec!["127.0.0.1:9001".to_owned()],
+            ..Config::default()
+        };
+        assert!(matches!(
+            validate_config(&zero_body),
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
+        ));
+    }
+
+    /// Scenario: a target sequentially returns HTTP 500, an oversized `Content-Length` response,
+    /// an oversized streaming body without `Content-Length`, and a malformed exposition payload.
+    /// Guarantees: each failure increments `scrapes_failed` without incrementing
+    /// `scrapes_completed` or `send_failures`, and no batches are emitted downstream.
+    #[test]
+    fn records_failures_for_bad_status_oversized_body_and_decode_error() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local test listener");
+            let addr = listener.local_addr().expect("listener address");
+
+            let oversized_body =
+                "# TYPE big_counter counter\nbig_counter{label=\"0123456789abcdef\"} 1\n";
+            let responses = vec![
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_owned(),
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    oversized_body.len(),
+                    oversized_body
+                ),
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nConnection: close\r\n\r\n{}",
+                    oversized_body
+                ),
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: 23\r\nConnection: close\r\n\r\nnot_a_valid_metric ===\n"
+                    .to_owned(),
+            ];
+
+            let server = tokio::task::spawn_local(async move {
+                for raw_resp in responses {
+                    if let Ok((mut socket, _)) = listener.accept().await {
+                        let mut buf = [0u8; 1024];
+                        let _ = socket.read(&mut buf).await;
+                        let _ = socket.write_all(raw_resp.as_bytes()).await;
+                    }
+                }
+            });
+
+            let config = Config {
+                scrape_interval: Duration::from_secs(60),
+                scrape_timeout: Duration::from_secs(5),
+                max_body_bytes: 32,
+                targets: vec![addr.to_string()],
+                ..Config::default()
+            };
+            let target_url =
+                normalize_target_url(&addr.to_string(), &config.metrics_path).expect("target url");
+            let mut scraper =
+                TargetScraper::new(&config, test_node("prometheus_test")).expect("build scraper");
+
+            let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+            let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
+            let pipeline =
+                controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+            let mut telemetry = ReceiverTelemetry {
+                metrics: Some(PrometheusReceiverMetrics::register(&pipeline)),
+                pull: ReceiverPullMetrics::register(&pipeline),
+            };
+
+            let TestReceiverHarness {
+                mut ctrl_chan,
+                ctrl_tx: _ctrl_tx,
+                effect_handler,
+                out_rx,
+                runtime_ctrl_rx: _runtime_ctrl_rx,
+            } = build_test_harness(4);
+
+            for _ in 0..4 {
+                let flow = scraper
+                    .scrape_target(&target_url, &mut ctrl_chan, &effect_handler, &mut telemetry)
+                    .await;
+                assert!(matches!(flow, ControlFlow::Continue(())));
+            }
+
+            let metrics = telemetry.metrics.as_ref().expect("metrics registered");
+            assert_eq!(metrics.scrapes_started.get(), 4);
+            assert_eq!(metrics.scrapes_failed.get(), 4);
+            assert_eq!(metrics.scrapes_completed.get(), 0);
+            assert_eq!(metrics.batches_sent.get(), 0);
+            assert_eq!(metrics.send_failures.get(), 0);
+            assert!(out_rx.is_empty());
+
+            let _ = server.await;
+        }));
+    }
+
+    /// Scenario: `TargetDiscovery::resolve_targets_counted` resolves a valid static target alongside
+    /// an unresolvable `.invalid` DNS service discovery target.
+    /// Guarantees: the static target is preserved while the failed DNS lookup increments the
+    /// returned DNS failure count.
+    #[tokio::test]
+    async fn counts_failed_and_empty_dns_target_lookups() {
+        let config = Config {
+            targets: vec!["127.0.0.1:9001".to_owned()],
+            dns_sd_targets: vec!["nonexistent.prometheus.target.invalid:9001".to_owned()],
+            dns_lookup_timeout: Duration::from_secs(2),
+            ..Config::default()
+        };
+        let discovery = TargetDiscovery::from_config(&config).expect("valid discovery config");
+        let (urls, dns_failures) = discovery.resolve_targets_counted().await;
+        assert_eq!(
+            urls.iter().map(Url::as_str).collect::<Vec<_>>(),
+            vec!["http://127.0.0.1:9001/metrics"]
+        );
+        assert_eq!(dns_failures, 1);
     }
 }
