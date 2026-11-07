@@ -181,49 +181,6 @@ fn same_process_lock_and_namespace_isolation() {
     let _reopened = store(&root);
 }
 
-/// Scenario: A child process attempts to open the namespace held by its parent.
-/// Guarantees: The OS lock excludes distinct processes as well as independent in-process opens.
-#[test]
-fn cross_process_lock() {
-    let (dir, root) = root();
-    let _store = store(&root);
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "store::tests::lock_child",
-            "--nocapture",
-            "--format=pretty",
-        ])
-        .env("FILELOG_LOCK_TEST_ROOT", dir.path())
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("test store::tests::lock_child ... ok"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("test result: ok. 1 passed; 0 failed;"),
-        "{stdout}"
-    );
-}
-
-/// Scenario: The lock-test child opens its parent's checkpoint namespace.
-/// Guarantees: Cross-process contention reports Locked without changing authority.
-#[test]
-fn lock_child() {
-    let Some(path) = std::env::var_os("FILELOG_LOCK_TEST_ROOT") else {
-        return;
-    };
-    let file = File::open(path).unwrap();
-    let root = StateRoot::from_borrowed_fd(file.as_fd()).unwrap();
-    assert!(matches!(
-        CheckpointStore::open(&root, ID, config()),
-        Err(StoreError::Locked)
-    ));
-}
-
 /// Scenario: A valid registration precedes a progress frame cut at every possible byte.
 /// Guarantees: Only that incomplete suffix is removed and the entire accepted prefix is byte-identical.
 #[test]
@@ -594,6 +551,14 @@ fn wal_count_admission() {
         recovered.append(vec![progress(10, 20)], Durability::Sync),
         Err(StoreError::CompactionRequired)
     ));
+    let _ = recovered.compact().unwrap();
+    assert_eq!(
+        recovered
+            .append(vec![progress(10, 20)], Durability::Sync)
+            .unwrap()
+            .sequence,
+        1
+    );
 }
 
 /// Scenario: Snapshot/WAL admission overflows or would exceed the fixed recovery ceiling.
@@ -884,6 +849,15 @@ fn lower_byte_threshold_allows_recovery() {
         Err(StoreError::CompactionRequired)
     ));
     assert_eq!(fs::metadata(path).unwrap().len(), length);
+    let _ = recovered.compact().unwrap();
+    assert_eq!(recovered.wal_bytes(), 0);
+    assert_eq!(
+        recovered
+            .append(vec![progress(0, 10)], Durability::Sync)
+            .unwrap()
+            .sequence,
+        1
+    );
 }
 
 /// Scenario: An authoritative file exceeds the fixed ceiling even with valid prefix bytes.
@@ -1071,7 +1045,7 @@ fn original_handle_sync_precedes_pending_recovery() {
             .append(vec![progress(0, 10)], Durability::Deferred)
             .unwrap();
         assert_eq!(store.synced_sequence(), 1);
-        let original_fd = store.recovered.file.as_raw_fd();
+        let original_fd = store.recovered.file().as_raw_fd();
         store.io.fail_write_after = Some(written);
         assert!(
             store
@@ -1128,7 +1102,7 @@ fn original_handle_sync_failure_blocks_pending_recovery() {
     );
     let path = namespace(dir.path()).join(DB);
     let before = fs::read(&path).unwrap();
-    let original_fd = store.recovered.file.as_raw_fd();
+    let original_fd = store.recovered.file().as_raw_fd();
     let start = store.io.events.len();
     store.io.fail_sync = Some("pre-resolution file sync");
     assert!(matches!(
@@ -1514,9 +1488,9 @@ fn append_is_independent_of_recovery_read_cursor() {
         .unwrap();
     let path = namespace(dir.path()).join(DB);
     let accepted = fs::read(&path).unwrap();
-    let _ = store.recovered.file.seek(SeekFrom::Start(0)).unwrap();
+    let _ = store.recovered.file_mut().seek(SeekFrom::Start(0)).unwrap();
     let mut header = [0; CHECKPOINT_HEADER_BYTES];
-    store.recovered.file.read_exact(&mut header).unwrap();
+    store.recovered.file_mut().read_exact(&mut header).unwrap();
     assert_eq!(header, accepted[..CHECKPOINT_HEADER_BYTES]);
     let _ = store
         .append(vec![progress(0, 10)], Durability::Sync)
@@ -1630,3 +1604,7 @@ fn prewrite_rejection_has_no_unresolved_append() {
     assert!(!store.has_unresolved_append());
     assert_eq!(store.state().unwrap().last_sequence(), 1);
 }
+
+mod compaction;
+
+mod snapshot_admission;

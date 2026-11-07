@@ -81,16 +81,19 @@ Every runtime file is a single root document that describes the engine process:
 ```yaml
 version: otel_dataflow/v1
 policies: {}
+codecs: {}
 topics: {}
 engine: {}
 groups:
     default:
         topics: {}
         policies: {}
+        codecs: {}
         pipelines:
             main:
                 type: otap
                 policies: {}
+                codecs: {}
                 extensions: {}
                 nodes: {}
                 connections: []
@@ -105,6 +108,7 @@ Required root fields:
 Optional root fields:
 
 - `policies`: top-level policy defaults.
+- `codecs`: optional codec bindings and named configurations inherited by pipelines.
 - `topics`: global topic declarations.
 - `engine`: engine-wide settings.
 
@@ -141,6 +145,18 @@ groups:
                     - from: batch
                       to: otlp/export
 ```
+
+## Codec Defaults
+
+Codecs convert encoded telemetry to and from native OTAP records on demand.
+Use `codecs.bindings.otlp-bytes.decode.validation: strict` to validate complete
+OTLP batches when decoding. Without codec declarations, all registered encodings
+use their distribution defaults. Bindings can select inline settings or reusable
+named configurations. The section can appear at root, group, pipeline, or
+observability-pipeline scope, alongside `policies`.
+
+Matching forwarding and borrowed encoded views do not run a decoder. See
+[PData codecs](codecs.md) for names, inheritance, validation costs, and examples.
 
 ## Receivers, Processors, and Exporters
 

@@ -3,6 +3,8 @@
 If working on Rust code (i.e., the `rust/` directory), read and follow all
 instructions in [rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md).
 
+You can find other available skills at [.github/skills/](.github/skills/).
+
 ## Reviewing changes
 
 When reviewing a pull request, follow

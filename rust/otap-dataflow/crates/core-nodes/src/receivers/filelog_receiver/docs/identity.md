@@ -203,9 +203,17 @@ returned readers after that stop.
 
 | Outcome | Required handling |
 | --- | --- |
-| `AppendRejected` | Nothing was written. Encoding/replay errors leave the owner usable. Required-write compaction and authority failures stop it. |
+| `AppendRejected` | Nothing was written. Encoding/replay errors leave the owner usable. Required-write compaction, snapshot-capacity and authority failures stop it. |
 | `PendingWrite` | The write may have reached disk. Keep its original result and leases; back off on the worker, then call `resolve_pending`. |
 | Failed sync, corruption, authority loss or exhausted failure budget | Stop the owner. |
+
+`SnapshotLimit { size, max }` rejects required admission/progress before writing
+and stops the entire owner. It does not quarantine only the affected source.
+Uncommitted admissions release their leases; existing readers retain theirs.
+Compaction without removals cannot free live snapshot space. Optional fingerprint
+growth stays queued on snapshot or WAL capacity rejection, so required sync can
+still complete; retry it only after capacity can change. Vetted retention and
+larger validated bounds are integration/operator decisions, not automatic repair.
 
 Never resubmit a pending operation or reopen the store to resolve it. Use the
 store's existing recovery protocol with its original file handle. Resolution
