@@ -290,20 +290,18 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
     // Pause time after the initial real loopback HTTP exchange completes so the
     // in-memory NotModified poll ticks can be stepped deterministically.
     tokio::time::pause();
-    // Advance 15s and 30s: google-cloud-auth has not rotated yet (rotates at 60s), so no
+    // Advance 15s, 30s, and 45s: google-cloud-auth has not rotated yet (rotates at 60s), so no
     // duplicate emission occurs on token_stream.
-    tokio::time::advance(Duration::from_secs(15)).await;
-    tokio::task::yield_now().await;
-    assert!(stream.next().now_or_never().is_none());
+    for _ in 0..3 {
+        tokio::time::advance(TOKEN_CACHE_POLL_INTERVAL).await;
+        tokio::task::yield_now().await;
+        assert!(stream.next().now_or_never().is_none());
+    }
 
-    tokio::time::advance(Duration::from_secs(15)).await;
-    tokio::task::yield_now().await;
-    assert!(stream.next().now_or_never().is_none());
-
-    // Advance past 60s so google-cloud-auth wakes to refresh in the background, briefly resume
-    // wall-clock time so the real loopback TCP exchange with wiremock completes, then pause and
-    // advance 15s to trigger the next periodic poll tick.
-    tokio::time::advance(Duration::from_secs(31)).await;
+    // Advance past 60s so google-cloud-auth wakes to refresh in the background, resume
+    // wall-clock time for the real loopback TCP exchange with wiremock, and then step
+    // periodic poll ticks in a bounded loop until the rotated token is published.
+    tokio::time::advance(Duration::from_secs(16)).await;
     tokio::time::resume();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -314,12 +312,21 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
         }
     })
     .await
-    .expect("google-cloud-auth background refresh request completed");
-    // Give google-cloud-auth's task a moment to write the new token into its watch channel.
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(15)).await;
-    let rotated = stream.next().await.expect("stream open");
+    .expect("google-cloud-auth background refresh request sent");
+
+    let mut rotated = None;
+    for _ in 0..100 {
+        tokio::time::pause();
+        tokio::time::advance(TOKEN_CACHE_POLL_INTERVAL).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        if let Some(Some(token)) = stream.next().now_or_never() {
+            rotated = Some(token);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let rotated = rotated.expect("rotated token published after google-cloud-auth refresh");
     assert_eq!(rotated.expose_token(), "gcp-token-v2");
 
     drop(ctrl_tx);
