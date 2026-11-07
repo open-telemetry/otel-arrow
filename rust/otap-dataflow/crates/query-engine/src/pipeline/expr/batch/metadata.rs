@@ -17,11 +17,18 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::types::ExprLogicalType;
 
 use super::BatchEval;
 
-trait MetadataUdfImpl {
+pub trait MetadataUdfImpl {
+    /// TODO commentary
     fn function_name() -> &'static str;
+
+    /// TODO commentary
+    fn context_entry_selector() -> Result<Option<ContextEntrySelector>>;
+
+    fn logical_type() -> ExprLogicalType;
 
     fn create_declared_metadata_read(
         entry_selector: &ContextEntrySelector,
@@ -42,6 +49,41 @@ trait MetadataUdfImpl {
     }
 }
 
+pub trait MetadataUdfFactory {
+    fn context_entry_selector(&self) -> Result<Option<ContextEntrySelector>>;
+
+    fn logical_type(&self) -> ExprLogicalType;
+
+    fn create(&self, node_bindings: &NodeBindings) -> Result<Box<dyn BatchEval>>;
+}
+
+#[derive(Default)]
+pub struct HasTransportHeaderPredicateFactory {}
+
+impl HasTransportHeaderPredicateFactory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl MetadataUdfFactory for HasTransportHeaderPredicateFactory {
+    fn logical_type(&self) -> ExprLogicalType {
+        HasTransportHeaderPredicate::logical_type()
+    }
+
+    fn context_entry_selector(&self) -> Result<Option<ContextEntrySelector>> {
+        HasTransportHeaderPredicate::context_entry_selector()
+    }
+
+    fn create(&self, node_bindings: &NodeBindings) -> Result<Box<dyn BatchEval>> {
+        Ok(Box::new(HasTransportHeaderPredicate::try_new(
+            "todo",
+            node_bindings,
+            None,
+        )?))
+    }
+}
+
 /// TODO docs
 #[derive(Debug)]
 pub(crate) struct HasTransportHeaderPredicate {
@@ -51,6 +93,14 @@ pub(crate) struct HasTransportHeaderPredicate {
 impl MetadataUdfImpl for HasTransportHeaderPredicate {
     fn function_name() -> &'static str {
         "has_transport_header"
+    }
+
+    fn logical_type() -> ExprLogicalType {
+        ExprLogicalType::Boolean
+    }
+
+    fn context_entry_selector() -> Result<Option<ContextEntrySelector>> {
+        todo!()
     }
 }
 
@@ -88,7 +138,7 @@ impl BatchEval for HasTransportHeaderPredicate {
             None => {
                 println!("ITS null");
                 ScalarValue::Null
-            },
+            }
         };
 
         Ok(result)

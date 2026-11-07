@@ -38,7 +38,7 @@ mod assign;
 mod attributes;
 mod concat;
 mod conditional;
-mod expr;
+pub(crate) mod expr;
 mod filter;
 mod fork;
 mod functions;

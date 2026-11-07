@@ -20,6 +20,8 @@ use crate::consts::{
     UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
 };
 
+pub mod visit;
+
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine
 #[must_use]

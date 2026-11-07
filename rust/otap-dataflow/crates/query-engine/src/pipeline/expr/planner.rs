@@ -56,7 +56,7 @@ use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
-mod func;
+pub(crate) mod func;
 
 /// Planner that converts AST expressions into `ScopedExpr` execution trees.
 pub(crate) struct ExprPlanner<'a> {

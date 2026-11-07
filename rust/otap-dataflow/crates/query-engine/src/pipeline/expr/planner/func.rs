@@ -15,7 +15,7 @@ use datafusion::functions::encoding::encode;
 use datafusion::functions::math::log10;
 use datafusion::functions::string::{ends_with, lower, ltrim, rtrim, starts_with, upper, uuid};
 use datafusion::logical_expr::ScalarUDF;
-use otel_arrow_dfe_engine::pdata_context::NodeBindings;
+use otel_arrow_dfe_engine::pdata_context::{ContextEntrySelector, NodeBindings};
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -28,7 +28,9 @@ use crate::consts::{
 };
 use crate::error::Result;
 use crate::pipeline::expr::batch::BatchEval;
-use crate::pipeline::expr::batch::metadata::HasTransportHeaderPredicate;
+use crate::pipeline::expr::batch::metadata::{
+    HasTransportHeaderPredicate, HasTransportHeaderPredicateFactory, MetadataUdfFactory,
+};
 use crate::pipeline::expr::types::ExprLogicalType;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
@@ -37,7 +39,7 @@ use crate::pipeline::functions::{
 };
 
 /// The definition of the function.
-pub(super) enum FunctionDefinition {
+pub(crate) enum FunctionDefinition {
     /// The function will be evaluated as a datafusion `[ScalarUDF]` as part of some datafusion
     /// expression evaluation
     DataFusion(DataFusionFunctionDef),
@@ -178,25 +180,17 @@ impl FunctionDefinition {
                 None,
             )),
 
-            HAS_TRANSPORT_HEADER_FUNC_NAME => {
-                Self::BatchEval(BatchEvalFuncDef::new(
-                    |node_bindings| {
-                        Ok(Box::new(HasTransportHeaderPredicate::try_new(
-                            "todo",
-                            node_bindings,
-                            None, /* TODO */
-                        )?))
-                    },
-                    ExprLogicalType::Boolean,
-                ))
-            }
+            HAS_TRANSPORT_HEADER_FUNC_NAME => Self::BatchEval(BatchEvalFuncDef::new(
+                HasTransportHeaderPredicateFactory::new(),
+
+            )),
             _ => return None,
         })
     }
 }
 
 /// Definition of function that can be invoked as part of a datafusion expression evaluation
-pub(super) struct DataFusionFunctionDef {
+pub(crate) struct DataFusionFunctionDef {
     pub scalar_udf: Arc<ScalarUDF>,
     pub return_type: ExprLogicalType,
     pub requires_dict_downcast: bool,
@@ -219,33 +213,29 @@ impl DataFusionFunctionDef {
     }
 }
 
-// TODO cleanup?
-type BatchEvalFuncFactory = dyn Fn(&NodeBindings) -> Result<Box<dyn BatchEval>>;
-
 pub struct BatchEvalFuncDef {
-    logical_type: ExprLogicalType,
-    factory: Box<BatchEvalFuncFactory>,
+    factory: Box<dyn MetadataUdfFactory>,
 }
 
 impl BatchEvalFuncDef {
-    fn new(
-        factory: impl Fn(&NodeBindings) -> Result<Box<dyn BatchEval>> + 'static,
-        logical_type: ExprLogicalType,
-    ) -> Self {
+    fn new(factory: impl MetadataUdfFactory + 'static) -> Self {
         Self {
             factory: Box::new(factory),
-            logical_type,
         }
     }
 
-    pub fn logical_type(&self) -> &ExprLogicalType {
-        &self.logical_type
+    pub fn logical_type(&self) -> ExprLogicalType {
+        self.factory.logical_type()
+    }
+
+    pub fn context_entry_selector(&self) -> Result<Option<ContextEntrySelector>> {
+        self.factory.context_entry_selector()
     }
 
     pub fn create_batch_eval_instance(
         &self,
         node_bindings: &NodeBindings,
     ) -> Result<Box<dyn BatchEval>> {
-        (self.factory)(node_bindings)
+        self.factory.create(node_bindings)
     }
 }
