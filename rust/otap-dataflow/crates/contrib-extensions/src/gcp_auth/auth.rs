@@ -153,15 +153,14 @@ impl BackgroundProviderSource<BearerToken> for Auth {
         // drops the inner receiver so any poisoned or dead `TokenCache` is
         // replaced on the next retry.
         let outcome: Result<BackgroundFetchOutcome<BearerToken>, Error> = async {
-            let headers_res =
-                tokio::time::timeout(self.timeout, credentials.headers(extensions))
-                    .await
-                    .map_err(|_| Error::TokenAcquisition {
-                        message: format!(
-                            "timed out after {:?} waiting for GCP metadata token",
-                            self.timeout
-                        ),
-                    })?;
+            let headers_res = tokio::time::timeout(self.timeout, credentials.headers(extensions))
+                .await
+                .map_err(|_| Error::TokenAcquisition {
+                    message: format!(
+                        "timed out after {:?} waiting for GCP metadata token",
+                        self.timeout
+                    ),
+                })?;
 
             match headers_res {
                 Ok(CacheableResource::New { entity_tag, data }) => {
