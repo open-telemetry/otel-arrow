@@ -17,6 +17,7 @@ use otel_arrow_dfe_engine::control::{
     pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::pdata_context::Metadata;
 pub(super) use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_engine::testing::node::test_node;
 pub(super) use otel_arrow_dfe_engine::testing::processor::TestRuntime;
@@ -58,6 +59,14 @@ pub(super) enum Action {
         interests: Interests,
         payload: OtapPayload,
         peer_addr: SocketAddr,
+    },
+
+    /// Send pdata with optional ack/nack subscriber interest and the given
+    /// message metadata.
+    SendPdataWithMetadata {
+        interests: Interests,
+        payload: OtapPayload,
+        metadata: Metadata,
     },
 
     /// Send a message to the processor
@@ -143,6 +152,24 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                         peer_addr,
                     } => {
                         let mut pdata = OtapPdata::new_default(payload).with_peer_addr(peer_addr);
+                        if !interests.is_empty() {
+                            pdata = pdata.test_subscribe_to(
+                                interests,
+                                TestCallData::new_with(input_idx, 0).into(),
+                                1,
+                            );
+                        }
+                        ctx.process(Message::PData(pdata))
+                            .await
+                            .expect("process pdata");
+                        input_idx += 1;
+                    }
+                    Action::SendPdataWithMetadata {
+                        interests,
+                        payload,
+                        metadata,
+                    } => {
+                        let mut pdata = OtapPdata::new_default(payload).with_metadata(metadata);
                         if !interests.is_empty() {
                             pdata = pdata.test_subscribe_to(
                                 interests,
@@ -287,13 +314,32 @@ pub(super) fn drain_upstream(
 pub(super) fn try_create_processor(
     config: serde_json::Value,
 ) -> Result<(TestRuntime<OtapPdata>, ProcessorWrapper<OtapPdata>), ConfigError> {
-    let pipeline_ctx = create_test_pipeline_context();
+    let mut pipeline_ctx = create_test_pipeline_context();
     let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-    let node = test_node("temporal-reaggregation-config-test");
+    let node_name = "temporal-reaggregation-config-test";
+    let node = test_node(node_name);
 
     let mut node_config =
         NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
     node_config.config = config;
+    let pipeline_config =
+        serde_json::from_value(serde_json::json!({ "nodes": { node_name: &node_config } }))
+            .expect("test pipeline configuration");
+    otel_arrow_dfe_engine::testing::install_test_context_bindings(
+        &mut pipeline_ctx,
+        &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+        pipeline_config,
+    )
+    .map_err(|error| match error {
+        otel_arrow_dfe_engine::error::Error::ConfigError(error) => *error,
+        other => panic!("context bindings compile: {other}"),
+    })?;
+    let pipeline_ctx = pipeline_ctx.with_node_context(
+        node_name.into(),
+        node_config.r#type.clone(),
+        node_config.kind(),
+        std::collections::HashMap::new(),
+    );
 
     (TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY.create)(
         pipeline_ctx,
