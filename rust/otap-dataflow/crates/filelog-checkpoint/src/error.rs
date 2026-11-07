@@ -376,6 +376,17 @@ pub enum EncodeError {
         /// Violated invariant.
         reason: &'static str,
     },
+    /// Snapshot admission failed before allocating its output buffer.
+    #[error("snapshot size {len} exceeds budget {max}")]
+    SnapshotTooLarge {
+        /// Calculated snapshot bytes, excluding the checkpoint container header.
+        len: u64,
+        /// Caller-supplied snapshot budget.
+        max: u64,
+    },
+    /// A bounded encoder attempted to exceed or did not fill its calculated size.
+    #[error("encoded output does not match its calculated size")]
+    EncodedSizeMismatch,
     /// Checked encoding arithmetic overflowed.
     #[error("arithmetic overflow while computing {context}")]
     ArithmeticOverflow {
