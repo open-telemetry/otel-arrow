@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Small Task 16 boundary; no batch builder or delivery state machine.
+//! Batch-sink contract for reader scheduling.
 
 use super::{CommittedFrontierGuard, Frame, ReaderKey};
 
@@ -27,7 +27,7 @@ pub(crate) struct Rejected {
     pub output: Output,
 }
 
-/// Task 16 review boundary. Preflight includes retained batch/carry-over state
+/// Preflight includes retained batch/carry-over state
 /// and all known record/byte/progress-mark limits. It runs before *every* framing
 /// step, including empty-input replay, and before every source operation.
 ///

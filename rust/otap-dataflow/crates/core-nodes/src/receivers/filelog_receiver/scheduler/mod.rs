@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Task 15 synchronous scheduling core. See `../docs/scheduling.md`.
+//! Synchronous reader scheduling. See `../docs/scheduling.md`.
 //!
-//! Readers are supplied by Task 12 after committed admission or validated recovery.
+//! `IdentityOwner` supplies readers after committed admission or validated recovery.
 //! No method writes checkpoints or authorizes lifecycle transitions.
 
 use super::discovery::{ProbeBudget, ReaderProbeRequest};
@@ -194,7 +194,7 @@ pub(crate) struct RejectedSeed {
 }
 
 impl<I: ReaderIo> Scheduler<I> {
-    /// Build on the blocking worker from the same validated inputs as Task 12.
+    /// Build on the blocking worker from the same validated inputs as `IdentityOwner`.
     pub(crate) fn from_inputs(
         io: I,
         inputs: &super::config::ValidatedInputs,

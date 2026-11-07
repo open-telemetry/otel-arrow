@@ -1350,7 +1350,7 @@ fn partial_payload_is_lazy_until_used() {
     assert_eq!(partial.used(), size_of::<Partial>());
 }
 
-/// Scenario: Task 12 commits admission, the scheduler emits data, and authorized progress is applied by the identity owner.
+/// Scenario: `IdentityOwner` commits admission, the scheduler emits data, and authorized progress is applied.
 /// Guarantees: ReaderSeed supplies the real ID/epoch/lease and ignored-header evidence; the scheduler neither writes progress nor releases ownership during Stop.
 #[test]
 fn committed_reader_seed_and_applied_evidence_integrate_with_scheduler() {
