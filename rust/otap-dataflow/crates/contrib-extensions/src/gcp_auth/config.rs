@@ -18,6 +18,11 @@ fn default_scopes() -> Vec<String> {
     vec![DEFAULT_SCOPE.to_string()]
 }
 
+/// Default per-attempt metadata token acquisition timeout.
+fn default_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
 /// Default startup readiness timeout.
 fn default_startup_timeout() -> Duration {
     Duration::from_secs(30)
@@ -41,6 +46,12 @@ pub struct Config {
     #[serde(default = "default_scopes")]
     pub scopes: Vec<String>,
 
+    /// Per-attempt timeout applied when acquiring or refreshing a token from
+    /// the metadata server via `google-cloud-auth`. Accepts human-readable
+    /// durations (e.g. `10s`, `500ms`). Must be non-zero.
+    #[serde(with = "humantime_serde", default = "default_timeout")]
+    pub timeout: Duration,
+
     /// How long the engine holds data-path node startup waiting for this
     /// extension to publish its first token, before aborting pipeline startup.
     /// Accepts human-readable durations (e.g. `30s`, `1m`). Must be non-zero.
@@ -53,6 +64,7 @@ impl Default for Config {
         Self {
             endpoint: None,
             scopes: default_scopes(),
+            timeout: default_timeout(),
             startup_timeout: default_startup_timeout(),
         }
     }
@@ -80,6 +92,10 @@ impl Config {
             if scope.trim().is_empty() {
                 return Err("`scopes` entries must not be empty".to_string());
             }
+        }
+
+        if self.timeout.is_zero() {
+            return Err("`timeout` must be greater than zero".to_string());
         }
 
         if self.startup_timeout.is_zero() {

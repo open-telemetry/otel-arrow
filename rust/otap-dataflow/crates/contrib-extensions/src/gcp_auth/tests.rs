@@ -84,6 +84,7 @@ fn config_defaults_apply_on_empty_or_null_config() {
         let cfg = config_from_json(val).expect("empty/null config is valid");
         assert!(cfg.endpoint.is_none());
         assert_eq!(cfg.scopes, vec![DEFAULT_SCOPE.to_string()]);
+        assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert_eq!(cfg.startup_timeout, Duration::from_secs(30));
         assert_eq!(cfg.normalized_endpoint().unwrap(), None);
     }
@@ -158,6 +159,7 @@ fn config_validation_rejects_invalid_values() {
             "must not include query parameters or a URL fragment",
         ),
         (serde_json::json!({ "scopes": ["  "] }), "`scopes`"),
+        (serde_json::json!({ "timeout": "0s" }), "`timeout`"),
         (
             serde_json::json!({ "startup_timeout": "0s" }),
             "`startup_timeout`",
@@ -232,7 +234,7 @@ async fn get_token_and_fetch_outcome_reuse_cached_token_without_refetching() {
 /// Guarantees: `NotModified` ticks do not emit duplicate tokens on `token_stream()`, and once
 /// `google-cloud-auth` rotates the token ahead of expiry, the rotated token is published to
 /// subscribers.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn background_poll_loop_publishes_rotated_token_without_duplicate_emissions() {
     let server = MockServer::start().await;
     // First token expires in 300s (so google-cloud-auth refreshes at 300s - 240s = 60s).
@@ -285,6 +287,9 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
         "gcp-token-v1"
     );
 
+    // Pause time after the initial real loopback HTTP exchange completes so the
+    // in-memory NotModified poll ticks can be stepped deterministically.
+    tokio::time::pause();
     // Advance 15s and 30s: google-cloud-auth has not rotated yet (rotates at 60s), so no
     // duplicate emission occurs on token_stream.
     tokio::time::advance(Duration::from_secs(15)).await;
@@ -463,6 +468,22 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
         .and(path(
             "/computeMetadata/v1/instance/service-accounts/default/token",
         ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_json(serde_json::json!({
+                    "access_token": "slow-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                })),
+        )
+        .up_to_n_times(1)
+        .mount(&recovery_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/computeMetadata/v1/instance/service-accounts/default/token",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "recovered-token",
             "token_type": "Bearer",
@@ -471,14 +492,22 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
         .mount(&recovery_server)
         .await;
 
-    let cfg =
-        config_from_json(serde_json::json!({ "endpoint": recovery_server.uri() })).expect("valid");
+    let cfg = config_from_json(serde_json::json!({
+        "endpoint": recovery_server.uri(),
+        "timeout": "50ms",
+    }))
+    .expect("valid");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err_403 = auth.fetch().await.expect_err("HTTP 403 must fail");
     auth.log_refresh_failure(&err_403);
     assert!(err_403.to_string().contains("403") || err_403.to_string().contains("failed to fetch"));
 
     let _ = auth.fetch().await.expect_err("malformed JSON must fail");
+    let timeout_err = auth.fetch().await.expect_err("slow response must time out");
+    assert!(
+        timeout_err.to_string().contains("timed out"),
+        "expected timeout error, got {timeout_err}"
+    );
 
     let recovered = auth
         .fetch()
