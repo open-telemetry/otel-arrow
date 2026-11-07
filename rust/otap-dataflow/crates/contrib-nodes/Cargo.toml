@@ -95,6 +95,8 @@ sysinfo = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
+rustls-webpki = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
@@ -206,6 +208,8 @@ windows-event-forwarding = [
     "dep:url",
     "dep:humantime-serde",
     "dep:x509-parser",
+    "dep:rustls-webpki",
+    "dep:sha1",
     "dep:http",
     "dep:rustls",
     "dep:tokio-rustls",
