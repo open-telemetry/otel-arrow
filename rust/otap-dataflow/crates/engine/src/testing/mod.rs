@@ -122,6 +122,7 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
             pipeline_group_id: pipeline_ctx.pipeline_group_id(),
             pipeline_id: pipeline_ctx.pipeline_id(),
             policies: Policies::resolve(pipeline.policies()),
+            codecs: otel_arrow_dfe_config::codecs::CodecsConfig::resolve(pipeline.codecs()),
             pipeline,
             topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             role: ResolvedPipelineRole::Regular,

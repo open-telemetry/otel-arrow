@@ -69,7 +69,10 @@ pub fn assert_decode_conformance(service: &CodecService, case: DecodeConformance
 
     if let Some(malformed) = case.malformed {
         assert_eq!(
-            service.decode_policy().validation(),
+            service
+                .decode_policy_for(codec)
+                .expect("conformance codec is selected in the service")
+                .validation(),
             crate::DecodeValidation::Strict,
             "malformed-input conformance requires strict decode validation"
         );

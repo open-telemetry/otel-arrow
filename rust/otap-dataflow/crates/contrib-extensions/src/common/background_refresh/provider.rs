@@ -70,6 +70,14 @@ pub trait BackgroundProviderSource<T>: Send + Sync + 'static {
     /// Emits the source's "refresh failed" internal log event. Owned by the
     /// source because `otel_warn!` requires a literal event name.
     fn log_refresh_failure(&self, error: &Self::Error);
+
+    /// Cancels source-owned work that can outlive a cancelled `fetch` and waits
+    /// for it to exit.
+    ///
+    /// Called during graceful shutdown after the in-flight refresh is dropped
+    /// and bounded by the shutdown deadline, so such work stops while the
+    /// pipeline runtime that drives it is still alive.
+    async fn shutdown_in_flight(&self) {}
 }
 
 /// Shared, clonable background provider extension.
@@ -519,6 +527,35 @@ async fn wait_for_refresh(next_refresh: Option<tokio::time::Instant>) {
     }
 }
 
+/// How an in-flight refresh ended.
+enum RefreshStep<T, E> {
+    Completed(Result<T, E>),
+    Shutdown(Instant),
+    Closed,
+}
+
+impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T, C: ExtensionCapability>
+    BackgroundProviderExtension<S, M, T, C>
+{
+    /// Stops source-owned work within the shutdown deadline, then returns the
+    /// final metric snapshot in the terminal state (the same contract nodes
+    /// follow).
+    async fn shutdown_terminal_state(&self, deadline: Instant) -> TerminalState {
+        // Expiry leaves the remaining work to finish on its own; shutdown must
+        // still complete by the deadline.
+        let _ = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.inner.source.shutdown_in_flight(),
+        )
+        .await;
+        let snapshot = self.inner.metrics.lock().ok().map(|m| m.snapshot());
+        match snapshot {
+            Some(snapshot) => TerminalState::new(deadline, [snapshot]),
+            None => TerminalState::default(),
+        }
+    }
+}
+
 #[async_trait]
 impl<
     S: BackgroundProviderSource<T>,
@@ -547,11 +584,7 @@ impl<
                         // Graceful shutdown: return the final metric snapshot in
                         // the terminal state (the same contract nodes follow).
                         Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
-                            let snapshot = inner.metrics.lock().ok().map(|m| m.snapshot());
-                            return Ok(match snapshot {
-                                Some(snapshot) => TerminalState::new(deadline, [snapshot]),
-                                None => TerminalState::default(),
-                            });
+                            return Ok(self.shutdown_terminal_state(deadline).await);
                         }
                         // Control channel closed: exit without a snapshot.
                         Err(_) => break,
@@ -570,65 +603,69 @@ impl<
                     // slow-path `get_value` uses so a scheduled refresh and a
                     // concurrent cache-miss fetch coalesce onto one in-flight
                     // value call instead of both hitting the source.
-                    let refresh = async {
-                        // Note the current cache version before contending for
-                        // the lock so we can tell whether another caller
-                        // publishes a new value while we wait.
-                        let mut rx = inner.tx.subscribe();
-                        let _ = rx.borrow_and_update();
-                        let _guard = inner.fetch_lock.lock().await;
-                        // Only coalesce when a concurrent slow-path `get_value`
-                        // actually published a fresh value while we waited for
-                        // the lock. We must NOT skip merely because the cached
-                        // value is still "usable": the loop refreshes ahead of
-                        // expiry, but a value stays usable until ~30 s before
-                        // expiry, so reusing it here would defer the planned
-                        // early refresh far too long.
-                        // Once acquisition also reuses a value published before
-                        // start(), not only one published while awaiting the lock.
-                        if (matches!(
-                            inner.refresh_policy.strategy,
-                            BackgroundProviderRefreshStrategy::Once
-                        ) || rx.has_changed().unwrap_or(false))
-                            && let Some(value) = self.current_fresh_value() {
-                            return Ok(value);
-                        }
-                        self.refresh_once().await
-                    };
-                    tokio::pin!(refresh);
+                    // The refresh is scoped to this block so shutdown drops it
+                    // before stopping source work it may have left running.
+                    let step = {
+                        let refresh = async {
+                            // Note the current cache version before contending for
+                            // the lock so we can tell whether another caller
+                            // publishes a new value while we wait.
+                            let mut rx = inner.tx.subscribe();
+                            let _ = rx.borrow_and_update();
+                            let _guard = inner.fetch_lock.lock().await;
+                            // Only coalesce when a concurrent slow-path `get_value`
+                            // actually published a fresh value while we waited for
+                            // the lock. We must NOT skip merely because the cached
+                            // value is still "usable": the loop refreshes ahead of
+                            // expiry, but a value stays usable until ~30 s before
+                            // expiry, so reusing it here would defer the planned
+                            // early refresh far too long.
+                            // Once acquisition also reuses a value published before
+                            // start(), not only one published while awaiting the lock.
+                            if (matches!(
+                                inner.refresh_policy.strategy,
+                                BackgroundProviderRefreshStrategy::Once
+                            ) || rx.has_changed().unwrap_or(false))
+                                && let Some(value) = self.current_fresh_value() {
+                                return Ok(value);
+                            }
+                            self.refresh_once().await
+                        };
+                        tokio::pin!(refresh);
 
-                    // Keep the refresh cancellable: race it against the control
-                    // channel so a slow value call cannot delay shutdown past its
-                    // deadline. Config/telemetry messages are still serviced while
-                    // the refresh is in flight; only shutdown or channel closure
-                    // ends the loop (dropping the in-flight refresh future).
-                    let outcome = loop {
-                        tokio::select! {
-                            outcome = &mut refresh => break outcome,
-                            ctrl_msg = ctrl.recv() => {
-                                match ctrl_msg {
-                                    Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
-                                        let snapshot =
-                                            inner.metrics.lock().ok().map(|m| m.snapshot());
-                                        return Ok(match snapshot {
-                                            Some(snapshot) => {
-                                                TerminalState::new(deadline, [snapshot])
+                        // Keep the refresh cancellable: race it against the control
+                        // channel so a slow value call cannot delay shutdown past its
+                        // deadline. Config/telemetry messages are still serviced while
+                        // the refresh is in flight; only shutdown or channel closure
+                        // ends the loop (dropping the in-flight refresh future).
+                        loop {
+                            tokio::select! {
+                                outcome = &mut refresh => break RefreshStep::Completed(outcome),
+                                ctrl_msg = ctrl.recv() => {
+                                    match ctrl_msg {
+                                        Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
+                                            break RefreshStep::Shutdown(deadline);
+                                        }
+                                        Err(_) => break RefreshStep::Closed,
+                                        Ok(ExtensionControlMsg::Config { .. }) => {}
+                                        Ok(ExtensionControlMsg::CollectTelemetry {
+                                            mut metrics_reporter,
+                                        }) => {
+                                            if let Ok(mut metrics) = inner.metrics.lock() {
+                                                let _ = metrics.report(&mut metrics_reporter);
                                             }
-                                            None => TerminalState::default(),
-                                        });
-                                    }
-                                    Err(_) => return Ok(TerminalState::default()),
-                                    Ok(ExtensionControlMsg::Config { .. }) => {}
-                                    Ok(ExtensionControlMsg::CollectTelemetry {
-                                        mut metrics_reporter,
-                                    }) => {
-                                        if let Ok(mut metrics) = inner.metrics.lock() {
-                                            let _ = metrics.report(&mut metrics_reporter);
                                         }
                                     }
                                 }
                             }
                         }
+                    };
+                    let outcome = match step {
+                        RefreshStep::Completed(outcome) => outcome,
+                        RefreshStep::Shutdown(deadline) => {
+                            return Ok(self.shutdown_terminal_state(deadline).await);
+                        }
+                        RefreshStep::Closed => return Ok(TerminalState::default()),
                     };
 
                     match outcome {
