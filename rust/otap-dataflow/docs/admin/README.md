@@ -9,6 +9,7 @@ This section documents the admin surface of the OTAP Dataflow Engine:
 
 ## Document map
 
+- [Self-observability guide and metrics reference](../self-observability.md)
 - [Admin UI Architecture](architecture.md)
 - [dfctl CLI](dfctl.md) including command reference, output modes, and
   design principles
