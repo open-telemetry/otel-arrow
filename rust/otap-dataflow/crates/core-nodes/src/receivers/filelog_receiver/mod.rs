@@ -20,6 +20,11 @@ pub mod source;
 #[cfg(target_os = "linux")]
 pub mod discovery;
 
+// Scheduler composition remains separate from receiver registration.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod scheduler;
+
 /// Linux file identity and local ownership admission.
 #[cfg(target_os = "linux")]
 pub mod identity;

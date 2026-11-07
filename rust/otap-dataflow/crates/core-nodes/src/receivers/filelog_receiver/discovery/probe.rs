@@ -200,17 +200,21 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
     cancelled: &mut F,
     mut open: impl FnMut(&File, &CStr, SymlinkPolicy, &mut F) -> Result<PinnedSource, FileAccessError>,
 ) {
-    let reservation = context.budget.try_reserve().or_else(|| {
-        // One scheduler yield, not a spin loop or an unbounded retry queue.
-        std::thread::yield_now();
-        if cancelled() {
-            out.reason = Some(ScanReason::Cancelled);
-            None
-        } else {
-            context.budget.try_reserve()
-        }
+    if cancelled() {
+        out.reason = Some(ScanReason::Cancelled);
+        return;
+    }
+    // Registered workers alternate; cancellation remains observable while
+    // waiting for a reader to finish its bounded conversion.
+    let mut stopped = false;
+    let reservation = context.budget.reserve_discovery(&mut || {
+        stopped |= cancelled();
+        stopped
     });
     let Some(_reservation) = reservation else {
+        if stopped {
+            out.reason = Some(ScanReason::Cancelled);
+        }
         return;
     };
     let mut prior = None;

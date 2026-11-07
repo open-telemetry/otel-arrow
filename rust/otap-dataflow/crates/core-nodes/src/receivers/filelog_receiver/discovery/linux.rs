@@ -144,8 +144,9 @@ impl<P: MatchPolicy> Scanner<P> {
     /// Returning false from `consume` cancels the pass. Consumers must bound any
     /// copying and check cancellation while blocked. No directory or source
     /// descriptor is held during delivery. Filesystem errors are not retried;
-    /// probe-budget contention gets one scheduler yield/retry. Environmental
-    /// backoff and scheduling belong to the worker.
+    /// registered reader contention waits for fair permit handoff with a 10 ms
+    /// cancellation-check timeout. Unregistered pressure returns ProbeBusy.
+    /// Environmental backoff and scheduling belong to the worker.
     pub fn scan(
         &mut self,
         generation: u64,

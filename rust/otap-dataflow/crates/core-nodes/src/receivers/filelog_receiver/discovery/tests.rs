@@ -1794,10 +1794,10 @@ fn overlay_replay_preserves_positive_progress() {
     );
 }
 
-/// Scenario: A reader releases the shared allowance during discovery's single contention retry.
-/// Guarantees: The recovered probe completes without an unnecessary incomplete-pass result or additional slots.
+/// Scenario: A held allowance is released at the cancellation checkpoint before discovery acquisition.
+/// Guarantees: The following acquisition uses the released allowance without a polling retry or extra descriptor slots.
 #[test]
-fn transient_budget_contention_can_recover() {
+fn release_before_probe_acquisition_can_complete() {
     use std::cell::Cell;
     struct SignallingPolicy<'a>(&'a Cell<bool>);
     impl MatchPolicy for SignallingPolicy<'_> {
@@ -2570,4 +2570,95 @@ fn exclusion_normalization_preserves_path_contract() {
         )
         .is_err()
     );
+}
+
+/// Scenario: Reader reopen requests remain pending while a real scanner repeatedly visits a stable file.
+/// Guarantees: Each registered side gets its next bounded turn, every scan completes, and a reader cannot steal discovery's handoff.
+#[test]
+fn sustained_reader_requests_allow_complete_discovery_passes() {
+    use std::sync::{Arc, mpsc::sync_channel};
+    use std::task::{Wake, Waker};
+    use std::time::Duration;
+    struct Signal(std::sync::mpsc::SyncSender<()>);
+    impl Wake for Signal {
+        fn wake(self: Arc<Self>) {
+            let _ = self.0.try_send(());
+        }
+    }
+    let dir = fixture();
+    fs::write(dir.path().join("log"), b"data").unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    let (ready_tx, ready_rx) = sync_channel(1);
+    let (demand_tx, demand_rx) = sync_channel(1);
+    let (queued_tx, queued_rx) = sync_channel(1);
+    let (wake_tx, wake_rx) = sync_channel(1);
+    let wait = Duration::from_secs(30);
+    std::thread::scope(|scope| {
+        let reader_budget = Arc::clone(&budget);
+        let reader = scope.spawn(move || {
+            let wake = Waker::from(Arc::new(Signal(wake_tx)));
+            let mut request = reader_budget.request_reader(wake.clone()).unwrap();
+            for _ in 0..8 {
+                let permit = loop {
+                    if let Some(permit) = request.try_reserve() {
+                        break permit;
+                    }
+                    wake_rx.recv_timeout(wait).unwrap();
+                };
+                ready_tx.send(()).unwrap();
+                demand_rx.recv_timeout(wait).unwrap();
+                drop(permit);
+                drop(request);
+                request = reader_budget.request_reader(wake.clone()).unwrap();
+                // Discovery's cancellation checkpoint holds it immediately
+                // before acquisition, so this is an exact handoff boundary.
+                assert!(request.try_reserve().is_none());
+                queued_tx.send(()).unwrap();
+            }
+            drop(request);
+        });
+        let mut scanner = scanner(dir.path(), false);
+        for generation in 1..=8 {
+            ready_rx.recv_timeout(wait).unwrap();
+            let mut notified = false;
+            let mut files = 0;
+            let done = scanner.scan(
+                generation,
+                &budget,
+                || {
+                    if budget.discovery_waiting() && !notified {
+                        notified = true;
+                        demand_tx.send(()).unwrap();
+                        queued_rx.recv_timeout(wait).unwrap();
+                    }
+                    false
+                },
+                |batch| {
+                    files += batch.iter().filter(|o| o.reason.is_none()).count();
+                    true
+                },
+            );
+            assert!(done.complete && !done.cancelled);
+            assert_eq!(files, 1);
+        }
+        reader.join().unwrap();
+    });
+    assert!(budget.try_reserve().is_some());
+}
+
+/// Scenario: Discovery is waiting behind a registered reader when cancellation arrives.
+/// Guarantees: Waiting demand is removed immediately without acquiring descriptors or requiring a timer to establish ordering.
+#[test]
+fn fair_probe_wait_observes_cancellation() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    let budget = Arc::new(ProbeBudget::default());
+    let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+    let held = reader.try_reserve().unwrap();
+    let result = budget.reserve_discovery(&mut || budget.discovery_waiting());
+    assert!(result.is_none());
+    assert!(!budget.discovery_waiting());
+    drop(held);
+    drop(reader);
+    assert!(budget.try_reserve().is_some());
 }
