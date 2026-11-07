@@ -3,7 +3,7 @@
 
 //! Tower middleware that rejects gRPC requests when a receiver rate bucket is exhausted.
 
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use crate::otlp::metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use futures::future::Either;
 use http::{Request, Response};
 use otel_arrow_dfe_engine::admission::SharedAdmissionGate;

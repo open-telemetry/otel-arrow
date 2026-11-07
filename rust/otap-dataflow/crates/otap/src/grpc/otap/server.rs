@@ -1,10 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Provides a set of structs and enums that interact with the gRPC Server with BiDirectional
-//! streaming.
-//!
-//! Implements the necessary service traits for OTLP data.
+//! OTAP gRPC services with bidirectional Arrow streaming.
 //!
 //! ToDo: Modify OTAPData -> Optimize message transport
 //! ToDo: Handle Ack and Nack, return proper batch status
@@ -41,19 +38,10 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tonic::{Request, Response, Status, Streaming};
 
-pub mod client_settings;
-pub mod common;
-pub mod middleware;
-pub mod otlp;
-pub mod proxy;
-pub mod server_settings;
-
+use super::ack::{SharedState, SlotGuard};
+use crate::grpc::server::peer_addr_from_extensions;
 use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressure_status};
-use crate::otap_grpc::common::peer_addr_from_extensions;
-use crate::otap_grpc::otlp::server::SharedState;
-pub use client_settings::GrpcClientSettings;
 use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
-pub use server_settings::GrpcServerSettings;
 
 /// Records lifecycle and rejection telemetry for OTAP receiver batches.
 pub trait OtapReceiverTelemetry: ReceiverRejectionMetrics {
@@ -645,7 +633,7 @@ where
             key.into(),
             &mut otap_pdata,
         );
-        Some((otlp::server::SlotGuard { key, state }, rx))
+        Some((SlotGuard { key, state }, rx))
     } else {
         None
     };
@@ -694,7 +682,7 @@ where
 
 async fn wait_for_pending_response(
     batch_id: i64,
-    _cancel_guard: otlp::server::SlotGuard,
+    _cancel_guard: SlotGuard,
     rx: oneshot::Receiver<Result<(), otel_arrow_dfe_engine::control::NackMsg<OtapPdata>>>,
     completion_guard: Option<OtapBatchCompletionGuard>,
 ) -> PendingResponse {

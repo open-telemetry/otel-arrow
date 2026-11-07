@@ -17,7 +17,7 @@ use {
 };
 
 use crate::compression::{CompressionMethod, deserialize_compression_method};
-use crate::otap_grpc::client_settings::{
+use crate::defaults::{
     default_concurrency_limit, default_connect_timeout, default_tcp_keepalive, default_tcp_nodelay,
 };
 
