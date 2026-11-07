@@ -4,7 +4,7 @@
 
 - Type: `urn:microsoft:exporter:azure_data_explorer`
 - Feature gate: `azure-data-explorer`
-- Stability: In-Progress; Not-Operational; supports logs, metrics, and traces
+- Stability: Experimental; supports logs, metrics, and traces
 
 ## Overview
 
@@ -95,11 +95,6 @@ nodes:
       # Gzip compression level (0-9, default: 6)
       gzip_compression_level: 6
 
-      # Optional log-schema compatibility controls.
-      legacy_logs_body_string: false
-      export_event_name: true
-      add_event_name_to_log_attributes: true
-
       # Maximum serialized JSON row size, including its newline separator.
       # May be lowered but cannot exceed the 900 KiB safety ceiling.
       max_row_bytes: 921600
@@ -139,10 +134,10 @@ or fragment. HTTP is accepted only for loopback development endpoints.
 
 ### Network request coalescing
 
-`network_requests.coalesce` is an explicit opt-in that combines multiple
-inbound PData messages into fewer, larger ADX HTTP requests. It reduces
-outbound request rate, but each source acknowledgement remains pending until
-ADX accepts the coalesced request.
+`network_requests.coalesce` is disabled by default. It is an explicit opt-in
+that combines multiple inbound PData messages into fewer, larger ADX HTTP
+requests. It reduces outbound request rate, but each source acknowledgement
+remains pending until ADX accepts the coalesced request.
 
 Configure the group as follows:
 
@@ -157,7 +152,7 @@ Configure the group as follows:
 An individual inbound PData message is never split to satisfy these limits. If
 its transformed rows exceed either boundary, the exporter permanently refuses
 the complete source message. When appending a valid message would cross a
-request boundary, the existing partial request is flushed first.
+request boundary, the existing partial request is sealed for dispatch first.
 
 `max_rows` must be between 1 and 100000, `max_bytes` between 1 and 4194304,
 and `max_in_flight` between 1 and 1024.
@@ -168,14 +163,28 @@ levels of nesting and 65536 visited values per source message. Exceeding either
 complexity limit permanently refuses the source message and emits
 `transformation_limit_exceeded` with the observed and allowed values.
 
+Encoded OTLP also undergoes exporter-private resource admission before decoding:
+the decoded allocation estimate must not exceed 16 MiB, and at most 65536
+fields or packed scalar elements may be processed. Estimates conservatively
+include vector growth, strings, bytes, nested messages, and overwritten fields.
+These are per-source safety limits, not process memory limits or raw-input byte
+limits. Sources exceeding either are permanently refused in their entirety.
+The admission layouts reuse the existing OTLP field constants and Rust field
+types, with tests comparing every field and oneof case against Prost encodings.
+Prost still performs complete nested validation and applies protobuf merging,
+oneof, and unknown-field semantics after admission succeeds.
+
 Keep `max_pending_messages` small for HTTP receivers, especially when clients
 use HTTP/1.1 or many clients send concurrently. Coalescing delays their
 responses until ADX completes the corresponding request. The bound applies per
 exporter instance, so multiply it by the configured engine core count when
 estimating process-wide pending requests. It is both a global admission bound
-and a per-request message cap; in-flight requests count against the global
-bound. Increase it deliberately if more than one full coalesced request must
-run concurrently.
+and a per-request message cap; source preparation, accumulators, in-flight
+requests, retained
+authentication retries, and pending completion routes all count against it.
+At the global cap, partial requests are flushed to release capacity.
+`max_in_flight` independently bounds concurrent requests. With coalescing
+disabled, it also bounds admitted source messages and completion routes.
 
 `flush_interval` applies only when `coalesce: true`. With coalescing disabled,
 each non-empty input message is dispatched immediately. With coalescing
@@ -186,16 +195,38 @@ therefore adds directly to acknowledgement latency during low-volume periods.
 Setting it too high can retain receiver responses, consume the pending-message
 bound, and apply backpressure that holds up the upstream pipeline.
 
-When a 401 rejects a coalesced request, the exporter retains that request and
-its acknowledgement contexts, waits for the bearer-token provider to publish
-a replacement token, and retries with the replacement. Authentication retries
-are bounded by `max_retries`; the value counts retries after the initial
-submission. Retry exhaustion and transient failures return retryable NACKs.
-Terminal client refusals return permanent NACKs. During shutdown, unresolved
-messages are routed with the `node_shutdown` cause while the engine deadline
-permits. At the deadline, remaining work is recorded as failed and abandoned
-so shutdown cannot block indefinitely. Setting `max_retries: 0` disables both
+When a 401 rejects a coalesced request, the exporter retains the compressed
+request and its acknowledgement contexts, waits for a replacement token, and
+retries with that token. Authentication retries are bounded by `max_retries`;
+the value counts retries after the initial submission. A late 401 cannot
+invalidate a newer token. Without coalescing, a 401 produces a retryable NACK.
+Retry exhaustion and transient failures return retryable NACKs. Terminal
+client refusals return permanent NACKs. Setting `max_retries: 0` disables both
 transient HTTP retries and retained 401 retries.
+
+During shutdown, the engine can force-drain input despite the normal admission
+gate. The exporter treats this as a shutdown signal, flushes partial requests
+without waiting for their timers, and parks at most one extra source until
+admitted work releases capacity. It does not accumulate the upstream backlog.
+Sources that cannot be dispatched without credentials receive `node_shutdown`
+NACKs. The exporter observes shutdown latching even when the receive remains
+pending because upstream is empty but still open, so partial requests flush
+without waiting for another input or their timers. It also observes the
+latched deadline while an overflow source is parked. That deadline bounds
+requests, completion routing, and the wait for capacity without requiring
+further inbox polling; unresolved work is canceled and recorded when it expires.
+Closing upstream after shutdown starts does not replace that original deadline.
+
+Non-OTLP inputs use the effect handler's cooperative codec view. The original
+source remains available for completion routing if preparation is canceled.
+Concurrent compressors share a 256 KiB work quantum across the exporter task,
+including ready-input iterations; stream setup and finalization also consume
+that quantum. The outer task yields before replenishing it. Individual streams
+also yield after 64 KiB of input. Every event-loop iteration also consumes the
+runtime's cooperative task budget, including empty inputs, preparation refusals,
+and completion routing, so these paths yield even when no compression is needed.
+These are scheduling targets, not latency guarantees for synchronous library
+calls.
 
 If the bearer-token provider closes its stream while no usable token is
 cached, no replacement can arrive. The exporter retryably NACKs retained
@@ -207,7 +238,9 @@ intended only for temporarily debugging export or connection issues. They log
 sensitive content at debug level and are not recommended in production unless
 strictly necessary. `log_failed_payload` controls the outbound request payload
 and sample row. `log_response_body` controls inbound ADX error response
-chunks. Either source may contain PII, schema values, telemetry attributes, or
+chunks, except for 401 bodies, which are not read so authentication recovery
+cannot be blocked by a stalled error body. Either source may contain PII,
+schema values, telemetry attributes, or
 other customer-sensitive data. Disable the setting immediately after
 diagnosis and ensure debug logs are handled according to applicable data
 protection requirements.
@@ -222,6 +255,7 @@ request transmission, response-body handling, transient retries, and retry
 backoff. A 401 ends the physical operation immediately so the exporter can
 invalidate the rejected token generation and, when coalescing is enabled,
 retain the request until the authentication provider publishes a replacement.
+Each retained authentication retry starts a new HTTP operation deadline.
 
 Database, table, and mapping names are percent-encoded when constructing the
 streaming-ingestion endpoint. Each physical submission, including a transient
@@ -234,12 +268,18 @@ Each serialized JSON row is checked before batching or HTTP submission.
 `max_row_bytes` defaults to 921600 bytes (900 KiB), leaving safety margin below
 ADX's 1 MiB dynamic-value limit. An oversized input is permanently refused:
 operators receive a `row_too_large` warning and counter increment, while OTLP
-senders receive `INVALID_ARGUMENT` over gRPC or HTTP 400 with the actual and
-allowed byte counts. The original input is not split because that could change
-its acknowledgement semantics.
+senders waiting for downstream results receive `INVALID_ARGUMENT` over gRPC or
+HTTP 400 with the actual and allowed byte counts. The original input is not
+split because that could change its acknowledgement semantics.
 
-Raw OTLP protobuf framing is validated before transformation. Malformed logs,
-metrics, or traces are permanently refused rather than treated as empty input.
+OTLP protobuf is fully decoded with the existing generated Prost messages
+before transformation. This checks nested framing, UTF-8 strings, packed
+numeric fields, and the decoder's recursion limit while preserving protobuf
+semantics such as unknown fields and merged messages. Decoding allocates an
+owned message tree; the transformer reads its existing views directly,
+without an intermediate Arrow conversion. Malformed logs, metrics, and
+traces receive a permanent refusal for the complete source; no empty or
+partial export can ACK a corrupt source.
 
 Log schema compatibility can be controlled independently. Setting
 `tables.logs.legacy_body_string` converts non-string log bodies to their JSON
@@ -256,6 +296,43 @@ count but keeps original client acknowledgements pending; configure its
 can acknowledge after local persistence, but its path must be placed on
 storage that survives the container, such as an Azure Files mount in Azure
 Container Apps. Ephemeral container storage is not durable across replacement.
+
+### Upstream batching compatibility
+
+The native OTAP batch processor flushes at 8192 items by default, while ADX
+accepts at most 1000 transformed rows per source by default. These defaults
+are not compatible for size-triggered batches of ordinary logs or spans.
+The exporter does not split a source, even with request coalescing disabled;
+an oversized source receives a permanent NACK.
+
+For ordinary logs and spans, explicitly configure the upstream processor's
+upper item limit to match ADX. A flush trigger alone is not an upper limit:
+
+```yaml
+nodes:
+  adx-batch:
+    type: "urn:otel:processor:batch"
+    config:
+      format: otap
+      otap:
+        min_size: 1000
+        max_size: 1000
+        sizer: items
+```
+
+Forcing OTAP makes this item policy apply to encoded inputs too. Preserving
+OTLP with its byte-based batching defaults does not enforce an ADX row limit.
+Alternatively, increase ADX `network_requests.max_rows` to accommodate the
+upstream item size, for example 8192, and set an explicit upstream `max_size`.
+Both choices must still satisfy ADX's uncompressed 4 MiB request limit and
+the configured per-row limit; large bodies require smaller batches.
+
+Metric data points are not ADX rows: histograms, exponential histograms, and
+summaries expand into multiple rows. Choose smaller item limits using the
+expected bucket/quantile expansion, or increase the ADX row limit accordingly.
+An individual expanded data point can itself exceed a request limit and be
+refused. See the
+[batch processor settings](../../../../core-nodes/src/processors/batch_processor/README.md).
 
 ### ADX provisioning
 
