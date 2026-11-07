@@ -723,7 +723,7 @@ impl<
                         RefreshStep::Shutdown(deadline) => {
                             return Ok(self.shutdown_terminal_state(deadline).await);
                         }
-                        RefreshStep::Closed => return Ok(TerminalState::default()),
+                        RefreshStep::Closed => break,
                     };
 
                     match outcome {
@@ -754,6 +754,7 @@ impl<
             }
         }
 
+        self.inner.source.shutdown_in_flight().await;
         Ok(TerminalState::default())
     }
 }
