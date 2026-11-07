@@ -9,7 +9,7 @@
 //! and attributes. The registry is compiled once into a [`SemconvModel`]
 //! (annotations parsed, samplers built); generation only draws from the
 //! compiled templates. Groups or attributes without annotations fall back to
-//! enum members, examples, and type defaults.
+//! the first enum member, examples, and type defaults.
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 //!
@@ -207,28 +207,27 @@ fn metrics<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut
             .name(metric.name.clone())
             .description(metric.description.clone())
             .unit(metric.unit.clone());
+        let temporality = metric.temporality;
         let built = match metric.instrument {
             InstrumentSpec::Histogram => builder
                 .data_histogram(Histogram::new(
-                    AggregationTemporality::Delta,
+                    temporality,
                     vec![histogram_point(metric, now, rng)],
                 ))
                 .finish(),
             InstrumentSpec::Gauge => builder
                 .data_gauge(Gauge::new(vec![number_point(metric, now, rng)]))
                 .finish(),
-            // Counters are per-interval increments with delta temporality, so
-            // each sample is independent and replayed batches stay valid.
             InstrumentSpec::Counter => builder
                 .data_sum(Sum::new(
-                    AggregationTemporality::Delta,
+                    temporality,
                     true,
                     vec![number_point(metric, now, rng)],
                 ))
                 .finish(),
             InstrumentSpec::UpDownCounter => builder
                 .data_sum(Sum::new(
-                    AggregationTemporality::Delta,
+                    temporality,
                     false,
                     vec![number_point(metric, now, rng)],
                 ))
@@ -247,9 +246,20 @@ fn number_point<R: Rng + ?Sized>(
     let attrs = attributes(&metric.attributes, rng);
     NumberDataPoint::build()
         .time_unix_nano(now)
+        .start_time_unix_nano(start_time(metric, now))
         .value_double(metric_value(metric, rng))
         .attributes(attrs)
         .finish()
+}
+
+/// Point start time: `now - delay()` for delta temporality (as the synthetic
+/// generator does), so each point covers an interval; 0 (unset) otherwise.
+fn start_time(metric: &MetricTemplate, now: u64) -> u64 {
+    if metric.temporality == AggregationTemporality::Delta {
+        now.saturating_sub(delay())
+    } else {
+        0
+    }
 }
 
 /// Index of the explicit bucket an observation falls into.
@@ -284,6 +294,7 @@ fn histogram_point<R: Rng + ?Sized>(
     }
     HistogramDataPoint::build()
         .time_unix_nano(now)
+        .start_time_unix_nano(start_time(metric, now))
         .count(n as u64)
         .sum(sum)
         .min(min)

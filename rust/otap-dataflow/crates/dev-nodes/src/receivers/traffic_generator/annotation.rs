@@ -21,6 +21,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
 use serde_json::{Map, Value};
 use weaver_semconv::YamlValue;
 use weaver_semconv::v1::attribute::{
@@ -115,6 +116,18 @@ pub enum Scalar {
     Bool(bool),
 }
 
+/// Format a scalar as a plain string (template keys, status and severity
+/// names, error messages).
+#[must_use]
+pub fn scalar_to_string(value: &Scalar) -> String {
+    match value {
+        Scalar::String(s) => s.clone(),
+        Scalar::Int(i) => i.to_string(),
+        Scalar::Double(d) => d.to_string(),
+        Scalar::Bool(b) => b.to_string(),
+    }
+}
+
 /// An inclusive numeric range.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Range {
@@ -207,6 +220,8 @@ pub struct MetricSpec {
     pub observations: Option<ValueSpec>,
     /// Histogram bucket bounds (strictly increasing).
     pub bounds: Option<Vec<f64>>,
+    /// Aggregation temporality for sums and histograms (only `delta`).
+    pub temporality: Option<AggregationTemporality>,
 }
 
 /// Signal-level spec for a span group.
@@ -235,12 +250,6 @@ pub const SEVERITY_NAMES: [&str; 24] = [
     "FATAL", "FATAL2", "FATAL3", "FATAL4",
 ];
 
-/// OTel SDK default explicit histogram bucket boundaries.
-pub const DEFAULT_HISTOGRAM_BOUNDS: [f64; 15] = [
-    0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
-    10000.0,
-];
-
 /// Minimum probability mass a truncated range must carry to be accepted.
 ///
 /// Inverse transform sampling stays accurate even for ranges deep in a tail
@@ -250,9 +259,10 @@ pub const MIN_RANGE_MASS: f64 = f64::MIN_POSITIVE;
 
 /// Largest accepted histogram `observations` value.
 ///
-/// Every observation is sampled on the receiver task, so a histogram batch
-/// does at most `max_batch_size * MAX_OBSERVATIONS` samples.
-pub const MAX_OBSERVATIONS: u64 = 100_000;
+/// Every observation is sampled on the receiver task. This bounds the work
+/// per histogram data point; work per batch still scales with
+/// `max_batch_size` (at most `max_batch_size * MAX_OBSERVATIONS` samples).
+pub const MAX_OBSERVATIONS: u64 = 1_000;
 
 /// Largest accepted array attribute `length` value.
 pub const MAX_ARRAY_LENGTH: u64 = 1_024;
@@ -457,9 +467,13 @@ fn check_enum_members(
             _ => false,
         });
         if !found {
+            let shown = match v {
+                Scalar::String(s) => format!("\"{s}\""),
+                other => scalar_to_string(other),
+            };
             return Err(AnnotationError::new(
                 &format!("{path}.values[{i}]"),
-                format!("{} is not an enum member value", scalar_display(v)),
+                format!("{shown} is not an enum member value"),
             ));
         }
     }
@@ -477,29 +491,35 @@ pub fn parse_metric_spec(
 ) -> AnnotationResult<MetricSpec> {
     let path = NAMESPACE;
     let histogram = matches!(instrument, InstrumentSpec::Histogram);
-    let allowed: &[&str] = if histogram {
-        &["value", "observations", "bounds"]
-    } else {
-        &["value"]
-    };
+    let gauge = matches!(instrument, InstrumentSpec::Gauge);
     for key in map.keys() {
-        if !allowed.contains(&key.as_str()) {
-            let reason = if matches!(key.as_str(), "observations" | "bounds") {
+        let reason = match key.as_str() {
+            "value" => continue,
+            "observations" | "bounds" if histogram => continue,
+            "temporality" if !gauge => continue,
+            "observations" | "bounds" => {
                 format!("unknown key \"{key}\" for non-histogram metric (only valid on histograms)")
-            } else {
-                format!("unknown key \"{key}\" for metric group")
-            };
-            return Err(AnnotationError::new(path, reason));
-        }
+            }
+            "temporality" => {
+                format!("unknown key \"{key}\" for gauge (only valid on sums and histograms)")
+            }
+            _ => format!("unknown key \"{key}\" for metric group"),
+        };
+        return Err(AnnotationError::new(path, reason));
     }
     let mut spec = MetricSpec::default();
     if let Some(m) = optional_map(map, path, "value")? {
         let p = format!("{path}.value");
         let v = parse_value_spec(m, &p, ScalarKind::Double)?;
-        if matches!(instrument, InstrumentSpec::Counter) {
+        // Counter increments and histogram observations must be >= 0 (OTLP
+        // only defines a histogram `sum` for non-negative observations).
+        if matches!(instrument, InstrumentSpec::Counter) || histogram {
             check_non_negative(&v, &p)?;
         }
         spec.value = Some(v);
+    }
+    if let Some(t) = map.get("temporality") {
+        spec.temporality = Some(parse_temporality(t, &format!("{path}.temporality"))?);
     }
     if let Some(m) = optional_map(map, path, "observations")? {
         let p = format!("{path}.observations");
@@ -559,6 +579,22 @@ pub fn parse_event_spec(map: &Mapping) -> AnnotationResult<EventSpec> {
         spec.severity = Some(v);
     }
     Ok(spec)
+}
+
+/// Parse a metric `temporality`.
+///
+/// Only `delta` is supported: every generated point is an independent sample,
+/// so cumulative totals would decrease between points (read as resets) and
+/// repeat on `pre_generated` replay.
+fn parse_temporality(value: &Value, path: &str) -> AnnotationResult<AggregationTemporality> {
+    match value {
+        Value::String(s) if s == "delta" => Ok(AggregationTemporality::Delta),
+        Value::String(s) => Err(AnnotationError::new(
+            path,
+            format!("unsupported temporality \"{s}\" (expected delta)"),
+        )),
+        _ => Err(AnnotationError::new(path, "must be a string")),
+    }
 }
 
 fn parse_bounds(value: &Value, path: &str) -> AnnotationResult<Vec<f64>> {
@@ -1014,15 +1050,6 @@ fn check_names(spec: &ValueSpec, path: &str, allowed: &[&str], what: &str) -> An
         }
     }
     Ok(())
-}
-
-fn scalar_display(v: &Scalar) -> String {
-    match v {
-        Scalar::Int(i) => i.to_string(),
-        Scalar::Double(d) => d.to_string(),
-        Scalar::String(s) => format!("\"{s}\""),
-        Scalar::Bool(b) => b.to_string(),
-    }
 }
 
 fn distribution_display(d: &Distribution) -> String {

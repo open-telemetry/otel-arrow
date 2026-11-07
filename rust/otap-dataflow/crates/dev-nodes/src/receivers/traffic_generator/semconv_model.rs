@@ -19,12 +19,15 @@
 use weaver_forge::v1::registry::{ResolvedGroup, ResolvedRegistry};
 use weaver_semconv::v1::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
+
 use super::annotation::{
-    self, AnnotationError, AnnotationResult, DEFAULT_HISTOGRAM_BOUNDS, EventSpec, MetricSpec,
-    NAMESPACE, RegistryAnnotationError, SEVERITY_NAMES, STATUS_NAMES, SpanSpec,
+    self, AnnotationError, AnnotationResult, EventSpec, MetricSpec, NAMESPACE,
+    RegistryAnnotationError, SEVERITY_NAMES, STATUS_NAMES, SpanSpec, scalar_to_string,
 };
 use super::attributes::AttributeGen;
-use super::sampler::{MappedSampler, ValueSampler, scalar_to_string};
+use super::sampler::{MappedSampler, ValueSampler};
+use super::synthetic_signal::HISTOGRAM_BOUNDS;
 
 /// A span group compiled for generation.
 #[derive(Debug, Clone)]
@@ -62,6 +65,8 @@ pub struct MetricTemplate {
     pub observations: Option<ValueSampler>,
     /// Histogram bucket bounds (`bounds`, or the SDK defaults).
     pub bounds: Vec<f64>,
+    /// Sum and histogram temporality (`temporality`, or `Unspecified`).
+    pub temporality: AggregationTemporality,
 }
 
 /// An event group compiled for generation.
@@ -225,9 +230,10 @@ fn compile_group(
                     .observations
                     .as_ref()
                     .map(|v| ValueSampler::new(v, true)),
-                bounds: spec
-                    .bounds
-                    .unwrap_or_else(|| DEFAULT_HISTOGRAM_BOUNDS.to_vec()),
+                bounds: spec.bounds.unwrap_or_else(|| HISTOGRAM_BOUNDS.to_vec()),
+                temporality: spec
+                    .temporality
+                    .unwrap_or(AggregationTemporality::Unspecified),
             })))
         }
         // Groups that produce no signal accept no annotation.

@@ -194,8 +194,9 @@ distribution is rejected.
 
 | Group | Key | Spec | Default when absent |
 | --- | --- | --- | --- |
-| metric | `value` | Int or double value spec; counters require values `>= 0` | `1` |
-| histogram metric | `observations` | Int value spec, `1` to `100000`; observations aggregated into each point | `1` |
+| metric | `value` | Int or double value spec; counters and histograms require values `>= 0` | `1` |
+| counter, updowncounter, histogram metric | `temporality` | `delta` (the only supported value); also sets each point's start time | `Unspecified`, no start time |
+| histogram metric | `observations` | Int value spec, `1` to `1000`; observations aggregated into each point | `1` |
 | histogram metric | `bounds` | Strictly increasing list of numbers | `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]` |
 | span | `duration` | Value spec in milliseconds, `>= 0` | 10 microseconds |
 | span | `status` | Discrete, `unset` / `ok` / `error` | Status not set |
@@ -213,6 +214,7 @@ distribution is rejected.
         distribution: { type: lognormal, mean: 0.1, stddev: 0.2 }
       bounds: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
       observations: { range: { min: 10, max: 100 } }
+      temporality: delta
 
 - id: event.http.server.request.exception
   type: event
@@ -224,12 +226,16 @@ distribution is rejected.
 Metric output, with or without annotations:
 
 - Number points are `as_double`.
-- Counters and updowncounters are emitted as sums with delta temporality, so
-  every point is an independent increment and replayed `pre_generated`
-  batches stay valid.
-- Histograms use delta temporality; each point carries bucket counts, count,
-  sum, min, and max. Bucket `i` counts observations `x` with
-  `bounds[i-1] < x <= bounds[i]`.
+- Counters and updowncounters are emitted as sums. Their temporality, and
+  that of histograms, is `Unspecified` unless the group sets
+  `temporality: delta`; delta points also get a start time just before the
+  point time. Only `delta` is supported: every point is sampled
+  independently, so cumulative totals would not grow between points and
+  would repeat on `pre_generated` replay.
+- Each histogram point carries bucket counts, count, sum, min, and max.
+  Bucket `i` counts observations `x` with `bounds[i-1] < x <= bounds[i]`.
+  Without annotations, a point holds one observation of `1` in the default
+  bounds.
 - Each metric carries a single data point, so batch sizes, rates, and
   `max_signal_count` count metrics and data points alike.
 - Metric groups without an `instrument` are skipped.
@@ -240,7 +246,7 @@ For each attribute the receiver uses the first source that applies:
 
 1. The `traffic-generator` annotation on the signal's attribute reference, or
    else on the attribute definition.
-2. Enum members, sampled uniformly.
+2. The first enum member.
 3. `examples`, sampled uniformly.
 4. A type default (`42`, `3.13`, `"value"`, `true`, ...).
 
@@ -258,12 +264,16 @@ annotation with its group, attribute, and key path:
 ```
 
 Validation rejects unknown keys at every level (for example `weight` instead
-of `weights`), keys used in the wrong context (`observations` on a gauge,
-`items` on a scalar), values that do not match the attribute type, invalid
-distribution parameters, unknown status and severity names, bounds that are
-not strictly increasing, counts above their limits (`observations` 100000,
-array `length` 1024), int ranges beyond +/-2^53, and weights whose sum is not
-finite.
+of `weights`), keys used in the wrong context (`observations` or
+`temporality` on a gauge, `items` on a scalar), values that do not match the
+attribute type, invalid distribution parameters, unknown status, severity,
+and temporality names, bounds that are not strictly increasing, counts above
+their limits (`observations` 1000, array `length` 1024), int ranges beyond
++/-2^53, and weights whose sum is not finite.
+
+The `observations` limit bounds the sampling work per histogram point; the
+work per batch still scales with `max_batch_size` (up to
+`max_batch_size * 1000` samples).
 
 With `generation_strategy: pre_generated`, values are sampled once at startup
 and replayed, so variety exists only across the pre-generated batches.

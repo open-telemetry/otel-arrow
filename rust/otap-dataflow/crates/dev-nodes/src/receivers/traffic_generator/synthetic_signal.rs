@@ -274,7 +274,7 @@ const METRIC_DEFS: &[MetricDef] = &[
 
 /// OTel SDK default explicit bucket histogram boundaries.
 /// See <https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation>
-const HISTOGRAM_BOUNDS: &[f64] = &[
+pub(crate) const HISTOGRAM_BOUNDS: &[f64] = &[
     0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
     10000.0,
 ];

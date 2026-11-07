@@ -8,7 +8,7 @@
 //! 1. The `traffic-generator` annotation on the resolved attribute (which, for
 //!    Weaver v1 references, is either the reference's or the definition's
 //!    annotation).
-//! 2. Enum members, sampled uniformly.
+//! 2. The first enum member.
 //! 3. `examples`, sampled uniformly.
 //! 4. A type default.
 //!
@@ -27,8 +27,10 @@ use weaver_semconv::v1::attribute::{
     AttributeType, Examples, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
 };
 
-use super::annotation::{self, AnnotationResult, AttributeSpec, Scalar, ValueSpec};
-use super::sampler::{MappedSampler, NumberSampler, ValueSampler, scalar_to_string};
+use super::annotation::{
+    self, AnnotationResult, AttributeSpec, Scalar, ValueSpec, scalar_to_string,
+};
+use super::sampler::{MappedSampler, NumberSampler, ValueSampler};
 
 fn scalar_to_any(value: Scalar) -> AnyValue {
     match value {
@@ -74,17 +76,17 @@ enum ScalarGen {
     /// Discrete values, already converted to `AnyValue`.
     Choice(MappedSampler<AnyValue>),
     /// Continuous range.
-    Number {
-        sampler: NumberSampler,
-        integer: bool,
-    },
+    Number(NumberSampler),
 }
 
 impl ScalarGen {
     fn new(spec: &ValueSpec, integer: bool) -> Self {
-        match ValueSampler::new(spec, integer) {
-            ValueSampler::Continuous { sampler, integer } => ScalarGen::Number { sampler, integer },
-            ValueSampler::Discrete { .. } => ScalarGen::Choice(
+        match spec {
+            ValueSpec::Continuous {
+                range,
+                distribution,
+            } => ScalarGen::Number(NumberSampler::new(*range, *distribution, integer)),
+            ValueSpec::Discrete { .. } => ScalarGen::Choice(
                 MappedSampler::new(spec, |v| Some(scalar_to_any(v.clone())))
                     .expect("discrete spec maps every value"),
             ),
@@ -94,9 +96,9 @@ impl ScalarGen {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> AnyValue {
         match self {
             ScalarGen::Choice(choice) => choice.sample(rng).clone(),
-            ScalarGen::Number { sampler, integer } => {
+            ScalarGen::Number(sampler) => {
                 let x = sampler.sample_f64(rng);
-                if *integer {
+                if sampler.is_integer() {
                     AnyValue::new_int(x as i64)
                 } else {
                     AnyValue::new_double(x)
@@ -366,11 +368,11 @@ fn fallback_candidates(attribute: &Attribute) -> Vec<AnyValue> {
                 _ => vec![string_array(&["value1".to_owned(), "value2".to_owned()])],
             },
         },
-        AttributeType::Enum { members, .. } => or_default(
-            members,
+        // The first member only; annotate the attribute to vary members.
+        AttributeType::Enum { members, .. } => vec![members.first().map_or_else(
+            || AnyValue::new_string("value"),
             |m| semconv_to_any(&m.value),
-            AnyValue::new_string("value"),
-        ),
+        )],
         AttributeType::Template(template_type_spec) => {
             // TODO Support examples when https://github.com/open-telemetry/semantic-conventions/issues/1740 is complete
             vec![match template_type_spec {

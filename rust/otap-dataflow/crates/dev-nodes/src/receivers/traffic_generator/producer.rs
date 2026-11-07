@@ -988,6 +988,54 @@ mod tests {
         assert_eq!(items, vec![5, 2]);
     }
 
+    /// Drain `producer` run by run until `max_signal_count` stops it, and
+    /// return the item count (data points for metrics) of every payload.
+    fn drain_items(producer: &mut TrafficProducer) -> Vec<usize> {
+        let mut items = Vec::new();
+        while let Some(run) = producer.next_run().expect("generation should succeed") {
+            let run_items: Vec<usize> = run
+                .map(|r| r.expect("payload").num_items())
+                .collect::<Vec<_>>();
+            producer.record_production(run_items.iter().sum::<usize>() as u64);
+            items.extend(run_items);
+        }
+        items
+    }
+
+    /// Scenario: Semantic-convention metrics are produced from the vendored,
+    /// annotated registry (whose histogram has 10-100 observations per point)
+    /// with `max_signal_count: 1` and `max_batch_size: 1`, using both `fresh`
+    /// and `pre_generated` strategies.
+    /// Guarantees: Exactly one metric data point is emitted in total, in a
+    /// single batch, so neither strategy can exceed `max_batch_size` or
+    /// `max_signal_count` by emitting several data points per requested
+    /// metric.
+    #[test]
+    fn test_semconv_metrics_respect_single_signal_limit() {
+        for strategy in [GenerationStrategy::Fresh, GenerationStrategy::PreGenerated] {
+            let cfg = TrafficConfig::new(Some(1), Some(1), 1, 1, 0, 0);
+            let config = Config::new(cfg, super::super::config::vendored_registry_path())
+                .with_generation_strategy(strategy.clone());
+            let mut producer = TrafficProducer::from_config(&config).expect("valid config");
+            assert_eq!(drain_items(&mut producer), vec![1], "{strategy:?}");
+        }
+    }
+
+    /// Scenario: Pre-generated semantic-convention metric batches (2 batches
+    /// of 2 metrics) are capped by `max_signal_count: 3`, so replay keeps the
+    /// first batch and regenerates a partial batch for the remainder.
+    /// Guarantees: The regenerated partial batch holds exactly the remaining
+    /// one data point, so the total never exceeds `max_signal_count` and no
+    /// batch exceeds `max_batch_size`.
+    #[test]
+    fn test_semconv_metrics_replay_partial_batch_respects_limit() {
+        let cfg = TrafficConfig::new(Some(4), Some(3), 2, 1, 0, 0);
+        let config = Config::new(cfg, super::super::config::vendored_registry_path())
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
+        let mut producer = TrafficProducer::from_config(&config).expect("valid config");
+        assert_eq!(drain_items(&mut producer), vec![2, 1]);
+    }
+
     #[test]
     fn test_cap_strategy_zero_budget() {
         // Cap to 0 signals should return None (checked in next_run before cap).

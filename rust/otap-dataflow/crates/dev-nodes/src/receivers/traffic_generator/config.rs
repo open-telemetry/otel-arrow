@@ -474,14 +474,10 @@ const fn default_weight() -> u32 {
     0
 }
 
-/// Upstream semantic conventions git tag; matches the vendored copy's `VERSION`.
+/// Semantic conventions registry git tag used when `registry_path` is not set.
 pub const SEMCONV_REGISTRY_REFSPEC: &str = "v1.44.0";
 
-/// Default semantic conventions registry path, used when `registry_path` is
-/// not set: the upstream registry at [`SEMCONV_REGISTRY_REFSPEC`]. It is cloned
-/// at startup, so it requires network access and a TLS crypto provider. It
-/// carries no `traffic-generator` annotations; set `registry_path` to
-/// [`vendored_registry_path`] to use the annotated copy instead.
+/// Default semantic conventions registry path.
 #[must_use]
 pub fn default_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::GitRepo {

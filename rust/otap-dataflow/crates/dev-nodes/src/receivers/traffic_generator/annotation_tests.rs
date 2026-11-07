@@ -29,8 +29,7 @@ use weaver_semconv::v1::attribute::{
 use weaver_semconv::v1::group::{GroupType, InstrumentSpec};
 
 use super::annotation::{
-    self, AnnotationError, AttributeSpec, DEFAULT_HISTOGRAM_BOUNDS, Distribution, Range, Scalar,
-    ScalarKind, ValueSpec,
+    self, AnnotationError, AttributeSpec, Distribution, Range, Scalar, ScalarKind, ValueSpec,
 };
 use super::attributes::AttributeGen;
 use super::config::{Config, TrafficConfig, vendored_registry_path};
@@ -43,6 +42,7 @@ use super::semconv_signal::{
     bucket_index, semconv_otlp_logs_with_rng, semconv_otlp_metrics_with_rng,
     semconv_otlp_traces_with_rng,
 };
+use super::synthetic_signal::HISTOGRAM_BOUNDS;
 
 // ===========================================================================
 // Helpers
@@ -1042,8 +1042,9 @@ fn parse_histogram_metric_spec() {
 
 /// Scenario: Invalid metric annotations are parsed.
 /// Guarantees: Histogram-only keys on other instruments, negative counter
-/// increments, non-increasing bounds, zero observations, and the unsupported
-/// `data_points` key (metrics carry one data point) are rejected.
+/// increments and histogram observations, non-increasing bounds, zero
+/// observations, and the unsupported `data_points` key (metrics carry one
+/// data point) are rejected.
 #[test]
 fn parse_metric_spec_rejections() {
     let ns = annotation::NAMESPACE;
@@ -1066,6 +1067,14 @@ fn parse_metric_spec_rejections() {
             &InstrumentSpec::Counter,
         ),
         &format!("{ns}.value.range.min"),
+        ">= 0",
+    );
+    expect_err(
+        annotation::parse_metric_spec(
+            &yaml_map("value: { values: [1.5, -0.5] }"),
+            &InstrumentSpec::Histogram,
+        ),
+        &format!("{ns}.value.values[1]"),
         ">= 0",
     );
     let _ = annotation::parse_metric_spec(
@@ -1097,7 +1106,7 @@ fn parse_metric_spec_rejections() {
             &InstrumentSpec::Histogram,
         ),
         &format!("{ns}.observations.range.min"),
-        "must be in 1..=100000",
+        "must be in 1..=1000",
     );
     expect_err(
         annotation::parse_metric_spec(
@@ -1106,6 +1115,52 @@ fn parse_metric_spec_rejections() {
         ),
         ns,
         "unknown key \"severity\" for metric group",
+    );
+}
+
+/// Scenario: `temporality` is annotated on every instrument with `delta`,
+/// `cumulative`, an unknown name, and a non-string value.
+/// Guarantees: `delta` is accepted on counters, updowncounters, and
+/// histograms and is absent (generation falls back to `Unspecified`) when not
+/// annotated; it is rejected on gauges, and `cumulative` (which a stateless
+/// generator cannot honor), unknown names, and non-strings are rejected with
+/// the `temporality` key path.
+#[test]
+fn parse_metric_temporality() {
+    let ns = annotation::NAMESPACE;
+    for instrument in [
+        InstrumentSpec::Counter,
+        InstrumentSpec::UpDownCounter,
+        InstrumentSpec::Histogram,
+    ] {
+        let spec = annotation::parse_metric_spec(&yaml_map("temporality: delta"), &instrument)
+            .expect("delta is valid on sums and histograms");
+        assert_eq!(spec.temporality, Some(AggregationTemporality::Delta));
+        let spec = annotation::parse_metric_spec(&yaml_map("{}"), &instrument).expect("valid");
+        assert_eq!(spec.temporality, None);
+    }
+    expect_err(
+        annotation::parse_metric_spec(&yaml_map("temporality: delta"), &InstrumentSpec::Gauge),
+        ns,
+        "only valid on sums and histograms",
+    );
+    expect_err(
+        annotation::parse_metric_spec(
+            &yaml_map("temporality: cumulative"),
+            &InstrumentSpec::Counter,
+        ),
+        &format!("{ns}.temporality"),
+        "unsupported temporality \"cumulative\" (expected delta)",
+    );
+    expect_err(
+        annotation::parse_metric_spec(&yaml_map("temporality: Delta"), &InstrumentSpec::Counter),
+        &format!("{ns}.temporality"),
+        "unsupported temporality",
+    );
+    expect_err(
+        annotation::parse_metric_spec(&yaml_map("temporality: 1"), &InstrumentSpec::Histogram),
+        &format!("{ns}.temporality"),
+        "must be a string",
     );
 }
 
@@ -1869,7 +1924,8 @@ fn attribute_value_arrays_and_templates() {
 
 /// Scenario: Enum attributes are generated with and without annotations.
 /// Guarantees: Annotated enums only produce the weighted subset; unannotated
-/// enums produce every member (not just the first).
+/// enums always produce the first member, matching the behavior before
+/// annotations were introduced.
 #[test]
 fn attribute_value_enums() {
     let mut r = rng();
@@ -1887,7 +1943,11 @@ fn attribute_value_enums() {
         let _ = p.insert(format!("{:?}", kv_scalar(&gen_kv(&plain, &mut r))));
     }
     assert_eq!(a.len(), 2);
-    assert_eq!(p.len(), 4, "unannotated enum must vary across members");
+    assert_eq!(
+        p,
+        HashSet::from([format!("{:?}", Scalar::String("GET".into()))]),
+        "unannotated enum emits the first member"
+    );
 }
 
 /// Scenario: An attribute has no annotation but has examples.
@@ -1984,17 +2044,18 @@ fn bucket_index_uses_upper_inclusive_bounds() {
         .collect();
     assert_eq!(indexes, vec![0, 0, 1, 1, 2, 2]);
     assert_eq!(
-        bucket_index(&DEFAULT_HISTOGRAM_BOUNDS, f64::MAX),
-        DEFAULT_HISTOGRAM_BOUNDS.len()
+        bucket_index(HISTOGRAM_BOUNDS, f64::MAX),
+        HISTOGRAM_BOUNDS.len()
     );
 }
 
 /// Scenario: Metrics are generated from every metric group in the vendored
 /// registry, annotated or not.
 /// Guarantees: The batch holds exactly the requested number of metrics,
-/// counters are delta and non-negative, sums are delta, every number point is
-/// `as_double`, and histograms have consistent buckets, count, sum, min, and
-/// max.
+/// counters are non-negative, sums and histograms carry the template's
+/// temporality (`Unspecified` unless annotated, with a start time only for
+/// delta), every number point is `as_double`, and histograms have consistent
+/// buckets, count, sum, min, and max.
 #[test]
 fn generated_metrics_are_well_formed() {
     let groups = groups_of(GroupType::Metric);
@@ -2007,14 +2068,21 @@ fn generated_metrics_are_well_formed() {
         .collect();
     let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
     assert_eq!(metrics.len(), requested);
+    let templates: HashMap<&str, _> = model()
+        .metrics
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
     for metric in metrics {
         let group = by_name[metric.name.as_str()];
+        let temporality = templates[metric.name.as_str()].temporality;
+        let delta = temporality == AggregationTemporality::Delta;
         match metric.data.as_ref().expect("data") {
             Data::Sum(sum) => {
-                assert_eq!(
-                    sum.aggregation_temporality,
-                    AggregationTemporality::Delta as i32
-                );
+                assert_eq!(sum.aggregation_temporality, temporality as i32);
+                for p in &sum.data_points {
+                    assert_eq!(p.start_time_unix_nano > 0, delta, "{}", metric.name);
+                }
                 assert_eq!(
                     sum.is_monotonic,
                     group.instrument == Some(InstrumentSpec::Counter)
@@ -2033,8 +2101,10 @@ fn generated_metrics_are_well_formed() {
                 }
             }
             Data::Histogram(h) => {
+                assert_eq!(h.aggregation_temporality, temporality as i32);
                 for p in &h.data_points {
                     assert_histogram_point_consistent(p, &metric.name);
+                    assert_eq!(p.start_time_unix_nano > 0, delta, "{}", metric.name);
                 }
             }
             other => panic!("unexpected data {other:?}"),
@@ -2360,7 +2430,10 @@ fn representative_span_respects_annotations() {
 /// counter, updowncounter, and gauge groups, and the updowncounter carries
 /// an annotated boolean attribute.
 /// Guarantees: The histogram uses the annotated `bounds`, per-point
-/// observation counts, and value range, with one data point per metric; the
+/// observation counts, value range, and delta `temporality` (with a start
+/// time no later than the point time), with one data point per metric; the
+/// counter and updowncounter, which have no `temporality` annotation, keep
+/// `Unspecified` temporality; the
 /// counter emits monotonic increments within its exponential range; the
 /// updowncounter emits non-monotonic values within its uniform range with a
 /// weighted boolean attribute; the gauge emits only the annotated doubles;
@@ -2387,8 +2460,18 @@ fn representative_metrics_respect_annotations() {
         let name = metric.name.as_str();
         match (name, metric.data.as_ref().expect("data")) {
             (REPRESENTATIVE_HISTOGRAM, Data::Histogram(h)) => {
+                assert_eq!(
+                    h.aggregation_temporality,
+                    AggregationTemporality::Delta as i32
+                );
                 let _ = histogram_points.insert(h.data_points.len());
                 for p in &h.data_points {
+                    assert!(
+                        p.start_time_unix_nano > 0 && p.start_time_unix_nano <= p.time_unix_nano,
+                        "delta start time {} vs time {}",
+                        p.start_time_unix_nano,
+                        p.time_unix_nano
+                    );
                     assert_histogram_point_consistent(p, name);
                     assert_eq!(p.explicit_bounds, vec![0.01, 0.1, 1.0, 10.0]);
                     assert!((10..=100).contains(&p.count), "observations {}", p.count);
@@ -2397,6 +2480,10 @@ fn representative_metrics_respect_annotations() {
             }
             (REPRESENTATIVE_COUNTER, Data::Sum(s)) => {
                 assert!(s.is_monotonic);
+                assert_eq!(
+                    s.aggregation_temporality,
+                    AggregationTemporality::Unspecified as i32
+                );
                 for p in &s.data_points {
                     let v = number_value(p.value.as_ref(), name);
                     assert!((0.0..=100.0).contains(&v), "{name} value {v}");
@@ -2405,6 +2492,10 @@ fn representative_metrics_respect_annotations() {
             }
             (REPRESENTATIVE_UPDOWNCOUNTER, Data::Sum(s)) => {
                 assert!(!s.is_monotonic);
+                assert_eq!(
+                    s.aggregation_temporality,
+                    AggregationTemporality::Unspecified as i32
+                );
                 for p in &s.data_points {
                     let v = number_value(p.value.as_ref(), name);
                     assert!((10.0..=200.0).contains(&v), "{name} value {v}");
@@ -2633,8 +2724,8 @@ fn compile_reports_same_errors_as_validation() {
 /// Scenario: Non-annotated attributes are compiled into fallback generators
 /// for enums, example lists, single examples, and type defaults.
 /// Guarantees: Compiled fallbacks produce exactly the values the
-/// non-annotated rules allow: every enum member, every example, or the type
-/// default.
+/// non-annotated rules allow: the first enum member (as on main), every
+/// example, or the type default.
 #[test]
 fn compiled_fallbacks_cover_expected_values() {
     let mut r = rng();
@@ -2645,7 +2736,10 @@ fn compiled_fallbacks_cover_expected_values() {
             .collect()
     };
     let e = attribute("e", enum_type(&["a", "b", "c"]), None);
-    assert_eq!(collect(&e, &mut r).len(), 3);
+    assert_eq!(
+        collect(&e, &mut r),
+        HashSet::from([format!("{:?}", Scalar::String("a".into()))])
+    );
 
     let mut ex = attribute("x", primitive(PrimitiveOrArrayTypeSpec::String), None);
     ex.examples = Some(Examples::Strings(vec!["p".into(), "q".into()]));
@@ -2733,11 +2827,11 @@ fn parse_rejects_counts_above_caps() {
     let ns = annotation::NAMESPACE;
     expect_err(
         annotation::parse_metric_spec(
-            &yaml_map("observations: { values: [1, 100001] }"),
+            &yaml_map("observations: { values: [1, 1001] }"),
             &InstrumentSpec::Histogram,
         ),
         &format!("{ns}.observations.values[1]"),
-        "must be in 1..=100000",
+        "must be in 1..=1000",
     );
     expect_err(
         annotation::parse_metric_spec(
@@ -2749,11 +2843,11 @@ fn parse_rejects_counts_above_caps() {
     );
     expect_err(
         annotation::parse_metric_spec(
-            &yaml_map("observations: { range: { min: 1, max: 100001 } }"),
+            &yaml_map("observations: { range: { min: 1, max: 1001 } }"),
             &InstrumentSpec::Histogram,
         ),
         &format!("{ns}.observations.range.max"),
-        "must be in 1..=100000",
+        "must be in 1..=1000",
     );
     expect_err(
         parse_attr(
@@ -2879,4 +2973,25 @@ fn huge_span_duration_saturates_end_time() {
     let span = &traces.resource_spans[0].scope_spans[0].spans[0];
     assert_eq!(span.end_time_unix_nano, u64::MAX);
     assert!(span.end_time_unix_nano >= span.start_time_unix_nano);
+}
+
+/// Scenario: A double range spans almost the whole finite `f64` domain, so
+/// its width `max - min` overflows to infinity.
+/// Guarantees: Uniform samples stay finite and inside the range and are
+/// spread across it, instead of every sample collapsing to `max`.
+#[test]
+fn uniform_sampling_handles_ranges_wider_than_f64_max() {
+    let sampler = number_sampler((-1.0e308, 1.0e308), Distribution::Uniform, false);
+    let xs = draw(&sampler, 1_000);
+    assert!(
+        xs.iter()
+            .all(|x| x.is_finite() && (-1.0e308..=1.0e308).contains(x)),
+        "samples must be finite and in range"
+    );
+    assert!(xs.iter().any(|x| *x < 0.0), "negative half is reachable");
+    assert!(xs.iter().any(|x| *x > 0.0), "positive half is reachable");
+    assert!(
+        xs.iter().all(|x| *x < 1.0e308),
+        "samples must not pin to max"
+    );
 }

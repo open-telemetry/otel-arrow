@@ -338,6 +338,12 @@ impl NumberSampler {
         }
     }
 
+    /// Whether samples are integral.
+    #[must_use]
+    pub const fn is_integer(&self) -> bool {
+        self.integer
+    }
+
     /// Probability mass of the (possibly widened) range under the distribution.
     #[must_use]
     pub fn mass(&self) -> f64 {
@@ -360,7 +366,10 @@ impl NumberSampler {
                 if self.lo == self.hi {
                     self.lo
                 } else {
-                    self.lo + rng.random::<f64>() * (self.hi - self.lo)
+                    // Interpolate instead of `lo + u * (hi - lo)`: the width
+                    // overflows to infinity for ranges wider than f64::MAX.
+                    let u = rng.random::<f64>();
+                    self.lo * (1.0 - u) + self.hi * u
                 }
             }
             Continuous::Normal { mean, stddev, t } => {
@@ -502,12 +511,7 @@ pub enum ValueSampler {
         index: IndexSampler,
     },
     /// Sample a number from a compiled continuous distribution.
-    Continuous {
-        /// Compiled distribution over the range.
-        sampler: NumberSampler,
-        /// Whether output is an integer.
-        integer: bool,
-    },
+    Continuous(NumberSampler),
 }
 
 impl ValueSampler {
@@ -522,10 +526,7 @@ impl ValueSampler {
             ValueSpec::Continuous {
                 range,
                 distribution,
-            } => ValueSampler::Continuous {
-                sampler: NumberSampler::new(*range, *distribution, integer),
-                integer,
-            },
+            } => ValueSampler::Continuous(NumberSampler::new(*range, *distribution, integer)),
         }
     }
 
@@ -538,9 +539,9 @@ impl ValueSampler {
     pub(crate) fn sample_value<R: Rng + ?Sized>(&self, rng: &mut R) -> Scalar {
         match self {
             ValueSampler::Discrete { values, index } => values[index.sample(rng)].clone(),
-            ValueSampler::Continuous { sampler, integer } => {
+            ValueSampler::Continuous(sampler) => {
                 let x = sampler.sample_f64(rng);
-                if *integer {
+                if sampler.is_integer() {
                     Scalar::Int(x as i64)
                 } else {
                     Scalar::Double(x)
@@ -554,7 +555,7 @@ impl ValueSampler {
         match self {
             ValueSampler::Discrete { values, index } => scalar_f64(&values[index.sample(rng)]),
             // Integer samplers already return integral values.
-            ValueSampler::Continuous { sampler, .. } => sampler.sample_f64(rng),
+            ValueSampler::Continuous(sampler) => sampler.sample_f64(rng),
         }
     }
 
@@ -571,17 +572,6 @@ fn scalar_f64(value: &Scalar) -> f64 {
         Scalar::Double(d) => *d,
         Scalar::Bool(b) => f64::from(u8::from(*b)),
         Scalar::String(_) => 0.0,
-    }
-}
-
-/// Format a scalar as a string (template keys, status and severity names).
-#[must_use]
-pub fn scalar_to_string(value: &Scalar) -> String {
-    match value {
-        Scalar::String(s) => s.clone(),
-        Scalar::Int(i) => i.to_string(),
-        Scalar::Double(d) => d.to_string(),
-        Scalar::Bool(b) => b.to_string(),
     }
 }
 
