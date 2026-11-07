@@ -13,7 +13,7 @@ use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::auth::Auth;
@@ -214,6 +214,137 @@ async fn acquires_token_with_metadata_flavor_header_and_default_scope() {
         .expect("token stream yields immediately")
         .expect("stream is open");
     assert_eq!(streamed.expose_token(), "gcp-test-token");
+}
+
+/// Scenario: `endpoint` is omitted (`None`) so Application Default Credentials (ADC) discovery runs
+/// against `GOOGLE_APPLICATION_CREDENTIALS` for both a valid `authorized_user` file and a missing
+/// file path, and is compared against an explicit `endpoint` override.
+/// Guarantees: `Auth` exchanges the ADC refresh token with the configured scopes and caches the
+/// resulting token, surfaces a `BuildCredentials` error when `GOOGLE_APPLICATION_CREDENTIALS`
+/// points to a missing file, and bypasses ADC file discovery when `endpoint` is explicitly set.
+#[test]
+fn adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime builds");
+
+    let oauth_server = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(header("content-type", "application/json"))
+            .and(body_json(serde_json::json!({
+                "grant_type": "refresh_token",
+                "client_id": "adc-test-client-id",
+                "client_secret": "adc-test-client-secret",
+                "refresh_token": "adc-test-refresh-token",
+                "scopes": DEFAULT_SCOPE,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "adc-authorized-user-token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+        server
+    });
+
+    let adc_file = tempfile::NamedTempFile::new().expect("temp ADC file created");
+    std::fs::write(
+        adc_file.path(),
+        serde_json::json!({
+            "type": "authorized_user",
+            "client_id": "adc-test-client-id",
+            "client_secret": "adc-test-client-secret",
+            "refresh_token": "adc-test-refresh-token",
+            "token_uri": format!("{}/token", oauth_server.uri()),
+        })
+        .to_string(),
+    )
+    .expect("ADC JSON written");
+
+    temp_env::with_var(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        Some(adc_file.path()),
+        || {
+            rt.block_on(async {
+                let cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
+                assert!(cfg.endpoint.is_none());
+                let auth = Auth::new(&cfg).expect("ADC auth builds");
+
+                let (tx, _rx) = watch::channel(None);
+                let ext = GcpAuthExtension::new(
+                    "test-gcp-adc-auth",
+                    auth.clone(),
+                    BackgroundProviderRefreshPolicy::periodic(TOKEN_CACHE_POLL_INTERVAL)
+                        .expect("valid refresh_policy"),
+                    tx,
+                    make_tracker(),
+                );
+
+                let token = ext
+                    .get_token()
+                    .await
+                    .expect("ADC token acquisition succeeds");
+                assert_eq!(token.expose_token(), "adc-authorized-user-token");
+
+                let outcome_2 = auth
+                    .fetch_outcome()
+                    .await
+                    .expect("cached ADC fetch_outcome succeeds");
+                assert!(matches!(outcome_2, BackgroundFetchOutcome::Unchanged(_)));
+                assert_eq!(
+                    outcome_2.into_value().expose_token(),
+                    "adc-authorized-user-token"
+                );
+
+                let requests = oauth_server
+                    .received_requests()
+                    .await
+                    .expect("requests recorded");
+                assert_eq!(
+                    requests.len(),
+                    1,
+                    "cached ADC credentials must not re-fetch on NotModified"
+                );
+            });
+        },
+    );
+
+    let missing_path = adc_file.path().with_file_name("nonexistent-adc-creds.json");
+    temp_env::with_var(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        Some(&missing_path),
+        || {
+            rt.block_on(async {
+                let adc_cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
+                let adc_auth = Auth::new(&adc_cfg).expect("Auth::new defers ADC loading");
+                let err = adc_auth
+                    .fetch()
+                    .await
+                    .expect_err("missing GOOGLE_APPLICATION_CREDENTIALS file must fail");
+                assert!(
+                    err.to_string().contains("GOOGLE_APPLICATION_CREDENTIALS"),
+                    "expected error mentioning GOOGLE_APPLICATION_CREDENTIALS, got: {err}"
+                );
+
+                let mds_server =
+                    start_metadata_server(Some(DEFAULT_SCOPE), "mds-override-token", 3600).await;
+                let mds_cfg = config_from_json(serde_json::json!({
+                    "endpoint": mds_server.uri(),
+                }))
+                .expect("explicit endpoint config");
+                let mds_auth = Auth::new(&mds_cfg).expect("explicit endpoint auth builds");
+                let mds_token = mds_auth
+                    .fetch()
+                    .await
+                    .expect("explicit endpoint bypasses GOOGLE_APPLICATION_CREDENTIALS");
+                assert_eq!(mds_token.expose_token(), "mds-override-token");
+            });
+        },
+    );
 }
 
 /// Scenario: Repeated `get_token()` and `fetch_outcome()` calls are made while the cached token is

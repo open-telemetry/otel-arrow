@@ -1,14 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Google Cloud compute metadata server credential construction and token
-//! acquisition via [`google_cloud_auth`].
+//! Google Cloud Application Default Credentials (ADC) and compute metadata
+//! server credential construction and token acquisition via
+//! [`google_cloud_auth`].
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use google_cloud_auth::credentials::{CacheableResource, Credentials, mds};
+use google_cloud_auth::credentials::{Builder as AdcBuilder, CacheableResource, Credentials, mds};
 use http::Extensions;
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
 
@@ -31,7 +32,7 @@ enum CredentialState {
     ShutDown,
 }
 
-/// A Google Cloud metadata token source backed by [`google_cloud_auth`].
+/// A Google Cloud token source backed by [`google_cloud_auth`].
 #[derive(Clone)]
 pub struct Auth {
     endpoint: Option<String>,
@@ -66,11 +67,12 @@ impl Auth {
             });
         }
 
-        // NOTE: `mds::Builder::build()` spawns `google-cloud-auth`'s internal
-        // `TokenCache` task via `tokio::spawn`. We defer building `Credentials`
-        // until the first async `fetch_outcome()` call so `Auth::new()` remains
-        // callable outside a Tokio runtime (such as during synchronous pipeline
-        // wiring) and never initiates background network traffic before startup.
+        // NOTE: `google-cloud-auth` credential builders spawn an internal
+        // `TokenCache` task via `tokio::spawn` when `.build()` is called. We
+        // defer building `Credentials` until the first async `fetch_outcome()`
+        // call so `Auth::new()` remains callable outside a Tokio runtime (such
+        // as during synchronous pipeline wiring) and never initiates background
+        // network or file I/O before startup.
         Ok(Self {
             endpoint,
             scopes,
@@ -80,15 +82,30 @@ impl Auth {
     }
 
     fn build_credentials(&self) -> Result<Credentials, Error> {
-        let mut builder = mds::Builder::default();
-        if let Some(endpoint) = &self.endpoint {
-            builder = builder.with_endpoint(endpoint.clone());
-        }
-        if !self.scopes.is_empty() {
-            builder = builder.with_scopes(self.scopes.iter().cloned());
-        }
-        builder.build().map_err(|e| Error::BuildCredentials {
-            reason: e.to_string(),
+        // When `endpoint` is omitted, use `google_cloud_auth::credentials::Builder`
+        // so full Application Default Credentials (ADC) discovery runs
+        // (`GOOGLE_APPLICATION_CREDENTIALS` -> well-known `gcloud` ADC file ->
+        // GCE/GKE compute metadata server fallback). When `endpoint` is
+        // explicitly configured, target that metadata server endpoint directly
+        // via `mds::Builder`.
+        let credentials = match &self.endpoint {
+            Some(endpoint) => {
+                let mut builder = mds::Builder::default().with_endpoint(endpoint.clone());
+                if !self.scopes.is_empty() {
+                    builder = builder.with_scopes(self.scopes.iter().cloned());
+                }
+                builder.build()
+            }
+            None => {
+                let mut builder = AdcBuilder::default();
+                if !self.scopes.is_empty() {
+                    builder = builder.with_scopes(self.scopes.iter().cloned());
+                }
+                builder.build()
+            }
+        };
+        credentials.map_err(|e| Error::BuildCredentials {
+            reason: format_error_chain(&e),
         })
     }
 

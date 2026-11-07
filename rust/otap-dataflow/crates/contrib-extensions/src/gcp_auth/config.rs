@@ -10,15 +10,15 @@ use serde::Deserialize;
 /// Default base URL for the Google Compute Engine / GKE metadata server.
 pub const DEFAULT_METADATA_ENDPOINT: &str = "http://metadata.google.internal";
 
-/// Default OAuth 2.0 scope requested from the metadata server.
+/// Default OAuth 2.0 scope requested for Google Cloud credentials.
 pub const DEFAULT_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-/// Default OAuth 2.0 scopes requested from the metadata server.
+/// Default OAuth 2.0 scopes requested for Google Cloud credentials.
 fn default_scopes() -> Vec<String> {
     vec![DEFAULT_SCOPE.to_string()]
 }
 
-/// Default per-attempt metadata token acquisition timeout.
+/// Default per-attempt token acquisition timeout.
 fn default_timeout() -> Duration {
     Duration::from_secs(10)
 }
@@ -32,24 +32,29 @@ fn default_startup_timeout() -> Duration {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Base URL of the GCE/GKE metadata server passed to
-    /// `google_cloud_auth::credentials::mds::Builder::with_endpoint`.
+    /// Optional base URL override for the GCE/GKE compute metadata server.
     ///
-    /// Note that `google-cloud-auth` checks the `GCE_METADATA_HOST`
-    /// environment variable (`http://$GCE_METADATA_HOST`) first when set in
-    /// the process environment, falling back to this `endpoint` override and
-    /// otherwise defaulting to `http://metadata.google.internal`.
+    /// When omitted (`None`), credentials are resolved using standard Google
+    /// Cloud Application Default Credentials (ADC) via
+    /// `google_cloud_auth::credentials::Builder` (`GOOGLE_APPLICATION_CREDENTIALS`,
+    /// the well-known `gcloud` ADC file, and finally the GCE/GKE metadata
+    /// server at `http://metadata.google.internal` or `http://$GCE_METADATA_HOST`).
+    ///
+    /// When set, `google_cloud_auth::credentials::mds::Builder::with_endpoint`
+    /// is used directly against this metadata server base URL (note that
+    /// `google-cloud-auth` still checks `GCE_METADATA_HOST` first when set in
+    /// the process environment).
     #[serde(default)]
     pub endpoint: Option<String>,
 
-    /// OAuth 2.0 scopes requested from the metadata server. Defaults to
+    /// OAuth 2.0 scopes requested for the access token. Defaults to
     /// `["https://www.googleapis.com/auth/cloud-platform"]`.
     #[serde(default = "default_scopes")]
     pub scopes: Vec<String>,
 
-    /// Per-attempt timeout applied when acquiring or refreshing a token from
-    /// the metadata server via `google-cloud-auth`. Accepts human-readable
-    /// durations (e.g. `10s`, `500ms`). Must be non-zero.
+    /// Per-attempt timeout applied when acquiring or refreshing a token via
+    /// `google-cloud-auth`. Accepts human-readable durations (e.g. `10s`,
+    /// `500ms`). Must be non-zero.
     #[serde(with = "humantime_serde", default = "default_timeout")]
     pub timeout: Duration,
 
