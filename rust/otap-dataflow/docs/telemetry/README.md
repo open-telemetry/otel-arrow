@@ -12,6 +12,10 @@ This documentation applies to all telemetry produced by the OTAP dataflow engine
 - events (structured logs with an event name)
 - traces (when implemented)
 
+For an operator-facing guide covering the embedded debugging UI, admin HTTP
+endpoints, Prometheus scraping, and the complete reference of exposed metrics,
+see [Self-observability](../self-observability.md).
+
 ## Normative language
 
 The keywords MUST, SHOULD, and MAY are to be interpreted as normative

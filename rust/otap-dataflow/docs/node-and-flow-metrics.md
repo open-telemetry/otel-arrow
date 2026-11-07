@@ -21,7 +21,8 @@ Both metric layers are emitted through the engine's internal observability
 pipeline. Configure an `engine.observability.pipeline` to export them, or use
 the admin metrics endpoint while developing. See
 [Configuration](configuration.md#engine-section) for observability-pipeline
-configuration.
+configuration and [Self-observability](self-observability.md) for the embedded
+debugging UI, admin HTTP endpoints, and full metrics reference.
 
 ## Choose the Right Metric Layer
 
