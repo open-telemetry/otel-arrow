@@ -72,7 +72,8 @@ flat-file-api-key-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 flat-file-sasl-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
 flat-file-user-pass-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
-# Google Cloud compute metadata authentication extension (BearerTokenProvider capability).
+# Google Cloud authentication extension (BearerTokenProvider capability) via
+# Application Default Credentials (ADC) or the GCE/GKE compute metadata server.
 gcp-auth = ["dep:google-cloud-auth", "dep:http", "dep:humantime-serde", "dep:rand"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
@@ -99,6 +100,7 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+temp-env = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls = { workspace = true }

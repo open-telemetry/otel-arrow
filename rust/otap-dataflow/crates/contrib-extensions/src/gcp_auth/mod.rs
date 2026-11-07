@@ -3,8 +3,9 @@
 
 //! Google Cloud (GCP) Auth extension.
 //!
-//! Acquires and refreshes Google Cloud OAuth 2.0 access tokens from the GCE/GKE
-//! compute metadata server via [`google_cloud_auth`] and exposes them to
+//! Acquires and refreshes Google Cloud OAuth 2.0 access tokens using
+//! Application Default Credentials (ADC) or an explicit GCE/GKE compute
+//! metadata server endpoint via [`google_cloud_auth`] and exposes them to
 //! data-path nodes through the `BearerTokenProvider` capability.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
@@ -44,8 +45,9 @@ use crate::common::background_refresh::{
 };
 use crate::common::token_refresh::TokenProviderExtension;
 
-/// The GCP Auth extension: the shared bearer-token refresher driven by the
-/// Google Cloud compute metadata server.
+/// The GCP Auth extension: the shared bearer-token refresher driven by
+/// Google Cloud Application Default Credentials (ADC) or the GCE/GKE
+/// compute metadata server.
 pub type GcpAuthExtension = TokenProviderExtension<Auth, GcpAuthMetrics>;
 
 /// URN under which this extension is registered.

@@ -12,11 +12,27 @@
 
 ## Overview
 
-Acquires and refreshes Google Cloud OAuth 2.0 access tokens from the Google
-Compute Engine (GCE) / Google Kubernetes Engine (GKE) metadata server via the
-official [`google-cloud-auth`](https://crates.io/crates/google-cloud-auth) SDK
-(`google_cloud_auth::credentials::mds::Builder`) and exposes them to data-path
-nodes through the `bearer_token_provider` capability.
+Acquires and refreshes Google Cloud OAuth 2.0 access tokens via the official
+[`google-cloud-auth`](https://crates.io/crates/google-cloud-auth) SDK and
+exposes them to data-path nodes through the `bearer_token_provider` capability.
+
+By default (when `endpoint` is omitted), credentials are resolved using standard
+Google Cloud Application Default Credentials (ADC) via
+`google_cloud_auth::credentials::Builder`:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` environment variable (service account key,
+   authorized user credentials, impersonated service account, or external
+   account / Workload Identity Federation).
+2. Well-known `gcloud` ADC credentials file
+   (`$HOME/.config/gcloud/application_default_credentials.json` on Linux/macOS,
+   `%APPDATA%\gcloud\application_default_credentials.json` on Windows) created
+   by `gcloud auth application-default login`.
+3. Google Compute Engine (GCE) / Google Kubernetes Engine (GKE) / Cloud Run
+   compute metadata server fallback (`http://metadata.google.internal`, or
+   `http://$GCE_METADATA_HOST` when `GCE_METADATA_HOST` is set).
+
+When `endpoint` is explicitly configured, `google_cloud_auth::credentials::mds::Builder`
+is used directly against that metadata server base URL.
 
 Tokens are cached and refreshed ahead of expiry (4 minutes before expiration) in
 `google-cloud-auth`'s internal `TokenCache`, concurrent cache misses are
@@ -65,17 +81,19 @@ The default build includes `crypto-ring`. If you build with
 
 ## Configuration
 
-All fields are optional; an empty `config: {}` queries the default service
-account on `http://metadata.google.internal` with the
-`https://www.googleapis.com/auth/cloud-platform` scope. When the
+All fields are optional; an empty `config: {}` uses Application Default
+Credentials (ADC) with the `https://www.googleapis.com/auth/cloud-platform`
+scope, falling back to the default service account on
+`http://metadata.google.internal` when no ADC file is present. When the
 `GCE_METADATA_HOST` environment variable is set, `google-cloud-auth` gives
-`http://$GCE_METADATA_HOST` precedence over `endpoint`.
+`http://$GCE_METADATA_HOST` precedence over `endpoint` for metadata server
+requests.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `endpoint` | string | `http://metadata.google.internal` (overridden by `http://$GCE_METADATA_HOST` if set) | Base URL of the GCE/GKE metadata server. Must start with `http://` or `https://`. |
-| `scopes` | list of strings | `["https://www.googleapis.com/auth/cloud-platform"]` | OAuth 2.0 scopes passed in the `?scopes=` query parameter when non-empty. |
-| `timeout` | duration | `10s` | Per-attempt timeout for acquiring a token from the metadata server. Must be non-zero. |
+| `endpoint` | string | omitted (uses ADC, falling back to `http://metadata.google.internal` or `http://$GCE_METADATA_HOST`) | Optional GCE/GKE metadata server base URL override. When set, bypasses local ADC file discovery and queries this metadata server directly. Must start with `http://` or `https://`. |
+| `scopes` | list of strings | `["https://www.googleapis.com/auth/cloud-platform"]` | OAuth 2.0 scopes requested for the access token when non-empty. |
+| `timeout` | duration | `10s` | Per-attempt timeout for acquiring a token via `google-cloud-auth`. Must be non-zero. |
 | `startup_timeout` | duration | `30s` | Maximum time pipeline startup waits for the first token publish. Must be non-zero. |
 
 ## Telemetry
