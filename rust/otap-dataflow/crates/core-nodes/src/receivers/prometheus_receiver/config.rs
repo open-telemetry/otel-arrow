@@ -15,6 +15,18 @@ const fn default_scrape_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
+const fn default_dns_lookup_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+const fn default_max_body_bytes() -> usize {
+    16 * 1024 * 1024
+}
+
+const fn default_max_data_points_per_batch() -> usize {
+    4096
+}
+
 fn default_job_name() -> String {
     "prometheus".to_owned()
 }
@@ -45,6 +57,10 @@ pub struct Config {
     #[serde(default = "default_scrape_timeout", with = "humantime_serde")]
     pub scrape_timeout: Duration,
 
+    /// Per-entry DNS lookup timeout for `dns_sd_targets` (capped by `scrape_timeout`).
+    #[serde(default = "default_dns_lookup_timeout", with = "humantime_serde")]
+    pub dns_lookup_timeout: Duration,
+
     /// Optional delay before the first scrape tick.
     #[serde(default, with = "humantime_serde")]
     pub initial_delay: Duration,
@@ -61,8 +77,12 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub enable_open_metrics: bool,
 
-    /// Maximum number of data points per emitted OTAP batch (`0` means unchunked).
-    #[serde(default)]
+    /// Maximum HTTP response body size in bytes per target scrape (default 16 MiB).
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
+
+    /// Maximum number of data points per emitted OTAP batch (default `4096`; `0` means unchunked).
+    #[serde(default = "default_max_data_points_per_batch")]
     pub max_data_points_per_batch: usize,
 
     /// Static scrape target endpoints (`host:port` or full `http(s)://...` URLs).
@@ -80,11 +100,13 @@ impl Default for Config {
             job_name: default_job_name(),
             scrape_interval: default_scrape_interval(),
             scrape_timeout: default_scrape_timeout(),
+            dns_lookup_timeout: default_dns_lookup_timeout(),
             initial_delay: Duration::ZERO,
             metrics_path: default_metrics_path(),
             honor_timestamps: true,
             enable_open_metrics: true,
-            max_data_points_per_batch: 0,
+            max_body_bytes: default_max_body_bytes(),
+            max_data_points_per_batch: default_max_data_points_per_batch(),
             targets: Vec::new(),
             dns_sd_targets: Vec::new(),
         }
@@ -154,6 +176,16 @@ pub(crate) fn validate_config(config: &Config) -> Result<(), otel_arrow_dfe_conf
     if config.scrape_timeout > config.scrape_interval {
         return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "scrape_timeout must not exceed scrape_interval".to_owned(),
+        });
+    }
+    if config.dns_lookup_timeout.is_zero() {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: "dns_lookup_timeout must be greater than zero".to_owned(),
+        });
+    }
+    if config.max_body_bytes == 0 {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: "max_body_bytes must be greater than zero".to_owned(),
         });
     }
     if !config.metrics_path.starts_with('/') {
