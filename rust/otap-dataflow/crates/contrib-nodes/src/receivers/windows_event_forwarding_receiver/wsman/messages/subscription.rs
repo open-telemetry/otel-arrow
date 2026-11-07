@@ -50,11 +50,15 @@ impl Advertisement {
             return Ok(None);
         };
         let subscription = &config.subscriptions[0];
-        let (identifier, version) = subscription
+        let (identifier, settings_version) = subscription
             .identifiers(receiver_name)
             .map_err(|error| error.to_string())?;
         let mut address = url::Url::parse(endpoint).map_err(|error| error.to_string())?;
         let public_origin = address.origin();
+        let version = Uuid::new_v5(
+            &settings_version,
+            public_origin.ascii_serialization().as_bytes(),
+        );
         address.set_path(&format!("/wsman/subscriptions/{identifier}/{version}"));
         Ok(Some(Self {
             subscription: subscription.clone(),
@@ -71,7 +75,7 @@ impl Advertisement {
         self.identifier
     }
 
-    /// Version derived from canonical subscription settings.
+    /// Version derived from canonical subscription settings and the normalized public origin.
     #[must_use]
     pub fn version(&self) -> Uuid {
         self.version
@@ -181,37 +185,26 @@ impl Advertisement {
         start(
             writer,
             "c:Policy",
-            &[
-                ("xmlns:c", "http://schemas.xmlsoap.org/ws/2002/12/policy"),
-                (
-                    "xmlns:auth",
-                    "http://schemas.microsoft.com/wbem/wsman/1/authentication",
-                ),
-            ],
+            &[("xmlns:c", "http://schemas.xmlsoap.org/ws/2002/12/policy")],
         )?;
         start(writer, "c:ExactlyOne", &[])?;
         start(writer, "c:All", &[])?;
         start(
             writer,
-            "auth:Authentication",
+            "w:Authentication",
             &[(
                 "Profile",
                 "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/mutual",
             )],
         )?;
-        start(writer, "auth:ClientCertificate", &[])?;
+        start(writer, "w:ClientCertificate", &[])?;
         let mut thumbprint = String::with_capacity(40);
         for byte in issuer_thumbprint {
             write!(&mut thumbprint, "{byte:02X}").map_err(io::Error::other)?;
         }
-        text(
-            writer,
-            "auth:Thumbprint",
-            &thumbprint,
-            &[("Role", "issuer")],
-        )?;
-        end(writer, "auth:ClientCertificate")?;
-        end(writer, "auth:Authentication")?;
+        text(writer, "w:Thumbprint", &thumbprint, &[("Role", "issuer")])?;
+        end(writer, "w:ClientCertificate")?;
+        end(writer, "w:Authentication")?;
         end(writer, "c:All")?;
         end(writer, "c:ExactlyOne")?;
         end(writer, "c:Policy")?;
@@ -359,10 +352,9 @@ mod tests {
             let advertisement = Advertisement::from_config(&config, "receiver-one")
                 .unwrap()
                 .unwrap();
-            let (identifier, version) =
-                config.subscriptions[0].identifiers("receiver-one").unwrap();
+            let (identifier, _) = config.subscriptions[0].identifiers("receiver-one").unwrap();
+            let version = advertisement.version();
             assert_eq!(advertisement.identifier(), identifier);
-            assert_eq!(advertisement.version(), version);
             assert_eq!(
                 advertisement.delivery_url(),
                 format!(
@@ -497,12 +489,11 @@ mod tests {
                 );
             }
             let policy_ns = "http://schemas.xmlsoap.org/ws/2002/12/policy";
-            let auth_ns = "http://schemas.microsoft.com/wbem/wsman/1/authentication";
             let notify = child(delivery, EVENTING, "NotifyTo");
             let policy = child(notify, policy_ns, "Policy");
             let exactly_one = child(policy, policy_ns, "ExactlyOne");
             let all = child(exactly_one, policy_ns, "All");
-            let auth = child(all, auth_ns, "Authentication");
+            let auth = child(all, WSMAN, "Authentication");
             for parent in [policy, exactly_one, all, auth] {
                 assert_eq!(parent.children().filter(Node::is_element).count(), 1);
             }
@@ -510,11 +501,7 @@ mod tests {
                 auth.attribute("Profile"),
                 Some("http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/mutual")
             );
-            let thumbprint = child(
-                child(auth, auth_ns, "ClientCertificate"),
-                auth_ns,
-                "Thumbprint",
-            );
+            let thumbprint = child(child(auth, WSMAN, "ClientCertificate"), WSMAN, "Thumbprint");
             assert_eq!(thumbprint.attribute("Role"), Some("issuer"));
             assert_eq!(
                 thumbprint.text(),
@@ -673,25 +660,68 @@ mod tests {
         ));
     }
 
-    /// Scenario: the advertised origin or receiver name changes without modifying subscription settings.
-    /// Guarantees: public-origin edits preserve identity/version; receiver-name edits isolate identities.
+    /// Scenario: the advertised host or port changes and is restored, or the receiver is renamed.
+    /// Guarantees: origin edits change only the version, rollback restores it, and receiver names isolate identities.
     #[test]
     fn preserves_subscription_identity() {
         let mut config = config();
         let first = Advertisement::from_config(&config, "receiver")
             .unwrap()
             .unwrap();
-        config.public_endpoint = Some("https://other.example:8443".into());
-        let second = Advertisement::from_config(&config, "receiver")
+        for endpoint in [
+            "https://other.example:5986",
+            "https://collector.example:8443",
+        ] {
+            config.public_endpoint = Some(endpoint.into());
+            let changed = Advertisement::from_config(&config, "receiver")
+                .unwrap()
+                .unwrap();
+            assert_eq!(first.identifier(), changed.identifier());
+            assert_ne!(first.version(), changed.version());
+            assert_ne!(first.delivery_url(), changed.delivery_url());
+        }
+        config.public_endpoint = Some("https://collector.example:5986".into());
+        let restored = Advertisement::from_config(&config, "receiver")
             .unwrap()
             .unwrap();
-        assert_eq!(first.identifier(), second.identifier());
-        assert_eq!(first.version(), second.version());
-        assert_ne!(first.delivery_url(), second.delivery_url());
+        assert_eq!(first.identifier(), restored.identifier());
+        assert_eq!(first.version(), restored.version());
+        assert_eq!(first.delivery_url(), restored.delivery_url());
         let third = Advertisement::from_config(&config, "other-receiver")
             .unwrap()
             .unwrap();
         assert_ne!(first.identifier(), third.identifier());
         assert_ne!(first.version(), third.version());
+    }
+
+    /// Scenario: equivalent HTTPS origins are spelled differently, then subscription settings change.
+    /// Guarantees: origin normalization preserves identity/version/URL while settings still affect the version.
+    #[test]
+    fn normalizes_advertised_version_origin() {
+        let mut config = config();
+        config.public_endpoint = Some("https://collector.example".into());
+        let first = Advertisement::from_config(&config, "receiver")
+            .unwrap()
+            .unwrap();
+        for endpoint in [
+            "https://COLLECTOR.EXAMPLE",
+            "https://collector.example/",
+            "https://collector.example:443",
+            "https://COLLECTOR.EXAMPLE:443/",
+        ] {
+            config.public_endpoint = Some(endpoint.into());
+            let equivalent = Advertisement::from_config(&config, "receiver")
+                .unwrap()
+                .unwrap();
+            assert_eq!(first.identifier(), equivalent.identifier());
+            assert_eq!(first.version(), equivalent.version());
+            assert_eq!(first.delivery_url(), equivalent.delivery_url());
+        }
+        config.subscriptions[0].heartbeat += Duration::from_millis(1);
+        let changed = Advertisement::from_config(&config, "receiver")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.identifier(), changed.identifier());
+        assert_ne!(first.version(), changed.version());
     }
 }

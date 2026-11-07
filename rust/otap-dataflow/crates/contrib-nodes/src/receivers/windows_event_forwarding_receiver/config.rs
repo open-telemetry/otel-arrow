@@ -249,6 +249,10 @@ impl Config {
 
 impl Subscription {
     /// Compute UUID v5 identifiers without mutable or durable state.
+    ///
+    /// Returns the stable subscription ID and a subscription-settings version.
+    /// Advertisement construction incorporates the normalized delivery origin
+    /// into the final advertised version.
     pub fn identifiers(&self, receiver_name: &str) -> Result<(Uuid, Uuid), serde_json::Error> {
         let application = Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
