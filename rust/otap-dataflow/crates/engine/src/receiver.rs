@@ -744,7 +744,8 @@ mod tests {
     use crate::local::receiver as local;
     use crate::node::NodeId;
     use crate::pdata_context::{
-        Arrival, ArrivalHeaders, ContextMaterializationPlan, Metadata, NodeBindings,
+        Arrival, ArrivalHeaders, ContextDeclarationProvider, ContextMaterializationPlan, Metadata,
+        NodeBindings,
     };
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
@@ -909,7 +910,7 @@ mod tests {
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
-            context_declarations: None,
+            context_declarations: Some(ContextDeclarationProvider::arriving()),
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
@@ -918,7 +919,7 @@ mod tests {
         ReceiverFactory {
             name: SHARED_WIRING_RECEIVER_URN,
             create: create_shared_wiring_receiver,
-            context_declarations: None,
+            context_declarations: Some(ContextDeclarationProvider::arriving()),
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,

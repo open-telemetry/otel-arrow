@@ -141,7 +141,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            node_bindings: None,
+            node_bindings: Some(NodeBindings::implicit_arrival()),
             context_materialization_plan: None,
             readiness: None,
         }
