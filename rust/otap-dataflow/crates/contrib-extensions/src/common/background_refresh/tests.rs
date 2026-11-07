@@ -375,7 +375,10 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
                 2 => Ok(BackgroundFetchOutcome::Updated(
                     BearerToken::without_expiry("tok-2"),
                 )),
-                _ => Err(std::io::Error::other("sdk token expired and mds down")),
+                3 => Err(std::io::Error::other("sdk token expired and mds down")),
+                _ => Ok(BackgroundFetchOutcome::Unchanged(
+                    BearerToken::without_expiry("tok-3"),
+                )),
             }
         }
 
@@ -472,9 +475,28 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
     tokio::task::yield_now().await;
     assert_eq!(step.load(Ordering::SeqCst), 4);
     assert!(
+        rx.borrow_and_update().is_none(),
+        "watch channel cache must be evicted to None on error"
+    );
+    assert!(
         extension.get_value().await.is_err(),
         "get_value must fail after cache eviction instead of serving stale non-expiring token"
     );
+
+    // Step 4 (after retry backoff <= 10s): Unchanged("tok-3") while watch cache is None
+    // repopulates the watch channel via the `self.inner.tx.borrow().is_none()` fallback.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(step.load(Ordering::SeqCst), 5);
+    assert!(
+        rx.has_changed().unwrap(),
+        "Unchanged outcome while watch cache is None must publish to repopulate cache"
+    );
+    assert_eq!(
+        rx.borrow_and_update().as_ref().unwrap().expose_token(),
+        "tok-3"
+    );
+    assert_eq!(extension.get_value().await.unwrap().expose_token(), "tok-3");
 
     let (report_rx, metrics_reporter) =
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
@@ -488,11 +510,11 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
         .unwrap();
     let snapshot = report_rx.recv_async().await.unwrap();
     let values = snapshot.get_metrics();
-    // Only the 2 Updated polls (steps 0 and 2) count as acquisitions/publications;
-    // the Unchanged poll (step 1) is not counted, and step 3 counts as 1 failure.
-    assert_eq!(values[0].to_u64_lossy(), 2, "successes should be 2");
+    // Steps 0, 2, and 4 publish (3 successes/publications); step 1 (Unchanged while
+    // populated) is skipped, and step 3 counts as 1 failure.
+    assert_eq!(values[0].to_u64_lossy(), 3, "successes should be 3");
     assert_eq!(values[1].to_u64_lossy(), 1, "failures should be 1");
-    assert_eq!(values[2].to_u64_lossy(), 2, "publishes should be 2");
+    assert_eq!(values[2].to_u64_lossy(), 3, "publishes should be 3");
 
     drop(ctrl_tx);
     let _ = task.await.expect("join").expect("clean shutdown");
