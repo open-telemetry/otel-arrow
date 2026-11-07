@@ -19,9 +19,13 @@ official [`google-cloud-auth`](https://crates.io/crates/google-cloud-auth) SDK
 nodes through the `bearer_token_provider` capability.
 
 Tokens are cached and refreshed ahead of expiry (4 minutes before expiration) in
-a background task, concurrent cache misses are coalesced onto a single
-credential call, and pipeline startup is held until the first token is
-published.
+`google-cloud-auth`'s internal `TokenCache`, concurrent cache misses are
+coalesced onto a single credential call, and pipeline startup is held until the
+first token is published. Because `google-cloud-auth` manages token expiry
+internally without exposing the raw `expires_in` timestamp through
+`Credentials::headers`, published `BearerToken` values carry `expires_on: None`
+and are evicted from the extension watch channel whenever the SDK reports an
+expired or failed token refresh.
 
 ## Getting started
 
@@ -62,13 +66,14 @@ The default build includes `crypto-ring`. If you build with
 ## Configuration
 
 All fields are optional; an empty `config: {}` queries the default service
-account on `http://metadata.google.internal` (or `http://$GCE_METADATA_HOST` when
-the `GCE_METADATA_HOST` environment variable is set) with the
-`https://www.googleapis.com/auth/cloud-platform` scope.
+account on `http://metadata.google.internal` with the
+`https://www.googleapis.com/auth/cloud-platform` scope. When the
+`GCE_METADATA_HOST` environment variable is set, `google-cloud-auth` gives
+`http://$GCE_METADATA_HOST` precedence over `endpoint`.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `endpoint` | string | `http://metadata.google.internal` (or `http://$GCE_METADATA_HOST`) | Base URL of the GCE/GKE metadata server. Must start with `http://` or `https://`. |
+| `endpoint` | string | `http://metadata.google.internal` (overridden by `http://$GCE_METADATA_HOST` if set) | Base URL of the GCE/GKE metadata server. Must start with `http://` or `https://`. |
 | `scopes` | list of strings | `["https://www.googleapis.com/auth/cloud-platform"]` | OAuth 2.0 scopes passed in the `?scopes=` query parameter when non-empty. |
 | `timeout` | duration | `10s` | Per-attempt timeout for acquiring a token from the metadata server. Must be non-zero. |
 | `startup_timeout` | duration | `30s` | Maximum time pipeline startup waits for the first token publish. Must be non-zero. |

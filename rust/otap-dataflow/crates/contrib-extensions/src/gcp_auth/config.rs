@@ -35,9 +35,10 @@ pub struct Config {
     /// Base URL of the GCE/GKE metadata server passed to
     /// `google_cloud_auth::credentials::mds::Builder::with_endpoint`.
     ///
-    /// When omitted, `google-cloud-auth` checks the `GCE_METADATA_HOST`
-    /// environment variable (`http://$GCE_METADATA_HOST`) and otherwise
-    /// defaults to `http://metadata.google.internal`.
+    /// Note that `google-cloud-auth` checks the `GCE_METADATA_HOST`
+    /// environment variable (`http://$GCE_METADATA_HOST`) first when set in
+    /// the process environment, falling back to this `endpoint` override and
+    /// otherwise defaulting to `http://metadata.google.internal`.
     #[serde(default)]
     pub endpoint: Option<String>,
 
