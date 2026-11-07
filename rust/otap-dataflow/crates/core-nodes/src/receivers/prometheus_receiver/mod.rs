@@ -175,6 +175,7 @@ fn create_prometheus_receiver(
     receiver_config: &ReceiverConfig,
 ) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     if pipeline.num_cores() > 1 {
+        // See https://github.com/open-telemetry/otel-arrow/issues/4001
         return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "prometheus receiver must run in a one-core source pipeline; use \
                 receiver:prometheus -> exporter:topic and fan out downstream"
