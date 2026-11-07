@@ -5,7 +5,7 @@
 //! acquisition via [`google_cloud_auth`].
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use google_cloud_auth::credentials::{CacheableResource, Credentials, mds};
@@ -29,6 +29,7 @@ struct CachedCredentials {
 pub struct Auth {
     endpoint: Option<String>,
     scopes: Vec<String>,
+    timeout: Duration,
     state: Arc<Mutex<Option<CachedCredentials>>>,
 }
 
@@ -52,6 +53,12 @@ impl Auth {
             scopes.push(trimmed.to_string());
         }
 
+        if config.timeout.is_zero() {
+            return Err(Error::BuildCredentials {
+                reason: "`timeout` must be greater than zero".to_string(),
+            });
+        }
+
         // NOTE: `mds::Builder::build()` spawns `google-cloud-auth`'s internal
         // `TokenCache` task via `tokio::spawn`. We defer building `Credentials`
         // until the first async `fetch_outcome()` call so `Auth::new()` remains
@@ -60,6 +67,7 @@ impl Auth {
         Ok(Self {
             endpoint,
             scopes,
+            timeout: config.timeout,
             state: Arc::new(Mutex::new(None)),
         })
     }
@@ -109,7 +117,28 @@ impl BackgroundProviderSource<BearerToken> for Auth {
             (cached.credentials.clone(), ext)
         };
 
-        let headers_res = credentials.headers(extensions).await;
+        // NOTE: `google-cloud-auth` constructs an untimed `reqwest::Client::new()`
+        // internally, so bound `credentials.headers(extensions)` with `self.timeout`
+        // to ensure a stalled metadata server cannot hold `fetch_lock` indefinitely.
+        let headers_res = match tokio::time::timeout(
+            self.timeout,
+            credentials.headers(extensions),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => {
+                if let Ok(mut guard) = self.state.lock() {
+                    *guard = None;
+                }
+                return Err(Error::TokenAcquisition {
+                    message: format!(
+                        "timed out after {:?} waiting for GCP metadata token",
+                        self.timeout
+                    ),
+                });
+            }
+        };
         match headers_res {
             Ok(CacheableResource::New { entity_tag, data }) => {
                 let header = data

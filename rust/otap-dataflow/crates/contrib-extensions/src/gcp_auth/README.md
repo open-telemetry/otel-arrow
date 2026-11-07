@@ -70,6 +70,7 @@ the `GCE_METADATA_HOST` environment variable is set) with the
 | --- | --- | --- | --- |
 | `endpoint` | string | `http://metadata.google.internal` (or `http://$GCE_METADATA_HOST`) | Base URL of the GCE/GKE metadata server. Must start with `http://` or `https://`. |
 | `scopes` | list of strings | `["https://www.googleapis.com/auth/cloud-platform"]` | OAuth 2.0 scopes passed in the `?scopes=` query parameter when non-empty. |
+| `timeout` | duration | `10s` | Per-attempt timeout for acquiring a token from the metadata server. Must be non-zero. |
 | `startup_timeout` | duration | `30s` | Maximum time pipeline startup waits for the first token publish. Must be non-zero. |
 
 ## Telemetry
