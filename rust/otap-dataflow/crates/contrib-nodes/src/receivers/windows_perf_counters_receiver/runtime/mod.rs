@@ -8,12 +8,14 @@ use super::metrics::WindowsPerfCountersMetrics;
 use super::otap_builder::project_points;
 use super::pdh::{NativePdh, Report, Stopped, Worker};
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use std::time::{Duration, Instant};
@@ -96,7 +98,10 @@ struct WindowsPerfCountersReceiver {
 }
 
 /// Creates the Windows performance-counter local receiver.
-pub(super) static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+#[allow(unsafe_code)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
+#[distributed_slice(OTAP_RECEIVER_FACTORIES)]
+static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: WINDOWS_PERF_COUNTERS_RECEIVER_URN,
     create: |pipeline, node, node_config, receiver_config, _capabilities| {
         if pipeline.num_cores() > 1 {

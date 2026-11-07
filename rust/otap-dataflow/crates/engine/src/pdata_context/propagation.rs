@@ -13,7 +13,10 @@ use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-use super::{ContextMaterializationPlan, ContextProjection, ContextValueKind, MaterializedContext};
+use super::{
+    ContextError, ContextMaterializationPlan, ContextProjection, ContextValueKind,
+    MaterializedContext,
+};
 
 /// An exporter's propagation policy with qualified context references validated.
 #[doc(hidden)]
@@ -284,7 +287,7 @@ impl CompiledHeaderPropagationPolicy {
         H: TransportHeaderSource + ?Sized,
     {
         self.propagate_primitive(headers)
-            .chain(self.materialized_headers(materialized))
+            .chain(self.materialized_headers_or_log(materialized))
     }
 
     fn propagate_primitive<'a, H>(
@@ -316,13 +319,34 @@ impl CompiledHeaderPropagationPolicy {
         &'a self,
         materialized: Option<&'a MaterializedContext>,
     ) -> impl Iterator<Item = PropagatedHeader<'a>> {
-        self.materialized_headers(materialized).into_iter()
+        self.materialized_headers_or_log(materialized).into_iter()
     }
 
-    fn materialized_headers<'a>(
+    /// Returns materialized headers for the legacy iterator APIs, which cannot fail.
+    ///
+    /// A mismatched snapshot is logged as an error and contributes no headers.
+    fn materialized_headers_or_log<'a>(
         &'a self,
         materialized: Option<&'a MaterializedContext>,
     ) -> SmallVec<[PropagatedHeader<'a>; 8]> {
+        self.materialized_headers(materialized)
+            .unwrap_or_else(|error| {
+                otel_arrow_dfe_telemetry::otel_error!(
+                    "context.propagation.materialized_mismatch",
+                    error = error.to_string()
+                );
+                SmallVec::new()
+            })
+    }
+
+    /// Returns headers for the qualified composite selections.
+    ///
+    /// Fails with [`ContextError::ContextMismatch`] when a composite in the
+    /// snapshot was materialized under a different plan or declaration.
+    pub(super) fn materialized_headers<'a>(
+        &'a self,
+        materialized: Option<&'a MaterializedContext>,
+    ) -> Result<SmallVec<[PropagatedHeader<'a>; 8]>, ContextError> {
         let mut propagated = SmallVec::new();
         if let Some(materialized) = materialized {
             for binding in &self.compiled_named {
@@ -330,7 +354,7 @@ impl CompiledHeaderPropagationPolicy {
                     continue;
                 }
                 let Some(projection) =
-                    materialized.resolve(&self.materialization_plan, &binding.projection)
+                    materialized.resolve(&self.materialization_plan, &binding.projection)?
                 else {
                     continue;
                 };
@@ -364,7 +388,7 @@ impl CompiledHeaderPropagationPolicy {
                 });
             }
         }
-        propagated
+        Ok(propagated)
     }
 
     fn resolve_primitive_action(&self, name: &str) -> (PropagationAction, NameStrategy) {

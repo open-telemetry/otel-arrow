@@ -117,6 +117,18 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:extension:azure_key_vault_sasl_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:azure_key_vault_user_pass_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:extension:flat_file_api_key_auth",
     "category": "Extension",
     "description": null,
@@ -135,7 +147,7 @@
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:oauth2_client_auth",
+    "id": "urn:otel:extension:gcp_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}
@@ -345,15 +357,15 @@
     "attributes": {}
   },
   {
-    "id": "urn:otel:safety:memory_limiter",
-    "category": "Safety",
-    "description": "Engine memory pressure monitor and shedding controller",
+    "id": "urn:otel:receiver:windows_perf_counters",
+    "category": "Receiver",
+    "description": null,
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:azure_key_vault_sasl_auth",
-    "category": "Extension",
-    "description": null,
+    "id": "urn:otel:safety:memory_limiter",
+    "category": "Safety",
+    "description": "Engine memory pressure monitor and shedding controller",
     "attributes": {}
   }
 ]

@@ -23,6 +23,7 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+serde_yaml.workspace = true
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]

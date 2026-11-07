@@ -10,7 +10,7 @@
 //! Extensions deliberately do NOT use this type -- they have a separate
 //! [`crate::extension_urn::ExtensionUrn`] type so the rest of the codebase
 //! cannot accidentally treat extensions as nodes. The underlying parsing
-//! primitives are shared via the private [`crate::urn`] module.
+//! primitives are shared via the private `crate::urn` module.
 
 use crate::error::Error;
 use crate::node::NodeKind;

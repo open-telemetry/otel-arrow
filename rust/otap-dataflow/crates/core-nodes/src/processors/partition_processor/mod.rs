@@ -26,7 +26,7 @@ use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
+    ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
@@ -520,9 +520,10 @@ fn partition_value_to_transport_header(
 
 impl ConfigNodeContextDeclaration for Config {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Produces {
-            domain: ContextDomain::TransportHeader,
-            entry: self.partition_header_name.clone(),
+        std::iter::once(ContextDeclaration::Edits {
+            actions: Box::new([ContextAction::Add {
+                entry: self.partition_header_name.clone(),
+            }]),
         })
         .collect()
     }
@@ -2074,7 +2075,7 @@ mod test {
     }
 
     /// Scenario: a partition processor has an output header.
-    /// Guarantees: its factory declares the output name in the transport-header domain.
+    /// Guarantees: its factory declares an edit adding the output name.
     #[test]
     fn partition_declaration_names_output() {
         let config = serde_json::json!({
@@ -2086,9 +2087,10 @@ mod test {
         assert_eq!(decls.len(), 1);
         assert_eq!(
             decls.iter().next().expect("one declaration"),
-            &ContextDeclaration::Produces {
-                domain: ContextDomain::TransportHeader,
-                entry: context_name("x-partition"),
+            &ContextDeclaration::Edits {
+                actions: Box::new([ContextAction::Add {
+                    entry: context_name("x-partition"),
+                }]),
             }
         );
     }

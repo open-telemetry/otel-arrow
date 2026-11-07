@@ -97,6 +97,7 @@ The `reason` attribute is bounded to:
 | `retry_limit` | The retry-count safety limit was reached. |
 | `deadline` | The next retry would exceed the configured elapsed-time deadline. |
 | `send_failure` | The processor could not send the PData message or convert the failure into a NACK. |
+| `scheduling_failure` | The processor-local scheduler could not accept the next retry. |
 
 ### Events
 
@@ -107,6 +108,10 @@ The `reason` attribute is bounded to:
 ## Limits
 
 - Retry state is not durable across process restart.
+- Pending retries are bounded by the pdata channel capacity
+  (`policies.channel_capacity.pdata`). When that bound is reached, or the
+  processor is shutting down, the NACK is returned upstream with a
+  `cannot requeue` reason and counted as a `scheduling_failure` termination.
 - The implementation rejects configurations that would require absurd retry
   growth simulations.
 - The processor retries NACK outcomes; it does not make an exporter idempotent.
