@@ -35,6 +35,7 @@ use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, LiteralValue, UpsertTransform, apply_attribute_transform,
 };
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
@@ -320,13 +321,12 @@ pub(crate) fn records_to_otap_with_resource(
             if let Some(start_ts_ns) = default_start_timestamp_ns
                 && is_metric_data_point_table(wire_type)
             {
-                let clamped_start_ns =
-                    start_ts_ns.min(scrape_timestamp_ns.saturating_sub(1_000_000));
                 batch = ensure_cumulative_start_time_unix_nano(
                     wire_type,
                     &batch,
                     univariate_batch,
-                    clamped_start_ns,
+                    start_ts_ns,
+                    scrape_timestamp_ns,
                 )?;
             }
             store.set(wire_type, batch)?;
@@ -345,8 +345,11 @@ pub(crate) fn records_to_otap_with_resource(
 }
 
 /// Extracts `<host>:<port>` (or `<host>`) from a scrape target URL for `service.instance.id`.
+///
+/// Uses `port_or_known_default()` so standard HTTP (`:80`) and HTTPS (`:443`) targets retain
+/// their port suffix matching Prometheus `instance` semantics.
 pub(crate) fn target_instance_id(target_url: &Url) -> String {
-    match (target_url.host_str(), target_url.port()) {
+    match (target_url.host_str(), target_url.port_or_known_default()) {
         (Some(host), Some(port)) => format!("{host}:{port}"),
         (Some(host), None) => host.to_owned(),
         _ => target_url.as_str().to_owned(),
@@ -381,30 +384,67 @@ const fn is_metric_data_point_table(payload_type: ArrowPayloadType) -> bool {
     )
 }
 
+/// Resolves whether a `NumberDataPoints` `parent_id` references a cumulative `MetricType::Sum`
+/// row in `UnivariateMetrics`.
+fn is_sum_parent_id(
+    parent_id: u16,
+    univariate_ids: Option<&arrow::array::UInt16Array>,
+    metric_types: &arrow::array::UInt8Array,
+) -> bool {
+    use arrow::array::Array as _;
+
+    const SUM_METRIC_TYPE: u8 = MetricType::Sum as u8;
+    let idx = parent_id as usize;
+    if let Some(ids) = univariate_ids {
+        // Fast path when `UnivariateMetrics.id` is dense in row order `0..N`.
+        if idx < ids.len() && !ids.is_null(idx) && ids.value(idx) == parent_id {
+            return idx < metric_types.len()
+                && !metric_types.is_null(idx)
+                && metric_types.value(idx) == SUM_METRIC_TYPE;
+        }
+        for row in 0..ids.len().min(metric_types.len()) {
+            if !ids.is_null(row) && ids.value(row) == parent_id {
+                return !metric_types.is_null(row) && metric_types.value(row) == SUM_METRIC_TYPE;
+            }
+        }
+        false
+    } else {
+        idx < metric_types.len()
+            && !metric_types.is_null(idx)
+            && metric_types.value(idx) == SUM_METRIC_TYPE
+    }
+}
+
 /// Populates `start_time_unix_nano` on cumulative metric data points when the exposition payload
-/// omits `_created` timestamps (such as Prometheus text `0.0.4`).
+/// omits `_created` timestamps (such as Prometheus text `0.0.4` or mixed OpenMetrics batches).
 fn ensure_cumulative_start_time_unix_nano(
     payload_type: ArrowPayloadType,
     batch: &arrow::record_batch::RecordBatch,
     univariate_batch: Option<&arrow::record_batch::RecordBatch>,
     start_timestamp_ns: i64,
+    scrape_timestamp_ns: i64,
 ) -> Result<arrow::record_batch::RecordBatch, otel_arrow_dfe_pdata::error::Error> {
+    use arrow::array::Array as _;
+
     if batch.num_rows() == 0 {
         return Ok(batch.clone());
     }
     let schema = batch.schema();
-    if schema
+    let existing_start_idx = schema
         .index_of(otel_arrow_dfe_pdata::schema::consts::START_TIME_UNIX_NANO)
-        .is_ok()
+        .ok();
+    if let Some(start_idx) = existing_start_idx
+        && batch.column(start_idx).null_count() == 0
     {
         return Ok(batch.clone());
     }
     let Ok(parent_idx) = schema.index_of(otel_arrow_dfe_pdata::schema::consts::PARENT_ID) else {
         return Ok(batch.clone());
     };
-    let tz: Option<Arc<str>> = schema
+    let time_idx = schema
         .index_of(otel_arrow_dfe_pdata::schema::consts::TIME_UNIX_NANO)
-        .ok()
+        .ok();
+    let tz: Option<Arc<str>> = time_idx
         .and_then(|idx| match schema.field(idx).data_type() {
             arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, tz) => {
                 tz.clone()
@@ -412,64 +452,143 @@ fn ensure_cumulative_start_time_unix_nano(
             _ => None,
         })
         .or_else(|| Some("UTC".into()));
+    let time_col = time_idx.and_then(|idx| {
+        batch
+            .column(idx)
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+    });
 
-    let (start_col, nullable): (arrow::array::ArrayRef, bool) =
+    // Clamp each row's start time against that row's own `time_unix_nano` so historical sample
+    // timestamps preserved under `honor_timestamps: true` still satisfy `start_time < time`.
+    let row_start_ns = |row: usize| -> i64 {
+        let sample_ts_ns = time_col
+            .filter(|col| !col.is_null(row))
+            .map_or(scrape_timestamp_ns, |col| col.value(row));
+        start_timestamp_ns.min(sample_ts_ns.saturating_sub(1_000_000))
+    };
+
+    let univariate_ids = univariate_batch
+        .and_then(|ub| ub.column_by_name(otel_arrow_dfe_pdata::schema::consts::ID))
+        .and_then(|col| col.as_any().downcast_ref::<arrow::array::UInt16Array>());
+    let metric_types = univariate_batch
+        .and_then(|ub| ub.column_by_name(otel_arrow_dfe_pdata::schema::consts::METRIC_TYPE))
+        .and_then(|col| col.as_any().downcast_ref::<arrow::array::UInt8Array>());
+    let parent_ids = batch
+        .column(parent_idx)
+        .as_any()
+        .downcast_ref::<arrow::array::UInt16Array>();
+
+    if payload_type == ArrowPayloadType::NumberDataPoints
+        && (metric_types.is_none() || parent_ids.is_none())
+    {
+        return Ok(batch.clone());
+    }
+
+    let is_cumulative_row = |row: usize| -> bool {
         if payload_type == ArrowPayloadType::NumberDataPoints {
-            // MetricType::Sum == 2; Gauge == 1. Only cumulative Sum rows receive a start timestamp.
-            let metric_types = univariate_batch
-                .and_then(|ub| ub.column_by_name(otel_arrow_dfe_pdata::schema::consts::METRIC_TYPE))
-                .and_then(|col| col.as_any().downcast_ref::<arrow::array::UInt8Array>());
-            let parent_ids = batch
-                .column(parent_idx)
-                .as_any()
-                .downcast_ref::<arrow::array::UInt16Array>();
-            if let (Some(metric_types), Some(parent_ids)) = (metric_types, parent_ids) {
-                let mut any_sum = false;
-                let mut all_sum = true;
-                for i in 0..parent_ids.len() {
-                    let pid = parent_ids.value(i) as usize;
-                    let is_sum = pid < metric_types.len() && metric_types.value(pid) == 2;
-                    any_sum |= is_sum;
-                    all_sum &= is_sum;
-                }
-                if !any_sum {
-                    return Ok(batch.clone());
-                }
-                if all_sum {
-                    let mut arr = arrow::array::TimestampNanosecondArray::from_value(
-                        start_timestamp_ns,
-                        batch.num_rows(),
-                    );
-                    if let Some(ref tz) = tz {
-                        arr = arr.with_timezone(Arc::clone(tz));
-                    }
-                    (Arc::new(arr), false)
-                } else {
-                    let mut arr: arrow::array::TimestampNanosecondArray = (0..parent_ids.len())
-                        .map(|i| {
-                            let pid = parent_ids.value(i) as usize;
-                            (pid < metric_types.len() && metric_types.value(pid) == 2)
-                                .then_some(start_timestamp_ns)
-                        })
-                        .collect();
-                    if let Some(ref tz) = tz {
-                        arr = arr.with_timezone(Arc::clone(tz));
-                    }
-                    (Arc::new(arr), true)
-                }
-            } else {
-                return Ok(batch.clone());
-            }
+            let (Some(metric_types), Some(parent_ids)) = (metric_types, parent_ids) else {
+                return false;
+            };
+            !parent_ids.is_null(row)
+                && is_sum_parent_id(parent_ids.value(row), univariate_ids, metric_types)
         } else {
-            let mut arr = arrow::array::TimestampNanosecondArray::from_value(
-                start_timestamp_ns,
-                batch.num_rows(),
-            );
-            if let Some(ref tz) = tz {
-                arr = arr.with_timezone(Arc::clone(tz));
-            }
-            (Arc::new(arr), false)
+            true
+        }
+    };
+
+    if let Some(start_idx) = existing_start_idx {
+        let Some(existing) = batch
+            .column(start_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+        else {
+            return Ok(batch.clone());
         };
+        let mut any_filled = false;
+        let mut any_null = false;
+        for row in 0..batch.num_rows() {
+            if existing.is_null(row) {
+                if is_cumulative_row(row) {
+                    any_filled = true;
+                } else {
+                    any_null = true;
+                }
+            }
+        }
+        if !any_filled {
+            return Ok(batch.clone());
+        }
+        let existing_tz = match schema.field(start_idx).data_type() {
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, tz) => {
+                tz.clone()
+            }
+            _ => tz,
+        };
+        let mut arr: arrow::array::TimestampNanosecondArray = (0..batch.num_rows())
+            .map(|row| {
+                if !existing.is_null(row) {
+                    Some(existing.value(row))
+                } else if is_cumulative_row(row) {
+                    Some(row_start_ns(row))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if let Some(ref tz_val) = existing_tz {
+            arr = arr.with_timezone(Arc::clone(tz_val));
+        }
+        let mut fields: Vec<arrow::datatypes::FieldRef> = schema.fields().iter().cloned().collect();
+        fields[start_idx] = Arc::new(arrow::datatypes::Field::new(
+            otel_arrow_dfe_pdata::schema::consts::START_TIME_UNIX_NANO,
+            arrow::datatypes::DataType::Timestamp(
+                arrow::datatypes::TimeUnit::Nanosecond,
+                existing_tz,
+            ),
+            any_null,
+        ));
+        let mut columns = batch.columns().to_vec();
+        columns[start_idx] = Arc::new(arr);
+        let new_schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+            fields,
+            schema.metadata().clone(),
+        ));
+        return arrow::record_batch::RecordBatch::try_new(new_schema, columns).map_err(|err| {
+            otel_arrow_dfe_pdata::error::Error::UnexpectedRecordBatchState {
+                reason: err.to_string(),
+            }
+        });
+    }
+
+    let mut any_cumulative = false;
+    let mut all_cumulative = true;
+    for row in 0..batch.num_rows() {
+        let cumulative = is_cumulative_row(row);
+        any_cumulative |= cumulative;
+        all_cumulative &= cumulative;
+    }
+    if !any_cumulative {
+        return Ok(batch.clone());
+    }
+
+    let (start_col, nullable): (arrow::array::ArrayRef, bool) = if all_cumulative {
+        let mut arr = arrow::array::TimestampNanosecondArray::from_iter_values(
+            (0..batch.num_rows()).map(row_start_ns),
+        );
+        if let Some(ref tz) = tz {
+            arr = arr.with_timezone(Arc::clone(tz));
+        }
+        (Arc::new(arr), false)
+    } else {
+        let mut arr: arrow::array::TimestampNanosecondArray = (0..batch.num_rows())
+            .map(|row| is_cumulative_row(row).then(|| row_start_ns(row)))
+            .collect();
+        if let Some(ref tz) = tz {
+            arr = arr.with_timezone(Arc::clone(tz));
+        }
+        (Arc::new(arr), true)
+    };
 
     let insert_idx = parent_idx + 1;
     let mut fields: Vec<arrow::datatypes::FieldRef> = schema.fields().iter().cloned().collect();
@@ -1831,5 +1950,181 @@ mod tests {
             ));
             server.abort();
         }));
+    }
+
+    /// Scenario: `resolve_response_format` inspects missing, unknown, unversioned OpenMetrics,
+    /// and versioned Prometheus text `Content-Type` headers.
+    /// Guarantees: missing or unrecognized headers fall back to Prometheus text `0.0.4`, while
+    /// bare `application/openmetrics-text` resolves to OpenMetrics `1.0.0`.
+    #[test]
+    fn resolves_response_format_content_type_fallbacks() {
+        assert_eq!(resolve_response_format(None), Format::TEXT);
+        assert_eq!(resolve_response_format(Some("")), Format::TEXT);
+        assert_eq!(
+            resolve_response_format(Some("application/octet-stream")),
+            Format::TEXT
+        );
+        assert_eq!(
+            resolve_response_format(Some("text/plain; charset=utf-8")),
+            Format::TEXT
+        );
+        assert_eq!(
+            resolve_response_format(Some("application/openmetrics-text")),
+            Format::OPEN_METRICS_0_0_1
+        );
+        assert_eq!(
+            resolve_response_format(Some(
+                "Application/OpenMetrics-Text; version=1.0.0; escaping=allow-utf-8"
+            )),
+            Format::OPEN_METRICS_1_0_0
+        );
+        assert_eq!(
+            resolve_response_format(Some(
+                "application/openmetrics-text; version=1.0.0; charset=utf-8"
+            )),
+            Format::OPEN_METRICS_1_0_0
+        );
+        assert_eq!(
+            resolve_response_format(Some("text/plain; version=1.0.0; escaping=allow-utf-8")),
+            Format::TEXT
+        );
+        assert_eq!(
+            resolve_response_format(Some("text/plain; version=0.0.4; charset=utf-8")),
+            Format::TEXT
+        );
+    }
+
+    /// Scenario: `target_instance_id` extracts `<host>:<port>` from URLs with explicit ports and
+    /// default HTTP/HTTPS ports.
+    /// Guarantees: default ports (`:80` for HTTP and `:443` for HTTPS) are preserved in
+    /// `service.instance.id` matching Prometheus `instance` semantics.
+    #[test]
+    fn target_instance_id_includes_default_http_and_https_ports() {
+        let explicit = Url::parse("http://127.0.0.1:9001/metrics").expect("valid url");
+        assert_eq!(target_instance_id(&explicit), "127.0.0.1:9001");
+
+        let default_http = Url::parse("http://example.com/metrics").expect("valid http url");
+        assert_eq!(target_instance_id(&default_http), "example.com:80");
+
+        let default_https = Url::parse("https://example.com/metrics").expect("valid https url");
+        assert_eq!(target_instance_id(&default_https), "example.com:443");
+    }
+
+    /// Scenario: `ensure_cumulative_start_time_unix_nano` processes a `NumberDataPoints` batch
+    /// where `UnivariateMetrics.id` is non-dense (`[10, 42]`), `start_time_unix_nano` is already
+    /// partially populated with nulls, and a sample carries a historical timestamp earlier than
+    /// the receiver creation start timestamp.
+    /// Guarantees: `parent_id` is matched against `UnivariateMetrics.id` rather than row index,
+    /// existing non-null `_created` start timestamps are preserved, missing cumulative start
+    /// timestamps are filled and clamped below each row's own `time_unix_nano`, and gauge rows
+    /// remain null.
+    #[test]
+    fn fills_cumulative_start_time_with_non_dense_parent_ids_and_partial_column() {
+        use arrow::array::Array as _;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use arrow::record_batch::RecordBatch;
+
+        let univariate_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                otel_arrow_dfe_pdata::schema::consts::ID,
+                DataType::UInt16,
+                false,
+            ),
+            Field::new(
+                otel_arrow_dfe_pdata::schema::consts::METRIC_TYPE,
+                DataType::UInt8,
+                false,
+            ),
+        ]));
+        // Row 0 has id=10 (Gauge), row 1 has id=42 (Sum).
+        let univariate_batch = RecordBatch::try_new(
+            univariate_schema,
+            vec![
+                Arc::new(arrow::array::UInt16Array::from(vec![10_u16, 42_u16])),
+                Arc::new(arrow::array::UInt8Array::from(vec![
+                    MetricType::Gauge as u8,
+                    MetricType::Sum as u8,
+                ])),
+            ],
+        )
+        .expect("valid univariate batch");
+
+        let tz: Option<Arc<str>> = Some("UTC".into());
+        let dp_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                otel_arrow_dfe_pdata::schema::consts::PARENT_ID,
+                DataType::UInt16,
+                false,
+            ),
+            Field::new(
+                otel_arrow_dfe_pdata::schema::consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, tz.clone()),
+                true,
+            ),
+            Field::new(
+                otel_arrow_dfe_pdata::schema::consts::TIME_UNIX_NANO,
+                DataType::Timestamp(TimeUnit::Nanosecond, tz.clone()),
+                false,
+            ),
+        ]));
+
+        let explicit_created_ns = 1_600_000_000_000_000_000_i64;
+        let historical_sample_ns = 1_650_000_000_000_000_000_i64;
+        let receiver_start_ns = 1_700_000_000_000_000_000_i64;
+        let scrape_ns = 1_700_000_005_000_000_000_i64;
+
+        let start_arr = arrow::array::TimestampNanosecondArray::from(vec![
+            Some(explicit_created_ns),
+            None,
+            None,
+        ])
+        .with_timezone("UTC");
+        let time_arr = arrow::array::TimestampNanosecondArray::from(vec![
+            scrape_ns,
+            historical_sample_ns,
+            scrape_ns,
+        ])
+        .with_timezone("UTC");
+
+        let dp_batch = RecordBatch::try_new(
+            dp_schema,
+            vec![
+                // Row 0: Sum (id=42) with explicit _created; Row 1: Sum (id=42) missing _created
+                // with historical sample timestamp; Row 2: Gauge (id=10) missing _created.
+                Arc::new(arrow::array::UInt16Array::from(vec![
+                    42_u16, 42_u16, 10_u16,
+                ])),
+                Arc::new(start_arr),
+                Arc::new(time_arr),
+            ],
+        )
+        .expect("valid data point batch");
+
+        let filled = ensure_cumulative_start_time_unix_nano(
+            ArrowPayloadType::NumberDataPoints,
+            &dp_batch,
+            Some(&univariate_batch),
+            receiver_start_ns,
+            scrape_ns,
+        )
+        .expect("ensure_cumulative_start_time_unix_nano succeeds");
+
+        let start_col = filled
+            .column_by_name(otel_arrow_dfe_pdata::schema::consts::START_TIME_UNIX_NANO)
+            .expect("start_time_unix_nano column present")
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+            .expect("TimestampNanosecondArray");
+
+        // Row 0 preserves explicit _created start time.
+        assert!(!start_col.is_null(0));
+        assert_eq!(start_col.value(0), explicit_created_ns);
+
+        // Row 1 fills missing Sum start time and clamps to historical_sample_ns - 1ms.
+        assert!(!start_col.is_null(1));
+        assert_eq!(start_col.value(1), historical_sample_ns - 1_000_000);
+
+        // Row 2 belongs to Gauge (id=10) and stays null.
+        assert!(start_col.is_null(2));
     }
 }

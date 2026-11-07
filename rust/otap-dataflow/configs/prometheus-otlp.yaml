@@ -2,24 +2,36 @@ version: otel_dataflow/v1
 engine: {}
 groups:
   default:
-    pipelines:
-      main:
-        # prometheus_receiver -> OTLP/gRPC exporter pipeline.
-        #
-        # Scrapes Prometheus text (0.0.4 / 1.0.0) and OpenMetrics 1.0 endpoints
-        # and decodes them directly into OTAP Arrow record batches via `expfmt`.
-        #
-        # The prometheus_receiver requires a single-core source pipeline, so
-        # this config is meant to be run as:
-        #
-        #   df_engine --config configs/prometheus-otlp.yaml --num-cores 1
+    # prometheus_receiver -> topic -> OTLP/gRPC exporter pipeline group.
+    #
+    # Scrapes Prometheus text (0.0.4 / 1.0.0) and OpenMetrics 1.0 endpoints
+    # in a dedicated one-core source pipeline (`scrape`), decodes payloads
+    # directly into OTAP Arrow record batches via `expfmt`, and fans out over
+    # an in-memory topic (`scraped_metrics`) to the downstream `export`
+    # pipeline.
 
+    policies:
+      channel_capacity:
+        control:
+          node: 100
+          pipeline: 100
+        pdata: 128
+
+    topics:
+      scraped_metrics:
+        description: "One-core Prometheus scrape pipeline -> downstream OTLP export pipeline"
         policies:
-          channel_capacity:
-            control:
-              node: 100
-              pipeline: 100
-            pdata: 128
+          balanced:
+            queue_capacity: 1024
+            on_full: block
+
+    pipelines:
+      scrape:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
 
         nodes:
           receiver:
@@ -33,11 +45,31 @@ groups:
               targets:
                 - "127.0.0.1:9001"
 
+          topic_exporter:
+            type: exporter:topic
+            config:
+              topic: scraped_metrics
+              queue_on_full: block
+
+        connections:
+          - from: receiver
+            to: topic_exporter
+
+      export:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: scraped_metrics
+              subscription:
+                mode: balanced
+                group: otlp_export
+
           exporter:
             type: exporter:otlp_grpc
             config:
               grpc_endpoint: "http://127.0.0.1:4317"
 
         connections:
-          - from: receiver
+          - from: topic_receiver
             to: exporter
