@@ -144,6 +144,16 @@
       ]
     },
     {
+      // kube and k8s-openapi must use the same Kubernetes API types.
+      "groupName": "kubernetes crates",
+      "separateMajorMinor": false,
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["kube", "k8s-openapi"],
+      "schedule": [
+        "before 8am on Friday"
+      ]
+    },
+    {
       // keep Azure SDK dependencies on the same repository revision
       "groupName": "azure sdk crates",
       "matchManagers": ["cargo"],

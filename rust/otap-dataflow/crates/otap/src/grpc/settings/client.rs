@@ -4,7 +4,10 @@
 //! Shared configuration for gRPC-based clients.
 
 use crate::compression::CompressionMethod;
-use crate::otap_grpc::proxy::ProxyConfig;
+use crate::defaults::{
+    default_concurrency_limit, default_connect_timeout, default_tcp_keepalive, default_tcp_nodelay,
+};
+use crate::grpc::proxy::ProxyConfig;
 use crate::tls_utils;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
@@ -190,7 +193,7 @@ pub enum GrpcEndpointError {
 
     /// Proxy configuration or connection error.
     #[error("proxy error: {0}")]
-    Proxy(#[from] crate::otap_grpc::proxy::ProxyError),
+    Proxy(#[from] crate::grpc::proxy::ProxyError),
 
     /// Invalid gRPC endpoint.
     #[error("invalid grpc_endpoint: {0}")]
@@ -579,7 +582,7 @@ impl GrpcClientSettings {
         proxy: Arc<ProxyConfig>,
     ) -> impl tower::Service<
         http::Uri,
-        Response = TokioIo<crate::otap_grpc::proxy::ProxyTcpStream>,
+        Response = TokioIo<crate::grpc::proxy::ProxyTcpStream>,
         Error = io::Error,
         Future = impl Send + 'static,
     > + Send
@@ -599,7 +602,7 @@ impl GrpcClientSettings {
                 // The connection timeout is handled by the tonic::Endpoint configuration
                 // (via .connect_timeout()), which wraps this connector service.
                 // We don't need an additional timeout here.
-                crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
+                crate::grpc::proxy::connect_tcp_stream_with_proxy_config(
                     &uri,
                     proxy.as_ref(),
                     tcp_nodelay,
@@ -683,22 +686,6 @@ impl Default for GrpcClientSettings {
             headers: HashMap::new(),
         }
     }
-}
-
-pub(crate) const fn default_concurrency_limit() -> usize {
-    256
-}
-
-pub(crate) const fn default_connect_timeout() -> Duration {
-    Duration::from_secs(3)
-}
-
-pub(crate) const fn default_tcp_nodelay() -> bool {
-    true
-}
-
-pub(crate) const fn default_tcp_keepalive() -> Option<Duration> {
-    Some(Duration::from_secs(45))
 }
 
 const fn default_initial_stream_window_size() -> Option<u32> {
@@ -1733,7 +1720,7 @@ mod tests {
         use tonic::transport::Server;
         use tonic::{Request, Response, Status};
 
-        use crate::otap_grpc::otlp::client::LogsServiceClient;
+        use crate::grpc::otlp::client::LogsServiceClient;
 
         // Verify default has no user_agent
         let defaults = GrpcClientSettings::default();
