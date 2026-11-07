@@ -14,7 +14,7 @@ tokio.workspace = true
 serde_json.workspace = true
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["bench", "core-nodes"] }
 otel-arrow-dfe-dev-nodes = { workspace = true }
-otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }

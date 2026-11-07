@@ -58,7 +58,7 @@ use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::{
     Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
+use otel_arrow_dfe_otap::grpc::otlp::typed::OTLPData;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 use std::pin::Pin;
@@ -379,7 +379,7 @@ fn bench_exporter(c: &mut Criterion) {
                         .expect("Failed to set PData receiver");
                     // start the exporter
                     let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
+                    let run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(
                                 runtime_ctrl_tx,
@@ -392,16 +392,21 @@ fn bench_exporter(c: &mut Criterion) {
                             .expect("Exporter event loop failed")
                     });
 
-                    // send signals to the exporter
-                    for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone()).await;
-                    }
+                    local
+                        .run_until(async {
+                            // send signals to the exporter
+                            for signal in otap_signals {
+                                _ = pdata_sender.send(signal.clone()).await;
+                            }
+                            _ = control_sender
+                                .send(NodeControlMsg::Shutdown {
+                                    deadline: std::time::Instant::now()
+                                        + Duration::from_millis(2000),
+                                    reason: "shutdown".to_string(),
+                                })
+                                .await;
 
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
+                            _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
                 });
@@ -453,7 +458,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
+                    let run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(
                                 runtime_ctrl_tx,
@@ -466,16 +471,21 @@ fn bench_exporter(c: &mut Criterion) {
                             .expect("Exporter event loop failed")
                     });
 
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
+                    local
+                        .run_until(async {
+                            // send signals to the exporter
+                            for otap_signal in otap_signals {
+                                _ = pdata_sender.send(otap_signal.clone()).await;
+                            }
+                            _ = control_sender
+                                .send(NodeControlMsg::Shutdown {
+                                    deadline: std::time::Instant::now()
+                                        + Duration::from_millis(2000),
+                                    reason: "shutdown".to_string(),
+                                })
+                                .await;
 
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
+                            _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
                 });
@@ -532,7 +542,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
+                    let run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(
                                 runtime_ctrl_tx,
@@ -545,15 +555,22 @@ fn bench_exporter(c: &mut Criterion) {
                             .expect("Exporter event loop failed")
                     });
 
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
+                    local
+                        .run_until(async {
+                            // send signals to the exporter
+                            for otap_signal in otap_signals {
+                                _ = pdata_sender.send(otap_signal.clone()).await;
+                            }
 
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
+                            _ = control_sender
+                                .send(NodeControlMsg::Shutdown {
+                                    deadline: std::time::Instant::now()
+                                        + Duration::from_millis(2000),
+                                    reason: "shutdown".to_string(),
+                                })
+                                .await;
+
+                            _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
                 });
