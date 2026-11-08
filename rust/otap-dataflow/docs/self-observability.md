@@ -112,7 +112,7 @@ distributions across entity instances that share the same `otel_scope_name`:
 | --- | --- | --- | --- |
 | `format` | `prometheus`, `json`, `json_compact`, `line_protocol` | `prometheus` | Selects the aggregated response format. |
 | `reset` | `true`, `false` | `false` | Resets metrics after reading when set to `true`. |
-| `attrs` | Comma-separated attribute keys, or `*` | empty | Retains the specified entity or datapoint attributes as grouping keys. When omitted, each `otel_scope_name` collapses into a single aggregate group. |
+| `attrs` | Comma-separated entity attribute keys | empty | Retains the listed entity attribute keys (for example `pipeline.id,node.id`) as grouping keys. Wildcards (`*`) and datapoint attributes (such as `signal`) are not supported. When omitted, each `otel_scope_name` collapses into a single aggregate group. |
 
 <!-- markdownlint-enable MD013 -->
 
