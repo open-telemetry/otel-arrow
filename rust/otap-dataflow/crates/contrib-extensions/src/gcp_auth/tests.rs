@@ -255,30 +255,26 @@ fn adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted() {
     )
     .expect("ADC JSON written");
 
-    temp_env::with_var(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        Some(adc_file.path()),
+    temp_env::with_vars(
+        [
+            ("GOOGLE_APPLICATION_CREDENTIALS", Some(adc_file.path())),
+            ("GCE_METADATA_HOST", None),
+        ],
         || {
             rt.block_on(async {
                 let cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
                 assert!(cfg.endpoint.is_none());
                 let auth = Auth::new(&cfg).expect("ADC auth builds");
 
-                let (tx, _rx) = watch::channel(None);
-                let ext = GcpAuthExtension::new(
-                    "test-gcp-adc-auth",
-                    auth.clone(),
-                    BackgroundProviderRefreshPolicy::periodic(TOKEN_CACHE_POLL_INTERVAL)
-                        .expect("valid refresh_policy"),
-                    tx,
-                    make_tracker(),
-                );
-
-                let token = ext
-                    .get_token()
+                let outcome_1 = auth
+                    .fetch_outcome()
                     .await
                     .expect("ADC token acquisition succeeds");
-                assert_eq!(token.expose_token(), "adc-authorized-user-token");
+                assert!(matches!(outcome_1, BackgroundFetchOutcome::Updated(_)));
+                assert_eq!(
+                    outcome_1.into_value().expose_token(),
+                    "adc-authorized-user-token"
+                );
 
                 let outcome_2 = auth
                     .fetch_outcome()
@@ -304,9 +300,11 @@ fn adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted() {
     );
 
     let missing_path = adc_file.path().with_file_name("nonexistent-adc-creds.json");
-    temp_env::with_var(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        Some(&missing_path),
+    temp_env::with_vars(
+        [
+            ("GOOGLE_APPLICATION_CREDENTIALS", Some(&missing_path)),
+            ("GCE_METADATA_HOST", None),
+        ],
         || {
             rt.block_on(async {
                 let adc_cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
@@ -439,35 +437,15 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
         assert!(stream.next().now_or_never().is_none());
     }
 
-    // Advance past 60s so google-cloud-auth wakes to refresh in the background, resume
-    // wall-clock time for the real loopback TCP exchange with wiremock, and then step
-    // periodic poll ticks in a bounded loop until the rotated token is published.
-    tokio::time::advance(Duration::from_secs(16)).await;
+    // Advance past the initial token's 300s expiry so google-cloud-auth's background refresh
+    // wakes up and TokenCache awaits the refreshed token before returning, then resume
+    // wall-clock time so the loopback HTTP response completes and publishes gcp-token-v2.
+    tokio::time::advance(Duration::from_secs(260)).await;
     tokio::time::resume();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if server.received_requests().await.unwrap().len() >= 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("google-cloud-auth background refresh request sent");
-
-    let mut rotated = None;
-    for _ in 0..100 {
-        tokio::time::pause();
-        tokio::time::advance(TOKEN_CACHE_POLL_INTERVAL).await;
-        tokio::task::yield_now().await;
-        tokio::time::resume();
-        if let Some(Some(token)) = stream.next().now_or_never() {
-            rotated = Some(token);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    let rotated = rotated.expect("rotated token published after google-cloud-auth refresh");
+    let rotated = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("rotated token published after google-cloud-auth refresh")
+        .expect("stream is open");
     assert_eq!(rotated.expose_token(), "gcp-token-v2");
 
     drop(ctrl_tx);
@@ -555,85 +533,58 @@ async fn multiple_scopes_and_empty_scopes_are_handled_correctly() {
     );
 }
 
-/// Scenario: The metadata server returns a non-Bearer `token_type`, an empty or whitespace-laden
-/// `access_token`, an HTTP 403 error, or malformed JSON, and then recovers on a subsequent call.
+/// Scenario: The metadata server returns HTTP 403, malformed JSON, a non-Bearer `token_type`, an
+/// empty or whitespace-laden `access_token`, and a non-ASCII `access_token`, and then recovers on
+/// a subsequent call.
 /// Guarantees: `Auth::fetch` rejects each invalid response with `Error::TokenAcquisition`, resets
 /// its cached credentials on error, and succeeds once the metadata server returns a valid token.
 #[tokio::test]
 async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
-    for bad_body in [
-        serde_json::json!({
-            "access_token": "gcp-mac-token",
-            "token_type": "mac",
-            "expires_in": 120,
-        }),
-        serde_json::json!({
-            "access_token": "   ",
-            "token_type": "Bearer",
-            "expires_in": 120,
-        }),
-        serde_json::json!({
-            "access_token": "tok with space",
-            "token_type": "Bearer",
-            "expires_in": 120,
-        }),
-    ] {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(
-                "/computeMetadata/v1/instance/service-accounts/default/token",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(bad_body))
-            .mount(&server)
-            .await;
-
-        let cfg = config_from_json(serde_json::json!({ "endpoint": server.uri() })).expect("valid");
-        let auth = Auth::new(&cfg).expect("auth builds");
-        let bad_err = auth
-            .fetch()
-            .await
-            .expect_err("invalid token_type or access_token must be rejected");
-        assert!(
-            bad_err
-                .to_string()
-                .contains("invalid Bearer Authorization header from google-cloud-auth"),
-            "unexpected error for bad token body: {bad_err}"
-        );
-    }
-
     let recovery_server = MockServer::start().await;
+    let token_path = "/computeMetadata/v1/instance/service-accounts/default/token";
     Mock::given(method("GET"))
-        .and(path(
-            "/computeMetadata/v1/instance/service-accounts/default/token",
-        ))
+        .and(path(token_path))
         .respond_with(ResponseTemplate::new(403).set_body_string("permission denied"))
         .up_to_n_times(1)
         .mount(&recovery_server)
         .await;
     Mock::given(method("GET"))
-        .and(path(
-            "/computeMetadata/v1/instance/service-accounts/default/token",
-        ))
+        .and(path(token_path))
         .respond_with(ResponseTemplate::new(200).set_body_string("{not-json"))
         .up_to_n_times(1)
         .mount(&recovery_server)
         .await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/computeMetadata/v1/instance/service-accounts/default/token",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+    for bad_body in [
+        serde_json::json!({
             "access_token": "gcp-mac-token",
             "token_type": "mac",
             "expires_in": 3600,
-        })))
-        .up_to_n_times(1)
-        .mount(&recovery_server)
-        .await;
+        }),
+        serde_json::json!({
+            "access_token": "   ",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }),
+        serde_json::json!({
+            "access_token": "tok with space",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }),
+        serde_json::json!({
+            "access_token": "tok-\u{00e9}",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(token_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(bad_body))
+            .up_to_n_times(1)
+            .mount(&recovery_server)
+            .await;
+    }
     Mock::given(method("GET"))
-        .and(path(
-            "/computeMetadata/v1/instance/service-accounts/default/token",
-        ))
+        .and(path(token_path))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "recovered-token",
             "token_type": "Bearer",
@@ -661,16 +612,18 @@ async fn invalid_token_responses_and_http_errors_are_rejected_and_recover() {
         json_err.to_string().contains("failed to fetch"),
         "expected malformed JSON acquisition error, got: {json_err}"
     );
-    let mac_err = auth
-        .fetch()
-        .await
-        .expect_err("non-Bearer token_type must fail and reset cached TokenCache");
-    assert!(
-        mac_err
-            .to_string()
-            .contains("invalid Bearer Authorization header"),
-        "expected invalid Bearer error, got: {mac_err}"
-    );
+    for _ in 0..4 {
+        let bad_err = auth
+            .fetch()
+            .await
+            .expect_err("invalid token_type or access_token must fail and reset TokenCache");
+        assert!(
+            bad_err
+                .to_string()
+                .contains("invalid Bearer Authorization header from google-cloud-auth"),
+            "expected invalid Bearer error, got: {bad_err}"
+        );
+    }
 
     let recovered = auth
         .fetch()
@@ -796,6 +749,15 @@ fn create_builds_a_shared_active_bundle() {
         .err()
         .expect("empty scope must fail Auth::new");
     assert!(scope_err.to_string().contains("`scopes`"));
+
+    let zero_timeout_cfg = Config {
+        timeout: Duration::ZERO,
+        ..Config::default()
+    };
+    let timeout_err = Auth::new(&zero_timeout_cfg)
+        .err()
+        .expect("zero timeout must fail Auth::new");
+    assert!(timeout_err.to_string().contains("`timeout`"));
 
     let (ext_ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
     let name: otel_arrow_dfe_config::ExtensionId = "gcp-auth".into();
