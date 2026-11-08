@@ -38,10 +38,10 @@ configuration, browse to `http://127.0.0.1:8080/`.
   zero-valued instruments, pause live polling to freeze the buffered time
   window, and scrub across historical samples with synchronized crosshair hover
   across charts.
-- Engine summary cards display process resident memory `memory.rss`, process
-  CPU utilization `cpu.utilization`, engine uptime `uptime`, active pipeline
-  groups, active pipelines, and active worker cores from the `engine` and
-  `controller.runtime_host` metric sets.
+- Engine summary cards read `memory.rss`, `memory.commit`, and
+  `cpu.utilization` from the `engine` metric set, derive displayed uptime from
+  the maximum observed `pipeline.uptime`, and count active pipeline groups,
+  pipelines, and worker cores from observed metric-set attributes.
 - Pipeline and runtime cards display per-core pipeline memory usage, CPU time,
   context switches, and Tokio worker thread statistics from the `pipeline` and
   `tokio.runtime` metric sets.
