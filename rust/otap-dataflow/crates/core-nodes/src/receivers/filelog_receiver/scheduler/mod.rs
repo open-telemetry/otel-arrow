@@ -159,6 +159,7 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     ready: VecDeque<usize>,
     waiting: VecDeque<usize>,
     blocked: VecDeque<usize>,
+    probe_deferred: VecDeque<usize>,
     reactivate: usize,
     deadlines: BTreeSet<(Instant, usize)>,
     resident: BTreeSet<(u64, usize)>,
@@ -326,6 +327,12 @@ impl<I: ReaderIo> Scheduler<I> {
         {
             return Err(Fault::SourceContract);
         }
+        if r.validation.is_some()
+            && (r.evidence.applied_offset != record.committed_offset
+                || r.evidence.applied_guard != record.committed_frontier_guard)
+        {
+            r.validation = Some(Validation::default());
+        }
         r.evidence.applied_offset = record.committed_offset;
         r.evidence.applied_guard = record.committed_frontier_guard;
         Ok(())
@@ -355,6 +362,7 @@ impl<I: ReaderIo> Scheduler<I> {
             ready: VecDeque::with_capacity(limits.readers),
             waiting: VecDeque::with_capacity(limits.readers),
             blocked: VecDeque::with_capacity(limits.readers),
+            probe_deferred: VecDeque::with_capacity(limits.readers),
             readers: Vec::with_capacity(limits.readers),
             io,
             limits,
@@ -474,7 +482,14 @@ impl<I: ReaderIo> Scheduler<I> {
             return turn;
         }
         while turn.steps < self.limits.steps && self.selecting.is_none() && !self.probe_ready {
-            if self.reactivate != 0 {
+            if self.probe_waiter.is_none() && !self.probe_deferred.is_empty() {
+                let id = self
+                    .probe_deferred
+                    .pop_front()
+                    .expect("deferred probe reader");
+                self.ready.push_back(id);
+                turn.steps += 1;
+            } else if self.reactivate != 0 {
                 self.reactivate -= 1;
                 if let Some(id) = self.blocked.pop_front() {
                     self.ready.push_back(id);
@@ -562,7 +577,11 @@ impl<I: ReaderIo> Scheduler<I> {
             }
             Reason::Capacity => self.waiting.push_back(id),
             Reason::Descriptors => self.blocked.push_back(id),
-            Reason::Probe => {}
+            Reason::Probe => {
+                if self.probe_waiter.as_ref().is_some_and(|p| p.0 != id) {
+                    self.probe_deferred.push_back(id);
+                }
+            }
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {
                 reader.halted = true;
             }
@@ -598,7 +617,7 @@ impl<I: ReaderIo> Scheduler<I> {
             // Only the registered waiter may consume its vacant resident slot
             // and permit. Resident readers can still do useful work meanwhile.
             if self.probe_waiter.as_ref().is_some_and(|p| p.0 != id) {
-                return Ok(Reason::Descriptors);
+                return Ok(Reason::Probe);
             }
         }
         if reader.partial.is_none() && !self.grants.contains(&id) {
@@ -657,6 +676,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     .request_reader(wake.clone())
                     .ok_or(Fault::SourceContract)?
             };
+            request.register_waker(wake);
             let result = {
                 let Some(_reservation) = request.try_reserve() else {
                     self.probe_waiter = Some((id, request));
@@ -935,7 +955,7 @@ impl<I: ReaderIo> Scheduler<I> {
             AccessFailure::Terminal(error) => Ok(Reason::Source(error)),
             AccessFailure::Environmental(error) => {
                 reader.failures = reader.failures.saturating_add(1);
-                let global = matches!(error.raw_os_error(), Some(23 | 24)); // ENFILE / EMFILE on Linux.
+                let global = matches!(error.raw_os_error(), Some(libc::ENFILE | libc::EMFILE));
                 let count = if global {
                     self.open_retry.map_or(1, |(_, n)| n.saturating_add(1))
                 } else {

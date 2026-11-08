@@ -1220,7 +1220,7 @@ fn pending_empty_input_replay_spends_the_processing_budget() {
 }
 
 /// Scenario: A probe waiter is notified with several other ready readers and a vacant resident slot.
-/// Guarantees: Only that waiter consumes the handoff, and probe notification does not reactivate descriptor waiters.
+/// Guarantees: Only that waiter consumes the handoff, while probe-deferred peers remain queued until completion.
 #[test]
 fn notified_probe_belongs_to_its_waiting_reader() {
     let mut s = scheduler(
@@ -1237,18 +1237,15 @@ fn notified_probe_belongs_to_its_waiting_reader() {
     let now = Instant::now();
     assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
     assert_eq!(s.slots, 0);
-    assert!(matches!(
-        tick(&mut s, &mut sink, now).reason,
-        Reason::Descriptors
-    ));
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
     assert_eq!(s.slots, 0);
-    assert_eq!(s.blocked.len(), 1);
+    assert_eq!(s.probe_deferred.len(), 1);
     drop(held);
     s.probe_available();
     let t = tick(&mut s, &mut sink, now);
     assert_eq!(t.key, Some(ReaderKey(0)));
     assert_eq!(sink.frames[0].key, ReaderKey(0));
-    assert_eq!(s.blocked.len(), 1);
+    assert_eq!(s.probe_deferred.len(), 1);
     assert!(budget.try_reserve().is_some());
 }
 
@@ -1294,29 +1291,25 @@ fn sink_stop_and_terminal_fault_release_other_readers_probe_request() {
     }
 }
 
-/// Scenario: Cancellation is first observed while draining a resource notification.
-/// Guarantees: It releases a separately pending probe request on that return, without needing another turn.
+/// Scenario: Cancellation arrives after readers defer to another reader's probe request.
+/// Guarantees: Clearing the request preserves all deferred readers for bounded reactivation.
 #[test]
-fn cancellation_during_reactivation_releases_probe_request() {
-    let mut s = scheduler(&[b"a\n", b"b\n"], 8, 32, 2, 1, FramingConfig::Line(line()));
+fn cancellation_reactivates_probe_deferred_readers() {
+    let mut s = scheduler(&[b"", b"b\n"], 8, 2, 2, 1, FramingConfig::Line(line()));
     let budget = Arc::clone(&s.probe_budget);
     let held = budget.try_reserve().unwrap();
     let mut sink = Sink::default();
     let now = Instant::now();
     assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
-    assert!(matches!(
-        tick(&mut s, &mut sink, now).reason,
-        Reason::Descriptors
-    ));
-    drop(held);
-    s.reactivate = s.blocked.len();
-    let mut checks = 0;
-    let t = s.turn(now, permission(), &mut sink, Waker::noop(), || {
-        checks += 1;
-        checks == 2
-    });
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
+    assert_eq!(s.probe_deferred.len(), 1);
+    let t = s.turn(now, permission(), &mut sink, Waker::noop(), || true);
     assert!(matches!(t.reason, Reason::Cancelled));
-    assert!(budget.try_reserve().is_some());
+    assert!(s.probe_waiter.is_none());
+    drop(held);
+    frames(&mut s, &mut sink, 1, now);
+    assert_eq!(body(&sink.frames[0]), b"b");
+    assert!(s.probe_deferred.is_empty());
 }
 
 /// Scenario: A nonresident file cannot evict a pinned resident that has released its empty EOF slot.
@@ -1333,6 +1326,9 @@ fn descriptor_wait_does_not_pin_empty_partial_capacity() {
         Reason::Descriptors
     ));
     assert_eq!(s.slots, 0);
+    s.probe_available();
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Idle));
+    assert_eq!(s.blocked.len(), 1);
     s.io.files[0].bytes.extend_from_slice(b"new\n");
     frames(&mut s, &mut sink, 1, now + Duration::from_millis(250));
     assert_eq!(body(&sink.frames[0]), b"new");
@@ -1696,4 +1692,166 @@ fn contended_minimum_budget_opens_reach_source_reads() {
         }
     }
     panic!("both readers must emit under sustained contention");
+}
+
+/// Scenario: An empty or unterminated reader completes a probe while several peers are deferred.
+/// Guarantees: Every deferred reader progresses without batch notifications, even with two-step turns.
+#[test]
+fn completed_probe_reactivates_deferred_readers_without_batch_progress() {
+    for first in [b"".as_slice(), b"unfinished".as_slice()] {
+        for steps in [2, 32] {
+            let mut s = scheduler(
+                &[first, b"b\n", b"c\n", b"d\n"],
+                16,
+                steps,
+                4,
+                4,
+                FramingConfig::Line(line()),
+            );
+            let budget = Arc::clone(&s.probe_budget);
+            let held = budget.try_reserve().unwrap();
+            let now = Instant::now();
+            let mut sink = Sink::default();
+            for _ in 0..4 {
+                assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Probe));
+            }
+            assert_eq!(s.probe_deferred.len(), 3);
+            assert!(s.blocked.is_empty());
+            drop(held);
+            s.probe_available();
+            assert_eq!(tick(&mut s, &mut sink, now).key, Some(ReaderKey(0)));
+            frames(&mut s, &mut sink, 3, now);
+            assert_eq!(
+                sink.frames.iter().map(|o| o.key).collect::<BTreeSet<_>>(),
+                BTreeSet::from([ReaderKey(1), ReaderKey(2), ReaderKey(3)])
+            );
+            assert!(s.probe_deferred.is_empty());
+        }
+    }
+}
+
+/// Scenario: Line and multiline configurations use exactly the reported partial-state minimum.
+/// Guarantees: Every accepted boundary constructs a scheduler; one byte less is rejected by configuration.
+#[test]
+fn accepted_partial_state_minimum_constructs_scheduler() {
+    use super::super::config::Config;
+    for framing in [
+        "",
+        "framing: {multiline: {line_start_pattern: '^START'}}",
+        "framing: {multiline: {line_end_pattern: 'END$'}}",
+    ] {
+        for encoding in ["utf-8", "utf-16le", "raw"] {
+            let yaml = format!("include: ['/logs/*.log']\nencoding: {encoding}\n{framing}");
+            let compile = |budget| {
+                let mut config: Config = serde_yaml::from_str(&yaml).unwrap();
+                if let Some(budget) = budget {
+                    config.limits.max_partial_state_bytes = budget;
+                }
+                config.compile("g", "p", "filelog", std::path::Path::new("/"))
+            };
+            let floor = compile(None)
+                .unwrap()
+                .inputs()
+                .resources()
+                .partial_state_floor_bytes;
+            let inputs = compile(Some(floor)).unwrap();
+            assert_eq!(
+                compile(Some(floor - 1)).unwrap_err().setting,
+                "limits.max_partial_state_bytes"
+            );
+            let io = scheduler(&[b""], 8, 2, 1, 1, FramingConfig::Line(line())).io;
+            let s = Scheduler::from_inputs(
+                io,
+                inputs.inputs(),
+                2,
+                Arc::new(ProbeBudget::default()),
+                Instant::now(),
+            )
+            .unwrap();
+            assert_eq!(s.slot_bytes as u64, floor);
+            assert_eq!(s.limits.partial_bytes / s.slot_bytes, 1);
+        }
+    }
+}
+
+/// Scenario: Applied evidence changes after part or all of its old guard has been revalidated.
+/// Guarantees: Validation restarts against the latest frontier, and repeated identical observations preserve progress.
+#[test]
+fn applied_evidence_changes_restart_inflight_validation() {
+    for advance in [false, true] {
+        for bytes_checked in [8, 64] {
+            let source: Vec<u8> = (0..192).map(|n| b'A' + (n % 26) as u8).collect();
+            let mut s = scheduler(&[&source], 8, 2, 1, 1, FramingConfig::Line(line()));
+            let now = Instant::now();
+            let mut sink = Sink::default();
+            let reader = s.readers[0].as_mut().unwrap();
+            reader.window.append(&source[..160]).unwrap();
+            reader.record_start = 160;
+            reader.initial = false;
+            reader.evidence.applied_offset = 96;
+            let correct_old = CommittedFrontierGuard::compute(96, &source[32..96]).unwrap();
+            // Begin with valid applied evidence at the earlier frontier.
+            reader.evidence.applied_guard = correct_old;
+            let old = cp::SnapshotRecord {
+                file_id: reader.file_id,
+                file_epoch: reader.epoch,
+                committed_offset: 96,
+                committed_frontier_guard: correct_old,
+                fingerprint: Vec::new(),
+                ignored_header_bytes: 0,
+                locator: cp::Locator::PosixDevIno { dev: 1, ino: 1 },
+                framing_profile_version: 1,
+                framing_profile_digest: [0; 32],
+                framing_resume: cp::FramingResume::Clean,
+                lifecycle_state: cp::LifecycleState::Active,
+                quarantine_evidence: None,
+                last_seen_time_unix_nano: 0,
+                advisory_path: cp::AdvisoryPath::unavailable(),
+            };
+            for _ in 0..32 {
+                let turn = tick(&mut s, &mut sink, now);
+                assert!(!matches!(turn.reason, Reason::Transition(_)), "{turn:?}");
+                if s.io.calls.borrow().last() == Some(&(0, 32 + bytes_checked - 8, 8)) {
+                    break;
+                }
+            }
+            assert_eq!(
+                s.io.calls.borrow().last(),
+                Some(&(0, 32 + bytes_checked - 8, 8))
+            );
+            let mut updated = old;
+            if advance {
+                updated.committed_offset = 128;
+                updated.committed_frontier_guard =
+                    CommittedFrontierGuard::compute(128, &source[64..128]).unwrap();
+            } else {
+                // A changed guard at the same offset must also be checked, even
+                // if the old guard phase had already finished.
+                updated.committed_frontier_guard =
+                    CommittedFrontierGuard::compute(96, &[b'X'; 64]).unwrap();
+            }
+            s.observe_applied(ReaderKey(0), &updated).unwrap();
+            let mut outcome = None;
+            for _ in 0..64 {
+                // Duplicate notifications must not restart the cursor forever.
+                s.observe_applied(ReaderKey(0), &updated).unwrap();
+                let turn = tick(&mut s, &mut sink, now);
+                if matches!(turn.reason, Reason::Transition(_))
+                    || s.readers[0].as_ref().unwrap().validation.is_none()
+                {
+                    outcome = Some(turn.reason);
+                    break;
+                }
+            }
+            if advance {
+                assert!(outcome.is_some_and(|r| !matches!(r, Reason::Transition(_))));
+                assert!(s.io.calls.borrow().contains(&(0, 64, 8)));
+            } else {
+                assert!(matches!(
+                    outcome,
+                    Some(Reason::Transition(Transition::Changed))
+                ));
+            }
+        }
+    }
 }

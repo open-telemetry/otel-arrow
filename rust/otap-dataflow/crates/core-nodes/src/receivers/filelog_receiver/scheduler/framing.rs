@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+pub(crate) use super::super::partial_state::Partial;
+use super::super::partial_state::{self, Framing};
 use super::*;
 use crate::receivers::filelog_receiver::{
     framer::{LineConfig, LineError, LineFrame, LineFramer, LineStart},
@@ -16,15 +18,14 @@ pub(crate) enum FramingConfig {
 
 impl FramingConfig {
     fn history_bytes(&self) -> Result<usize, Fault> {
-        // Only multiline can retain a whole lookahead line beyond the emitted
-        // boundary. UTF-16 source uses at most two bytes per decoded line byte.
-        let line = match self {
+        partial_state::history_bytes(self.lookahead_bytes()).ok_or(Fault::Configuration)
+    }
+
+    fn lookahead_bytes(&self) -> usize {
+        match self {
             Self::Line(_) => 0,
             Self::Multiline(c, _) => c.line.max_line_bytes,
-        };
-        line.checked_mul(2)
-            .and_then(|n| n.checked_add(136))
-            .ok_or(Fault::Configuration)
+        }
     }
 
     pub(crate) fn slot_bytes(&self, read_bytes: usize) -> Result<usize, Fault> {
@@ -32,11 +33,7 @@ impl FramingConfig {
             Self::Line(c) => c.payload_peak_bytes().map_err(|_| Fault::Configuration)?,
             Self::Multiline(c, _) => c.payload_peak_bytes().map_err(|_| Fault::Configuration)?,
         };
-        payload
-            .checked_add(read_bytes)
-            .and_then(|n| n.checked_add(self.history_bytes().ok()?))
-            .and_then(|n| n.checked_add(64 + size_of::<Partial>()))
-            .filter(|n| *n <= isize::MAX as usize)
+        partial_state::slot_bytes(payload, read_bytes, self.lookahead_bytes())
             .ok_or(Fault::Configuration)
     }
 
@@ -116,14 +113,6 @@ impl FramingConfig {
     }
 }
 
-// Inline storage is included in every conservative slot, avoiding a separate
-// allocation and pointer chase for the framer on each capacity admission.
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum Framing {
-    Line(LineFramer),
-    Multiline(MultilineFramer),
-}
-
 #[derive(Debug)]
 pub(crate) enum Frame {
     Line(LineFrame),
@@ -168,16 +157,6 @@ pub(crate) struct Step {
     pub advanced: bool,
     pub frame: Option<Frame>,
     pub error: Option<FramingFailure>,
-}
-
-pub(crate) struct Partial {
-    framer: Framing,
-    pub input: Vec<u8>,
-    pub cursor: usize,
-    history: VecDeque<u8>,
-    history_end: u64,
-    history_limit: usize,
-    continuing: bool,
 }
 
 impl Partial {

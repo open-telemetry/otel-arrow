@@ -40,11 +40,12 @@ invalidate absence conclusions from an otherwise complete pass.
   interrupted by the cancellation callback.
 - Share one `ProbeBudget` with reader reopens. It reserves both temporary source
   descriptor slots together. Registered reader and discovery demand alternate at
-  release. Discovery waits for notification when a reader owns the handoff;
-  it samples cancellation on notifications and a 10 ms park timeout. This checks
-  cancellation, not permit fairness. Unregistered external pressure still returns
-  `ProbeBusy` and makes the pass incomplete. Identity preparation uses the
-  opportunistic nonblocking acquisition and cannot steal a registered handoff.
+  release. Discovery waits for notification for at most 10 ms per handoff, checking
+  cancellation after wakes. Expiry removes its pending demand and reports
+  `ProbeBusy`, making the pass incomplete; the worker retries on a later pass.
+  Resident readers continue independently. Unregistered external pressure returns
+  `ProbeBusy` immediately. Identity preparation uses opportunistic nonblocking
+  acquisition and cannot steal a registered handoff.
 - Consume every batch before acting on the completion result. Overlapping roots
   or aliases can produce duplicates; reconciliation deduplicates its bounded
   tracked and pending populations.

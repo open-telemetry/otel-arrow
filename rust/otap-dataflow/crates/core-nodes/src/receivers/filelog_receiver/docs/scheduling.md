@@ -7,7 +7,11 @@ their leases independently of open file handles.
 Reading and framing have separate turn budgets, including buffered replay.
 Readers share one source buffer and reserve capacity before framing. Eviction
 preserves unfinished state; reopening validates source continuity before work
-resumes. Unresolved batch deltas and pinned rotation handles prevent eviction.
+resumes. Unresolved batch deltas prevent eviction. Rotation pin controls and
+reader retirement remain receiver-integration prerequisites: retirement must
+resolve retained output and authorize partial-state disposal before releasing
+the lease and capacity. Until those controls exist, halted readers retain bounded
+capacity, and receiver integration must remain disabled.
 
 The caller supplies a policy-checked source opener, processing permission,
 cancellation and [batch sink](../scheduler/batch.rs). Sink preflight must account
@@ -25,6 +29,9 @@ when no reader is ready or source work is paused. Combine it with eligible
 reader and control deadlines, and service expiry without waiting for a source
 event. The scheduler's reader deadlines alone do not provide a batch timer.
 Concrete batch timing and registration are implemented with the batch builder.
+Its [scheduler hooks][batch-hooks] also request a flush when descriptor eviction
+finds no eligible victim. Receiver integration depends on that hook: protected
+open-batch progress must be flushed and resolved before retrying eviction.
 
 `unresolved` covers open, retained and carry-over progress for the reader/epoch.
 Sealing, sending or Ack alone does not release the descriptor-eviction veto.
@@ -36,10 +43,13 @@ permission checks still govern whether source work can resume.
 Route probe-release notifications to `probe_available` and descriptor, pin or
 batch-delta changes to `resources_changed`. After authorized checkpoint
 application, `observe_applied` refreshes cached evidence from the identity
-owner's record. The scheduler does not authorize delivery, checkpoint or
-lifecycle transitions.
+owner's record and restarts in-flight validation when that evidence changes.
+Probe-deferred readers reactivate within processing budgets when the request
+completes or clears; protected-descriptor waiters need their own resource event.
+The scheduler does not authorize delivery, checkpoint or lifecycle transitions.
 
 See the [behavioral specification][spec] for scheduling and resource rules;
 implementation details and tests live beside the code.
 
 [spec]: ../../../../../../docs/filelog-receiver-phase1-spec.md#reader-scheduling-and-descriptor-resources
+[batch-hooks]: https://github.com/open-telemetry/otel-arrow/pull/4648

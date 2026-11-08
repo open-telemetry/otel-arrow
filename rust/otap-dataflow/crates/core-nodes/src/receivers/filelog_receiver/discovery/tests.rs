@@ -2662,3 +2662,41 @@ fn fair_probe_wait_observes_cancellation() {
     drop(reader);
     assert!(budget.try_reserve().is_some());
 }
+
+/// Scenario: A reader retains its registered probe permit throughout a real discovery pass.
+/// Guarantees: Discovery returns incomplete ProbeBusy coverage without cancellation or leaked demand.
+#[test]
+fn stalled_reader_handoff_returns_incomplete_pass() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    fs::write(dir.path().join("log"), b"data").unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+    let held = reader.try_reserve().unwrap();
+    // The real scanner uses thread parking. Deterministic expiry is covered in
+    // budget tests; this generous cancellation deadline only guards a regression.
+    let started = Instant::now();
+    let mut reasons = Vec::new();
+    let end = scanner(dir.path(), false).scan(
+        1,
+        &budget,
+        || started.elapsed() >= Duration::from_secs(30),
+        |batch| {
+            reasons.extend(batch.iter().filter_map(|o| o.reason));
+            true
+        },
+    );
+    assert!(!end.complete);
+    assert!(!end.cancelled, "discovery waited until the failure guard");
+    assert!(reasons.contains(&ScanReason::ProbeBusy));
+    assert!(!budget.discovery_waiting());
+    drop(held);
+    assert!(reader.try_reserve().is_some());
+    drop(reader);
+    let (end, observations) = run(&mut scanner(dir.path(), false));
+    assert!(end.complete);
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].3, b"data");
+}

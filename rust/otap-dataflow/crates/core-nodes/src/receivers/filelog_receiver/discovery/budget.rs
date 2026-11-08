@@ -5,7 +5,21 @@ use futures::task::AtomicWaker;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::task::{Wake, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const DISCOVERY_HANDOFF_WAIT: Duration = Duration::from_millis(10);
+
+struct ThreadWake(std::thread::Thread);
+impl Wake for ThreadWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+thread_local! {
+    // Initialized on the worker that actually waits, not on the constructing thread.
+    static DISCOVERY_WAKE: Waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+}
 
 const OCCUPIED: u8 = 1;
 const READER: u8 = 2;
@@ -119,12 +133,28 @@ impl ProbeBudget {
 
     /// Discovery-worker acquisition. A registered reader receives its bounded
     /// turn, then discovery owns the next release before another reader can win.
-    /// Waits for release notification, not a yield/retry race. The 10 ms timeout
-    /// only samples the existing cancellation callback; permit fairness is
-    /// independent of time. Unregistered external pressure still reports Busy.
+    /// Waits at most 10 ms for notification, then reports Busy so discovery can
+    /// return incomplete coverage. Unregistered external pressure reports Busy
+    /// immediately. Permit fairness within the wait is independent of time.
     pub(super) fn reserve_discovery(
         &self,
         cancelled: &mut impl FnMut() -> bool,
+    ) -> Option<ProbeReservation<'_>> {
+        let started = Instant::now();
+        self.reserve_discovery_with_wait(cancelled, || {
+            let remaining = DISCOVERY_HANDOFF_WAIT.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return false;
+            }
+            std::thread::park_timeout(remaining);
+            true
+        })
+    }
+
+    fn reserve_discovery_with_wait(
+        &self,
+        cancelled: &mut impl FnMut() -> bool,
+        mut wait: impl FnMut() -> bool,
     ) -> Option<ProbeReservation<'_>> {
         if cancelled() {
             return None;
@@ -138,13 +168,7 @@ impl ProbeBudget {
         if contended & READER == 0 {
             return None;
         }
-        struct ThreadWake(std::thread::Thread);
-        impl Wake for ThreadWake {
-            fn wake(self: Arc<Self>) {
-                self.0.unpark();
-            }
-        }
-        let wake = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+        let wake = DISCOVERY_WAKE.with(Clone::clone);
         if !self.register(DISCOVERY, &wake) {
             return None;
         }
@@ -162,12 +186,16 @@ impl ProbeBudget {
             if cancelled() {
                 return None;
             }
+            // AtomicWaker consumes a wake; refresh before checking availability.
+            self.discovery_wake.register(&wake);
             if let Some(mut permit) = self.acquire(DISCOVERY) {
                 demand.1 = false;
                 permit.owns_request = true;
                 return Some(permit);
             }
-            std::thread::park_timeout(Duration::from_millis(10));
+            if !wait() {
+                return None;
+            }
         }
     }
 }
@@ -178,6 +206,11 @@ pub struct ReaderProbeRequest {
     budget: Arc<ProbeBudget>,
 }
 impl ReaderProbeRequest {
+    /// Refresh the read worker's notification target before checking availability.
+    pub fn register_waker(&self, wake: &Waker) {
+        self.budget.reader_wake.register(wake);
+    }
+
     /// Claims this worker's turn without blocking.
     #[must_use]
     pub fn try_reserve(&self) -> Option<ProbeReservation<'_>> {
@@ -236,5 +269,51 @@ impl Drop for ProbeReservation<'_> {
 impl ProbeBudget {
     pub(super) fn discovery_waiting(&self) -> bool {
         self.state.load(Ordering::Acquire) & DISCOVERY != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: A reader keeps its permit while discovery receives spurious wakes until expiry.
+    /// Guarantees: The bounded wait returns Busy and removes discovery demand without stealing the reader's turn.
+    #[test]
+    fn expired_handoff_clears_discovery_demand() {
+        let budget = Arc::new(ProbeBudget::default());
+        let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+        let held = reader.try_reserve().unwrap();
+        let mut waits = 0;
+        let result = budget.reserve_discovery_with_wait(&mut || false, || {
+            assert!(budget.discovery_waiting());
+            waits += 1;
+            waits < 3
+        });
+        assert!(result.is_none());
+        assert_eq!(waits, 3);
+        assert!(!budget.discovery_waiting());
+        drop(held);
+        assert!(reader.try_reserve().is_some());
+        drop(reader);
+        assert!(budget.try_reserve().is_some());
+    }
+
+    /// Scenario: A reader releases the probe during discovery's notification wait.
+    /// Guarantees: Discovery acquires its handoff before expiry and unregisters on permit release.
+    #[test]
+    fn release_during_handoff_wait_acquires_permit() {
+        let budget = Arc::new(ProbeBudget::default());
+        let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+        let mut held = Some(reader.try_reserve().unwrap());
+        let permit = budget
+            .reserve_discovery_with_wait(&mut || false, || {
+                drop(held.take().expect("only one notification wait"));
+                true
+            })
+            .unwrap();
+        assert!(reader.try_reserve().is_none());
+        drop(permit);
+        assert!(!budget.discovery_waiting());
+        assert!(reader.try_reserve().is_some());
     }
 }

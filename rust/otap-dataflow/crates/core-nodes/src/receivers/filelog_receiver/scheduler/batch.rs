@@ -39,6 +39,8 @@ pub(crate) struct Rejected {
 /// Composition must service the concrete sink's flush deadline even when no
 /// reader is ready or source work is paused. Reader deadlines alone are not a
 /// batch timer; deadline polling must not depend on another source event.
+/// The batch-builder integration must also flush when descriptor eviction finds
+/// no eligible victim, then resolve progress before retrying protected readers.
 pub(crate) trait BatchSink {
     fn preflight(&mut self, key: ReaderKey, epoch: u32) -> Flow;
     /// Both success values consume ownership. Stop retains at most one carry-over
