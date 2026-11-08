@@ -186,26 +186,31 @@ policies:
   telemetry:
     pipeline_metrics: true
     tokio_metrics: true
-    runtime_metrics: normal
+    runtime_metrics: basic
 ```
 
-The `runtime_metrics` level controls channel, node boundary, and latency
-distribution instruments:
+The `runtime_metrics` level (default: `basic`) controls channel transport, node
+boundary outcomes, and shared control-plane instrumentation:
 
 <!-- markdownlint-disable MD013 -->
 
 | Level | Collected runtime instrumentation |
 | --- | --- |
-| `none` | Disables channel metrics, node boundary metrics, and shared receiver or exporter latency distributions. Component-specific operational counters and engine or pipeline gauges remain active. |
-| `basic` | Enables channel message counters, channel queue depth and capacity gauges, node boundary message counters, and min/max/sum/count `Mmsc` duration summaries. |
-| `normal` | Includes `basic` plus per-signal item counts, payload byte counters, and normal-resolution exponential histograms using `HistogramNormal` at scale 3 with 32 buckets. This is the default level. |
-| `detailed` | Includes `normal` with high-resolution exponential histograms using `HistogramDetailed` at scale 5 with 160 buckets. |
+| `none` | Disables channel transport metrics, node boundary metrics, and control-plane metrics (`pipeline.completion`, `pipeline.runtime_control`). Component-specific metrics and engine, pipeline, or Tokio gauges remain active. |
+| `basic` | Default level. Enables channel transport metrics (`channel.sender`, `channel.receiver`) and control-plane state gauges (`pending_sends.buffered`, `drain.active`, `drain.pending_receivers`, `timers.active`, `telemetry_timers.active`). No node boundary metrics are enabled by default. |
+| `normal` | Includes `basic` plus node boundary message counters (`node.input.messages`, `node.output.messages`, `receiver.received.messages`, `exporter.attempted.messages`), `node.completion_emission` counters, and control-plane message/phase counters. |
+| `detailed` | Includes `normal` plus per-signal item counts (`items`), logical and payload byte sizes (`size`, `payload.size`), node completion and local durations (`node.completion.duration`, `receiver.processing.duration`, `processor.compute.duration`, `exporter.attempted.duration`), drain duration summaries, and completion unwind depth (`unwind.depth`). |
 
 <!-- markdownlint-enable MD013 -->
 
-Individual node telemetry dimensions such as `messages`, `item_counts`, `size`,
-`completion_duration`, `duration`, and `duration_distribution`, along with
-processor range `flow_metrics`, can be overridden selectively. See
+Individual node telemetry dimensions (`messages`, `item_counts`, `size`,
+`completion_duration`, and `duration`) can be enabled per node at any
+`runtime_metrics` level. Histogram aggregation fidelity for supported duration
+instruments is controlled separately by `duration_distribution` (default:
+`normal`, using `HistogramNormal` at scale 3 with 32 buckets; `basic` uses
+bucketless `Mmsc` summaries; `detailed` uses `HistogramDetailed` at scale 5 with
+160 buckets). Processor range `flow_metrics` are configured separately under
+`policies.telemetry.flow_metrics`. See
 [Node and flow metrics](node-and-flow-metrics.md) for per-node and flow
 configuration details.
 
