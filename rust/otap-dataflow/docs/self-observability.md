@@ -149,7 +149,7 @@ engine:
       level: info
       providers:
         engine: its
-        admin: console_async
+        admin: console_direct
       tap:
         enabled: true
         max_entries: 10000
