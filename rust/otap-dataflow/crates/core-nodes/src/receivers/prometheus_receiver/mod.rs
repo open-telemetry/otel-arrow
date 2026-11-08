@@ -201,6 +201,27 @@ struct ReceiverTelemetry {
     pull: ReceiverPullMetrics,
 }
 
+impl ReceiverTelemetry {
+    fn record_scrape_failure(&mut self, started: StdInstant) {
+        if let Some(metrics) = self.metrics.as_mut() {
+            metrics.scrapes_failed.add(1);
+            metrics.scrape_duration_ns.record(elapsed_nanos(started));
+        }
+    }
+}
+
+struct ActiveScrapeCancel {
+    pull: ReceiverPullCancellation,
+    started: StdInstant,
+}
+
+impl ActiveScrapeCancel {
+    fn cancel(&self, telemetry: &mut ReceiverTelemetry) {
+        self.pull.cancel();
+        telemetry.record_scrape_failure(self.started);
+    }
+}
+
 /// Prometheus scrape receiver.
 pub struct PrometheusReceiver {
     config: Config,
@@ -625,20 +646,14 @@ impl TargetScraper {
         })
     }
 
-    async fn scrape_target(
+    async fn fetch_and_decode_target(
         &mut self,
         target_url: &Url,
         ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
         effect_handler: &local::EffectHandler<OtapPdata>,
         telemetry: &mut ReceiverTelemetry,
-    ) -> ControlFlow<Result<TerminalState, Error>> {
-        let started = StdInstant::now();
-        if let Some(metrics) = telemetry.metrics.as_mut() {
-            metrics.scrapes_started.add(1);
-        }
-        let pull_attempt = telemetry.pull.processing();
-        let pull_cancel = pull_attempt.cancellation_handle();
-
+        active_cancel: &ActiveScrapeCancel,
+    ) -> ControlFlow<Result<TerminalState, Error>, Result<(Vec<OtapPdata>, u64), ()>> {
         // TODO(bwplotka): Delegate single-target HTTP fetch, compression negotiation, and scrape
         // headers to scrape.rs once https://github.com/prometheus/scrape.rs/issues/36 lands.
         let send_res = match poll_with_control(
@@ -649,7 +664,7 @@ impl TargetScraper {
             ctrl_msg_recv,
             effect_handler,
             telemetry,
-            Some(&pull_cancel),
+            Some(active_cancel),
         )
         .await
         {
@@ -659,50 +674,39 @@ impl TargetScraper {
         let mut response = match send_res {
             Ok(resp) => resp,
             Err(err) => {
-                if let Some(metrics) = telemetry.metrics.as_mut() {
-                    metrics.scrapes_failed.add(1);
-                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                }
                 otel_warn!(
                     "prometheus_receiver.http_error",
                     target = target_url.as_str(),
                     error = err.to_string(),
                     message = "HTTP scrape request failed"
                 );
-                return ControlFlow::Continue(());
+                return ControlFlow::Continue(Err(()));
             }
         };
 
         if !response.status().is_success() {
-            if let Some(metrics) = telemetry.metrics.as_mut() {
-                metrics.scrapes_failed.add(1);
-                metrics.scrape_duration_ns.record(elapsed_nanos(started));
-            }
             otel_warn!(
                 "prometheus_receiver.bad_status",
                 target = target_url.as_str(),
                 status = response.status().as_u16(),
                 message = "target returned non-2xx HTTP status"
             );
-            return ControlFlow::Continue(());
+            return ControlFlow::Continue(Err(()));
         }
 
+        let max_body_u64 = u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX);
         let content_length = response.content_length();
         if let Some(len) = content_length
-            && len > u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX)
+            && len > max_body_u64
         {
-            if let Some(metrics) = telemetry.metrics.as_mut() {
-                metrics.scrapes_failed.add(1);
-                metrics.scrape_duration_ns.record(elapsed_nanos(started));
-            }
             otel_warn!(
                 "prometheus_receiver.body_too_large",
                 target = target_url.as_str(),
                 content_length = len,
-                max_body_bytes = u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX),
+                max_body_bytes = max_body_u64,
                 message = "scrape response Content-Length exceeds max_body_bytes"
             );
-            return ControlFlow::Continue(());
+            return ControlFlow::Continue(Err(()));
         }
 
         let format = resolve_response_format(
@@ -722,7 +726,7 @@ impl TargetScraper {
                 ctrl_msg_recv,
                 effect_handler,
                 telemetry,
-                Some(&pull_cancel),
+                Some(active_cancel),
             )
             .await
             {
@@ -732,153 +736,123 @@ impl TargetScraper {
             match chunk_res {
                 Ok(Some(chunk)) => {
                     if body.len().saturating_add(chunk.len()) > self.max_body_bytes {
-                        if let Some(metrics) = telemetry.metrics.as_mut() {
-                            metrics.scrapes_failed.add(1);
-                            metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                        }
                         otel_warn!(
                             "prometheus_receiver.body_too_large",
                             target = target_url.as_str(),
-                            max_body_bytes = u64::try_from(self.max_body_bytes).unwrap_or(u64::MAX),
+                            max_body_bytes = max_body_u64,
                             message = "scrape response body exceeds max_body_bytes"
                         );
-                        return ControlFlow::Continue(());
+                        return ControlFlow::Continue(Err(()));
                     }
                     body.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
                 Err(err) => {
-                    if let Some(metrics) = telemetry.metrics.as_mut() {
-                        metrics.scrapes_failed.add(1);
-                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                    }
                     otel_warn!(
                         "prometheus_receiver.body_error",
                         target = target_url.as_str(),
                         error = err.to_string(),
                         message = "failed to read scrape response body"
                     );
-                    return ControlFlow::Continue(());
+                    return ControlFlow::Continue(Err(()));
                 }
             }
         }
 
         let scrape_timestamp_ms = current_timestamp_ms();
+        let chunk_limit = if self.max_data_points_per_batch == 0 {
+            usize::MAX
+        } else {
+            self.max_data_points_per_batch
+        };
         let decode_opts = DecodeOptions::new()
             .with_timestamp_ms(scrape_timestamp_ms)
-            .with_max_data_points_per_batch(self.max_data_points_per_batch);
+            .with_max_data_points_per_batch(chunk_limit);
         let resource_transform = build_target_resource_transform(&self.job_name, target_url);
         let mut batches = Vec::new();
+        let mut decoded_points = 0_u64;
 
         // TODO(bwplotka): Switch to cooperative incremental decoding so large payloads yield to
         // the local runtime once https://github.com/prometheus/scrape.rs/issues/27 lands.
-        if self.max_data_points_per_batch == 0 {
-            match self.decoder.decode(body.as_slice(), &format, &decode_opts) {
-                Ok(records) => {
-                    if let Some(metrics) = telemetry.metrics.as_mut() {
-                        metrics
-                            .data_points_decoded
-                            .add(records.num_data_points() as u64);
-                    }
-                    if !records.is_empty() {
-                        match records_to_otap_with_resource(
-                            &records,
-                            self.honor_timestamps,
-                            scrape_timestamp_ms,
-                            Some(self.start_timestamp_ns),
-                            Some(&resource_transform),
-                        ) {
-                            Ok(otap) => {
-                                batches.push(OtapPdata::new(Context::default(), otap.into()));
-                            }
-                            Err(err) => {
-                                if let Some(metrics) = telemetry.metrics.as_mut() {
-                                    metrics.scrapes_failed.add(1);
-                                    metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                                }
-                                otel_warn!(
-                                    "prometheus_receiver.otap_conversion_error",
-                                    target = target_url.as_str(),
-                                    error = err.to_string(),
-                                    message = "failed to convert decoded Arrow batch into OtapArrowRecords"
-                                );
-                                return ControlFlow::Continue(());
-                            }
-                        }
-                    }
-                }
+        for chunk_res in self
+            .decoder
+            .decode_stream(body.as_slice(), &format, &decode_opts)
+        {
+            let records = match chunk_res {
+                Ok(records) => records,
                 Err(err) => {
-                    if let Some(metrics) = telemetry.metrics.as_mut() {
-                        metrics.scrapes_failed.add(1);
-                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                    }
                     otel_warn!(
                         "prometheus_receiver.decode_error",
                         target = target_url.as_str(),
                         error = err.to_string(),
                         message = "failed to decode exposition payload"
                     );
-                    return ControlFlow::Continue(());
+                    return ControlFlow::Continue(Err(()));
                 }
-            }
-        } else {
-            for chunk_res in self
-                .decoder
-                .decode_stream(body.as_slice(), &format, &decode_opts)
-            {
-                match chunk_res {
-                    Ok(records) => {
-                        if let Some(metrics) = telemetry.metrics.as_mut() {
-                            metrics
-                                .data_points_decoded
-                                .add(records.num_data_points() as u64);
-                        }
-                        if !records.is_empty() {
-                            match records_to_otap_with_resource(
-                                &records,
-                                self.honor_timestamps,
-                                scrape_timestamp_ms,
-                                Some(self.start_timestamp_ns),
-                                Some(&resource_transform),
-                            ) {
-                                Ok(otap) => {
-                                    batches.push(OtapPdata::new(Context::default(), otap.into()));
-                                }
-                                Err(err) => {
-                                    if let Some(metrics) = telemetry.metrics.as_mut() {
-                                        metrics.scrapes_failed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                                    }
-                                    otel_warn!(
-                                        "prometheus_receiver.otap_conversion_error",
-                                        target = target_url.as_str(),
-                                        error = err.to_string(),
-                                        message = "failed to convert decoded Arrow batch into OtapArrowRecords"
-                                    );
-                                    return ControlFlow::Continue(());
-                                }
-                            }
-                        }
-                    }
+            };
+            decoded_points += records.num_data_points() as u64;
+            if !records.is_empty() {
+                match records_to_otap_with_resource(
+                    &records,
+                    self.honor_timestamps,
+                    scrape_timestamp_ms,
+                    Some(self.start_timestamp_ns),
+                    Some(&resource_transform),
+                ) {
+                    Ok(otap) => batches.push(OtapPdata::new(Context::default(), otap.into())),
                     Err(err) => {
-                        if let Some(metrics) = telemetry.metrics.as_mut() {
-                            metrics.scrapes_failed.add(1);
-                            metrics.scrape_duration_ns.record(elapsed_nanos(started));
-                        }
                         otel_warn!(
-                            "prometheus_receiver.decode_error",
+                            "prometheus_receiver.otap_conversion_error",
                             target = target_url.as_str(),
                             error = err.to_string(),
-                            message = "failed to decode streaming exposition chunk"
+                            message = "failed to convert decoded Arrow batch into OtapArrowRecords"
                         );
-                        return ControlFlow::Continue(());
+                        return ControlFlow::Continue(Err(()));
                     }
                 }
-                tokio::task::consume_budget().await;
             }
         }
 
+        ControlFlow::Continue(Ok((batches, decoded_points)))
+    }
+
+    async fn scrape_target(
+        &mut self,
+        target_url: &Url,
+        ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        telemetry: &mut ReceiverTelemetry,
+    ) -> ControlFlow<Result<TerminalState, Error>> {
+        let started = StdInstant::now();
         if let Some(metrics) = telemetry.metrics.as_mut() {
+            metrics.scrapes_started.add(1);
+        }
+        let pull_attempt = telemetry.pull.processing();
+        let active_cancel = ActiveScrapeCancel {
+            pull: pull_attempt.cancellation_handle(),
+            started,
+        };
+
+        let (batches, decoded_points) = match self
+            .fetch_and_decode_target(
+                target_url,
+                ctrl_msg_recv,
+                effect_handler,
+                telemetry,
+                &active_cancel,
+            )
+            .await
+        {
+            ControlFlow::Continue(Ok(ok)) => ok,
+            ControlFlow::Continue(Err(())) => {
+                telemetry.record_scrape_failure(started);
+                return ControlFlow::Continue(());
+            }
+            ControlFlow::Break(exit) => return ControlFlow::Break(exit),
+        };
+
+        if let Some(metrics) = telemetry.metrics.as_mut() {
+            metrics.data_points_decoded.add(decoded_points);
             metrics.scrapes_completed.add(1);
             metrics.scrape_duration_ns.record(elapsed_nanos(started));
         }
@@ -919,7 +893,7 @@ async fn handle_control_msg(
     msg: Result<NodeControlMsg<OtapPdata>, RecvError>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     telemetry: &mut ReceiverTelemetry,
-    cancel_on_exit: Option<&ReceiverPullCancellation>,
+    cancel_on_exit: Option<&ActiveScrapeCancel>,
 ) -> ControlFlow<Result<TerminalState, Error>> {
     match msg {
         Ok(NodeControlMsg::CollectTelemetry {
@@ -934,7 +908,7 @@ async fn handle_control_msg(
         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
             otel_info!("prometheus_receiver.drain_ingress");
             if let Some(cancel) = cancel_on_exit {
-                cancel.cancel();
+                cancel.cancel(telemetry);
             }
             if let Err(err) = effect_handler.notify_receiver_drained().await {
                 return ControlFlow::Break(Err(err));
@@ -944,13 +918,13 @@ async fn handle_control_msg(
         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
             otel_info!("prometheus_receiver.shutdown");
             if let Some(cancel) = cancel_on_exit {
-                cancel.cancel();
+                cancel.cancel(telemetry);
             }
             ControlFlow::Break(Ok(terminal_state(deadline, telemetry)))
         }
         Err(err) => {
             if let Some(cancel) = cancel_on_exit {
-                cancel.cancel();
+                cancel.cancel(telemetry);
             }
             ControlFlow::Break(Err(Error::ChannelRecvError(err)))
         }
@@ -963,7 +937,7 @@ async fn poll_with_control<F, T>(
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     telemetry: &mut ReceiverTelemetry,
-    cancel_on_exit: Option<&ReceiverPullCancellation>,
+    cancel_on_exit: Option<&ActiveScrapeCancel>,
 ) -> ControlFlow<Result<TerminalState, Error>, T>
 where
     F: Future<Output = T>,
