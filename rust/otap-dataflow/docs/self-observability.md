@@ -288,11 +288,13 @@ instrument name, such as `messages_total{otel_scope_name="node.input"}`.
 - `UpDownCounter`, `ObserveUpDownCounter`, and `Gauge` instruments emit
   `# TYPE <metric> gauge` without a `_total` suffix.
 - `Mmsc`, `HistogramNormal`, and `HistogramDetailed` distribution instruments
-  expand into four Prometheus series when their observation count is non-zero,
-  producing `<name>_min` as `gauge`, `<name>_max` as `gauge`, `<name>_sum` as
-  `counter`, and `<name>_count` as `counter`. When queried with `?format=json`,
-  exponential histograms also include populated bucket counts and estimated
-  `p50`, `p90`, and `p99` quantiles.
+  expand into four Prometheus series when their observation count is non-zero:
+  `<name>_min` (`gauge`), `<name>_max` (`gauge`), `<name>_sum` (`counter`), and
+  `<name>_count` (`counter`). With `?format=json` or `?format=json_compact`,
+  bucketed tiers (`HistogramNormal` and `HistogramDetailed`) include a
+  `details` object with `zero_count`, `relative_error`, and estimated `p50`,
+  `p90`, and `p99` quantiles. Raw histogram bucket counts are emitted only
+  through OTLP export.
 
 ## Self-observability metrics reference
 
