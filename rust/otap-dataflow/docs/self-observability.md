@@ -74,7 +74,7 @@ lists all endpoints related to metrics, logs, status, and profiling.
 | `GET /api/v1/telemetry/metrics` | Canonical per-entity metrics snapshot endpoint with the same handler and query parameters as `/api/v1/metrics`. |
 | `GET /api/v1/telemetry/metrics/aggregate` | Cross-entity aggregated metrics grouped by `otel_scope_name` and optional `attrs`. |
 | `GET /api/v1/telemetry/live-schema` | Live semantic convention registry JSON describing registered entities, metric sets, and events. |
-| `GET /api/v1/telemetry/logs` | Paginated query over the in-memory internal log tap buffer. Accepts `after` and `limit`. Returns `503` when the log tap is disabled. |
+| `GET /api/v1/telemetry/logs` | Paginated query over the in-memory internal log tap buffer. Accepts `after` and `limit`. Returns `404` when the log tap is disabled. |
 | `GET /api/v1/telemetry/logs/stream` | WebSocket live stream of internal log tap records. |
 | `GET /api/v1/status` | Full engine status snapshot, observed state store report, and build information. |
 | `GET /api/v1/livez` | Engine-wide liveness probe across all deployed pipelines. |
