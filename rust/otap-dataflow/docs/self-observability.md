@@ -172,9 +172,9 @@ engine:
           to: otlp
 ```
 
-When `engine.observability.pipeline` is omitted, the controller runs a default
-internal observability pipeline that drains internal telemetry into
-`exporter:noop` so internal ring buffers never back up.
+When `engine.observability.pipeline` is omitted, the controller installs a
+default pipeline that routes `its` logs to `exporter:console` and metrics to
+`exporter:noop`.
 
 ### Controlling metric verbosity with telemetry policies
 
