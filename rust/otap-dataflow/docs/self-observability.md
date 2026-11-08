@@ -83,7 +83,7 @@ lists all endpoints related to metrics, logs, status, and profiling.
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | Status and condition details for a single logical pipeline. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | Per-pipeline liveness probe. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | Per-pipeline readiness probe. |
-| `GET /api/v1/debug/pprof/heap` | Jemalloc heap profile snapshot in pprof protobuf format when built with the `jemalloc-profiling` feature and `MALLOC_CONF=prof:true`. |
+| `GET /api/v1/debug/pprof/heap` | Jemalloc heap profile in pprof protobuf format (`application/x-protobuf`). Requires the `jemalloc` feature (default on Linux and macOS) and runtime activation via `MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:19"` on Linux or `_RJEM_MALLOC_CONF` on macOS (see [Profiling](../PROFILING.md#live-heap-profiling-jemalloc-pprof)). |
 | `GET /api/v1/debug/pprof/profile` | Sampled CPU flamegraph or pprof protobuf profile. Accepts `seconds`, `frequency`, and `format=flamegraph` or `format=protobuf`. |
 
 <!-- markdownlint-enable MD013 -->
