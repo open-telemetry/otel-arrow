@@ -111,16 +111,6 @@ fn normalized_endpoint_strips_trailing_slashes_and_preserves_scheme() {
         upper_cfg.normalized_endpoint().unwrap().as_deref(),
         Some("HTTP://metadata.example.internal:8080")
     );
-    assert_eq!(
-        config::trim_endpoint_trailing_slashes("http://"),
-        "http://",
-        "scheme prefix must not be stripped by trailing-slash trimmer"
-    );
-    assert_eq!(
-        config::trim_endpoint_trailing_slashes("https://"),
-        "https://",
-        "scheme prefix must not be stripped by trailing-slash trimmer"
-    );
 }
 
 /// Scenario: Unknown configuration fields are supplied in the JSON config.

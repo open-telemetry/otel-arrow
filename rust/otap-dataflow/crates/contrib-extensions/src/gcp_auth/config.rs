@@ -77,17 +77,14 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Validates and normalizes `endpoint` (stripping trailing slashes without
-    /// stripping the `http://` or `https://` scheme prefix) for
+    /// Validates and normalizes `endpoint` (stripping trailing slashes) for
     /// `google_cloud_auth::credentials::mds::Builder::with_endpoint`.
     pub(crate) fn normalized_endpoint(&self) -> Result<Option<String>, String> {
         let Some(endpoint) = &self.endpoint else {
             return Ok(None);
         };
-        validate_base_endpoint(endpoint, "endpoint")?;
-        Ok(Some(
-            trim_endpoint_trailing_slashes(endpoint.trim()).to_string(),
-        ))
+        validate_base_endpoint(endpoint)?;
+        Ok(Some(endpoint.trim().trim_end_matches('/').to_string()))
     }
 
     /// Validates the configuration beyond what deserialization checks.
@@ -112,69 +109,44 @@ impl Config {
     }
 }
 
-/// Returns the byte length of the `http://` or `https://` scheme prefix when
-/// present (case-insensitively).
-fn http_scheme_len(raw: &str) -> Option<usize> {
-    if raw
-        .get(..8)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
-    {
-        Some(8)
-    } else if raw
-        .get(..7)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
-    {
-        Some(7)
-    } else {
-        None
-    }
-}
-
-/// Strips trailing `/` characters from an endpoint string without stripping the
-/// `//` separator of an `http://` or `https://` scheme prefix.
-pub(crate) fn trim_endpoint_trailing_slashes(raw: &str) -> &str {
-    let min_len = http_scheme_len(raw).unwrap_or(0);
-    let mut end = raw.len();
-    while end > min_len && raw.as_bytes()[end - 1] == b'/' {
-        end -= 1;
-    }
-    &raw[..end]
-}
-
 /// Parses and validates a metadata server base URL, ensuring it uses `http://`
 /// or `https://`, has a non-empty host, and carries no credentials, query
 /// parameters, or fragment.
-pub(crate) fn validate_base_endpoint(raw: &str, field_name: &str) -> Result<(), String> {
+pub(crate) fn validate_base_endpoint(raw: &str) -> Result<(), String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(format!("`{field_name}` must not be empty when set"));
+        return Err("`endpoint` must not be empty when set".to_string());
     }
-    let Some(scheme_len) = http_scheme_len(trimmed) else {
-        return Err(format!(
-            "`{field_name}` must start with `http://` or `https://`"
-        ));
+    let scheme_len = if trimmed
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        8
+    } else if trimmed
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+    {
+        7
+    } else {
+        return Err("`endpoint` must start with `http://` or `https://`".to_string());
     };
     if trimmed.contains('#') || trimmed.contains('?') {
-        return Err(format!(
-            "`{field_name}` must not include query parameters or a URL fragment"
-        ));
+        return Err("`endpoint` must not include query parameters or a URL fragment".to_string());
     }
     if trimmed[scheme_len..].trim_start_matches('/').is_empty() {
-        return Err(format!("`{field_name}` must include a non-empty host"));
+        return Err("`endpoint` must include a non-empty host".to_string());
     }
     let uri = trimmed
         .parse::<http::Uri>()
-        .map_err(|e| format!("invalid `{field_name}` URL `{trimmed}`: {e}"))?;
-    let Some(authority) = uri.authority() else {
-        return Err(format!("`{field_name}` must include a non-empty host"));
-    };
-    if authority.as_str().contains('@') {
-        return Err(format!(
-            "`{field_name}` must not include userinfo credentials"
-        ));
+        .map_err(|e| format!("invalid `endpoint` URL `{trimmed}`: {e}"))?;
+    if uri
+        .authority()
+        .is_some_and(|authority| authority.as_str().contains('@'))
+    {
+        return Err("`endpoint` must not include userinfo credentials".to_string());
     }
     if uri.host().is_none_or(str::is_empty) {
-        return Err(format!("`{field_name}` must include a non-empty host"));
+        return Err("`endpoint` must include a non-empty host".to_string());
     }
     Ok(())
 }
