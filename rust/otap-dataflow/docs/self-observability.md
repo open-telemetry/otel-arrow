@@ -218,9 +218,10 @@ configuration details.
 
 ### Resource metadata and `target_info`
 
-Attributes configured under `engine.telemetry.resource`, along with automatic
-process and host resource attributes, are exposed once per Prometheus scrape as
-a `target_info` gauge with value `1`:
+Attributes configured under `engine.telemetry.resource` and attributes produced
+by `engine.telemetry.detectors` (default: `["service_instance", "env",
+"service_name"]`; `host`, `os`, `process`, `container`, and `k8s` are opt-in)
+are exposed once per Prometheus scrape on a `target_info` gauge with value `1`:
 
 ```text
 # HELP target_info Target metadata
