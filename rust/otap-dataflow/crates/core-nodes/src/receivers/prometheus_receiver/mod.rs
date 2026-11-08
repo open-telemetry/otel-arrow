@@ -131,15 +131,22 @@ impl TargetDiscovery {
     }
 
     async fn resolve_targets_counted(&self) -> (Vec<Url>, u64) {
+        self.resolve_targets_with(lookup_host).await
+    }
+
+    async fn resolve_targets_with<'a, F, Fut, I>(&'a self, mut lookup: F) -> (Vec<Url>, u64)
+    where
+        F: FnMut(&'a str) -> Fut,
+        Fut: Future<Output = std::io::Result<I>>,
+        I: Iterator<Item = std::net::SocketAddr>,
+    {
         let mut all_urls =
             Vec::with_capacity(self.static_urls.len() + self.dns_sd_targets.len() * 4);
         all_urls.extend(self.static_urls.iter().cloned());
         let mut dns_failures = 0_u64;
 
         for dns_target in &self.dns_sd_targets {
-            match tokio::time::timeout(self.dns_lookup_timeout, lookup_host(dns_target.as_str()))
-                .await
-            {
+            match tokio::time::timeout(self.dns_lookup_timeout, lookup(dns_target.as_str())).await {
                 Ok(Ok(addrs)) => {
                     let mut sorted_addrs: Vec<_> = addrs.collect();
                     sorted_addrs.sort_unstable();
@@ -1971,9 +1978,12 @@ mod tests {
     }
 
     /// Scenario: a target sequentially returns HTTP 500, an oversized `Content-Length` response,
-    /// an oversized streaming body without `Content-Length`, and a malformed exposition payload.
-    /// Guarantees: each failure increments `scrapes_failed` without incrementing
-    /// `scrapes_completed` or `send_failures`, and no batches are emitted downstream.
+    /// an oversized streaming body without `Content-Length`, a malformed exposition payload, and
+    /// a valid exposition payload within `max_body_bytes`.
+    /// Guarantees: the four failed scrapes increment `scrapes_failed` and `receiver.pulled`
+    /// (`outcome="failure"`) without emitting batches, the valid scrape increments
+    /// `scrapes_completed` and `receiver.pulled` (`outcome="success"`), and `receiver.processing`
+    /// records all five attempts.
     #[test]
     fn records_failures_for_bad_status_oversized_body_and_decode_error() {
         let (rt, local) = setup_test_runtime();
@@ -1999,6 +2009,8 @@ mod tests {
                 ),
                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: 23\r\nConnection: close\r\n\r\nnot_a_valid_metric ===\n"
                     .to_owned(),
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: 12\r\nConnection: close\r\n\r\nok_metric 1\n"
+                    .to_owned(),
             ];
 
             let server = tokio::task::spawn_local(async move {
@@ -2023,10 +2035,11 @@ mod tests {
             let mut scraper =
                 TargetScraper::new(&config, test_node("prometheus_test")).expect("build scraper");
 
-            let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
-            let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
-            let pipeline =
-                controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+            let (pipeline, _registry) =
+                otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+                    otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+                        | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+                );
             let mut telemetry = ReceiverTelemetry {
                 metrics: Some(PrometheusReceiverMetrics::register(&pipeline)),
                 pull: ReceiverPullMetrics::register(&pipeline),
@@ -2040,7 +2053,7 @@ mod tests {
                 runtime_ctrl_rx: _runtime_ctrl_rx,
             } = build_test_harness(4);
 
-            for _ in 0..4 {
+            for _ in 0..5 {
                 let flow = scraper
                     .scrape_target(&target_url, &mut ctrl_chan, &effect_handler, &mut telemetry)
                     .await;
@@ -2048,34 +2061,59 @@ mod tests {
             }
 
             let metrics = telemetry.metrics.as_ref().expect("metrics registered");
-            assert_eq!(metrics.scrapes_started.get(), 4);
+            assert_eq!(metrics.scrapes_started.get(), 5);
             assert_eq!(metrics.scrapes_failed.get(), 4);
-            assert_eq!(metrics.scrapes_completed.get(), 0);
-            assert_eq!(metrics.batches_sent.get(), 0);
+            assert_eq!(metrics.scrapes_completed.get(), 1);
+            assert_eq!(metrics.data_points_decoded.get(), 1);
+            assert_eq!(metrics.batches_sent.get(), 1);
             assert_eq!(metrics.send_failures.get(), 0);
-            assert!(out_rx.is_empty());
+            assert!(!out_rx.is_empty());
+
+            let pull_snapshots = telemetry.pull.terminal_snapshots();
+            assert_eq!(pull_snapshots.len(), 3);
 
             let _ = server.await;
         }));
     }
 
-    /// Scenario: `TargetDiscovery::resolve_targets_counted` resolves a valid static target alongside
-    /// an unresolvable `.invalid` DNS service discovery target.
-    /// Guarantees: the static target is preserved while the failed DNS lookup increments the
-    /// returned DNS failure count.
-    #[tokio::test]
+    /// Scenario: `TargetDiscovery::resolve_targets_with` resolves a static target alongside three
+    /// DNS service discovery entries that return an empty address list, an I/O error, and a
+    /// timed-out lookup.
+    /// Guarantees: the static target is preserved while empty, failed, and timed-out DNS lookups
+    /// each increment the returned DNS failure count without querying the host OS DNS resolver.
+    #[tokio::test(start_paused = true)]
     async fn counts_failed_and_empty_dns_target_lookups() {
         let config = Config {
             targets: vec!["127.0.0.1:9001".to_owned()],
-            dns_sd_targets: vec!["nonexistent.prometheus.target.invalid:9001".to_owned()],
+            dns_sd_targets: vec![
+                " empty.dns.local:9001 ".to_owned(),
+                "error.dns.local:9001".to_owned(),
+                "timeout.dns.local:9001".to_owned(),
+            ],
+            scrape_timeout: Duration::from_secs(2),
             ..Config::default()
         };
         let discovery = TargetDiscovery::from_config(&config).expect("valid discovery config");
-        let (urls, dns_failures) = discovery.resolve_targets_counted().await;
+        let (urls, dns_failures) = discovery
+            .resolve_targets_with(|target| async move {
+                match target {
+                    "empty.dns.local:9001" => Ok(Vec::<std::net::SocketAddr>::new().into_iter()),
+                    "error.dns.local:9001" => Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "nxdomain",
+                    )),
+                    "timeout.dns.local:9001" => {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        Ok(Vec::<std::net::SocketAddr>::new().into_iter())
+                    }
+                    other => panic!("unexpected dns target: {other}"),
+                }
+            })
+            .await;
         assert_eq!(
             urls.iter().map(Url::as_str).collect::<Vec<_>>(),
             vec!["http://127.0.0.1:9001/metrics"]
         );
-        assert_eq!(dns_failures, 1);
+        assert_eq!(dns_failures, 3);
     }
 }
