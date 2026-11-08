@@ -91,6 +91,9 @@ pub struct PrometheusReceiverMetrics {
     pub scrape_duration_ns: Mmsc,
 }
 
+/// Default cap for a single `dns_sd_targets` lookup (bounded by `Config::scrape_timeout`).
+const DEFAULT_DNS_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 // TODO(bwplotka): Replace static and DNS target resolution with scrape.rs discovery once
 // https://github.com/prometheus/scrape.rs/issues/36 lands.
 /// Discovers and resolves configured static and DNS scrape target URLs.
@@ -112,9 +115,13 @@ impl TargetDiscovery {
         }
         Ok(Self {
             static_urls,
-            dns_sd_targets: config.dns_sd_targets.clone(),
+            dns_sd_targets: config
+                .dns_sd_targets
+                .iter()
+                .map(|target| target.trim().to_owned())
+                .collect(),
             metrics_path: config.metrics_path.clone(),
-            dns_lookup_timeout: config.dns_lookup_timeout.min(config.scrape_timeout),
+            dns_lookup_timeout: config.scrape_timeout.min(DEFAULT_DNS_LOOKUP_TIMEOUT),
         })
     }
 
@@ -1966,26 +1973,17 @@ mod tests {
         }));
     }
 
-    /// Scenario: configuration specifies a zero `dns_lookup_timeout` or zero `max_body_bytes`,
-    /// or relies on default batching and limit settings.
-    /// Guarantees: validation rejects zero `dns_lookup_timeout` and zero `max_body_bytes`, and
-    /// default configuration bounds batch size to 4096 data points and body size to 16 MiB.
+    /// Scenario: configuration specifies zero `max_body_bytes` or uses default batching and limit settings.
+    /// Guarantees: validation rejects zero `max_body_bytes`, and default configuration bounds
+    /// batch size to `expfmt::arrow::DEFAULT_MAX_DATA_POINTS_PER_BATCH` and body size to 16 MiB.
     #[test]
-    fn rejects_zero_dns_lookup_timeout_and_zero_max_body_bytes() {
+    fn rejects_zero_max_body_bytes() {
         let default_cfg = Config::default();
-        assert_eq!(default_cfg.max_data_points_per_batch, 4096);
+        assert_eq!(
+            default_cfg.max_data_points_per_batch,
+            expfmt::arrow::DEFAULT_MAX_DATA_POINTS_PER_BATCH
+        );
         assert_eq!(default_cfg.max_body_bytes, 16 * 1024 * 1024);
-        assert_eq!(default_cfg.dns_lookup_timeout, Duration::from_secs(5));
-
-        let zero_dns = Config {
-            dns_lookup_timeout: Duration::ZERO,
-            targets: vec!["127.0.0.1:9001".to_owned()],
-            ..Config::default()
-        };
-        assert!(matches!(
-            validate_config(&zero_dns),
-            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
-        ));
 
         let zero_body = Config {
             max_body_bytes: 0,
@@ -2096,7 +2094,6 @@ mod tests {
         let config = Config {
             targets: vec!["127.0.0.1:9001".to_owned()],
             dns_sd_targets: vec!["nonexistent.prometheus.target.invalid:9001".to_owned()],
-            dns_lookup_timeout: Duration::from_secs(2),
             ..Config::default()
         };
         let discovery = TargetDiscovery::from_config(&config).expect("valid discovery config");

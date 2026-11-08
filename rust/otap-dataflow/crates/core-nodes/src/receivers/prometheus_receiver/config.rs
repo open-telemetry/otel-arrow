@@ -15,16 +15,12 @@ const fn default_scrape_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
-const fn default_dns_lookup_timeout() -> Duration {
-    Duration::from_secs(5)
-}
-
 const fn default_max_body_bytes() -> usize {
     16 * 1024 * 1024
 }
 
 const fn default_max_data_points_per_batch() -> usize {
-    4096
+    expfmt::arrow::DEFAULT_MAX_DATA_POINTS_PER_BATCH
 }
 
 fn default_job_name() -> String {
@@ -57,10 +53,6 @@ pub struct Config {
     #[serde(default = "default_scrape_timeout", with = "humantime_serde")]
     pub scrape_timeout: Duration,
 
-    /// Per-entry DNS lookup timeout for `dns_sd_targets` (capped by `scrape_timeout`).
-    #[serde(default = "default_dns_lookup_timeout", with = "humantime_serde")]
-    pub dns_lookup_timeout: Duration,
-
     /// Optional delay before the first scrape tick.
     #[serde(default, with = "humantime_serde")]
     pub initial_delay: Duration,
@@ -81,7 +73,7 @@ pub struct Config {
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
 
-    /// Maximum number of data points per emitted OTAP batch (default `4096`; `0` means unchunked).
+    /// Maximum number of data points per emitted OTAP batch (default `16384`; `0` means unchunked).
     #[serde(default = "default_max_data_points_per_batch")]
     pub max_data_points_per_batch: usize,
 
@@ -100,7 +92,6 @@ impl Default for Config {
             job_name: default_job_name(),
             scrape_interval: default_scrape_interval(),
             scrape_timeout: default_scrape_timeout(),
-            dns_lookup_timeout: default_dns_lookup_timeout(),
             initial_delay: Duration::ZERO,
             metrics_path: default_metrics_path(),
             honor_timestamps: true,
@@ -176,11 +167,6 @@ pub(crate) fn validate_config(config: &Config) -> Result<(), otel_arrow_dfe_conf
     if config.scrape_timeout > config.scrape_interval {
         return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "scrape_timeout must not exceed scrape_interval".to_owned(),
-        });
-    }
-    if config.dns_lookup_timeout.is_zero() {
-        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-            error: "dns_lookup_timeout must be greater than zero".to_owned(),
         });
     }
     if config.max_body_bytes == 0 {
