@@ -80,9 +80,9 @@ lists all endpoints related to metrics, logs, status, and profiling.
 | `GET /api/v1/livez` | Engine-wide liveness probe across all deployed pipelines. |
 | `GET /api/v1/readyz` | Engine-wide readiness probe across all deployed pipelines. |
 | `GET /api/v1/groups/status` | Pipeline status grouped by pipeline group ID. |
-| `GET /api/v1/pipeline-groups/{group_id}/pipelines/{pipeline_id}/status` | Status and condition details for a single logical pipeline. |
-| `GET /api/v1/pipeline-groups/{group_id}/pipelines/{pipeline_id}/livez` | Per-pipeline liveness probe. |
-| `GET /api/v1/pipeline-groups/{group_id}/pipelines/{pipeline_id}/readyz` | Per-pipeline readiness probe. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | Status and condition details for a single logical pipeline. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | Per-pipeline liveness probe. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | Per-pipeline readiness probe. |
 | `GET /api/v1/debug/pprof/heap` | Jemalloc heap profile snapshot in pprof protobuf format when built with the `jemalloc-profiling` feature and `MALLOC_CONF=prof:true`. |
 | `GET /api/v1/debug/pprof/profile` | Sampled CPU flamegraph or pprof protobuf profile. Accepts `seconds`, `frequency`, and `format=flamegraph` or `format=protobuf`. |
 
