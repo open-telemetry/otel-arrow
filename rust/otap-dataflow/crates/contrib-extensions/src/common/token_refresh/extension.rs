@@ -24,6 +24,7 @@ pub type TokenProviderExtension<S, M> =
 
 /// Next-refresh delay used for non-expiring tokens (~1 year). The loop is still
 /// woken by control messages in the meantime.
+#[allow(dead_code)]
 pub const NON_EXPIRING_TOKEN_REFRESH_INTERVAL: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 #[async_trait]

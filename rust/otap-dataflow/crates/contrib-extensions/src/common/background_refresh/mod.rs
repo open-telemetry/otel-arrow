@@ -10,6 +10,8 @@ mod provider;
 mod tests;
 
 pub use metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
+#[allow(unused_imports)]
 pub use provider::{
-    BackgroundProviderExtension, BackgroundProviderRefreshPolicy, BackgroundProviderSource,
+    BackgroundFetchOutcome, BackgroundProviderExtension, BackgroundProviderRefreshPolicy,
+    BackgroundProviderSource,
 };
