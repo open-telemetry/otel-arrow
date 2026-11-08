@@ -46,26 +46,13 @@ impl Auth {
     pub fn new(config: &Config) -> Result<Self, Error> {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
+        config
+            .validate()
+            .map_err(|reason| Error::BuildCredentials { reason })?;
         let endpoint = config
             .normalized_endpoint()
             .map_err(|reason| Error::BuildCredentials { reason })?;
-
-        let mut scopes = Vec::with_capacity(config.scopes.len());
-        for scope in &config.scopes {
-            let trimmed = scope.trim();
-            if trimmed.is_empty() {
-                return Err(Error::BuildCredentials {
-                    reason: "`scopes` entries must not be empty".to_string(),
-                });
-            }
-            scopes.push(trimmed.to_string());
-        }
-
-        if config.timeout.is_zero() {
-            return Err(Error::BuildCredentials {
-                reason: "`timeout` must be greater than zero".to_string(),
-            });
-        }
+        let scopes = config.scopes.iter().map(|s| s.trim().to_string()).collect();
 
         // NOTE: `google-cloud-auth` credential builders spawn an internal
         // `TokenCache` task via `tokio::spawn` when `.build()` is called. We
@@ -142,20 +129,19 @@ impl BackgroundProviderSource<BearerToken> for Auth {
                 CredentialState::Uninitialized => {
                     let credentials = self.build_credentials()?;
                     *guard = CredentialState::Active(CachedCredentials {
-                        credentials,
+                        credentials: credentials.clone(),
                         last_token: None,
                     });
+                    (credentials, Extensions::new(), None)
                 }
-                CredentialState::Active(_) => {}
+                CredentialState::Active(cached) => {
+                    let (ext, last_tok) = match &cached.last_token {
+                        Some((ext, tok)) => (ext.clone(), Some(tok.clone())),
+                        None => (Extensions::new(), None),
+                    };
+                    (cached.credentials.clone(), ext, last_tok)
+                }
             }
-            let CredentialState::Active(cached) = &*guard else {
-                unreachable!("populated above");
-            };
-            let (ext, last_tok) = match &cached.last_token {
-                Some((ext, tok)) => (ext.clone(), Some(tok.clone())),
-                None => (Extensions::new(), None),
-            };
-            (cached.credentials.clone(), ext, last_tok)
         };
 
         // NOTE: `google-cloud-auth` constructs an untimed `reqwest::Client::new()`
@@ -181,25 +167,14 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
             match headers_res {
                 Ok(CacheableResource::New { entity_tag, data }) => {
-                    let header = data
+                    let token = data
                         .get(http::header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(BearerToken::from_header_value)
                         .ok_or_else(|| Error::TokenAcquisition {
-                            message: "missing Authorization header from google-cloud-auth"
-                                .to_string(),
-                        })?
-                        .to_str()
-                        .map_err(|e| Error::TokenAcquisition {
-                            message: format!(
-                                "non-ASCII Authorization header from google-cloud-auth: {e}"
-                            ),
-                        })?;
-
-                    let token = BearerToken::from_header_value(header).ok_or_else(|| {
-                        Error::TokenAcquisition {
                             message: "invalid Bearer Authorization header from google-cloud-auth"
                                 .to_string(),
-                        }
-                    })?;
+                        })?;
 
                     let mut ext = Extensions::new();
                     let _ = ext.insert(entity_tag);
