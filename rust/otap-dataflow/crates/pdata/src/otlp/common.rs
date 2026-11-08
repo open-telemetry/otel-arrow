@@ -1036,7 +1036,7 @@ impl BatchSorter {
                             (i, (*r as u64) << 32 | (*s as u64) << 16 | *id as u64)
                         }),
                 );
-                self.u64_ids.sort_unstable_by_key(|&(_, v)| v);
+                self.u64_ids.sort_unstable_by_key(|&(i, v)| (v, i));
                 cursor
                     .sorted_indices
                     .extend(self.u64_ids.iter().map(|(i, _)| *i));
@@ -1051,7 +1051,7 @@ impl BatchSorter {
                         .enumerate()
                         .map(|(i, (a, b))| (i, (*a as u32) << 16 | *b as u32)),
                 );
-                self.u32_ids.sort_unstable_by_key(|&(_, v)| v);
+                self.u32_ids.sort_unstable_by_key(|&(i, v)| (v, i));
                 cursor
                     .sorted_indices
                     .extend(self.u32_ids.iter().map(|(i, _)| *i));
@@ -1093,6 +1093,14 @@ impl BatchSorter {
     ) where
         <T as ArrowPrimitiveType>::Native: Ord,
     {
+        if let MaybeDictArrayAccessor::Native(ids) = ids
+            && ids.null_count() == 0
+            && ids.values().is_sorted()
+        {
+            cursor.sorted_indices.extend(0..ids.len());
+            return;
+        }
+
         sort_ids_tmp.clear();
 
         match ids {
@@ -1116,16 +1124,18 @@ impl BatchSorter {
         }
 
         if ids.null_count() == 0 {
-            // fast path, no null IDs
-            sort_ids_tmp.sort_unstable_by_key(|&(_, value)| value);
+            // Fast path, no null IDs. Include the original row index as a tie-breaker so
+            // unstable sorting stays allocation-free while preserving relative row order
+            // for equal IDs (such as multiple attributes sharing a parent_id).
+            sort_ids_tmp.sort_unstable_by_key(|&(i, value)| (value, i));
         } else {
             // sort nulls last
             sort_ids_tmp.sort_unstable_by(|(ia, a), (ib, b)| {
                 match (ids.is_valid(*ia), ids.is_valid(*ib)) {
-                    (true, true) => a.cmp(b),
+                    (true, true) => a.cmp(b).then_with(|| ia.cmp(ib)),
                     (true, false) => Ordering::Less,
                     (false, true) => Ordering::Greater,
-                    (false, false) => Ordering::Equal,
+                    (false, false) => ia.cmp(ib),
                 }
             });
         }
@@ -1782,5 +1792,61 @@ mod test {
             assert_eq!(b.limit(), outer, "scoped limit clamped to outer");
         });
         assert_eq!(buf.limit(), outer);
+    }
+
+    /// Scenario: an attribute parent_id column has initial per-parent rows followed by
+    /// column-major appended rows across 64 parents (matching `upsert_attributes` output).
+    /// Guarantees: `BatchSorter` preserves the relative input row order for every `parent_id`.
+    #[test]
+    fn batch_sorter_preserves_row_order_for_equal_ids() {
+        let num_parents = 64u32;
+        let mut raw_ids = Vec::with_capacity((num_parents as usize) * 16);
+        // Initial two attributes per parent_id in parent-grouped order.
+        for pid in 0..num_parents {
+            raw_ids.push(pid);
+            raw_ids.push(pid);
+        }
+        // Fourteen upserted attributes appended one attribute column at a time across all parents.
+        for _ in 0..14 {
+            for pid in 0..num_parents {
+                raw_ids.push(pid);
+            }
+        }
+
+        let ids_array = UInt32Array::from(raw_ids);
+        let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+        sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+        for pid in 0..num_parents {
+            let child_indices: Vec<usize> =
+                ChildIndexIter::new(pid, &accessor, &mut cursor).collect();
+            assert_eq!(child_indices.len(), 16);
+            assert!(
+                child_indices.is_sorted(),
+                "child row indices for parent_id={pid} must preserve input order, got {child_indices:?}"
+            );
+        }
+    }
+
+    /// Scenario: a native ID array is already sorted in non-decreasing order with no nulls.
+    /// Guarantees: `BatchSorter` populates identity indices directly without touching scratch buffers.
+    #[test]
+    fn batch_sorter_native_sorted_fast_path() {
+        let ids_array = UInt32Array::from(vec![0u32, 0, 1, 1, 2, 2, 5]);
+        let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+        sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+        assert_eq!(
+            cursor.sorted_indices,
+            (0..ids_array.len()).collect::<Vec<_>>()
+        );
+        assert!(
+            sorter.u32_ids.is_empty(),
+            "already-sorted native ID column should bypass sort scratch buffer"
+        );
     }
 }
