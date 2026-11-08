@@ -3,15 +3,84 @@
 
 //! Unit tests for the shared refresh scheduling helpers.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::control::ExtensionControlMsg;
+use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
+use otel_arrow_dfe_engine::shared::message::SharedReceiver;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
-use crate::common::background_refresh::BackgroundProviderRefreshPolicy;
+use crate::common::background_refresh::{
+    BackgroundFetchOutcome, BackgroundProviderExtension, BackgroundProviderMetrics,
+    BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy, BackgroundProviderSource,
+};
 
 use super::provider::{
     jitter_refresh, negative_cache_window_secs, retry_backoff_secs, schedule_next,
 };
+
+#[metric_set(name = "test.background_refresh")]
+#[derive(Debug, Default, Clone)]
+struct TestMetrics {
+    /// Successful acquisitions.
+    #[metric(unit = "{acquisition}")]
+    successes: Counter<u64>,
+    /// Failed acquisitions.
+    #[metric(unit = "{acquisition}")]
+    failures: Counter<u64>,
+    /// Publications.
+    #[metric(unit = "{publication}")]
+    publishes: Counter<u64>,
+    /// Acquisition duration.
+    #[metric(unit = "ms")]
+    latency: Mmsc,
+}
+
+impl BackgroundProviderMetrics for TestMetrics {
+    fn successes(&mut self) -> &mut Counter<u64> {
+        &mut self.successes
+    }
+    fn failures(&mut self) -> &mut Counter<u64> {
+        &mut self.failures
+    }
+    fn publishes(&mut self) -> &mut Counter<u64> {
+        &mut self.publishes
+    }
+    fn success_latency(&mut self) -> &mut Mmsc {
+        &mut self.latency
+    }
+}
+
+type TestExtension<S> =
+    BackgroundProviderExtension<S, TestMetrics, BearerToken, BearerTokenProvider>;
+
+fn new_test_extension<S>(
+    name: &'static str,
+    source: S,
+    policy: BackgroundProviderRefreshPolicy,
+) -> TestExtension<S>
+where
+    S: BackgroundProviderSource<BearerToken>,
+{
+    let (tx, _rx) = tokio::sync::watch::channel(None);
+    let registry = TelemetryRegistryHandle::new();
+    let metrics = registry.register_metric_set::<TestMetrics>(EmptyAttributes());
+    BackgroundProviderExtension::new(
+        name,
+        source,
+        policy,
+        tx,
+        BackgroundProviderMetricsTracker::new(metrics),
+    )
+}
 
 // -- schedule_next timing tests --------------------------------
 
@@ -211,21 +280,6 @@ async fn jitter_refresh_stays_within_bounds() {
 /// Guarantees: Startup and arbitrarily late consumers reuse that first value without another fetch.
 #[tokio::test(start_paused = true)]
 async fn once_reuses_value_acquired_before_start() {
-    use super::{
-        BackgroundProviderExtension, BackgroundProviderMetrics, BackgroundProviderMetricsTracker,
-        BackgroundProviderSource,
-    };
-    use async_trait::async_trait;
-    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
-    use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
-    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
-    use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-    use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
-    use otel_arrow_dfe_telemetry_macros::metric_set;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     struct Source(Arc<AtomicUsize>);
 
     #[async_trait]
@@ -246,48 +300,11 @@ async fn once_reuses_value_acquired_before_start() {
         }
     }
 
-    #[metric_set(name = "test.background_once")]
-    #[derive(Debug, Default, Clone)]
-    struct Metrics {
-        /// Successful acquisitions.
-        #[metric(unit = "{acquisition}")]
-        successes: Counter<u64>,
-        /// Failed acquisitions.
-        #[metric(unit = "{acquisition}")]
-        failures: Counter<u64>,
-        /// Publications.
-        #[metric(unit = "{publication}")]
-        publishes: Counter<u64>,
-        /// Acquisition duration.
-        #[metric(unit = "ms")]
-        latency: Mmsc,
-    }
-
-    impl BackgroundProviderMetrics for Metrics {
-        fn successes(&mut self) -> &mut Counter<u64> {
-            &mut self.successes
-        }
-        fn failures(&mut self) -> &mut Counter<u64> {
-            &mut self.failures
-        }
-        fn publishes(&mut self) -> &mut Counter<u64> {
-            &mut self.publishes
-        }
-        fn success_latency(&mut self) -> &mut Mmsc {
-            &mut self.latency
-        }
-    }
-
     let calls = Arc::new(AtomicUsize::new(0));
-    let (tx, _rx) = tokio::sync::watch::channel(None);
-    let registry = TelemetryRegistryHandle::new();
-    let metrics = registry.register_metric_set::<Metrics>(EmptyAttributes());
-    let extension = BackgroundProviderExtension::<_, _, _, BearerTokenProvider>::new(
+    let extension = new_test_extension(
         "once-test",
         Source(Arc::clone(&calls)),
         BackgroundProviderRefreshPolicy::once(),
-        tx,
-        BackgroundProviderMetricsTracker::new(metrics),
     );
     assert_eq!(
         extension.get_value().await.unwrap().expose_token(),
@@ -333,21 +350,6 @@ async fn once_reuses_value_acquired_before_start() {
 /// an expired non-expiring token.
 #[tokio::test(start_paused = true)]
 async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_error() {
-    use super::{
-        BackgroundFetchOutcome, BackgroundProviderExtension, BackgroundProviderMetrics,
-        BackgroundProviderMetricsTracker, BackgroundProviderSource,
-    };
-    use async_trait::async_trait;
-    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
-    use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension};
-    use otel_arrow_dfe_engine::shared::message::SharedReceiver;
-    use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-    use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
-    use otel_arrow_dfe_telemetry_macros::metric_set;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     struct CachedSdkSource(Arc<AtomicUsize>);
 
     #[async_trait]
@@ -389,51 +391,13 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
         fn log_refresh_failure(&self, _error: &Self::Error) {}
     }
 
-    #[metric_set(name = "test.background_cached_sdk")]
-    #[derive(Debug, Default, Clone)]
-    struct Metrics {
-        /// Successful acquisitions.
-        #[metric(unit = "{acquisition}")]
-        successes: Counter<u64>,
-        /// Failed acquisitions.
-        #[metric(unit = "{acquisition}")]
-        failures: Counter<u64>,
-        /// Publications.
-        #[metric(unit = "{publication}")]
-        publishes: Counter<u64>,
-        /// Acquisition duration.
-        #[metric(unit = "ms")]
-        latency: Mmsc,
-    }
-
-    impl BackgroundProviderMetrics for Metrics {
-        fn successes(&mut self) -> &mut Counter<u64> {
-            &mut self.successes
-        }
-        fn failures(&mut self) -> &mut Counter<u64> {
-            &mut self.failures
-        }
-        fn publishes(&mut self) -> &mut Counter<u64> {
-            &mut self.publishes
-        }
-        fn success_latency(&mut self) -> &mut Mmsc {
-            &mut self.latency
-        }
-    }
-
     let step = Arc::new(AtomicUsize::new(0));
-    let (tx, _rx) = tokio::sync::watch::channel(None);
-    let registry = TelemetryRegistryHandle::new();
-    let metrics = registry.register_metric_set::<Metrics>(EmptyAttributes());
-    let extension = BackgroundProviderExtension::<_, _, _, BearerTokenProvider>::new(
+    let extension = new_test_extension(
         "cached-sdk-test",
         CachedSdkSource(Arc::clone(&step)),
         BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(10)).unwrap(),
-        tx,
-        BackgroundProviderMetricsTracker::new(metrics),
     );
     let mut rx = extension.subscribe();
-
     let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let ctrl = ControlChannel::new(SharedReceiver::mpsc(ctrl_rx), shutdown_rx);
@@ -501,11 +465,7 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
     let (report_rx, metrics_reporter) =
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
     ctrl_tx
-        .send(
-            otel_arrow_dfe_engine::control::ExtensionControlMsg::CollectTelemetry {
-                metrics_reporter,
-            },
-        )
+        .send(ExtensionControlMsg::CollectTelemetry { metrics_reporter })
         .await
         .unwrap();
     let snapshot = report_rx.recv_async().await.unwrap();
