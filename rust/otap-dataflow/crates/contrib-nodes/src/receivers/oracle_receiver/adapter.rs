@@ -469,6 +469,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::UnsupportedScalarType
             | OracleAdapterError::UnsupportedScalarCharset
             | OracleAdapterError::InvalidScalarCursor => ReceiverErrorKind::Configuration,
+            OracleAdapterError::SourceQuery(_) => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
             | OracleAdapterError::Prepare(_)
             | OracleAdapterError::Query(_)
@@ -581,14 +582,29 @@ fn execute_blocking(
     let mut rows = Vec::new();
     let mut payload_bytes = 0;
     let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
-    for _ in 0..query.max_rows() {
+    let committed = cursor.clone();
+    for _ in 0..=query.max_rows() {
         cancellation.ensure_not_requested()?;
         let Some(row) = result_set.next() else { break };
         let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
         cancellation.ensure_not_requested()?;
+        if snapshot && rows.len() == query.max_rows() {
+            return Err(OracleAdapterError::SnapshotRowLimit {
+                limit: query.max_rows(),
+            });
+        }
         let normalized = normalize_row(&row, &prepared.types, cancellation)?;
         cancellation.ensure_not_requested()?;
         let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
+        if rows.is_empty()
+            && !snapshot
+            && cursor
+                .compare(&committed)
+                .map_err(|_| OracleAdapterError::InvalidCursorValue)?
+                != std::cmp::Ordering::Greater
+        {
+            return Err(OracleAdapterError::InvalidCursorValue);
+        }
         let pushed = match push_bounded_row(
             &mut rows,
             &mut payload_bytes,
@@ -618,21 +634,6 @@ fn execute_blocking(
             break;
         }
     }
-    // Probe one extra row, without normalizing it, to distinguish an exact-fit
-    // snapshot from a truncated result. Never acknowledge a partial snapshot.
-    if snapshot && rows.len() == query.max_rows() {
-        cancellation.ensure_not_requested()?;
-        let extra = result_set
-            .next()
-            .transpose()
-            .map_err(|error| OracleAdapterError::Fetch(error.into()))?;
-        cancellation.ensure_not_requested()?;
-        if extra.is_some() {
-            return Err(OracleAdapterError::SnapshotRowLimit {
-                limit: query.max_rows(),
-            });
-        }
-    }
     drop(result_set);
     cancellation.native_call(|| finish_session(&session.connection))?;
 
@@ -647,6 +648,19 @@ fn push_bounded_row(
     max_rows: usize,
     limit: u64,
 ) -> Result<bool, OracleAdapterError> {
+    if let Some(previous) = rows.last()
+        && !(matches!(previous.cursor, Cursor::Snapshot) && matches!(row.cursor, Cursor::Snapshot))
+        && row
+            .cursor
+            .compare(&previous.cursor)
+            .map_err(|_| OracleAdapterError::InvalidCursorValue)?
+            != std::cmp::Ordering::Greater
+    {
+        return Err(OracleAdapterError::InvalidCursorValue);
+    }
+    if rows.len() >= max_rows {
+        return Ok(false);
+    }
     let next_payload = payload_bytes
         .saturating_add(
             row.row
@@ -692,6 +706,57 @@ fn push_bounded_row(
     *payload_bytes = next_payload;
     rows.push(row);
     Ok(true)
+}
+
+#[cfg(test)]
+mod source_boundary_tests {
+    use super::*;
+
+    fn row(id: i64) -> CursorRow {
+        CursorRow {
+            row: Row {
+                values: vec![CellValue::Int64(id)],
+            },
+            cursor: ScalarValue::Int64(id).into(),
+        }
+    }
+
+    /// Scenario: A duplicated key is the successor of a full row-limited Oracle page.
+    /// Guarantees: Validation happens before deferral, and a valid successor is not appended.
+    #[test]
+    fn row_limit_requires_a_strict_successor() {
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        assert!(push_bounded_row(&mut rows, &mut bytes, row(1), 1, 4096).unwrap());
+        let retained = bytes;
+        assert!(matches!(
+            push_bounded_row(&mut rows, &mut bytes, row(1), 1, 4096),
+            Err(OracleAdapterError::InvalidCursorValue)
+        ));
+        assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 1, 4096).unwrap());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(bytes, retained);
+    }
+
+    /// Scenario: Exactly one normalized row fits but a second row shares its cursor.
+    /// Guarantees: Duplicate detection precedes the byte cut and leaves the prefix unchanged.
+    #[test]
+    fn byte_limit_requires_a_strict_successor() {
+        let limit = size_of::<Vec<CursorRow>>() as u64 + row(1).row.normalized_size()
+            - size_of::<Row>() as u64
+            + size_of::<CursorRow>() as u64;
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        assert!(push_bounded_row(&mut rows, &mut bytes, row(1), 2, limit).unwrap());
+        let retained = bytes;
+        assert!(matches!(
+            push_bounded_row(&mut rows, &mut bytes, row(1), 2, limit),
+            Err(OracleAdapterError::InvalidCursorValue)
+        ));
+        assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 2, limit).unwrap());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(bytes, retained);
+    }
 }
 
 /// Binds the committed cursor through Oracle named parameters.
@@ -769,11 +834,6 @@ pub(super) fn parse_cursor_timestamp(text: &str) -> Result<Timestamp, OracleAdap
 pub(super) fn normalize_cursor_timestamp(text: &str) -> Result<String, OracleAdapterError> {
     cursor_bind_timestamp(parse_cursor_timestamp(text)?, &OracleType::TimestampTZ(9))
         .map(|timestamp| timestamp.to_string())
-}
-
-/// Uses a lossless universal bind only for the one metadata-discovery execution.
-fn discovery_cursor_bind_type() -> OracleType {
-    OracleType::TimestampTZ(9)
 }
 
 /// Reuses Oracle's exact cursor-column type and precision for normal polling.
@@ -860,42 +920,45 @@ fn cursor_bind_timestamp(
 fn ensure_prepared(
     session: &mut OracleSession,
     query: &CompiledQuery,
-    cursor: &Cursor,
+    _cursor: &Cursor,
     cancellation: &OracleCancellation,
 ) -> Result<(), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
-    if session.prepared.is_some() {
-        return Ok(());
-    }
-
-    // Oracle exposes result metadata only after execution. Discover it with a
-    // one-row buffer, then rebuild once with a byte-bounded fetch array.
+    // Oracle caches metadata on reused statements. Describe the source anew on
+    // every page so views and wildcard projections cannot silently change shape.
+    let source =
+        otel_arrow_dfe_scraper::database::SourceQuery::compile(query, DatabaseSystem::Oracle)?;
     let mut discovery = session
         .connection
-        .statement(query.sql())
+        .statement(source.sql())
         .fetch_array_size(1)
         .prefetch_rows(0)
         .build()
         .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
-    let discovery_type = discovery_cursor_bind_type();
-    let result_set = bind_cursor(
-        &mut discovery,
-        query,
-        cursor,
-        Some(&discovery_type),
-        cancellation,
-    )?;
+    let result_set = cancellation.native_call(|| {
+        discovery
+            .query_named(&[])
+            .map_err(|error| OracleAdapterError::Query(error.into()))
+    })?;
     let (columns, types) = result_metadata(result_set.column_info())?;
     let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
     let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;
     drop(result_set);
     drop(discovery);
 
+    if let Some(prepared) = &session.prepared {
+        if prepared.columns != columns || prepared.types != types {
+            return Err(OracleAdapterError::ResultMetadataChanged);
+        }
+        return Ok(());
+    }
+
     cancellation.ensure_not_requested()?;
     let fetch_rows = bounded_fetch_array_size(&types, query);
+    let sql = source.paged_sql(query, &columns)?;
     let statement = session
         .connection
-        .statement(query.sql())
+        .statement(&sql)
         .fetch_array_size(fetch_rows)
         // Prefetch owns a second native row buffer outside the calculated byte budget.
         .prefetch_rows(0)
@@ -963,19 +1026,7 @@ fn validate_cursor_columns(
         .iter()
         .map(|column| (column.name().to_owned(), column.oracle_type().clone()))
         .collect::<Vec<_>>();
-    let plan = validate_described_watermark(&described, query.watermark())?;
-    let (first, second) = match plan {
-        CursorColumns::Snapshot => return Ok(plan),
-        CursorColumns::Composite {
-            timestamp,
-            tie_breaker,
-        } => (timestamp, Some(tie_breaker)),
-        CursorColumns::Scalar { index, .. } => (index, None),
-    };
-    if columns[first].nullable() || second.is_some_and(|index| columns[index].nullable()) {
-        return Err(OracleAdapterError::NullableCursorColumn);
-    }
-    Ok(plan)
+    validate_described_watermark(&described, query.watermark())
 }
 
 fn validate_described_watermark(
@@ -1555,6 +1606,9 @@ impl From<std::io::Error> for OracleIoError {
 /// Expose only the operation and numeric codes, never native Debug/source chains.
 #[derive(thiserror::Error)]
 pub enum OracleAdapterError {
+    /// The common source-query contract was violated.
+    #[error(transparent)]
+    SourceQuery(#[from] otel_arrow_dfe_scraper::database::SourceQueryError),
     /// The bound provider could not supply a usable credential.
     #[error("Oracle authentication provider has no usable credential")]
     CredentialUnavailable,

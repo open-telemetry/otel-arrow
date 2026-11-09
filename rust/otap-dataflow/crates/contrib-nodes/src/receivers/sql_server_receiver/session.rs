@@ -4,7 +4,7 @@
 //! Parameterized metadata discovery and incremental consumption of Tiberius streams.
 
 use super::{
-    SqlServerError as Error, SqlServerParameter, SqlServerStatement,
+    SqlServerError as Error, SqlServerStatement,
     data::{ColumnPlan, MAX_COLUMNS, MAX_METADATA_BYTES, NativeType, ResultPlan},
 };
 use futures::{
@@ -45,22 +45,9 @@ pub(super) async fn describe<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let declarations = statement
-        .parameters()
-        .iter()
-        .enumerate()
-        .map(|(index, role)| {
-            let kind = match role {
-                SqlServerParameter::Timestamp => "datetime2(7)",
-                _ => "bigint",
-            };
-            format!("@P{} {kind}", index + 1)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
     let mut request = tiberius::Query::new(DESCRIBE);
-    request.bind(statement.driver_sql());
-    request.bind(declarations);
+    request.bind(statement.canonical_sql());
+    request.bind(Option::<&str>::None);
     // Adapter-owned state survives an outer timeout dropping even the submission future.
     *response_pending = true;
     let mut stream = response_result(request.query(client).await, response_pending)?;
@@ -144,7 +131,7 @@ where
         }
     }
     *response_pending = false;
-    ResultPlan::new(columns, query)
+    ResultPlan::new(columns, query, statement)
 }
 
 pub(super) async fn fetch<S>(
@@ -164,6 +151,8 @@ where
     let mut rows = Vec::new();
     let mut bytes = 0u64;
     let snapshot = matches!(cursor, Cursor::Snapshot);
+    let mut previous = cursor.clone();
+    let mut successor_seen = false;
     loop {
         let Some(item) = response_result(stream.try_next().await, response_pending)? else {
             *response_pending = false;
@@ -174,12 +163,24 @@ where
                 plan.check_columns(metadata.columns())?
             }
             QueryItem::Row(row) if row.result_index() == 0 => {
+                if successor_seen {
+                    return Err(Error::Driver);
+                }
+                let next = plan.row_cursor(&row)?;
+                if !snapshot
+                    && next.compare(&previous).map_err(|_| Error::Cursor)?
+                        != std::cmp::Ordering::Greater
+                {
+                    return Err(Error::Cursor);
+                }
                 if rows.len() == query.max_rows() {
-                    return Err(if snapshot {
-                        Error::SnapshotLimit
-                    } else {
-                        Error::Driver
-                    });
+                    if snapshot {
+                        return Err(Error::SnapshotLimit);
+                    }
+                    // TOP bounds this to the last row. Drain the bounded response
+                    // tail rather than cancelling a query that may already be done.
+                    successor_seen = true;
+                    continue;
                 }
                 // Tiberius already allocated the native row. This bounds the normalized
                 // page, not driver-internal buffers or process RSS.
@@ -226,6 +227,7 @@ where
                     });
                 }
                 bytes += row_bytes;
+                previous = next;
                 rows.push(row);
                 if rows.len() % query.fetch_size_rows() == 0 {
                     tokio::task::yield_now().await;

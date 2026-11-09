@@ -40,9 +40,6 @@ groups:
               query:
                 statement: >
                   SELECT ID, EVENT_TS, PAYLOAD FROM dbo.OTAP_SQL_EVENTS
-                  WHERE EVENT_TS > @last_timestamp
-                    OR (EVENT_TS = @last_timestamp AND ID > @last_id)
-                  ORDER BY EVENT_TS ASC, ID ASC
                 interval: 1m
                 timeout: 30s
                 fetch_size_rows: 100

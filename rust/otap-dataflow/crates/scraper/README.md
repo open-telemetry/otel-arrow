@@ -30,11 +30,11 @@ A concrete vendor receiver supplies the adapter and registers the node.
 | Database contracts | Configuration validation, query plans, adapter interfaces, row/cursor/page types, and size-accounting helpers |
 | Checkpointing | Atomic file storage with platform-dependent durability and exclusive ownership of a checkpoint identity |
 | Polling | Scheduling, OTLP mapping, backpressure, ACK/NACK handling, checkpoint integration, lifecycle, and telemetry |
-| Vendor receiver | Native driver, connection/authentication settings, SQL validation, type conversion, and node registration |
+| Vendor receiver | Native driver, connection/authentication settings, result discovery, type conversion, and node registration |
 
 The goal is to share polling, delivery, checkpointing, and resource-management
 behavior without putting every database driver into one receiver. A vendor
-receiver owns its connection configuration, native driver, SQL dialect checks,
+receiver owns its connection configuration, native driver, native bindings,
 and component registration. The shared crate must not depend on those vendor
 implementations.
 
@@ -63,7 +63,7 @@ Existing Dataflow host
 
 | Responsibility | Shared scraper | Vendor receiver / host |
 | --- | --- | --- |
-| Query policy | Common limits and validated plan | Operator-authored SQL and dialect-specific validation |
+| Query policy | One native source-query compiler, read-only policy, and generated keyset paging | Native SQL preparation and result metadata |
 | Cursor parameters | Logical bind names and a typed scalar or composite cursor | Binding through the driver's parameter API |
 | Row representation | Database-neutral values, metadata, and page contract | Native type inspection and precision-preserving conversion |
 | Timing and lifecycle | Common scheduling, control-message handling, and worker cleanup coordination | Native timeout, cancellation, and connection cleanup |
@@ -99,8 +99,9 @@ cargo test -p otel-arrow-dfe-scraper
 
 A receiver implementation uses the library by constructing and validating
 `PollingConfig`, `WatermarkConfig`, `CheckpointConfig`, and `OutputConfig`,
-then passing them with its SQL to `CompiledQuery::compile`. Its adapter
-implements `DriverAdapter` to execute that plan.
+then passing them with source-only SQL to `CompiledQuery::compile`. The adapter
+uses `SourceQuery::compile` with its database dialect before native preparation,
+resolves output names/types, and executes receiver-generated paging SQL.
 
 The minimal shared polling block is:
 
@@ -290,19 +291,18 @@ timestamps are not. Timestamp formats match the composite timestamp parser;
 timezone-less values have UTC semantics. Floating-point, decimal, boolean,
 binary, and null cursors are not supported by this scalar contract.
 
-For a dialect using colon-prefixed named parameters, an illustrative query is:
+An illustrative scalar source query is:
 
 ```sql
 SELECT EVENT_ID, MESSAGE
 FROM EVENTS
-WHERE EVENT_ID > :last_key
-ORDER BY EVENT_ID ASC
 ```
 
-The adapter must bind the native declared type, validate the complete read-only
-keyset predicate and ordering, check metadata and nullability, and reject any
-unsupported type or collation. String ordering must agree with Rust UTF-8 byte
-ordering, including trailing spaces. SQL text interpolation is never permitted.
+The receiver generates the exclusive cursor predicate and ascending ordering.
+Adapters bind the declared native type, validate output metadata and actual
+cursor values, and reject unsupported types or collations. String ordering
+must agree with Rust UTF-8 byte ordering, including trailing spaces. Cursor
+values are never interpolated into SQL text.
 
 The initial value is an **exclusive** lower bound, so a source row equal to it
 is not collected. Scalar timestamps must be unique; use composite mode when
@@ -364,33 +364,97 @@ infer OTLP fields from matching column names. Richer mapping is future work.
 
 ### SQL Validation
 
-`CompiledQuery::compile` currently performs only these shared SQL checks:
+Oracle, PostgreSQL, and SQL Server use one `SourceQuery` contract. There is no
+strict/relaxed flag or legacy execution fallback. `query.statement` describes
+the source result, not the paging algorithm. It must not contain handwritten
+cursor parameters or predicates referring to them.
 
-1. The statement is at most 16 KiB, measured in UTF-8 bytes.
-2. Its first whitespace-delimited word is `SELECT`, ignoring ASCII case.
+Allowed native relational SQL includes joins, views, CTEs, subqueries, arbitrary
+`WHERE` expressions, casts and functions, datetime literals, grouping, window
+functions, and set operations. Comments, quoted identifiers, wildcards, and one
+final semicolon are accepted. There is no function allowlist, direct-column-only
+projection rule, join-count restriction, or mandatory catalog/index proof.
+The selected dialect must be parseable and composable; native preparation still
+checks database syntax, permissions, and result types.
 
-These checks do not prove SQL is safe. Before executing SQL or starting polling,
-each adapter's `validate_query` must apply its dialect's rules to:
+For example, PostgreSQL source SQL can include:
 
-- Require one read-only SELECT; reject extra statements and row-locking forms
-  such as `SELECT ... FOR UPDATE`.
-- Verify both cursor binds are real parameters used by a complete keyset
-  predicate that selects only rows strictly after the supplied cursor.
-- Require deterministic ascending timestamp/tie-breaker ordering consistent
-  with the predicate and selected cursor columns.
-- Require non-null cursor columns with supported UTC timestamp and signed
-  `int64` tie-breaker types.
+```sql
+SELECT e.event_ts, e.event_id, COALESCE(c.name, 'unknown') AS customer_name
+FROM public.events e
+LEFT JOIN public.customers c ON c.customer_id = e.customer_id
+WHERE e.created_at >= TIMESTAMPTZ '2026-11-01 00:00:00+00'
+  AND (e.status IN ('ready', 'retry') OR e.priority >= 5)
+```
 
-Reject unsupported or ambiguous forms. Bind cursor values as parameters, never
-SQL string concatenation. A least-privileged read-only account is required, but
-does not replace adapter validation.
+In scalar/composite modes, the receiver wraps the complete source result in an
+outer, parameterized keyset predicate and ascending cursor order. Cursor
+columns are resolved from live result names/types, including aliases and
+expressions. A final source `ORDER BY` is optional and, if supplied, must match
+the cursor order. Top-level incremental `TOP`, `LIMIT`, `OFFSET`, and `FETCH`
+are rejected because paging belongs to the receiver. Nested source operations
+retain their native meaning; filtering is not pushed through aggregates or
+set operations by the receiver.
+
+Snapshots execute the native source unchanged. They may use their own ordering,
+limits, duplicate rows, and nullable values, but the complete requested result
+must fit the receiver's row and byte bounds.
+
+The shared parser rejects additional executable statements, writes (including
+data-modifying CTEs), `INTO`, row locks/isolation overrides, unbound parameters,
+and non-tabular clauses that cannot be composed safely. Input is limited to
+16 KiB and bounded parser/expression nesting. Result columns must have unique,
+nonempty names and supported native types; use aliases or explicit casts where
+necessary.
+
+Incremental cursors must be non-null and unique in the **final result**, not
+just in the driving table. Nullable metadata is accepted: generated predicates
+surface null keys for explicit failure instead of silently filtering them out.
+Adapters inspect a successor cursor before cutting at row or normalized-byte
+limits. Duplicate/backward cursors fail before a prefix is returned. The
+controller checks every returned cursor before encoding can make a further
+byte-limited cut.
+
+These checks do not prove future source behavior. Late commits, changing join
+or filter eligibility, volatile cursor expressions, and mutable aggregates can
+violate incremental delivery requirements. Use snapshots when the source
+cannot supply stable, replayable positions. SQL validation is not a sandbox
+for functions or views with external effects: dedicated least-privileged
+accounts and database-enforced read-only execution remain necessary. Row
+limits do not bound database CPU or I/O for a join, sort, or aggregation.
+
+### Source-query migration
+
+The source-query contract changes configuration fingerprints. Existing
+incompatible checkpoints are rejected, never ignored or automatically reset.
+
+1. Stop the old receiver and confirm its database workers and downstream
+   delivery have stopped. Preserve its checkpoint and ownership files.
+2. Remove manually authored cursor predicates/parameters from the SQL, retaining
+   business filters. Keep watermark result-column definitions and types. Remove
+   conflicting outer limits/order; the receiver generates paging.
+3. Review whether the new source describes the same stream. For equivalent
+   source semantics, take the **last durably committed cursor**, not a fetched
+   row or a pending batch, as the new initial position. Preserve both components
+   for composite mode and the exact declared type/value for scalar mode.
+4. Configure a fresh checkpoint directory/identity and that reviewed initial
+   position. The logical `source_id` may remain unchanged when the stream is
+   unchanged. Do not edit stored fingerprints/checksums or delete old progress
+   to suppress compatibility errors.
+5. Start only the replacement receiver. Its first acknowledged page establishes
+   the new checkpoint identity after the migrated exclusive cursor. Keep the
+   old state for audit/recovery. Snapshots have no row cursor to migrate and
+   resume periodic full observations.
+
+Changing filters, joins, cursor meaning, or output semantics may instead define
+a new stream. Choose its starting position deliberately; copying an old cursor
+does not make a changed stream lossless.
 
 ### Authentication and TLS
 
 Operators must provision a dedicated, least-privileged account with only the
 permissions needed for collection. The receiver does not audit account grants
-or roles. The Oracle adapter additionally uses read-only transactions and
-validates supported SQL forms.
+or roles. Oracle and PostgreSQL additionally use read-only transactions.
 
 There are no connection, password, TLS, or secret-provider fields in the shared
 configuration. These belong to the concrete receiver and capability integration.
@@ -410,9 +474,9 @@ support does not by itself implement database login.
 
 | Method / type | Responsibility |
 | --- | --- |
-| `DriverAdapter::system` | Return a stable database-system identity. `DatabaseSystem` currently contains only `Oracle`; that enum value does not include an Oracle driver. |
+| `DriverAdapter::system` | Return the stable Oracle, SQL Server, or PostgreSQL identity without introducing driver dependencies into the shared crate. |
 | `begin_operation` | Reset operation cancellation state and return a cancellation handle before native work begins. |
-| `validate_query` | Validate single-statement/read-only SQL, cursor binds, keyset predicate, ordering, and non-null cursor metadata before polling. |
+| `validate_query` | Compile the common source contract, discover native result metadata, and generate typed cursor paging before polling. |
 | `execute` | Execute the validated query with bound cursor parameters and return a bounded `QueryPage` strictly after the committed cursor. |
 | `should_pause_source` | Classify deterministic source-local failures that should pause polling without terminating the pipeline; the default is `false`. |
 | `shutdown` | Stop workers and destroy native resources off the pipeline thread. The default is a no-op; an adapter owning such resources must override it. |

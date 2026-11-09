@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{SqlServerConnectionConfig, SqlServerParameter as Parameter, SqlServerReceiverConfig};
-use otel_arrow_dfe_scraper::database::{CompiledWatermark, MAX_QUERY_BYTES, ScalarValue};
+use otel_arrow_dfe_scraper::database::{
+    ColumnMetadata, CompiledWatermark, MAX_QUERY_BYTES, ScalarValue,
+};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -15,8 +17,6 @@ fn composite() -> Value {
         },
         "query": {
             "statement": "SELECT EVENT_ID, EVENT_TS, PAYLOAD FROM dbo.EVENTS \
-                WHERE EVENT_TS > @last_timestamp \
-                OR (EVENT_TS = @last_timestamp AND EVENT_ID > @last_id) \
                 ORDER BY EVENT_TS ASC, EVENT_ID ASC",
             "max_rows_per_poll": 1000,
             "max_batch_bytes": "4MiB"
@@ -42,9 +42,8 @@ fn composite() -> Value {
 
 fn scalar(initial: Value) -> Value {
     let mut config = composite();
-    config["query"]["statement"] = json!(
-        "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID"
-    );
+    config["query"]["statement"] =
+        json!("SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS ORDER BY EVENT_ID");
     config["watermark"] = json!({
         "mode": "scalar", "column": "EVENT_ID", "bind": "last_key", "initial": initial
     });
@@ -64,6 +63,29 @@ fn parse(value: Value) -> SqlServerReceiverConfig {
 
 fn rejects(value: Value) {
     assert!(serde_json::from_value::<SqlServerReceiverConfig>(value).is_err());
+}
+
+fn driver_sql(config: &SqlServerReceiverConfig) -> String {
+    let names = match config.query().watermark() {
+        CompiledWatermark::Snapshot => vec!["result"],
+        CompiledWatermark::Scalar(cursor) => vec![cursor.column.as_str()],
+        CompiledWatermark::Composite(cursor) => vec![
+            cursor.timestamp_column.as_str(),
+            cursor.tie_breaker_column.as_str(),
+        ],
+    };
+    let columns = names
+        .into_iter()
+        .map(|name| ColumnMetadata {
+            name: name.into(),
+            source_type: "bigint".into(),
+            nullable: true,
+        })
+        .collect::<Vec<_>>();
+    config
+        .statement()
+        .driver_sql(config.query(), &columns)
+        .unwrap()
 }
 
 /// Scenario: The documented composite query omits optional operating settings.
@@ -89,7 +111,7 @@ fn composite_defaults_and_native_binding_plan() {
     assert_eq!(config.query().max_batch_bytes(), 4 * 1024 * 1024);
     assert_eq!(config.query().catch_up().max_pages, 32);
     assert_eq!(config.checkpoint().max_consecutive_failures, 5);
-    assert_eq!(config.page_limit(), 1000);
+    assert_eq!(config.page_limit(), 1001);
     assert_eq!(
         config.statement().parameters(),
         [
@@ -98,14 +120,13 @@ fn composite_defaults_and_native_binding_plan() {
             Parameter::PageLimit
         ]
     );
-    assert_eq!(
-        config.statement().driver_sql(),
-        "SELECT TOP (@P3) EVENT_ID , EVENT_TS , PAYLOAD FROM dbo . EVENTS \
-         WHERE EVENT_TS > @P1 OR ( EVENT_TS = @P1 AND EVENT_ID > @P2 ) \
-         ORDER BY EVENT_TS ASC , EVENT_ID ASC"
-    );
-    assert!(config.query().sql().contains("@last_timestamp"));
-    assert!(!config.statement().driver_sql().contains("2026"));
+    let sql = driver_sql(&config);
+    assert!(sql.contains("SELECT TOP (@P3) * FROM ("));
+    assert!(sql.contains("[EVENT_TS] > @P1"));
+    assert!(sql.contains("[EVENT_ID] > @P2"));
+    assert!(sql.contains("[EVENT_ID] IS NULL"));
+    assert!(!config.query().sql().contains("@last_timestamp"));
+    assert!(!sql.contains("2026"));
 }
 
 /// Scenario: Snapshot, scalar, and composite queries omit fetch size at small and large row limits.
@@ -178,10 +199,9 @@ fn scalar_modes_preserve_declared_types() {
             config.statement().parameters(),
             [expected, Parameter::PageLimit]
         );
-        assert_eq!(
-            config.statement().driver_sql(),
-            "SELECT TOP (@P2) EVENT_ID , PAYLOAD FROM dbo . EVENTS WHERE EVENT_ID > @P1 ORDER BY EVENT_ID"
-        );
+        let sql = driver_sql(&config);
+        assert!(sql.contains("TOP (@P2)"));
+        assert!(sql.contains("[EVENT_ID] > @P1"));
         assert_eq!(
             config.query().output().timestamp_column.is_some(),
             expected == Parameter::Timestamp
@@ -201,7 +221,7 @@ fn scalar_modes_preserve_declared_types() {
 }
 
 /// Scenario: Snapshot queries use projections, expressions, aggregates, filtering, and grouping.
-/// Guarantees: Snapshots bind only a limit-plus-one probe and never acquire a source cursor.
+/// Guarantees: Snapshots preserve native SQL without binds and use a bounded driver overflow probe.
 #[test]
 fn snapshot_queries_use_complete_result_probe() {
     for statement in [
@@ -212,13 +232,8 @@ fn snapshot_queries_use_complete_result_probe() {
     ] {
         let config = parse(snapshot(statement));
         assert_eq!(config.page_limit(), 1001);
-        assert_eq!(config.statement().parameters(), [Parameter::PageLimit]);
-        assert!(
-            config
-                .statement()
-                .driver_sql()
-                .starts_with("SELECT TOP (@P1)")
-        );
+        assert!(config.statement().parameters().is_empty());
+        assert_eq!(driver_sql(&config), statement);
         assert!(matches!(
             config.query().watermark(),
             CompiledWatermark::Snapshot
@@ -228,9 +243,9 @@ fn snapshot_queries_use_complete_result_probe() {
 }
 
 /// Scenario: Decimal casts use supported precision and scale, with or without an ARRAY modifier.
-/// Guarantees: Scalar decimal casts still prepare, but array casts fail even inside expressions.
+/// Guarantees: Cast syntax is retained verbatim for native validation, never silently normalized to another type.
 #[test]
-fn rejects_decimal_array_casts() {
+fn preserves_native_cast_syntax() {
     for expression in [
         "CAST(AMOUNT AS decimal(19,4))",
         "CAST(AMOUNT AS decimal(1,0))",
@@ -244,17 +259,19 @@ fn rejects_decimal_array_casts() {
             .replace("decimal(19,4)", "decimal(19,4) ARRAY")
             .replace("decimal(1,0)", "decimal(1,0) ARRAY")
             .replace("decimal(38,38)", "decimal(38,38) ARRAY");
-        assert!(
-            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&array_statement)).is_err(),
-            "accepted unsupported array cast: {array_statement}"
+        assert_eq!(
+            parse(snapshot(&array_statement))
+                .statement()
+                .canonical_sql(),
+            array_statement
         );
     }
 }
 
-/// Scenario: Every allowlisted function is called with zero through three arguments.
-/// Guarantees: COALESCE accepts two or more, ISNULL exactly two, and other functions exactly one.
+/// Scenario: Native functions are supplied with different argument lists.
+/// Guarantees: Offline preparation preserves calls for SQL Server to validate without a function allowlist.
 #[test]
-fn validates_supported_function_arities() {
+fn delegates_function_arities_to_database() {
     for name in [
         "ABS",
         "COALESCE",
@@ -273,29 +290,20 @@ fn validates_supported_function_arities() {
         "coalesce",
         "isnull",
     ] {
-        for (count, arguments) in ["", "EVENT_ID", "EVENT_ID, 1", "EVENT_ID, 1, 2"]
-            .into_iter()
-            .enumerate()
-        {
+        for arguments in ["", "EVENT_ID", "EVENT_ID, 1", "EVENT_ID, 1, 2"] {
             let statement = format!("SELECT {name}({arguments}) AS RESULT FROM dbo.EVENTS");
-            let expected = match name.to_ascii_uppercase().as_str() {
-                "COALESCE" => count >= 2,
-                "ISNULL" => count == 2,
-                _ => count == 1,
-            };
             assert_eq!(
-                serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_ok(),
-                expected,
-                "unexpected preparation result for: {statement}"
+                parse(snapshot(&statement)).statement().canonical_sql(),
+                statement
             );
         }
     }
 }
 
 /// Scenario: Function calls contain wildcards or invalid nested calls.
-/// Guarantees: Only single-argument COUNT wildcards pass, and nested calls also enforce arity.
+/// Guarantees: Calls remain unchanged for native arity and type checks.
 #[test]
-fn validates_wildcard_and_nested_function_arities() {
+fn preserves_wildcard_and_nested_function_calls() {
     for expression in ["COUNT(*)", "COUNT_BIG(*)", "ABS(ABS(EVENT_ID))"] {
         _ = parse(snapshot(&format!(
             "SELECT {expression} AS RESULT FROM dbo.EVENTS"
@@ -310,9 +318,9 @@ fn validates_wildcard_and_nested_function_arities() {
         "COALESCE(EVENT_ID, ISNULL(EVENT_ID))",
     ] {
         let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
-        assert!(
-            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_err(),
-            "accepted invalid function call: {statement}"
+        assert_eq!(
+            parse(snapshot(&statement)).statement().canonical_sql(),
+            statement
         );
     }
 }
@@ -339,7 +347,7 @@ fn accepts_snapshot_aggregate_wrappers() {
     ] {
         let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
         let config = parse(snapshot(&statement));
-        assert_eq!(config.statement().parameters(), [Parameter::PageLimit]);
+        assert!(config.statement().parameters().is_empty());
         assert_eq!(config.page_limit(), 1001);
     }
     _ = parse(snapshot(
@@ -350,9 +358,9 @@ fn accepts_snapshot_aggregate_wrappers() {
 }
 
 /// Scenario: An aggregate contains another aggregate directly or through scalar wrappers.
-/// Guarantees: Allowing wrappers never permits nested aggregates at any argument depth.
+/// Guarantees: Offline preparation cannot rewrite invalid aggregate calls into different native SQL.
 #[test]
-fn rejects_nested_aggregate_wrappers() {
+fn preserves_nested_aggregate_syntax() {
     for expression in [
         "SUM(AVG(AMOUNT))",
         "SUM(ABS(AVG(AMOUNT)))",
@@ -364,17 +372,17 @@ fn rejects_nested_aggregate_wrappers() {
         "SUM(CAST(AVG(AMOUNT) AS decimal(19,4)))",
     ] {
         let statement = format!("SELECT {expression} AS RESULT FROM dbo.EVENTS");
-        assert!(
-            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_err(),
-            "accepted nested aggregate: {statement}"
+        assert_eq!(
+            parse(snapshot(&statement)).statement().canonical_sql(),
+            statement
         );
     }
 }
 
-/// Scenario: Scalar wrappers appear where aggregates are disallowed by the query contract.
-/// Guarantees: Scalar/composite projections and snapshot GROUP BY cannot hide an aggregate.
+/// Scenario: Source expressions contain aggregates in several SQL contexts.
+/// Guarantees: Native validity is delegated to SQL Server rather than a second aggregate grammar.
 #[test]
-fn rejects_aggregate_wrappers_in_nonaggregate_contexts() {
+fn delegates_aggregate_contexts_to_database() {
     for expression in [
         "COALESCE(SUM(EVENT_ID), 0)",
         "ABS(COALESCE(SUM(EVENT_ID), 0))",
@@ -385,15 +393,12 @@ fn rejects_aggregate_wrappers_in_nonaggregate_contexts() {
                 .unwrap()
                 .replace("PAYLOAD", &format!("{expression} AS TOTAL"));
             value["query"]["statement"] = json!(statement);
-            assert!(
-                serde_json::from_value::<SqlServerReceiverConfig>(value).is_err(),
-                "accepted aggregate in incremental query: {statement}"
-            );
+            assert_eq!(parse(value).statement().canonical_sql(), statement);
         }
         let statement = format!("SELECT COUNT(*) AS TOTAL FROM dbo.EVENTS GROUP BY {expression}");
-        assert!(
-            serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&statement)).is_err(),
-            "accepted aggregate in GROUP BY: {statement}"
+        assert_eq!(
+            parse(snapshot(&statement)).statement().canonical_sql(),
+            statement
         );
     }
 }
@@ -406,12 +411,10 @@ fn rewriting_respects_literals_and_brackets() {
     value["query"]["statement"] = json!(
         "SELECT [EVENT_ID], [EVENT_TS], N'@last_timestamp; -- /* ''x''' AS MESSAGE, \
          [payload@last_id] FROM [audit schema].[event]]rows] \
-         WHERE [EVENT_TS] > @last_timestamp \
-         OR ([EVENT_TS] = @last_timestamp AND [EVENT_ID] > @last_id) \
          ORDER BY [EVENT_TS], [EVENT_ID]"
     );
     let config = parse(value);
-    let sql = config.statement().driver_sql();
+    let sql = driver_sql(&config);
     assert!(sql.contains("N'@last_timestamp; -- /* ''x'''"));
     assert!(sql.contains("[payload@last_id]"));
     assert!(sql.contains("[event]]rows]"));
@@ -433,45 +436,23 @@ fn logical_bind_slot_collisions_are_unambiguous() {
             .replace("@last_id", "@P1")
     );
     let config = parse(value);
-    assert!(config.statement().driver_sql().contains("EVENT_TS > @P1"));
-    assert!(config.statement().driver_sql().contains("EVENT_ID > @P2"));
+    assert!(driver_sql(&config).contains("[EVENT_TS] > @P1"));
+    assert!(driver_sql(&config).contains("[EVENT_ID] > @P2"));
 }
 
-/// Scenario: A statement uses extra operations, hints, external sources, or unsupported result shapes.
-/// Guarantees: Unsafe or ambiguous SQL never reaches a driver binding plan.
+/// Scenario: SQL contains extra statements, writes, parameters, locks, or non-tabular clauses.
+/// Guarantees: The shared read-only statement boundary applies before native preparation.
 #[test]
 fn rejects_unsupported_statement_shapes() {
     for statement in [
         "SELECT EVENT_ID FROM dbo.EVENTS; DELETE FROM dbo.EVENTS",
         "SELECT EVENT_ID FROM dbo.EVENTS;;",
-        "SELECT EVENT_ID FROM dbo.EVENTS -- comment",
-        "SELECT /* comment */ EVENT_ID FROM dbo.EVENTS",
         "SELECT EVENT_ID INTO dbo.COPY FROM dbo.EVENTS",
         "SELECT @out = EVENT_ID FROM dbo.EVENTS",
-        "SELECT * FROM dbo.EVENTS",
-        "SELECT e.* FROM dbo.EVENTS AS e",
-        "SELECT DISTINCT EVENT_ID FROM dbo.EVENTS",
-        "SELECT ALL EVENT_ID FROM dbo.EVENTS",
-        "SELECT TOP (1) EVENT_ID FROM dbo.EVENTS",
-        "SELECT EVENT_ID FROM dbo.EVENTS ORDER BY EVENT_ID OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY",
         "SELECT EVENT_ID FROM dbo.EVENTS WITH (NOLOCK)",
         "SELECT EVENT_ID FROM dbo.EVENTS WITH (UPDLOCK, HOLDLOCK)",
         "SELECT EVENT_ID FROM dbo.EVENTS (READPAST)",
-        "SELECT EVENT_ID FROM server.db.dbo.EVENTS",
-        "SELECT EVENT_ID FROM dbo.EVENTS AS e",
-        "SELECT EVENT_ID FROM dbo.EVENTS JOIN dbo.OTHER ON 1 = 1",
-        "SELECT EVENT_ID FROM dbo.EVENTS, dbo.OTHER",
-        "SELECT EVENT_ID FROM (SELECT EVENT_ID FROM dbo.EVENTS) AS t",
-        "SELECT EVENT_ID FROM dbo.EVENTS UNION ALL SELECT EVENT_ID FROM dbo.EVENTS",
-        "WITH t AS (SELECT EVENT_ID FROM dbo.EVENTS) SELECT EVENT_ID FROM t",
-        "SELECT dbo.customer_function(PAYLOAD) AS MESSAGE FROM dbo.EVENTS",
-        "SELECT NEXT VALUE FOR dbo.SEQ AS EVENT_ID FROM dbo.EVENTS",
         "SELECT EVENT_ID FROM dbo.EVENTS FOR JSON AUTO",
-        "SELECT EVENT_ID FROM OPENQUERY(remote, 'SELECT EVENT_ID FROM EVENTS')",
-        "SELECT EVENT_ID FROM #EVENTS",
-        "SELECT EVENT_ID FROM EVENTS",
-        "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID IN (SELECT EVENT_ID FROM dbo.OTHER)",
-        "SELECT SUM(EVENT_ID) OVER () AS TOTAL FROM dbo.EVENTS",
         "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @undeclared",
         "SELECT EVENT_ID FROM dbo.EVENTS OPTION (MAXDOP 1)",
         "SELECT EVENT_ID FROM dbo.EVENTS; EXEC sp_who",
@@ -489,7 +470,7 @@ fn rejects_unsupported_statement_shapes() {
 fn rejects_double_equals_operators() {
     for mut raw in [
         snapshot("SELECT EVENT_ID FROM dbo.EVENTS WHERE PAYLOAD = 'SENSITIVE'"),
-        composite(),
+        snapshot("SELECT EVENT_ID FROM dbo.EVENTS WHERE STATUS = 'SENSITIVE'"),
     ] {
         let statement = raw["query"]["statement"]
             .as_str()
@@ -509,12 +490,11 @@ fn accepts_supported_operators_and_quoted_double_equals() {
         let config = parse(snapshot(&format!(
             "SELECT [==], 'a==b' AS TEXT, N'==' AS NTEXT FROM dbo.EVENTS WHERE EVENT_ID {operator} 1"
         )));
-        let sql = config.statement().driver_sql();
+        let sql = driver_sql(&config);
         assert!(sql.contains("[==]"));
         assert!(sql.contains("'a==b'"));
         assert!(sql.contains("N'=='"));
-        let rendered = if operator == "!=" { "<>" } else { operator };
-        assert!(sql.contains(&format!("EVENT_ID {rendered} 1")));
+        assert!(sql.contains(&format!("EVENT_ID {operator} 1")));
     }
 }
 
@@ -554,49 +534,29 @@ fn accepts_complete_statements_with_quoted_end_tokens() {
     let expected = parse(snapshot(statement));
     for suffix in ["", ";", ";\n"] {
         let config = parse(snapshot(&format!("{statement}{suffix}")));
-        assert_eq!(
-            config.statement().driver_sql(),
-            expected.statement().driver_sql()
-        );
-        assert!(config.statement().driver_sql().contains("[END]"));
-        assert!(
-            config
-                .statement()
-                .driver_sql()
-                .contains("'END DELETE FROM dbo.EVENTS'")
-        );
-        assert!(config.statement().driver_sql().contains("N'END'"));
+        assert_eq!(driver_sql(&config), driver_sql(&expected));
+        assert!(driver_sql(&config).contains("[END]"));
+        assert!(driver_sql(&config).contains("'END DELETE FROM dbo.EVENTS'"));
+        assert!(driver_sql(&config).contains("N'END'"));
     }
 }
 
-/// Scenario: A keyset predicate or ordering resembles the required form but changes its meaning.
-/// Guarantees: No non-strict, reordered, derived, aliased, or collation-dependent cursor is accepted.
+/// Scenario: A source specifies conflicting outer ordering or the old manual bind contract.
+/// Guarantees: No compatibility fallback bypasses receiver-owned paging.
 #[test]
-fn rejects_keyset_lookalikes() {
+fn rejects_manual_paging_and_conflicting_order() {
     let base = composite();
     let sql = base["query"]["statement"].as_str().unwrap();
     for statement in [
-        sql.replace("EVENT_TS > @last_timestamp", "EVENT_TS >= @last_timestamp"),
-        sql.replace("AND EVENT_ID >", "OR EVENT_ID >"),
-        sql.replace("@last_id)", "@last_id) OR 1 = 1"),
-        sql.replace("@last_timestamp", "'@last_timestamp'"),
-        sql.replace("@last_timestamp", "@last_timestamp_extra"),
+        "SELECT EVENT_ID, EVENT_TS FROM dbo.EVENTS WHERE EVENT_TS > @last_timestamp".into(),
         sql.replace("EVENT_ID ASC", "EVENT_ID DESC"),
         sql.replace(
             "ORDER BY EVENT_TS ASC, EVENT_ID ASC",
             "ORDER BY EVENT_ID, EVENT_TS",
         ),
-        sql.replace("SELECT EVENT_ID", "SELECT EVENT_ID AS EVENT_ID"),
-        sql.replace("SELECT EVENT_ID", "SELECT EVENT_ID + 1 AS EVENT_ID"),
-        sql.replace("WHERE EVENT_TS", "WHERE event_ts"),
-        sql.replace("WHERE EVENT_TS", "WHERE \"EVENT_TS\""),
         sql.replace(
             "ORDER BY EVENT_TS ASC",
             "ORDER BY EVENT_TS COLLATE Latin1_General_BIN2 ASC",
-        ),
-        sql.replace(
-            "SELECT EVENT_ID, EVENT_TS, PAYLOAD",
-            "SELECT EVENT_ID, EVENT_TS, SUM(EVENT_ID) AS TOTAL",
         ),
     ] {
         let mut value = base.clone();
@@ -606,14 +566,13 @@ fn rejects_keyset_lookalikes() {
 }
 
 /// Scenario: Scalar predicates, key projections, or orderings violate exclusive keyset semantics.
-/// Guarantees: A scalar plan never accepts extra predicates, fake binds, or a hidden cursor alias.
+/// Guarantees: Manually authored cursor parameters cannot reintroduce a legacy path.
 #[test]
-fn rejects_scalar_lookalikes() {
+fn rejects_legacy_scalar_parameters() {
     let base = scalar(json!({"type":"int64","value":0}));
     for statement in [
         "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID >= @last_key ORDER BY EVENT_ID",
         "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID > @last_key AND STATUS = 1 ORDER BY EVENT_ID",
-        "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID > '@last_key' ORDER BY EVENT_ID",
         "SELECT EVENT_ID AS EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID",
         "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID DESC",
         "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key",
@@ -625,10 +584,10 @@ fn rejects_scalar_lookalikes() {
     }
 }
 
-/// Scenario: Selected columns are duplicated, unnamed, or exceed the fixed metadata column bound.
-/// Guarantees: The shared case-insensitive mapper receives a bounded, unambiguous result contract.
+/// Scenario: Source projections use expressions, aliases, and wildcard-compatible result discovery.
+/// Guarantees: SQL preparation does not infer a result schema before native metadata is available.
 #[test]
-fn validates_projection_names_and_count() {
+fn defers_result_schema_to_native_metadata() {
     for statement in [
         "SELECT EVENT_ID, event_id FROM dbo.EVENTS",
         "SELECT EVENT_ID, PAYLOAD AS event_id FROM dbo.EVENTS",
@@ -637,7 +596,7 @@ fn validates_projection_names_and_count() {
         "SELECT [@last_key] FROM dbo.EVENTS",
         "SELECT [bad\nname] FROM dbo.EVENTS",
     ] {
-        rejects(snapshot(statement));
+        _ = parse(snapshot(statement));
     }
     let projection = |count| {
         (0..count)
@@ -649,7 +608,7 @@ fn validates_projection_names_and_count() {
         "SELECT {} FROM dbo.EVENTS",
         projection(256)
     )));
-    rejects(snapshot(&format!(
+    _ = parse(snapshot(&format!(
         "SELECT {} FROM dbo.EVENTS",
         projection(257)
     )));
@@ -666,8 +625,8 @@ fn bounds_and_redacts_parser_failures() {
         ),
         format!(
             "SELECT {}1{} AS N FROM dbo.EVENTS",
-            "(".repeat(100),
-            ")".repeat(100)
+            "(".repeat(256),
+            ")".repeat(256)
         ),
         format!(
             "SELECT {} AS N FROM dbo.EVENTS",
@@ -685,8 +644,8 @@ fn bounds_and_redacts_parser_failures() {
     }
 }
 
-/// Scenario: Input and canonical SQL reach or exceed the shared byte limit independently.
-/// Guarantees: The exact limit passes; oversized input and canonical expansion both fail locally.
+/// Scenario: Input reaches or exceeds the shared byte limit.
+/// Guarantees: The exact limit passes without AST-rendering expansion and oversized input fails locally.
 #[test]
 fn enforces_shared_query_byte_limit() {
     let overhead = "SELECT '' AS PAYLOAD FROM dbo . EVENTS".len();
@@ -703,17 +662,16 @@ fn enforces_shared_query_byte_limit() {
             .unwrap_err();
     assert_eq!(
         error.to_string(),
-        format!("query.statement must not exceed {MAX_QUERY_BYTES} bytes")
+        format!("query.statement must be at most {MAX_QUERY_BYTES} bytes")
     );
 
     let compact = statement
         .replace("dbo . EVENTS", "dbo.EVENTS")
         .replacen("'x", "'xx", 1);
     assert!(compact.len() < MAX_QUERY_BYTES);
-    let error = serde_json::from_value::<SqlServerReceiverConfig>(snapshot(&compact)).unwrap_err();
     assert_eq!(
-        error.to_string(),
-        format!("canonical query.statement must not exceed {MAX_QUERY_BYTES} bytes")
+        parse(snapshot(&compact)).statement().canonical_sql(),
+        compact
     );
 }
 
@@ -1369,7 +1327,7 @@ fn native_sql_preserves_literal_and_identifier_semantics() {
         );
         let config = parse(snapshot(&original));
         let original_ast = Parser::parse_sql(&dialect, &original).unwrap();
-        let native_ast = Parser::parse_sql(&dialect, config.statement().driver_sql()).unwrap();
+        let native_ast = Parser::parse_sql(&dialect, &driver_sql(&config)).unwrap();
         assert_eq!(native_ast.len(), 1);
         let (Statement::Query(original), Statement::Query(native)) =
             (&original_ast[0], &native_ast[0])
@@ -1381,7 +1339,7 @@ fn native_sql_preserves_literal_and_identifier_semantics() {
         assert_eq!(original.projection, native.projection);
         assert_eq!(original.from, native.from);
         assert!(original.top.is_none());
-        assert!(native.top.is_some());
+        assert!(native.top.is_none());
     }
 }
 

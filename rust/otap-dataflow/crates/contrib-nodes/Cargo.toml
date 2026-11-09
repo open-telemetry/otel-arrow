@@ -49,7 +49,6 @@ tokio-postgres = { workspace = true, optional = true }
 tokio-postgres-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
-sqlparser = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
@@ -165,7 +164,6 @@ postgresql = [
     "dep:tokio-postgres-rustls",
     "dep:rustls",
     "dep:rustls-pki-types",
-    "dep:sqlparser",
     "dep:chrono",
     "dep:secrecy",
     "dep:blake3",
@@ -184,7 +182,6 @@ oracle = [
 # SQL Server remains independently opt-in and uses platform-native TLS.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
-    "dep:sqlparser",
     "dep:blake3",
     "dep:chrono",
     "dep:humantime-serde",
@@ -297,6 +294,7 @@ aws = [
 ]
 
 [dev-dependencies]
+sqlparser.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true

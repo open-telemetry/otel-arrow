@@ -30,14 +30,6 @@ groups:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD
                   FROM OTAP_ORACLE_EVENTS
-                  WHERE (
-                    EVENT_TS > :last_timestamp
-                    OR (
-                      EVENT_TS = :last_timestamp
-                      AND EVENT_ID > :last_tie_breaker
-                    )
-                  )
-                  ORDER BY EVENT_TS ASC, EVENT_ID ASC
                 interval: 1m
                 fetch_size_rows: 300
                 max_rows_per_poll: 10000

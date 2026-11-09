@@ -5,14 +5,9 @@ use super::*;
 use otel_arrow_dfe_scraper::database::{CompiledWatermark, Cursor, ScalarValue};
 
 fn scalar_config(value: ScalarValue) -> Value {
-    let string = matches!(value, ScalarValue::String(_));
     let mut config = documented_config();
     config["watermark"] = serde_json::json!({"mode":"scalar", "column":"CURSOR_KEY", "bind":"last_key", "initial":value});
-    config["query"]["statement"] = if string {
-        "SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY COLLATE BINARY > :last_key COLLATE BINARY ORDER BY CURSOR_KEY COLLATE BINARY ASC"
-    } else {
-        "SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC"
-    }.into();
+    config["query"]["statement"] = "SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS".into();
     config
 }
 
@@ -50,12 +45,11 @@ fn scalar_types_compile_without_timestamp_coercion() {
     }
 }
 
-/// Scenario: Scalar predicates are absent, non-strict, broadened, or disguised in literals/subqueries.
-/// Guarantees: Only the supported exclusive keyset predicate and matching outer ASC order are accepted.
+/// Scenario: User SQL contains legacy cursor binds, mutation, or conflicting ordering.
+/// Guarantees: The source-only contract has no permissive legacy execution fallback.
 #[test]
 fn scalar_sql_rejects_unsafe_lookalikes() {
     for sql in [
-        "SELECT CURSOR_KEY FROM T ORDER BY CURSOR_KEY ASC",
         "SELECT PAYLOAD FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC",
         "SELECT OTHER AS CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY + 1 AS CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC",
@@ -63,7 +57,6 @@ fn scalar_sql_rejects_unsafe_lookalikes() {
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY = :last_key ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key OR 1 = 1 ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key_extra ORDER BY CURSOR_KEY ASC",
-        "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > ':last_key' ORDER BY CURSOR_KEY ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY DESC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY OTHER ASC",
         "SELECT CURSOR_KEY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC FOR UPDATE",
@@ -77,31 +70,36 @@ fn scalar_sql_rejects_unsafe_lookalikes() {
     }
     let mut value = scalar_config(ScalarValue::Int64(0));
     value["query"]["statement"] =
-        "select CURSOR_KEY from T where (CURSOR_KEY > :last_key) order by CURSOR_KEY asc;".into();
+        "select CURSOR_KEY from T where CURSOR_KEY >= 0 order by CURSOR_KEY asc;".into();
     assert!(parsed(value).is_ok());
     let mut value = scalar_config(ScalarValue::Int64(0));
     value["query"]["statement"] =
-        "SELECT CURSOR_KEY, PAYLOAD AS BODY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC"
-            .into();
+        "SELECT CURSOR_KEY, PAYLOAD AS BODY FROM T ORDER BY CURSOR_KEY ASC".into();
     assert!(parsed(value).is_ok());
 }
 
-/// Scenario: String keys would inherit linguistic or column-defined collation.
-/// Guarantees: Both comparison operands and ordering must explicitly select BINARY collation.
+/// Scenario: A string source query does not specify cursor ordering or collation.
+/// Guarantees: The receiver generates BINARY collation on both predicate operands and the ordering key.
 #[test]
 fn string_queries_require_explicit_binary_collation() {
-    let raw = scalar_config(ScalarValue::String("!".into()));
-    let sql = raw["query"]["statement"].as_str().expect("statement");
-    for rewritten in [
-        sql.replace(" COLLATE BINARY", ""),
-        sql.replacen("COLLATE BINARY", "COLLATE BINARY_CI", 1),
-        sql.replacen(" COLLATE BINARY", "", 1),
-    ] {
-        let mut value = raw.clone();
-        value["query"]["statement"] = rewritten.into();
-        assert!(parsed(value).is_err());
-    }
-    assert!(parsed(raw).is_ok());
+    use otel_arrow_dfe_scraper::database::{ColumnMetadata, DatabaseSystem, SourceQuery};
+    let query = parsed(scalar_config(ScalarValue::String("!".into())))
+        .unwrap()
+        .query();
+    let source = SourceQuery::compile(&query, DatabaseSystem::Oracle).unwrap();
+    let sql = source
+        .paged_sql(
+            &query,
+            &[ColumnMetadata {
+                name: "CURSOR_KEY".into(),
+                source_type: "VARCHAR2".into(),
+                nullable: true,
+            }],
+        )
+        .unwrap();
+    assert_eq!(sql.matches("COLLATE BINARY").count(), 3);
+    assert!(sql.contains(":last_key COLLATE BINARY"));
+    assert!(sql.ends_with("COLLATE BINARY ASC NULLS FIRST"));
 }
 
 /// Scenario: Oracle scalar initialization includes empty strings, NUL, oversized text, or excess timestamp precision.
@@ -168,10 +166,10 @@ fn scalar_fingerprints_track_mode_type_and_query() {
     );
 }
 
-/// Scenario: An existing composite configuration is compiled after adding scalar support.
-/// Guarantees: Its original ordered fingerprint payload is unchanged, preserving checkpoint identity.
+/// Scenario: A source-only query is compared with the former fingerprint format.
+/// Guarantees: The new contract cannot silently reinterpret an old checkpoint identity.
 #[test]
-fn composite_fingerprint_remains_byte_compatible() {
+fn composite_fingerprint_requires_explicit_migration() {
     let raw = documented_config();
     let config = parsed(raw.clone()).expect("composite");
     let query = config.query();
@@ -207,7 +205,7 @@ fn composite_fingerprint_remains_byte_compatible() {
             .collect::<Vec<_>>()
             .join(",")
     );
-    assert_eq!(
+    assert_ne!(
         config.config_fingerprint(),
         blake3::hash(legacy.as_bytes()).to_hex().as_str()
     );

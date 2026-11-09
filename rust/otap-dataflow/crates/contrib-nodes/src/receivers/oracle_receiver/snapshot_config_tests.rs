@@ -27,6 +27,11 @@ fn snapshot_queries_need_no_order_or_cursor() {
         r#"SELECT PAYLOAD AS "SELECT" FROM AUDIT_LOGS"#,
         r#"SELECT PAYLOAD AS "a'" FROM AUDIT_LOGS ORDER BY "a'""#,
         r#"SELECT PAYLOAD AS "a""b" FROM AUDIT_LOGS"#,
+        "SELECT PAYLOAD FROM AUDIT_LOGS -- ignored",
+        "SELECT PAYLOAD FROM (SELECT PAYLOAD FROM AUDIT_LOGS)",
+        "SELECT PAYLOAD FROM AUDIT_LOGS UNION SELECT PAYLOAD FROM OTHER",
+        r#"SELECT PAYLOAD AS "a'" FROM (SELECT PAYLOAD FROM AUDIT_LOGS) ORDER BY "a'""#,
+        "SELECT Q'{SELECT PAYLOAD FROM AUDIT_LOGS}' AS PAYLOAD FROM DUAL",
     ] {
         let mut raw = snapshot_config();
         raw["query"]["statement"] = sql.into();
@@ -38,8 +43,8 @@ fn snapshot_queries_need_no_order_or_cursor() {
     }
 }
 
-/// Scenario: Snapshot SQL contains visible or quote-hidden parameters, locks, extra statements, or nested SELECTs.
-/// Guarantees: Quoted identifiers and unsupported Oracle q-quotes cannot hide SQL from the read-only contract.
+/// Scenario: Snapshot SQL contains parameters, locks, writes, or multiple executable statements.
+/// Guarantees: Native literals and quoted identifiers cannot hide violations of the common read-only boundary.
 #[test]
 fn snapshot_sql_rejects_unsafe_or_unbound_statements() {
     for sql in [
@@ -49,15 +54,10 @@ fn snapshot_sql_rejects_unsafe_or_unbound_statements() {
         "SELECT PAYLOAD INTO TARGET FROM AUDIT_LOGS",
         "DELETE FROM AUDIT_LOGS",
         "SELECT PAYLOAD FROM AUDIT_LOGS; DELETE FROM AUDIT_LOGS",
-        "SELECT PAYLOAD FROM AUDIT_LOGS -- ignored",
-        "SELECT PAYLOAD FROM (SELECT PAYLOAD FROM AUDIT_LOGS)",
-        "SELECT PAYLOAD FROM AUDIT_LOGS UNION SELECT PAYLOAD FROM OTHER",
         r#"SELECT PAYLOAD AS "a'" FROM AUDIT_LOGS WHERE PAYLOAD = :key ORDER BY "a'""#,
-        r#"SELECT PAYLOAD AS "a'" FROM (SELECT PAYLOAD FROM AUDIT_LOGS) ORDER BY "a'""#,
         r#"SELECT PAYLOAD AS "unterminated FROM AUDIT_LOGS"#,
         "SELECT q'[it's]' AS PAYLOAD FROM DUAL WHERE DUMMY = :key",
         "SELECT nq'<it's>' AS PAYLOAD FROM DUAL WHERE DUMMY = :key",
-        "SELECT Q'{SELECT PAYLOAD FROM AUDIT_LOGS}' AS PAYLOAD FROM DUAL",
     ] {
         let mut raw = snapshot_config();
         raw["query"]["statement"] = sql.into();

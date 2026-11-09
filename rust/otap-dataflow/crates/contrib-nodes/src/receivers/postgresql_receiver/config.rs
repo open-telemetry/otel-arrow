@@ -3,13 +3,11 @@
 
 //! Strict native configuration and restart compatibility identity.
 
-use super::{
-    adapter::{Error, Result},
-    query::Plan,
-};
+use super::adapter::{Error, Result};
 use otel_arrow_dfe_scraper::database::{
-    CatchUpConfig, CheckpointConfig, CompiledQuery, OnNack, OnPermanentNack, OutputConfig,
-    PollingConfig, ScalarValue, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseSystem, OnNack, OnPermanentNack,
+    OutputConfig, PollingConfig, ScalarValue, SourceQuery, TieBreakerCursorConfig,
+    TimestampCursorConfig, WatermarkConfig,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
 use std::{net::IpAddr, path::Path, time::Duration};
@@ -165,7 +163,7 @@ fn default_tie_breaker_bind() -> String {
 pub(crate) struct Validated {
     pub config: PostgreSqlReceiverConfig,
     pub common: CompiledQuery,
-    pub plan: Plan,
+    pub source: SourceQuery,
     pub fingerprint: String,
 }
 
@@ -327,19 +325,19 @@ impl PostgreSqlReceiverConfig {
             },
         )
         .map_err(|_| Error::Config)?;
-        let plan = Plan::compile(&common)?;
+        let source = SourceQuery::compile(&common, DatabaseSystem::PostgreSQL)?;
         // Hash the authored query and value contract, not the optimized SQL.
         // Scheduling, resource budgets, catch-up, and checkpoint policy are excluded
         // so operational tuning does not invalidate a durable cursor.
         // Discovery never hashes transient catalog state.
         let identity = serde_json::to_vec(&(
-            "postgresql/v5-watermark-time",
+            "postgresql/v6-source-sql",
             "postgresql",
             &self.connection.host,
             self.connection.port,
             &self.connection.database,
-            &query.statement,
-            "named-parameters/v2",
+            source.fingerprint_sql(),
+            "receiver-owned-parameters/v1",
             &self.watermark,
             "UTC/microseconds/native-v2",
         ))
@@ -348,7 +346,7 @@ impl PostgreSqlReceiverConfig {
         Ok(Validated {
             config: self,
             common,
-            plan,
+            source,
             fingerprint,
         })
     }

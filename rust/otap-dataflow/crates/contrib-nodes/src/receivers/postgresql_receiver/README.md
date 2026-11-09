@@ -122,11 +122,6 @@ query:
   statement: >
     SELECT a.audit_id, a.last_updated, a.user_name, a.action
     FROM public.audit_logs AS a
-    WHERE (
-      a.last_updated > :last_timestamp
-      OR (a.last_updated = :last_timestamp AND a.audit_id > :last_tie_breaker)
-    )
-    ORDER BY a.last_updated ASC, a.audit_id ASC
   interval: 5m
   fetch_size_rows: 1000
   max_rows_per_poll: 10000
@@ -154,8 +149,6 @@ query:
   statement: >
     SELECT a.audit_id, a.last_updated, a.user_name, a.action
     FROM public.audit_logs AS a
-    WHERE a.audit_id > :last_value
-    ORDER BY a.audit_id ASC
   interval: 5m
   fetch_size_rows: 1000
   max_rows_per_poll: 10000
@@ -173,15 +166,15 @@ Supported scalar types are `int64` for PostgreSQL `int2`/`int4`/`int8`
 and `timestamp` for `timestamp`/`timestamptz`. Integer values must fit the native
 column type. Timestamp initial values use the existing UTC normalization and
 precision rules; for example, `initial.type: timestamp` with
-`initial.value: "2026-01-01T00:00:00.000000Z"`. The selected column, predicate,
-and ordering must all refer to that timestamp key. String and unsigned scalar
+`initial.value: "2026-01-01T00:00:00.000000Z"`. The source must return that
+timestamp key; the receiver supplies paging. String and unsigned scalar
 keys are not supported.
 
-Scalar uniqueness must be proven by a valid, immediate, nonpartial unique index
-whose sole key column is the cursor column; included non-key columns are allowed.
-Revalidate that guarantee on every page. A timestamp shared by multiple rows
-requires composite mode instead. Merely selecting `last_updated` in the integer
-example does not make it the event timestamp.
+Scalar uniqueness must hold over the final result, but a catalog/index proof
+is no longer required. Runtime ordering checks include a successor cursor at
+row and byte boundaries. A timestamp shared by multiple rows requires composite
+mode instead. Merely selecting `last_updated` in the integer example does not
+make it the event timestamp.
 
 #### Snapshot: complete result
 
@@ -281,31 +274,37 @@ Files refresh at `password_secret_file_refresh`; a reconnect before refresh may 
 
 ### SQL and cursor contract
 
-Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections in every mode. In composite/scalar mode, cursor columns must be direct, non-null columns of the driving table. Snapshot has no cursor columns.
+Use the [shared native source-query contract](../../../../scraper/README.md#sql-validation):
+one read-only source result, without manually authored cursor parameters. There
+is no strict/relaxed switch. Schema-qualify application objects because the
+connection uses `search_path=pg_catalog`. Native row-security policies are honored.
 
-The timestamp/tie-breaker pair must uniquely identify each result position.
-The receiver checks column presence, types, nullability, predicate, ordering,
-and joined-side uniqueness, but cannot prove composite driving-source uniqueness,
-commit ordering, or immutability. Scalar mode additionally checks
-the driving key's unique index; commit ordering and immutability remain source
-requirements.
+The receiver discovers the final output schema through PostgreSQL, not through
+table/projection lineage or unique-index catalog checks. Cursor columns may be
+aliases or expressions with supported native types. Their values must be
+non-null, stable, and unique per output row. Generated predicates surface null
+keys, and runtime checks reject duplicate/non-increasing keys before returning
+a page, including its successor at a row or normalized-byte cut.
 
 For composite/scalar modes, the at-least-once guarantee also requires cursor-ordered commit visibility: no row may become visible later at or before a committed cursor. The initial cursor excludes rows at or before that position. Snapshot instead repeats complete observations of current data.
 
-For composite mode, use either keyset below, optionally ANDed with supported static comparisons, and order by timestamp then tie-breaker ascending:
+For example, a composite source can join a view and use native datetime filters:
 
 ```sql
-(e.ts > :last_timestamp OR
- (e.ts = :last_timestamp AND e.id > :last_tie_breaker))
-
-(e.ts, e.id) > (:last_timestamp, :last_tie_breaker)
+SELECT e.ts, e.id, COALESCE(c.name, 'unknown') AS customer
+FROM public.event_view e
+LEFT JOIN public.customers c ON c.id = e.customer_id
+WHERE e.created_at >= TIMESTAMPTZ '2026-11-01 00:00:00+00'
+  AND (e.status IN ('ready', 'retry') OR e.priority >= 5)
 ```
 
-Native `$1`/`$2` binds are also accepted in composite mode; do not mix styles.
-Scalar mode accepts `a.audit_id > :last_value` or
-`a.audit_id > $1`, optionally ANDed with supported static comparisons, with
-ascending cursor ordering. Snapshot rejects all placeholders and can omit
-`WHERE` entirely or use the same supported static filters.
+Configure result columns `ts` and `id` as the watermark. The receiver generates
+typed `$1`/`$2` bindings, null-safe cursor validation, ascending ordering, and
+`LIMIT` with a successor probe around the complete source result. Do not put
+named or positional parameters in `query.statement`. A final matching cursor
+`ORDER BY` is optional; conflicting order and top-level incremental limits are
+rejected. Follow the [migration steps](../../../../scraper/README.md#source-query-migration)
+for old hand-paged SQL and checkpoint identities.
 
 Timestamp cursors require `timestamp`/`timestamptz`; composite additionally
 requires `timezone: UTC` in its timestamp block.
@@ -320,13 +319,17 @@ are rejected. Tie-breakers use range-checked `int2`, `int4`, or `int8`.
 
 | Area | Accepted contract |
 | --- | --- |
-| Source relations | Schema-qualified, aliased, ordinary persistent tables outside `pg_*` and `information_schema`. |
-| Projection | Between 1 and 128 direct, qualified columns, optionally renamed with unique aliases. |
-| Cursor predicate | Composite: exactly one supported composite keyset using both configured binds. Scalar: one strict `>` keyset using the configured bind. Snapshot: no cursor predicate or binds. |
-| Static filters | Qualified column compared to a numeric, Boolean, or single-quoted literal with `=`, `!=`, `>`, `<`, `>=`, or `<=`; `IS NULL` and `IS NOT NULL` are also accepted. Combine filters with `AND`. For `date`/`timestamp`/`timestamptz` columns, single-quoted literals must be absolute values (for example `2026-10-05`, `2026-10-05 00:00:00`, or RFC 3339); relative values such as `today`, `now`, and `epoch` are rejected. |
-| Joins | Up to three `INNER JOIN ... ON` clauses. Join predicates are `AND` combinations of direct column equalities. The columns on each newly joined side must cover a catalog-proven unique key and have matching native types/collations. |
-| Ordering | Composite: cursor timestamp followed by tie-breaker, both ascending. Scalar: cursor column ascending. Snapshot: optional ordering by direct, qualified columns. |
-| Rejected | Views, materialized/foreign/partitioned/temporary tables, RLS-enabled tables, system schemas, stars, expressions, casts, functions, aggregates, `DISTINCT`, outer/cross joins, subqueries, CTEs, `OR` outside the keyset, grouping, set operations, user `LIMIT`/`OFFSET`/`FETCH`, row locks, and multiple statements. |
+| Source relations | Native tables, views, CTEs, subqueries, and other permitted relational sources. |
+| Projection | Expressions, aliases, and wildcards; native output must have 1-128 uniquely named columns of supported types. |
+| Filters | Native `AND`/`OR`, comparisons, `IN`, `BETWEEN`, `EXISTS`, functions, casts, and temporal expressions; no receiver expression allowlist. |
+| Joins and sets | Native join types, grouping, windows, `DISTINCT`, and set operations; no join-count cap or index proof. Incremental output still needs a unique cursor per row. |
+| Ordering and limits | Receiver-owned for incremental collection; optional matching final cursor order. Snapshot SQL retains native ordering/limits and is fetched through bounded portals. |
+| Rejected | Mutations (including writable CTEs), extra executable statements, row locks, user parameters, unsupported output types/names, and constructs that cannot be parsed/composed safely. |
+
+Relative time expressions and changing joins/aggregates are not syntactically
+banned, but may violate stable eligibility or replay requirements. Prefer
+snapshots unless the source can supply a stable incremental stream. Reconnects
+and pages re-describe the source and reject changed result schemas.
 
 ## Value mapping
 

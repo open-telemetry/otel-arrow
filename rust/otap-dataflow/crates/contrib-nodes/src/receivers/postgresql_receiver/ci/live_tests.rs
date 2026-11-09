@@ -42,15 +42,15 @@ fn config(mode: &str, state: &Path) -> Value {
     let initial = "2026-10-05T00:00:00.000000Z";
     let (predicate, watermark) = match mode {
         "int64" => (
-            "WHERE e.event_id > :key ORDER BY e.event_id",
+            "ORDER BY e.event_id",
             json!({"mode":"scalar","column":"event_id","bind":"key","initial":{"type":"int64","value":0}}),
         ),
         "timestamp" => (
-            "WHERE e.scalar_ts > :key ORDER BY e.scalar_ts",
+            "ORDER BY e.scalar_ts",
             json!({"mode":"scalar","column":"scalar_ts","bind":"key","initial":{"type":"timestamp","value":initial}}),
         ),
         "composite" => (
-            "WHERE e.event_ts > :ts OR (e.event_ts = :ts AND e.event_id > :id) ORDER BY e.event_ts, e.event_id",
+            "ORDER BY e.event_ts, e.event_id",
             json!({"mode":"composite","timestamp":{"column":"event_ts","bind":"ts","initial":initial,"timezone":"UTC"},"tie_breaker":{"column":"event_id","bind":"id","initial":0}}),
         ),
         "snapshot" => ("ORDER BY e.event_id", json!({"mode":"snapshot"})),
