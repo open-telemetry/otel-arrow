@@ -99,14 +99,14 @@ impl ConfigNodeContextDeclaration for Config {
         match &self.query {
             Query::KqlQuery(kql_query) => {
                 let parser_result =
-                    KqlParser::parse_with_options(&kql_query, default_parser_options())
+                    KqlParser::parse_with_options(kql_query, default_parser_options())
                         .map_err(map_parser_err)?;
                 visit_expr_ast(&parser_result.pipeline, &mut metadata_access_ast_visitor)
                     .map_err(map_pipeline_err)?;
             }
             Query::OplQuery(opl_query) => {
                 let parser_result =
-                    OplParser::parse_with_options(&opl_query, default_parser_options())
+                    OplParser::parse_with_options(opl_query, default_parser_options())
                         .map_err(map_parser_err)?;
                 visit_expr_ast(&parser_result.pipeline, &mut metadata_access_ast_visitor)
                     .map_err(map_pipeline_err)?;
