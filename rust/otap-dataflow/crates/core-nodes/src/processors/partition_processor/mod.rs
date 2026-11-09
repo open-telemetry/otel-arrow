@@ -96,10 +96,10 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
         // about invalid expressions in user's config
         match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                // simply use default node bindings for validation. We don't have access to the
-                // configured pipeline context here, so we can't use the real node bindings.
-                // this is fine because purpose of the validation is currently just about syntax
-                // and field references.
+                // use default node bindings for validation. We don't have access to the configured
+                // pipeline context here, so we can't use the compiled node bindings. Using default
+                // is fine because purpose of the validation is currently just about syntax and
+                // checking that field references are valid
                 let node_bindings = NodeBindings::default();
 
                 let _ = try_create_partitioner(
@@ -540,13 +540,13 @@ fn partition_value_to_transport_header(
 }
 
 impl ConfigNodeContextDeclaration for Config {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Edits {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
+        Ok(std::iter::once(ContextDeclaration::Edits {
             actions: Box::new([ContextAction::Add {
                 entry: self.partition_header_name.clone(),
             }]),
         })
-        .collect()
+        .collect())
     }
 }
 
@@ -2104,7 +2104,7 @@ mod test {
             "partition_header_name": "x-partition"
         });
         let config: Config = serde_json::from_value(config).unwrap();
-        let decls = config.context_declarations();
+        let decls = config.context_declarations().unwrap();
         assert_eq!(decls.len(), 1);
         assert_eq!(
             decls.iter().next().expect("one declaration"),
