@@ -362,7 +362,7 @@ Before using, be aware of the following rules regarding branches:
 - Even users with access can only push to branches prefixed with their github
   user. Two patterns are accepted: `<user>/**/*` and `<user>-*`".
 - Branches must be published to open-telemetry/otel-arrow to create a stack
-- Branch names are case sensitive, so github user `JohnDoe` cannot create 
+- Branch names are case sensitive, so github user `JohnDoe` cannot create
   `johndoe/mystack`
 
 Some tips:
