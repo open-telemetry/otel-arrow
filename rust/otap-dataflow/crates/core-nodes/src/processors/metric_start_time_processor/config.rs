@@ -67,6 +67,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Scenario: Constructing Config via Default::default().
+    /// Guarantees: Strategy defaults to SubtractInitialPoint, gc_interval defaults to 10m, and validation passes.
     #[test]
     fn test_default_config() {
         let cfg = Config::default();
@@ -75,6 +77,8 @@ mod tests {
         assert!(cfg.validate().is_ok());
     }
 
+    /// Scenario: Deserializing an empty JSON object into Config.
+    /// Guarantees: Serde defaults populate SubtractInitialPoint and a 10m gc_interval that passes validation.
     #[test]
     fn test_deserialize_empty_config() {
         let cfg: Config = serde_json::from_value(json!({})).unwrap();
@@ -83,6 +87,8 @@ mod tests {
         assert!(cfg.validate().is_ok());
     }
 
+    /// Scenario: Deserializing a JSON config with explicit strategy and humantime gc_interval.
+    /// Guarantees: Strategy and duration are parsed accurately and pass validation.
     #[test]
     fn test_deserialize_custom_config() {
         let cfg: Config = serde_json::from_value(json!({
@@ -95,6 +101,8 @@ mod tests {
         assert!(cfg.validate().is_ok());
     }
 
+    /// Scenario: Validating a Config with a zero-duration gc_interval.
+    /// Guarantees: Config::validate rejects zero gc_interval with an InvalidUserConfig error.
     #[test]
     fn test_validate_rejects_zero_gc_interval() {
         let cfg: Config = serde_json::from_value(json!({
@@ -104,6 +112,8 @@ mod tests {
         assert!(cfg.validate().is_err());
     }
 
+    /// Scenario: Deserializing a JSON config with an unrecognized strategy string.
+    /// Guarantees: Serde rejects unknown strategy values at deserialization time.
     #[test]
     fn test_deserialize_rejects_unknown_strategy() {
         let res: Result<Config, _> = serde_json::from_value(json!({
