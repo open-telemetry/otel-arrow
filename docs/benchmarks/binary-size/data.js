@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794256643345,
+  "lastUpdate": 1794267997630,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -82450,6 +82450,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 122.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "7906020be2969ecf1a82d5dfcc82064c1dc624de",
+          "message": "chore(engine): add local delayed-resume identity (#3747)\n\nPart of #3272 (logical retained-work memory budgeting).\n\n## Background\n\nWhen a processor parks work with `requeue_later`, the node-local\nscheduler later returns it as a `ResumeData` message carrying the\npayload and its effective resume time. If the processor retains local\nstate for that item, the time is not a reliable correlation key:\nmultiple items can share a deadline, and shutdown can rewrite pending\ndeadlines to deliver the work immediately.\n\nThis PR adds a scheduler-assigned, scheduler-local identity so a\nprocessor can match resumed payloads with retained local state by\nidentity rather than time. The first planned consumer is retained-work\naccounting in the retry processor, but the mechanism is generic.\n\n## Summary\n\n- Add an opaque `LocalResumeId` to processor-local `ResumeData`\ndelivery.\n- Return the assigned ID from successful `requeue_later` calls.\n- Return the original payload when scheduling is rejected, including\ncapacity, shutdown, and ID-exhaustion cases.\n- Preserve the ID through normal due delivery and shutdown-forced\ndelivery.\n- Keep `LocalResumeId` required on `ResumeData`; the removed\nruntime-global delayed-data path cannot create an identity-less resume.\n- Preserve existing ordering, capacity, drain, shutdown, and processor\nbehavior.\n\nThis is a generic delayed-work identity change. It does not add memory\naccounting, metrics, configuration, tenant behavior, or enforcement.\n\n## Validation\n\nPassed on the rebased branch:\n\n- `cargo check -p otel-arrow-dfe-engine -p otel-arrow-dfe-core-nodes`\n- focused engine resume tests (8 passed)\n- `python3 tools/sanitycheck.py`\n- `cargo xtask check`\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-11-09T23:02:11Z",
+          "tree_id": "9e34ccaccea8011df042a4ed246bd66f0469cea8",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7906020be2969ecf1a82d5dfcc82064c1dc624de"
+        },
+        "date": 1794267980966,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.78,
             "unit": "MB"
           },
           {
