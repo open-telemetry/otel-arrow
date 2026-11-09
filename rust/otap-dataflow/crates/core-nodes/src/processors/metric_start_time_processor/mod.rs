@@ -2141,6 +2141,8 @@ mod tests {
         (Some(out), stats)
     }
 
+    /// Scenario: Cumulative Sum series observed across initial scrape, monotonic increase, and counter reset.
+    /// Guarantees: Initial points are cached and dropped, subsequent points subtract the initial baseline with start_time from the initial point, and resets set start_time to time - 1ms with a zeroed baseline.
     #[test]
     fn test_cumulative_sum_subtract_initial_and_reset() {
         let mut proc = test_processor(Duration::from_secs(600));
@@ -2268,6 +2270,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Mixed batch with Gauge, Delta Sum, Cumulative Sum with existing start_time, and staleness marker (FLAG_NO_RECORDED_VALUE).
+    /// Guarantees: Ineligible and pre-adjusted points pass through untouched, while FLAG_NO_RECORDED_VALUE points receive the cached start_time without altering reference state.
     #[test]
     fn test_passthrough_gauge_delta_existing_start_time_and_no_recorded_value() {
         let mut proc = test_processor(Duration::from_secs(600));
@@ -2443,6 +2447,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Cumulative Summary, Histogram, and ExponentialHistogram series across initial and subsequent scrapes with shifted bucket offset.
+    /// Guarantees: Initial points are dropped, and subsequent points subtract reference counts, sums, and offset-aligned buckets while preserving quantiles.
     #[test]
     fn test_summary_histogram_and_exp_histogram_adjustment() {
         let mut proc = test_processor(Duration::from_secs(600));
@@ -2618,6 +2624,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Two resources observed initially, then only one resource remains active across two mark-and-sweep GC intervals.
+    /// Guarantees: Inactive resources and series are evicted after two GC cycles while active series retain their cached baseline.
     #[test]
     fn test_mark_and_sweep_gc_evicts_stale_series_and_resources() {
         let gc_interval = Duration::from_secs(60);
@@ -2681,6 +2689,8 @@ mod tests {
         assert_eq!(stats_b_fresh.dropped_initial, 1);
     }
 
+    /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial and follow-up metric batches.
+    /// Guarantees: Fully dropped initial batches are completed without downstream emission, and subsequent adjusted batches are forwarded downstream.
     #[test]
     fn test_pipeline_runtime_drops_initial_and_emits_subsequent_batch() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
