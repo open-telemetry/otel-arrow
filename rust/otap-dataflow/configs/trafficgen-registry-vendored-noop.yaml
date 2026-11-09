@@ -1,0 +1,61 @@
+version: otel_dataflow/v1
+
+# Traffic generator -> noop exporter, using the VENDORED semantic-conventions
+# registry (the annotated copy under vendor/semconv/model, loaded from local
+# disk). Paired with trafficgen-registry-upstream-noop.yaml to measure the cost
+# of the vendored, annotated registry versus the upstream default.
+#
+# registry_path is a LocalFolder resolved relative to the current working
+# directory, so this config MUST be run from rust/otap-dataflow/.
+#
+# Run from rust/otap-dataflow/, pinned to one core, e.g.:
+#   cargo run --release -- \
+#     --config configs/trafficgen-registry-vendored-noop.yaml \
+#     --num-cores 1 --http-admin-bind 127.0.0.1:8080
+
+policies:
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    runtime_metrics: basic
+
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:8080"
+
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            policies:
+              telemetry:
+                item_counts: true
+                size: true
+            config:
+              data_source: semantic_conventions
+              registry_path: vendor/semconv/model
+              generation_strategy: fresh
+              traffic_config:
+                production_mode: open
+                signals_per_second: null
+                max_batch_size: 1000
+                log_weight: 1
+                metric_weight: 1
+                trace_weight: 1
+
+          exporter:
+            type: exporter:noop
+
+        connections:
+          - from: receiver
+            to: exporter
