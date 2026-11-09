@@ -215,9 +215,15 @@ impl DataFusionFunctionDef {
     }
 }
 
-// TODO - this type might not be needed, and we could probably move
-// this code back into the expr planner?
+/// Definition of a function that evaluates on an entire OTAP batch when invoked and returns
+/// a scalar value.
 pub struct BatchEvalFuncDef {
+    /// Factory for creating an instance of the function.
+    ///
+    /// Currently there is only one type of function that evaluates in this batch-oriented manner,
+    /// which are functions that evaluate on batch metadata, hence why this holds the
+    /// [`MetadataFunctionFactory`] directly. If types of similar functions are added in the
+    /// future, we may consider making this factory an enum.
     factory: Box<dyn MetadataFunctionFactory>,
 }
 
@@ -228,10 +234,12 @@ impl BatchEvalFuncDef {
         }
     }
 
+    /// Get the logical return type of the function
     pub fn logical_type(&self) -> ExprLogicalType {
         self.factory.logical_type()
     }
 
+    /// Get context selector the function may use to access batch metadata when invoked
     pub fn context_entry_selector(
         &self,
         args: &[InvokeFunctionArgument],
@@ -240,7 +248,9 @@ impl BatchEvalFuncDef {
         self.factory.context_entry_selector(args, query_location)
     }
 
-    pub fn create_batch_eval_instance(
+    /// Create the instance [`BatchEval`] that will serve as the executable expression for the
+    /// purpose of invoking the defined function.
+    pub fn create(
         &self,
         node_bindings: &NodeBindings,
         args: &[InvokeFunctionArgument],

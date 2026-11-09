@@ -795,7 +795,7 @@ impl<'a> ExprPlanner<'a> {
         invoke_expr: &InvokeFunctionScalarExpression,
         batch_eval_func_def: BatchEvalFuncDef,
     ) -> Result<PlannedOp> {
-        let batch_eval = batch_eval_func_def.create_batch_eval_instance(
+        let batch_eval = batch_eval_func_def.create(
             self.node_bindings,
             invoke_expr.get_arguments(),
             Some(invoke_expr.get_query_location()),
