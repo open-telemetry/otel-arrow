@@ -215,23 +215,26 @@ impl<'a> AttrColumns<'a> {
                 }
             }
             Ok(AttributeValueType::Int) => {
-                if let Some(v) = self.ints.as_ref().and_then(|c| c.value_at(row)) {
-                    buf.extend_from_slice(&v.to_le_bytes());
-                }
+                let v = self
+                    .ints
+                    .as_ref()
+                    .and_then(|c| c.value_at(row))
+                    .unwrap_or(0);
+                buf.extend_from_slice(&v.to_le_bytes());
             }
             Ok(AttributeValueType::Double) => {
-                if let Some(c) = self.doubles
-                    && c.is_valid(row)
-                {
-                    buf.extend_from_slice(&c.value(row).to_bits().to_le_bytes());
-                }
+                let v = self
+                    .doubles
+                    .and_then(|c| c.is_valid(row).then(|| c.value(row)))
+                    .unwrap_or(0.0);
+                buf.extend_from_slice(&v.to_bits().to_le_bytes());
             }
             Ok(AttributeValueType::Bool) => {
-                if let Some(c) = self.bools
-                    && c.is_valid(row)
-                {
-                    buf.push(u8::from(c.value(row)));
-                }
+                let v = self
+                    .bools
+                    .and_then(|c| c.is_valid(row).then(|| c.value(row)))
+                    .unwrap_or(false);
+                buf.push(u8::from(v));
             }
             Ok(AttributeValueType::Bytes) => {
                 if let Some(b) = self.bytes.as_ref().and_then(|c| c.slice_at(row)) {
