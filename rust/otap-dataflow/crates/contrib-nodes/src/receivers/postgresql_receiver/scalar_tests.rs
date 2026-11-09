@@ -17,7 +17,7 @@ fn config(initial: Value, kind: &str) -> Value {
         "source_id": "scalar-test",
         "connection": {"host": "localhost", "database": "fixture"},
         "query": {
-            "statement": "SELECT a.audit_id, a.payload FROM public.audit_logs AS a",
+            "statement": "SELECT a.audit_id, a.payload FROM public.audit_logs AS a WHERE a.audit_id > :last_value ORDER BY a.audit_id ASC",
             "interval": "5m", "fetch_size_rows": 1000,
             "max_rows_per_poll": 10000, "max_batch_bytes": "10 MiB"
         },
@@ -49,8 +49,8 @@ fn resolve(
     Ok((plan, schema))
 }
 
-/// Scenario: A scalar source query contains no handwritten cursor predicate or ordering.
-/// Guarantees: Native metadata supplies positions and generated SQL includes the successor probe.
+/// Scenario: A scalar query retains its explicit cursor predicate and ascending ordering.
+/// Guarantees: Native metadata supplies positions and bounded execution includes a successor probe.
 #[test]
 fn integer_scalar_configuration_uses_native_result_metadata() {
     let validated = validate(&config(json!(0), "int64")).unwrap();
@@ -62,8 +62,8 @@ fn integer_scalar_configuration_uses_native_result_metadata() {
     assert_eq!(cursor.initial, ScalarValue::Int64(0));
     assert_eq!(validated.common.fetch_size_rows(), 1000);
     let (plan, _) = resolve(&validated, Type::INT8, -1).unwrap();
-    assert!(plan.sql.contains("\"audit_id\" > $1"));
-    assert!(plan.sql.contains("\"audit_id\" IS NULL"));
+    assert!(plan.sql.contains("a.audit_id > $1"));
+    assert!(plan.sql.contains("a.audit_id IS NULL"));
     assert!(plan.sql.ends_with("LIMIT 10001"));
     assert_eq!(
         plan.cursor,
@@ -85,8 +85,9 @@ fn timestamp_scalar_initial_is_normalized() {
         "2026-01-01 00:00:00.123456",
     ] {
         let mut raw = config(json!(initial), "timestamp");
-        raw["query"]["statement"] =
-            json!("SELECT a.last_updated, a.payload FROM public.audit_logs a");
+        raw["query"]["statement"] = json!(
+            "SELECT a.last_updated, a.payload FROM public.audit_logs a WHERE a.last_updated > :last_value ORDER BY a.last_updated"
+        );
         raw["watermark"]["column"] = json!("last_updated");
         let validated = validate(&raw).unwrap();
         let CompiledWatermark::Scalar(cursor) = validated.common.watermark() else {
@@ -126,11 +127,24 @@ fn scalar_fingerprint_tracks_semantic_identity() {
     ] {
         let mut changed = raw.clone();
         changed["watermark"][field] = value;
+        if field == "column" {
+            changed["query"]["statement"] = json!(
+                "SELECT a.sequence_id,a.payload FROM public.audit_logs a WHERE a.sequence_id > :last_value ORDER BY a.sequence_id"
+            );
+        } else if field == "bind" {
+            changed["query"]["statement"] = json!(
+                raw["query"]["statement"]
+                    .as_str()
+                    .unwrap()
+                    .replace(":last_value", ":new_value")
+            );
+        }
         assert_ne!(baseline, validate(&changed).unwrap().fingerprint);
     }
     let mut changed = raw.clone();
-    changed["query"]["statement"] =
-        json!("SELECT sequence_id AS audit_id, payload FROM public.other");
+    changed["query"]["statement"] = json!(
+        "SELECT sequence_id AS audit_id, payload FROM public.other WHERE sequence_id > :last_value ORDER BY audit_id"
+    );
     assert_ne!(baseline, validate(&changed).unwrap().fingerprint);
     let mut tuned = raw;
     tuned["query"]["interval"] = json!("2m");
@@ -160,8 +174,8 @@ fn scalar_configuration_rejects_unsupported_shapes() {
     assert!(validate(&raw).is_err());
 }
 
-/// Scenario: Source SQL contains legacy binds or conflicts with generated incremental paging.
-/// Guarantees: There is no legacy fallback, while native filters and aliases remain supported.
+/// Scenario: SQL omits its final order or conflicts with bounded incremental paging.
+/// Guarantees: Mandatory cursor safeguards remain while native filters and aliases are accepted.
 #[test]
 fn scalar_sql_uses_the_shared_source_contract() {
     let base = config(json!(0), "int64");
@@ -176,8 +190,8 @@ fn scalar_sql_uses_the_shared_source_contract() {
         assert!(validate(&raw).is_err(), "{sql}");
     }
     for sql in [
-        "SELECT a.audit_id, a.payload FROM public.audit_logs a WHERE a.created_at >= TIMESTAMP '2026-11-01 00:00:00' AND a.status IN ('ready', 'retry')",
-        "SELECT a.audit_id + 0 AS audit_id, a.payload FROM public.audit_view a",
+        "SELECT a.audit_id, a.payload FROM public.audit_logs a WHERE a.audit_id > :last_value AND a.created_at >= TIMESTAMP '2026-11-01 00:00:00' AND a.status IN ('ready', 'retry') ORDER BY a.audit_id",
+        "SELECT a.sequence_id AS audit_id, a.payload FROM public.audit_view a WHERE a.sequence_id > :last_value ORDER BY audit_id",
     ] {
         let mut raw = base.clone();
         raw["query"]["statement"] = json!(sql);

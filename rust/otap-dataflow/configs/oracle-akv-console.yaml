@@ -36,6 +36,9 @@ groups:
               query:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD FROM OTAP_ORACLE_EVENTS
+                  WHERE EVENT_TS > :last_timestamp
+                    OR (EVENT_TS = :last_timestamp AND EVENT_ID > :last_id)
+                  ORDER BY EVENT_TS ASC, EVENT_ID ASC
                 interval: 1m
                 timeout: 30s
                 fetch_size_rows: 100

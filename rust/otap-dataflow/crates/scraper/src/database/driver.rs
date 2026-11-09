@@ -106,10 +106,10 @@ pub trait DriverAdapter {
     /// - In snapshot mode, require no cursor binds or columns; ordering and
     ///   uniqueness are unnecessary. Return the entire result or an error when
     ///   row or normalized-byte bounds would truncate it.
-    /// - Generate keyset predicates and ordering around the source result, using
-    ///   resolved output names and typed native cursor parameters.
+    /// - Validate the mandatory authored keyset predicate and matching final
+    ///   ascending order, using configured cursor roles and typed native binds.
     /// - Surface null cursor rows rather than silently filtering them out.
-    /// - For keysets, require present cursor columns compatible with the declared
+    /// - For keysets, require present, explicitly projected cursor columns compatible with the declared
     ///   types without rounding, truncation, or signed/unsigned coercion.
     /// - Scalar keys must be unique across the result, not merely within a page.
     ///   String keys require binary UTF-8 ordering without case folding, locale

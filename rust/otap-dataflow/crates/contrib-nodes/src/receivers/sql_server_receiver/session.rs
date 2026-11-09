@@ -4,7 +4,7 @@
 //! Parameterized metadata discovery and incremental consumption of Tiberius streams.
 
 use super::{
-    SqlServerError as Error, SqlServerStatement,
+    SqlServerError as Error, SqlServerParameter, SqlServerStatement,
     data::{ColumnPlan, MAX_COLUMNS, MAX_METADATA_BYTES, NativeType, ResultPlan},
 };
 use futures::{
@@ -47,7 +47,22 @@ where
 {
     let mut request = tiberius::Query::new(DESCRIBE);
     request.bind(statement.canonical_sql());
-    request.bind(Option::<&str>::None);
+    let declarations = statement
+        .parameters()
+        .iter()
+        .filter(|role| **role != SqlServerParameter::PageLimit)
+        .enumerate()
+        .map(|(index, role)| {
+            let ty = if *role == SqlServerParameter::Timestamp {
+                "datetime2(7)"
+            } else {
+                "bigint"
+            };
+            format!("@P{} {ty}", index + 1)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    request.bind(declarations);
     // Adapter-owned state survives an outer timeout dropping even the submission future.
     *response_pending = true;
     let mut stream = response_result(request.query(client).await, response_pending)?;

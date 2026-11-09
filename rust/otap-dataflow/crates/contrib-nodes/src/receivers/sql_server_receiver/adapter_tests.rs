@@ -54,7 +54,7 @@ pub(super) fn raw_config(snapshot: bool, bytes: u64) -> Value {
         "source_id":"events",
         "connection":{"host":"localhost","database":"fixture"},
         "query":{
-            "statement":if snapshot {"SELECT ID FROM dbo.events"} else {"SELECT ID FROM dbo.events ORDER BY ID"},
+            "statement":if snapshot {"SELECT ID FROM dbo.events"} else {"SELECT ID FROM dbo.events WHERE ID > @key ORDER BY ID"},
             "max_rows_per_poll":2,"fetch_size_rows":1,"max_batch_bytes":bytes,"timeout":"1s"
         },
         "watermark": if snapshot {json!({"mode":"snapshot"})} else {json!({"mode":"scalar","column":"ID","bind":"key","initial":{"type":"int64","value":0}})},
@@ -1894,7 +1894,9 @@ fn zoned_timestamp_preserves_instant_and_offset() {
 #[test]
 fn composite_conversion_and_binds_use_both_keys() {
     let mut raw = raw_config(false, 4096);
-    raw["query"]["statement"] = json!("SELECT EVENT_TS, ID FROM dbo.events ORDER BY EVENT_TS, ID");
+    raw["query"]["statement"] = json!(
+        "SELECT EVENT_TS, ID FROM dbo.events WHERE EVENT_TS > @ts OR (EVENT_TS = @ts AND ID > @id) ORDER BY EVENT_TS, ID"
+    );
     raw["watermark"] = json!({
         "mode":"composite",
         "timestamp":{"column":"EVENT_TS","bind":"ts","initial":"0001-01-01T00:00:00Z","timezone":"UTC"},

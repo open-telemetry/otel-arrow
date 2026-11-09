@@ -17,6 +17,8 @@ fn composite() -> Value {
         },
         "query": {
             "statement": "SELECT EVENT_ID, EVENT_TS, PAYLOAD FROM dbo.EVENTS \
+                WHERE EVENT_TS > @last_timestamp \
+                OR (EVENT_TS = @last_timestamp AND EVENT_ID > @last_id) \
                 ORDER BY EVENT_TS ASC, EVENT_ID ASC",
             "max_rows_per_poll": 1000,
             "max_batch_bytes": "4MiB"
@@ -42,8 +44,9 @@ fn composite() -> Value {
 
 fn scalar(initial: Value) -> Value {
     let mut config = composite();
-    config["query"]["statement"] =
-        json!("SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS ORDER BY EVENT_ID");
+    config["query"]["statement"] = json!(
+        "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID"
+    );
     config["watermark"] = json!({
         "mode": "scalar", "column": "EVENT_ID", "bind": "last_key", "initial": initial
     });
@@ -121,14 +124,76 @@ fn composite_defaults_and_native_binding_plan() {
         ]
     );
     let sql = driver_sql(&config);
-    assert!(sql.contains("SELECT TOP (@P3) * FROM ("));
-    assert!(sql.contains("[EVENT_TS] > @P1"));
-    assert!(sql.contains("[EVENT_ID] > @P2"));
-    assert!(sql.contains("[EVENT_ID] IS NULL"));
-    assert!(!config.query().sql().contains("@last_timestamp"));
+    assert!(sql.contains("SELECT TOP (@P3) EVENT_ID"));
+    assert!(sql.contains("EVENT_TS > @P1"));
+    assert!(sql.contains("EVENT_ID > @P2"));
+    assert!(sql.contains("EVENT_ID IS NULL"));
+    assert!(config.query().sql().contains("@last_timestamp"));
     assert!(!sql.contains("2026"));
 }
 
+/// Scenario: Unchanged configurations reopen checkpoints created by the original SQL Server receiver.
+/// Guarantees: Frozen v1 identity payloads preserve all three modes without cursor resets or new directories.
+#[test]
+fn original_fingerprints_reopen_committed_checkpoints() {
+    use otel_arrow_dfe_scraper::database::Cursor;
+    use otel_arrow_dfe_scraper::{CheckpointStore, SourceLease};
+    // Frozen serialization from 9145c0f config.rs/sql.rs, independent of the current identity builder.
+    const COMPOSITE: &str = r#"{"version":1,"database_system":"microsoft.sql_server","source_id":"sql-events","host":"sql.example.test","port":1433,"database":"telemetry","statement":"SELECT EVENT_ID , EVENT_TS , PAYLOAD FROM dbo . EVENTS WHERE EVENT_TS > @last_timestamp OR ( EVENT_TS = @last_timestamp AND EVENT_ID > @last_id ) ORDER BY EVENT_TS ASC , EVENT_ID ASC","watermark":{"mode":"composite","timestamp_column":"EVENT_TS","timestamp_bind":"last_timestamp","timestamp_initial":"2026-01-01T00:00:00.0000000Z","tie_breaker_column":"EVENT_ID","tie_breaker_bind":"last_id","tie_breaker_initial":0}}"#;
+    const SCALAR: &str = r#"{"version":1,"database_system":"microsoft.sql_server","source_id":"sql-events","host":"sql.example.test","port":1433,"database":"telemetry","statement":"SELECT EVENT_ID , PAYLOAD FROM dbo . EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID","watermark":{"mode":"scalar","column":"EVENT_ID","bind":"last_key","initial":{"type":"int64","value":0}}}"#;
+    const SNAPSHOT: &str = r#"{"version":1,"database_system":"microsoft.sql_server","source_id":"sql-events","host":"sql.example.test","port":1433,"database":"telemetry","statement":"SELECT EVENT_ID FROM dbo . EVENTS","watermark":{"mode":"snapshot"}}"#;
+    for (raw, legacy) in [
+        (composite(), COMPOSITE),
+        (scalar(json!({"type":"int64","value":0})), SCALAR),
+        (snapshot("SELECT EVENT_ID FROM dbo.EVENTS"), SNAPSHOT),
+    ] {
+        let config = parse(raw);
+        let expected = blake3::hash(legacy.as_bytes()).to_hex().to_string();
+        assert_eq!(config.config_fingerprint(), expected);
+        let dir = tempfile::tempdir().unwrap();
+        let old = CheckpointStore::new(dir.path(), "group", "pipeline", "sql", "source", expected);
+        let lease = SourceLease::acquire(old.lease_key()).unwrap();
+        let progress = match config.query().watermark().initial() {
+            Cursor::Composite(mut cursor) => {
+                cursor.tie_breaker = 17;
+                Cursor::Composite(cursor)
+            }
+            Cursor::Scalar(_) => ScalarValue::Int64(17).into(),
+            Cursor::Snapshot => Cursor::Snapshot,
+        };
+        let (committed, _) = old.write(0, &progress).unwrap();
+        drop(lease);
+        let current = CheckpointStore::new(
+            dir.path(),
+            "group",
+            "pipeline",
+            "sql",
+            "source",
+            config.config_fingerprint().into(),
+        );
+        assert_eq!(current.read().unwrap(), Some(committed));
+    }
+}
+
+/// Scenario: An existing explicit keyset adds a join and a fixed datetime AND condition.
+/// Guarantees: Broad source SQL is accepted while original typed cursor bindings stay authoritative.
+#[test]
+fn explicit_keyset_supports_join_and_datetime_filter() {
+    let mut raw = composite();
+    raw["query"]["statement"] = json!(
+        "SELECT e.EVENT_ID,e.EVENT_TS,COALESCE(c.NAME,'unknown') AS CUSTOMER \
+         FROM dbo.EVENTS e LEFT JOIN dbo.CUSTOMERS c ON c.ID=e.CUSTOMER_ID \
+         WHERE (e.EVENT_TS > @last_timestamp OR (e.EVENT_TS = @last_timestamp AND e.EVENT_ID > @last_id)) \
+         AND e.CREATED_AT >= CAST('2026-11-01T00:00:00' AS datetime2(7)) \
+         AND (e.STATUS IN ('ready','retry') OR c.PRIORITY >= 5) ORDER BY e.EVENT_TS,e.EVENT_ID"
+    );
+    let config = parse(raw);
+    let sql = driver_sql(&config);
+    assert!(sql.contains("LEFT JOIN dbo.CUSTOMERS"));
+    assert!(sql.contains("CAST('2026-11-01T00:00:00' AS datetime2(7))"));
+    assert!(sql.contains("e.EVENT_TS > @P1"));
+    assert!(sql.contains("e.EVENT_ID > @P2"));
+}
 /// Scenario: Snapshot, scalar, and composite queries omit fetch size at small and large row limits.
 /// Guarantees: The default is capped by the row limit and matches an explicit equivalent configuration.
 #[test]
@@ -201,7 +266,7 @@ fn scalar_modes_preserve_declared_types() {
         );
         let sql = driver_sql(&config);
         assert!(sql.contains("TOP (@P2)"));
-        assert!(sql.contains("[EVENT_ID] > @P1"));
+        assert!(sql.contains("EVENT_ID > @P1"));
         assert_eq!(
             config.query().output().timestamp_column.is_some(),
             expected == Parameter::Timestamp
@@ -393,7 +458,7 @@ fn delegates_aggregate_contexts_to_database() {
                 .unwrap()
                 .replace("PAYLOAD", &format!("{expression} AS TOTAL"));
             value["query"]["statement"] = json!(statement);
-            assert_eq!(parse(value).statement().canonical_sql(), statement);
+            assert_eq!(parse(value).query().sql(), statement);
         }
         let statement = format!("SELECT COUNT(*) AS TOTAL FROM dbo.EVENTS GROUP BY {expression}");
         assert_eq!(
@@ -411,6 +476,8 @@ fn rewriting_respects_literals_and_brackets() {
     value["query"]["statement"] = json!(
         "SELECT [EVENT_ID], [EVENT_TS], N'@last_timestamp; -- /* ''x''' AS MESSAGE, \
          [payload@last_id] FROM [audit schema].[event]]rows] \
+         WHERE [EVENT_TS] > @last_timestamp \
+         OR ([EVENT_TS] = @last_timestamp AND [EVENT_ID] > @last_id) \
          ORDER BY [EVENT_TS], [EVENT_ID]"
     );
     let config = parse(value);
@@ -436,8 +503,8 @@ fn logical_bind_slot_collisions_are_unambiguous() {
             .replace("@last_id", "@P1")
     );
     let config = parse(value);
-    assert!(driver_sql(&config).contains("[EVENT_TS] > @P1"));
-    assert!(driver_sql(&config).contains("[EVENT_ID] > @P2"));
+    assert!(driver_sql(&config).contains("EVENT_TS > @P1"));
+    assert!(driver_sql(&config).contains("EVENT_ID > @P2"));
 }
 
 /// Scenario: SQL contains extra statements, writes, parameters, locks, or non-tabular clauses.
@@ -541,8 +608,8 @@ fn accepts_complete_statements_with_quoted_end_tokens() {
     }
 }
 
-/// Scenario: A source specifies conflicting outer ordering or the old manual bind contract.
-/// Guarantees: No compatibility fallback bypasses receiver-owned paging.
+/// Scenario: A source specifies conflicting outer ordering or an incomplete composite guard.
+/// Guarantees: Broad source SQL retains the mandatory cursor contract.
 #[test]
 fn rejects_manual_paging_and_conflicting_order() {
     let base = composite();
@@ -566,14 +633,12 @@ fn rejects_manual_paging_and_conflicting_order() {
 }
 
 /// Scenario: Scalar predicates, key projections, or orderings violate exclusive keyset semantics.
-/// Guarantees: Manually authored cursor parameters cannot reintroduce a legacy path.
+/// Guarantees: Handwritten predicates remain strict and ordered even with permissive business filters.
 #[test]
-fn rejects_legacy_scalar_parameters() {
+fn rejects_invalid_scalar_guards() {
     let base = scalar(json!({"type":"int64","value":0}));
     for statement in [
         "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID >= @last_key ORDER BY EVENT_ID",
-        "SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS WHERE EVENT_ID > @last_key AND STATUS = 1 ORDER BY EVENT_ID",
-        "SELECT EVENT_ID AS EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID",
         "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID DESC",
         "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key",
         "SELECT EVENT_ID FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID, PAYLOAD",

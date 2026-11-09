@@ -154,7 +154,7 @@ reuse a checkpoint for a different schema or source.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `query.statement` | string | **required** | One read-only [native source query](#native-source-sql), without user parameters, at most 16 KiB of input. |
+| `query.statement` | string | **required** | One read-only [native query](#native-source-sql), retaining explicit cursor predicates/order in incremental modes, at most 16 KiB. |
 | `query.interval` | duration string | `1m` | Between `1m` and `24h`, inclusive, with whole-second precision. `1.5m` is valid (90 seconds); `60.5s` is not. Delay after a poll cycle ends; acknowledged catch-up pages do not wait this interval. |
 | `query.fetch_size_rows` | integer | `300` | Between `1` and `10000`, and no greater than `max_rows_per_poll`. Target rows per native fetch, further capped by row and byte budgets. |
 | `query.max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Maximum rows fetched per page, including catch-up pages. |
@@ -198,7 +198,7 @@ configured initial pair; subsequent polls use the last committed pair.
 | --- | --- | --- | --- |
 | `watermark.mode` | string | **required** | `composite` for the fields below; `scalar` uses the separate schema below. `snapshot` requires only the mode field. |
 | `watermark.timestamp.column` | string | **required** | Timestamp result-column name, including aliases. |
-| `watermark.timestamp.bind` | string | **required** | Generated paging parameter name without `:`. ASCII letters, digits, and `_` only, starting with a letter or `_`; do not put it in source SQL. |
+| `watermark.timestamp.bind` | string | **required** | Named query parameter without `:`. ASCII letters, digits, and `_` only, starting with a letter or `_`. |
 | `watermark.timestamp.initial` | string | **required** | Oracle timestamp text, such as `"1970-01-01 00:00:00"`, with at most nine digits per numeric component. Fractional precision above nine digits is rejected, not truncated. Used only when no checkpoint exists. |
 | `watermark.timestamp.timezone` | string | **required** | Must be `UTC`, ignoring ASCII case. The adapter sets its Oracle session timezone to UTC. |
 | `watermark.tie_breaker.column` | string | **required** | Signed-integer tie-breaker result-column name. |
@@ -208,7 +208,7 @@ configured initial pair; subsequent polls use the last committed pair.
 Cursor columns and bind names must each be distinct, ignoring ASCII case.
 Cursor column settings are result names, not SQL identifier expressions.
 Names may contain spaces or punctuation; the receiver resolves live metadata
-and quotes the actual names in generated SQL. Use the name itself, without
+and checks them against the explicitly selected cursor references. Use the name itself, without
 adding SQL quoting. Names are limited to 128 bytes without control characters.
 
 Both cursor values must be non-null; nullable metadata is accepted. Supported timestamp metadata
@@ -244,16 +244,18 @@ watermark:
     value: 0
 ```
 
-For integers and timestamps, supply source SQL without cursor parameters:
+For integers and timestamps, keep the explicit cursor predicate and ordering:
 
 ```sql
 SELECT EVENT_ID, PAYLOAD FROM OTAP_ORACLE_EVENTS
+WHERE EVENT_ID > :last_key
+ORDER BY EVENT_ID ASC
 ```
 
-Return the configured cursor result name, including through an alias or
-expression. Native filters, joins, and subqueries are allowed. The receiver
-generates the exclusive keyset predicate and ascending order around the complete
-source result, using typed parameters rather than interpolated cursor values.
+Return the configured cursor reference, optionally under a result alias.
+Native filters, joins, and subqueries are allowed. Keep the required keyset
+as a mandatory `WHERE` condition and add business filters with `AND`. The
+receiver binds cursor values through typed parameters, never SQL interpolation.
 
 | `initial.type` | Oracle column | Value requirements |
 | --- | --- | --- |
@@ -269,8 +271,8 @@ outside the selected Rust integer range; those rows stop progress rather than
 rounding or wrapping. Full uint64 values never pass through i64 or floating point.
 
 Scalar and composite timestamps use native type-aware handling. Metadata
-discovery executes the parameter-free source; paging binds use the exact Oracle
-timestamp family and precision. Configured initial timestamps are canonicalized
+discovery uses a lossless zoned timestamp bind; normal paging uses the exact
+Oracle timestamp family and precision. Configured initial timestamps are canonicalized
 to UTC before fingerprinting. Cursors are extracted from the already-normalized
 output row, without a second native decode.
 
@@ -314,11 +316,12 @@ and support for Oracle's COLLATE operator. The receiver checks the database
 character set once per connection before preparing the configured query. The
 account must be able to read `NLS_DATABASE_PARAMETERS`; failure is not bypassed.
 
-The receiver applies BINARY collation to both generated predicate operands and
-the ordering key. Source SQL does not need a cursor predicate or collation:
+Keep explicit BINARY collation on both predicate operands and the ordering key:
 
 ```sql
 SELECT EVENT_KEY, PAYLOAD FROM OTAP_ORACLE_EVENTS
+WHERE EVENT_KEY COLLATE BINARY > :last_key COLLATE BINARY
+ORDER BY EVENT_KEY COLLATE BINARY ASC
 ```
 
 This prevents session or declared column linguistic collation from disagreeing
@@ -440,21 +443,28 @@ and adds native filters:
 ```sql
 SELECT EVENT_ID, EVENT_TS, PAYLOAD
 FROM OTAP_ORACLE_EVENTS
-WHERE EVENT_TS >= TIMESTAMP '2026-11-01 00:00:00'
+WHERE (
+    EVENT_TS > :last_timestamp
+    OR (EVENT_TS = :last_timestamp AND EVENT_ID > :last_tie_breaker)
+)
+  AND EVENT_TS >= TIMESTAMP '2026-11-01 00:00:00'
   AND EVENT_ID BETWEEN 1 AND 1000000
+ORDER BY EVENT_TS ASC, EVENT_ID ASC
 ```
 
 Oracle uses the same [source-query contract](../../../../scraper/README.md#sql-validation)
 as SQL Server and PostgreSQL, without an opt-in or legacy validator. Joins,
 views, CTEs, subqueries, casts/functions, grouping, windows, and set operations
-are accepted when parseable/composable. Comments, quoted identifiers, wildcards,
-and one final semicolon are supported. Output names must be unique ignoring
+are accepted when parseable/composable. For incremental set sources, use a CTE
+or subquery beneath a final guarded `SELECT`. Comments, quoted identifiers,
+non-cursor wildcards/expressions, and one final semicolon are supported. Explicitly
+select the cursor column references, optionally aliased. Output names must be unique ignoring
 ASCII case, and native result types must be supported.
 
-Do not include cursor parameters in `query.statement`. The receiver generates
-an outer predicate and ascending order using resolved output names. A matching
-final source order is optional; conflicting order and top-level incremental
-row limits are rejected. Writes, additional statements, locks, and unbound
+Keep cursor parameters and ascending final order in `query.statement`. The
+standard strict keyset must constrain every returned incremental row; combine
+business filters through `AND`, never a bypassing `OR`. Conflicting order and
+top-level incremental row limits are rejected. Writes, extra statements, locks, and undeclared
 parameters are rejected in every mode.
 
 The final incremental result must have a stable, non-null, unique cursor per
@@ -468,8 +478,9 @@ each page. Functions and views are not proven free of external side effects,
 and future source visibility/replayability cannot be certified by a parser.
 Use a reviewed query and a dedicated least-privileged account.
 
-Follow the [source-query migration](../../../../scraper/README.md#source-query-migration)
-for existing SQL with handwritten cursor predicates and old checkpoint identities.
+Existing supported explicit queries and [checkpoint identities](../../../../scraper/README.md#checkpoint-compatibility)
+remain compatible, including the original Oracle mode-specific fingerprint
+format. No migration or reset is required for unchanged configurations.
 
 ### Output Mapping
 
@@ -700,6 +711,14 @@ groups:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD
                   FROM OTAP_ORACLE_EVENTS
+                  WHERE (
+                    EVENT_TS > :last_timestamp
+                    OR (
+                      EVENT_TS = :last_timestamp
+                      AND EVENT_ID > :last_tie_breaker
+                    )
+                  )
+                  ORDER BY EVENT_TS ASC, EVENT_ID ASC
                 interval: 1m
                 fetch_size_rows: 300
                 max_rows_per_poll: 10000

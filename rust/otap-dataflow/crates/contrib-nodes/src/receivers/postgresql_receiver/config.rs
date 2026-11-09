@@ -331,13 +331,13 @@ impl PostgreSqlReceiverConfig {
         // so operational tuning does not invalidate a durable cursor.
         // Discovery never hashes transient catalog state.
         let identity = serde_json::to_vec(&(
-            "postgresql/v6-source-sql",
+            "postgresql/v5-watermark-time",
             "postgresql",
             &self.connection.host,
             self.connection.port,
             &self.connection.database,
-            source.fingerprint_sql(),
-            "receiver-owned-parameters/v1",
+            &query.statement,
+            "named-parameters/v2",
             &self.watermark,
             "UTC/microseconds/native-v2",
         ))

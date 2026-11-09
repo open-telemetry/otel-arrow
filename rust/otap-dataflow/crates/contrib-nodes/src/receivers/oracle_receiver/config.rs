@@ -172,7 +172,6 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         let source = SourceQuery::compile(&query, DatabaseSystem::Oracle)?;
         let fingerprint = match &config.watermark {
             WatermarkConfig::Snapshot {} => serde_json::to_vec(&SnapshotFingerprintInput {
-                contract: "source-sql/v1",
                 source_id: &config.source_id,
                 connect_string: &config.connection.connect_string,
                 statement: source.fingerprint_sql(),
@@ -182,7 +181,6 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
                 timestamp,
                 tie_breaker,
             } => serde_json::to_vec(&FingerprintInput {
-                contract: "source-sql/v1",
                 source_id: &config.source_id,
                 connect_string: &config.connection.connect_string,
                 statement: source.fingerprint_sql(),
@@ -198,7 +196,6 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
                 bind,
                 initial,
             } => serde_json::to_vec(&ScalarFingerprintInput {
-                contract: "source-sql/v1",
                 source_id: &config.source_id,
                 connect_string: &config.connection.connect_string,
                 statement: source.fingerprint_sql(),
@@ -225,7 +222,6 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
 
 #[derive(Serialize)]
 struct SnapshotFingerprintInput<'a> {
-    contract: &'static str,
     source_id: &'a str,
     connect_string: &'a str,
     statement: &'a str,
@@ -234,7 +230,6 @@ struct SnapshotFingerprintInput<'a> {
 
 #[derive(Serialize)]
 struct ScalarFingerprintInput<'a> {
-    contract: &'static str,
     source_id: &'a str,
     connect_string: &'a str,
     statement: &'a str,
@@ -246,7 +241,6 @@ struct ScalarFingerprintInput<'a> {
 
 #[derive(Serialize)]
 struct FingerprintInput<'a> {
-    contract: &'static str,
     source_id: &'a str,
     connect_string: &'a str,
     statement: &'a str,

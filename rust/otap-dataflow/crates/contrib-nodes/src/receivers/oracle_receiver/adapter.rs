@@ -920,7 +920,7 @@ fn cursor_bind_timestamp(
 fn ensure_prepared(
     session: &mut OracleSession,
     query: &CompiledQuery,
-    _cursor: &Cursor,
+    cursor: &Cursor,
     cancellation: &OracleCancellation,
 ) -> Result<(), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
@@ -935,11 +935,14 @@ fn ensure_prepared(
         .prefetch_rows(0)
         .build()
         .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
-    let result_set = cancellation.native_call(|| {
-        discovery
-            .query_named(&[])
-            .map_err(|error| OracleAdapterError::Query(error.into()))
-    })?;
+    let discovery_type = OracleType::TimestampTZ(9);
+    let result_set = bind_cursor(
+        &mut discovery,
+        query,
+        cursor,
+        Some(&discovery_type),
+        cancellation,
+    )?;
     let (columns, types) = result_metadata(result_set.column_info())?;
     let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
     let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;

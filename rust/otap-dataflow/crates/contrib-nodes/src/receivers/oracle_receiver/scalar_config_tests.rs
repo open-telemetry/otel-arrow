@@ -7,7 +7,11 @@ use otel_arrow_dfe_scraper::database::{CompiledWatermark, Cursor, ScalarValue};
 fn scalar_config(value: ScalarValue) -> Value {
     let mut config = documented_config();
     config["watermark"] = serde_json::json!({"mode":"scalar", "column":"CURSOR_KEY", "bind":"last_key", "initial":value});
-    config["query"]["statement"] = "SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS".into();
+    config["query"]["statement"] = if matches!(value, ScalarValue::String(_)) {
+        "SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY COLLATE BINARY > :last_key COLLATE BINARY ORDER BY CURSOR_KEY COLLATE BINARY ASC"
+    } else {
+        "SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC"
+    }.into();
     config
 }
 
@@ -45,8 +49,8 @@ fn scalar_types_compile_without_timestamp_coercion() {
     }
 }
 
-/// Scenario: User SQL contains legacy cursor binds, mutation, or conflicting ordering.
-/// Guarantees: The source-only contract has no permissive legacy execution fallback.
+/// Scenario: User SQL violates the required explicit keyset or result ordering.
+/// Guarantees: Broader business expressions cannot bypass the checkpoint guard.
 #[test]
 fn scalar_sql_rejects_unsafe_lookalikes() {
     for sql in [
@@ -70,16 +74,16 @@ fn scalar_sql_rejects_unsafe_lookalikes() {
     }
     let mut value = scalar_config(ScalarValue::Int64(0));
     value["query"]["statement"] =
-        "select CURSOR_KEY from T where CURSOR_KEY >= 0 order by CURSOR_KEY asc;".into();
+        "select CURSOR_KEY from T where (CURSOR_KEY > :last_key) order by CURSOR_KEY asc;".into();
     assert!(parsed(value).is_ok());
     let mut value = scalar_config(ScalarValue::Int64(0));
     value["query"]["statement"] =
-        "SELECT CURSOR_KEY, PAYLOAD AS BODY FROM T ORDER BY CURSOR_KEY ASC".into();
+        "SELECT CURSOR_KEY, PAYLOAD AS BODY FROM T WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC".into();
     assert!(parsed(value).is_ok());
 }
 
-/// Scenario: A string source query does not specify cursor ordering or collation.
-/// Guarantees: The receiver generates BINARY collation on both predicate operands and the ordering key.
+/// Scenario: A string query explicitly supplies its BINARY comparison and ordering.
+/// Guarantees: The authored collation remains in the bound SQL and null-key checks do not change it.
 #[test]
 fn string_queries_require_explicit_binary_collation() {
     use otel_arrow_dfe_scraper::database::{ColumnMetadata, DatabaseSystem, SourceQuery};
@@ -166,10 +170,10 @@ fn scalar_fingerprints_track_mode_type_and_query() {
     );
 }
 
-/// Scenario: A source-only query is compared with the former fingerprint format.
-/// Guarantees: The new contract cannot silently reinterpret an old checkpoint identity.
+/// Scenario: An unchanged explicit query is compared with the original fingerprint format.
+/// Guarantees: Broader validation does not require existing users to reset their durable cursors.
 #[test]
-fn composite_fingerprint_requires_explicit_migration() {
+fn composite_fingerprint_remains_compatible() {
     let raw = documented_config();
     let config = parsed(raw.clone()).expect("composite");
     let query = config.query();
@@ -205,12 +209,62 @@ fn composite_fingerprint_requires_explicit_migration() {
             .collect::<Vec<_>>()
             .join(",")
     );
-    assert_ne!(
+    assert_eq!(
         config.config_fingerprint(),
         blake3::hash(legacy.as_bytes()).to_hex().as_str()
     );
 }
 
+/// Scenario: Original Oracle composite, scalar, and snapshot configurations reopen durable state.
+/// Guarantees: Frozen pre-relaxation identity payloads match without a migration or progress reset.
+#[test]
+fn original_identity_payloads_reopen_checkpoints() {
+    // Identity bytes from 9145c0f's field order, SQL spelling, and timestamp normalization.
+    const COMPOSITE: &str = r#"{"source_id":"oracle-audit","connect_string":"database.contoso.com:1521/ORCL","statement":"SELECT AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE (LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker)) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC","timestamp_column":"LAST_UPDATED","timestamp_bind":"last_timestamp","timestamp_initial":"1970-01-01 00:00:00.000000000 +00:00","tie_breaker_column":"AUDIT_ID","tie_breaker_bind":"last_tie_breaker","tie_breaker_initial":0}"#;
+    const SCALAR: &str = r#"{"source_id":"oracle-audit","connect_string":"database.contoso.com:1521/ORCL","statement":"SELECT CURSOR_KEY, PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY > :last_key ORDER BY CURSOR_KEY ASC","mode":"scalar","column":"CURSOR_KEY","bind":"last_key","initial":{"type":"int64","value":0}}"#;
+    const SNAPSHOT: &str = r#"{"source_id":"oracle-audit","connect_string":"database.contoso.com:1521/ORCL","statement":"SELECT PAYLOAD FROM AUDIT_LOGS","mode":"snapshot"}"#;
+    let mut snapshot = documented_config();
+    snapshot["watermark"] = serde_json::json!({"mode":"snapshot"});
+    snapshot["query"]["statement"] = "SELECT PAYLOAD FROM AUDIT_LOGS".into();
+    for (raw, legacy) in [
+        (documented_config(), COMPOSITE),
+        (scalar_config(ScalarValue::Int64(0)), SCALAR),
+        (snapshot, SNAPSHOT),
+    ] {
+        let config = parsed(raw).unwrap();
+        let expected = blake3::hash(legacy.as_bytes()).to_hex().to_string();
+        assert_eq!(config.config_fingerprint(), expected);
+        let dir = tempfile::tempdir().unwrap();
+        let old = CheckpointStore::new(
+            dir.path(),
+            "group",
+            "pipeline",
+            "oracle",
+            "source",
+            expected,
+        );
+        let lease = SourceLease::acquire(old.lease_key()).unwrap();
+        let progress = match config.query().watermark().initial() {
+            Cursor::Composite(mut cursor) => {
+                cursor.tie_breaker = 17;
+                Cursor::Composite(cursor)
+            }
+            Cursor::Scalar(_) => ScalarValue::Int64(17).into(),
+            Cursor::Snapshot => Cursor::Snapshot,
+        };
+        let (saved, _) = old.write(0, &progress).unwrap();
+        drop(lease);
+        let current = CheckpointStore::new(
+            dir.path(),
+            "group",
+            "pipeline",
+            "oracle",
+            "source",
+            config.config_fingerprint().into(),
+        );
+        assert_eq!(current.read().unwrap(), Some(saved));
+    }
+}
 /// Scenario: The Oracle factory reopens a durable scalar checkpoint for each supported type.
 /// Guarantees: Typed progress and exact source leases survive factory construction and teardown.
 #[test]

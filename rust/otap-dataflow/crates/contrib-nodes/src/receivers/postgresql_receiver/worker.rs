@@ -841,11 +841,6 @@ impl PostgreSqlAdapter {
                 .await
                 .map_err(database)?;
             op.check()?;
-            if !described.params().is_empty() {
-                return Err(Error::SourceQuery(
-                    otel_arrow_dfe_scraper::database::SourceQueryError::Parameters,
-                ));
-            }
             let cached = resolve_schema(
                 &mut self.schema,
                 &self.validated,
@@ -853,13 +848,16 @@ impl PostgreSqlAdapter {
             )?;
             let schema = &cached.resolved;
             let plan = &cached.plan;
+            let parameter_types: Vec<_> = plan
+                .cursor
+                .indices()
+                .iter()
+                .map(|&index| schema.native_types[index].clone())
+                .collect();
+            if described.params() != parameter_types {
+                return Err(Error::Metadata);
+            }
             if session.statement.is_none() {
-                let parameter_types: Vec<_> = plan
-                    .cursor
-                    .indices()
-                    .iter()
-                    .map(|&index| schema.native_types[index].clone())
-                    .collect();
                 let statement = tx
                     .prepare_typed(&plan.sql, &parameter_types)
                     .await

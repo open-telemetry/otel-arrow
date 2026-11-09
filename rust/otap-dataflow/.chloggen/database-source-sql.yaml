@@ -1,14 +1,14 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: breaking
+change_type: enhancement
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Database receivers accept native source-only SQL, including joins and datetime filters, and generate incremental pagination.
+note: Database receivers support broader native queries, including joins and datetime filters, while retaining explicit checkpoint predicates and existing checkpoint compatibility.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3918]
@@ -19,6 +19,6 @@ issues: [3918]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Migration: Remove handwritten cursor predicates and parameters; keep watermark settings.
-  Stop the old receiver and migrate its durable committed cursor to a reviewed new checkpoint identity.
-  Incompatible checkpoints are rejected, never reset.
+  Existing supported SQL, cursor parameters, and unchanged checkpoint identities continue to work.
+  Keep the required keyset predicate and ascending ORDER BY; combine business filters with AND.
+  Invalid cursor boundaries fail without advancing progress.

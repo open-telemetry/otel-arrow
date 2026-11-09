@@ -1235,6 +1235,8 @@ use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::time::{Duration, Instant};
 
 const COMPOSITE_STATEMENT: &str = "SELECT AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS \
+     WHERE (LAST_UPDATED > :last_timestamp \
+     OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker)) \
      ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC";
 
 struct FixedCredentials(BasicAuthCredential);
@@ -1335,8 +1337,8 @@ fn with_statement(statement: &str) -> Value {
     config
 }
 
-/// Scenario: SQL contains legacy cursor parameters or native set operations.
-/// Guarantees: Parameters require migration, while set results receive one outer generated cursor.
+/// Scenario: SQL combines the checkpoint incorrectly or adds an unguarded set branch.
+/// Guarantees: The explicit guard must constrain the final result; set sources need an outer guarded SELECT.
 #[test]
 fn rejects_composite_predicate_lookalikes_and_set_operations() {
     for statement in [
@@ -1354,19 +1356,18 @@ fn rejects_composite_predicate_lookalikes_and_set_operations() {
             1,
         );
         for statement in [statement.clone(), statement.to_ascii_lowercase()] {
-            assert!(parsed(with_statement(&statement)).is_ok(), "{statement}");
+            assert!(parsed(with_statement(&statement)).is_err(), "{statement}");
         }
     }
 }
 
-/// Scenario: Composite result cursor names are supplied by aliases or expressions.
-/// Guarantees: Result metadata, not direct-projection syntax, defines the cursor contract.
+/// Scenario: Composite result cursor names are aliases for native source columns.
+/// Guarantees: Aliases work when the predicate references those same source columns, never unrelated keys.
 #[test]
-fn rejects_aliased_or_derived_composite_cursor_projections() {
+fn accepts_consistent_composite_cursor_aliases() {
     for statement in [
-        "SELECT OTHER_ID AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS",
-        "SELECT AUDIT_ID, OTHER_TS AS LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS",
-        "SELECT AUDIT_ID + 1 AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS",
+        "SELECT OTHER_ID AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND OTHER_ID > :last_tie_breaker) ORDER BY LAST_UPDATED, AUDIT_ID",
+        "SELECT AUDIT_ID, OTHER_TS AS LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE OTHER_TS > :last_timestamp OR (OTHER_TS = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED, AUDIT_ID",
     ] {
         assert!(parsed(with_statement(statement)).is_ok(), "{statement}");
     }
@@ -1741,8 +1742,8 @@ fn requires_both_cursor_binds_as_real_markers() {
     assert!(parsed(with_statement(literal_only)).is_err());
 }
 
-/// Scenario: Legacy bind parameters appear outside their former strict keyset expression.
-/// Guarantees: No form of user parameter bypasses the migration requirement.
+/// Scenario: Configured bind parameters appear without the mandatory exclusive keyset.
+/// Guarantees: Merely mentioning a cursor parameter does not prove a correct checkpoint guard.
 #[test]
 fn requires_the_strict_composite_predicate() {
     let no_predicate = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
@@ -1757,12 +1758,12 @@ fn requires_the_strict_composite_predicate() {
 }
 
 /// Scenario: A result alias contains spaces, quotes, or SQL-looking delimiters.
-/// Guarantees: Generated cursor references quote the actual metadata name as one identifier.
+/// Guarantees: Authored aliases remain single identifiers while guard references use the selected source columns.
 #[test]
 fn rejects_unsafe_cursor_identifiers() {
     for column in ["AUDIT.ID", "\"AUDIT_ID\"", "AUDIT ID", "AUDIT_ID;DELETE"] {
         let mut config = with_statement(&format!(
-            "SELECT LAST_UPDATED, AUDIT_ID AS \"{}\" FROM AUDIT_LOGS",
+            "SELECT LAST_UPDATED, AUDIT_ID AS \"{}\" FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED,AUDIT_ID",
             column.replace('"', "\"\"")
         ));
         config["watermark"]["tie_breaker"]["column"] = serde_json::json!(column);
@@ -1916,8 +1917,8 @@ fn factory_redacts_checkpoint_lease_paths() {
     assert!(error.to_string().contains("lease I/O"));
 }
 
-/// Scenario: Final ordering conflicts with generated paging or is omitted by the source.
-/// Guarantees: Conflicts fail; omitted ordering and nested source queries are composed safely.
+/// Scenario: Final ordering is conflicting, missing, or only inside a subquery.
+/// Guarantees: Every incremental statement keeps its own matching final ascending ORDER BY.
 #[test]
 fn requires_the_final_outer_ascending_ordering() {
     let descending = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
@@ -1929,12 +1930,12 @@ fn requires_the_final_outer_ascending_ordering() {
     assert!(parsed(with_statement(reversed)).is_err());
 
     let missing = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS";
-    assert!(parsed(with_statement(missing)).is_ok());
+    assert!(parsed(with_statement(missing)).is_err());
 
     let nested_only = "SELECT AUDIT_ID, LAST_UPDATED FROM \
          (SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
          ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC)";
-    assert!(parsed(with_statement(nested_only)).is_ok());
+    assert!(parsed(with_statement(nested_only)).is_err());
 
     let nested_then_wrong_outer = "SELECT AUDIT_ID, LAST_UPDATED FROM \
          (SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp \
@@ -1947,8 +1948,8 @@ fn requires_the_final_outer_ascending_ordering() {
 /// Guarantees: Comments are preserved while extra statements are rejected before execution.
 #[test]
 fn rejects_comments_and_multiple_statements() {
-    let commented = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS -- trailing";
-    assert!(parsed(with_statement(commented)).is_ok());
+    let commented = format!("{COMPOSITE_STATEMENT} -- trailing");
+    assert!(parsed(with_statement(&commented)).is_ok());
 
     for statement in [
         format!("{COMPOSITE_STATEMENT}; SELECT 1 FROM DUAL"),
@@ -2197,7 +2198,8 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
         },
         "query": {
             "statement": "SELECT EVENT_ID, EVENT_TS, PAYLOAD FROM OTAP_ORACLE_EVENTS \
-                ORDER BY EVENT_TS ASC, EVENT_ID ASC",
+                WHERE (EVENT_TS > :last_timestamp OR (EVENT_TS = :last_timestamp \
+                AND EVENT_ID > :last_tie_breaker)) ORDER BY EVENT_TS ASC, EVENT_ID ASC",
             "interval": "1m",
             "fetch_size_rows": 10,
             "max_rows_per_poll": 10,

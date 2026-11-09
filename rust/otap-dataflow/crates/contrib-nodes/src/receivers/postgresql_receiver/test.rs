@@ -760,7 +760,8 @@ pub(super) fn test_provider() -> Box<dyn BasicAuthProvider> {
     Box::new(TestCredentials)
 }
 
-const KEY: &str = "e.id >= 0";
+const KEY: &str =
+    "((e.ts > :last_timestamp) OR (e.ts = :last_timestamp AND e.id > :last_tie_breaker))";
 
 fn config(sql: &str) -> Value {
     let root = std::env::current_dir().expect("working directory");
@@ -840,7 +841,7 @@ fn rejects_invalid_tls_configuration() {
 fn tls_settings_do_not_change_source_fingerprint() {
     let base = config(&sql(KEY));
     let expected = validate(&base).expect("default TLS").fingerprint;
-    assert_ne!(
+    assert_eq!(
         expected,
         "1a9e23808ba11ad37b24545510b5373a59d3140cbaa3571490c2c62cd6ff2068"
     );
@@ -869,7 +870,8 @@ fn watermark_modes_have_distinct_source_fingerprints() {
     let composite = config(&sql(KEY));
 
     let mut scalar = composite.clone();
-    scalar["query"]["statement"] = json!("SELECT e.id, e.ts FROM public.events AS e ORDER BY e.id");
+    scalar["query"]["statement"] =
+        json!("SELECT e.id, e.ts FROM public.events AS e WHERE e.id > :last_value ORDER BY e.id");
     scalar["watermark"] = json!({
         "mode": "scalar",
         "column": "id",
@@ -892,6 +894,51 @@ fn watermark_modes_have_distinct_source_fingerprints() {
     assert_ne!(fingerprints[1], fingerprints[2]);
 }
 
+/// Scenario: The original PostgreSQL v5 configurations and native parameter styles are reused.
+/// Guarantees: Frozen raw-SQL fingerprints reopen existing checkpoints for all collection modes.
+#[test]
+fn original_identity_payloads_reopen_checkpoints() {
+    use otel_arrow_dfe_scraper::database::{Cursor, ScalarValue};
+    use otel_arrow_dfe_scraper::{CheckpointStore, SourceLease};
+    const COMPOSITE: &str = r#"["postgresql/v5-watermark-time","postgresql","localhost",5432,"fixture","SELECT e.ts, e.id FROM public.events AS e WHERE ((e.ts > :last_timestamp) OR (e.ts = :last_timestamp AND e.id > :last_tie_breaker)) ORDER BY e.ts, e.id","named-parameters/v2",{"mode":"composite","timestamp":{"column":"ts","bind":"last_timestamp","initial":"2026-10-05T00:00:00.000000Z","timezone":"UTC"},"tie_breaker":{"column":"id","bind":"last_tie_breaker","initial":0}},"UTC/microseconds/native-v2"]"#;
+    const SCALAR: &str = r#"["postgresql/v5-watermark-time","postgresql","localhost",5432,"fixture","SELECT e.id FROM public.events AS e WHERE e.id > $1 ORDER BY e.id","named-parameters/v2",{"mode":"scalar","column":"id","bind":"last_value","initial":{"type":"int64","value":0}},"UTC/microseconds/native-v2"]"#;
+    const SNAPSHOT: &str = r#"["postgresql/v5-watermark-time","postgresql","localhost",5432,"fixture","SELECT e.ts, e.id FROM public.events AS e ORDER BY e.ts, e.id","named-parameters/v2",{"mode":"snapshot"},"UTC/microseconds/native-v2"]"#;
+    let mut scalar = config("SELECT e.id FROM public.events AS e WHERE e.id > $1 ORDER BY e.id");
+    scalar["watermark"] = json!({"mode":"scalar","column":"id","bind":"last_value","initial":{"type":"int64","value":0}});
+    let mut snapshot = config("SELECT e.ts, e.id FROM public.events AS e ORDER BY e.ts, e.id");
+    snapshot["watermark"] = json!({"mode":"snapshot"});
+    for (raw, legacy) in [
+        (config(&sql(KEY)), COMPOSITE),
+        (scalar, SCALAR),
+        (snapshot, SNAPSHOT),
+    ] {
+        let validated = validate(&raw).unwrap();
+        let expected = blake3::hash(legacy.as_bytes()).to_hex().to_string();
+        assert_eq!(validated.fingerprint, expected);
+        let dir = tempfile::tempdir().unwrap();
+        let old = CheckpointStore::new(dir.path(), "group", "pipeline", "pg", "source", expected);
+        let lease = SourceLease::acquire(old.lease_key()).unwrap();
+        let progress = match validated.common.watermark().initial() {
+            Cursor::Composite(mut cursor) => {
+                cursor.tie_breaker = 17;
+                Cursor::Composite(cursor)
+            }
+            Cursor::Scalar(_) => ScalarValue::Int64(17).into(),
+            Cursor::Snapshot => Cursor::Snapshot,
+        };
+        let (saved, _) = old.write(0, &progress).unwrap();
+        drop(lease);
+        let current = CheckpointStore::new(
+            dir.path(),
+            "group",
+            "pipeline",
+            "pg",
+            "source",
+            validated.fingerprint,
+        );
+        assert_eq!(current.read().unwrap(), Some(saved));
+    }
+}
 pub(super) fn test_validated() -> super::config::Validated {
     validate(&config(&sql(KEY))).expect("worker fixture")
 }
@@ -965,7 +1012,10 @@ fn native_temporal_expressions_are_accepted() {
         "e.ts >= now() - INTERVAL '1 day' OR e.id IN (1, 2)",
         "e.ts >= 'today'",
     ] {
-        assert!(validate(&config(&sql(predicate))).is_ok(), "{predicate}");
+        assert!(
+            validate(&config(&sql(&format!("{KEY} AND ({predicate})")))).is_ok(),
+            "{predicate}"
+        );
     }
 }
 

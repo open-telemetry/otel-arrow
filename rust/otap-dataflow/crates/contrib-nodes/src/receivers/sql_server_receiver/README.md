@@ -156,6 +156,9 @@ sql-events:
       statement: >
         SELECT ID, EVENT_TS, PAYLOAD
         FROM dbo.OTAP_SQL_EVENTS
+        WHERE EVENT_TS > @last_timestamp
+          OR (EVENT_TS = @last_timestamp AND ID > @last_id)
+        ORDER BY EVENT_TS ASC, ID ASC
       interval: 1m
       timeout: 30s
       max_rows_per_poll: 1000
@@ -241,7 +244,7 @@ with defaults.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `query.statement` | **required** | One read-only [native source query](#native-source-sql), without user parameters, at most 16 KiB. |
+| `query.statement` | **required** | One read-only [native query](#native-source-sql), with explicit cursor predicates/order for incremental collection, at most 16 KiB. |
 | `query.interval` | `1m` | `1m`-`24h`, in whole seconds. Delay after a polling cycle, not between acknowledged catch-up pages. |
 | `query.timeout` | `30s` | `1s`-`300s`, in whole seconds. Absolute deadline for metadata validation or a metadata-plus-fetch operation, not a downstream-ACK deadline. |
 | `query.max_rows_per_poll` | **required** | `1`-`10000`. Incremental per-page ceiling; snapshot complete-result ceiling. |
@@ -334,6 +337,9 @@ must make the pair unique.
 query:
   statement: >
     SELECT EVENT_TS, EVENT_ID, PAYLOAD FROM dbo.EVENTS
+    WHERE EVENT_TS > @last_timestamp
+       OR (EVENT_TS = @last_timestamp AND EVENT_ID > @last_id)
+    ORDER BY EVENT_TS ASC, EVENT_ID ASC
   max_rows_per_poll: 1000
   max_batch_bytes: 4 MiB
 watermark:
@@ -362,6 +368,8 @@ Use one unique, non-null, stable cursor. SQL Server supports `int64` and
 query:
   statement: >
     SELECT EVENT_ID, PAYLOAD FROM dbo.EVENTS
+    WHERE EVENT_ID > @last_key
+    ORDER BY EVENT_ID ASC
   max_rows_per_poll: 1000
   max_batch_bytes: 4 MiB
 watermark:
@@ -373,9 +381,8 @@ watermark:
     value: 0
 ```
 
-For a timestamp cursor, use `column: EVENT_TS` in the watermark and return that
-result column. The receiver supplies its predicate and ordering. Replace
-`initial` with:
+For a timestamp cursor, use `column: EVENT_TS` in the watermark and that column
+in the projection, predicate, and ordering. Replace `initial` with:
 
 ```yaml
 initial:
@@ -426,11 +433,13 @@ precision.
 ## Native source SQL
 
 All database receivers use the [shared source-query contract](../../../../scraper/README.md#sql-validation),
-without an opt-in or legacy validator. Supply the source result, not a cursor
-predicate. Native joins, aliases, views, CTEs, subqueries, functions, casts,
-grouping, windows, and set operations are accepted when parseable/composable.
-SQL Server checks their native validity. Wildcards are allowed; live output
-metadata must contain 1-256 uniquely named, supported columns.
+without an opt-in or legacy validator. Keep the explicit cursor predicate and
+ascending `ORDER BY`; combine business filters with `AND`. Native joins, views,
+CTEs, subqueries, functions, casts, grouping, and windows are accepted when
+parseable/composable. Put set operations in a CTE/subquery beneath the final
+guarded `SELECT`. SQL Server checks native validity. Wildcards and expressions
+are allowed for non-cursor output; explicitly select cursor column references,
+optionally aliased. Live output must have 1-256 uniquely named, supported columns.
 
 For example, this source works with a composite cursor on `EVENT_TS`/`EVENT_ID`:
 
@@ -438,29 +447,37 @@ For example, this source works with a composite cursor on `EVENT_TS`/`EVENT_ID`:
 SELECT e.EVENT_TS, e.EVENT_ID, COALESCE(c.NAME, 'unknown') AS CUSTOMER
 FROM dbo.EVENTS e
 LEFT JOIN dbo.CUSTOMERS c ON c.ID = e.CUSTOMER_ID
-WHERE e.CREATED_AT >= CAST('2026-11-01T00:00:00' AS datetime2(7))
+WHERE (
+    e.EVENT_TS > @last_timestamp
+    OR (e.EVENT_TS = @last_timestamp AND e.EVENT_ID > @last_id)
+)
+  AND e.CREATED_AT >= CAST('2026-11-01T00:00:00' AS datetime2(7))
   AND e.STATUS IN ('ready', 'retry')
+ORDER BY e.EVENT_TS ASC, e.EVENT_ID ASC
 ```
 
 The final result must have a unique, stable cursor per row. A join that fans
 out needs a cursor distinguishing each output row. Nullable metadata and
-computed cursor aliases are accepted; actual null or duplicate cursor values
+column aliases are accepted; actual null or duplicate cursor values
 fail explicitly, including at a deferred-row boundary.
 
 Incremental `TOP`/offset/fetch and incompatible final ordering are rejected;
-the receiver generates an outer predicate, order, and bound `TOP` with one
-successor probe. Snapshots preserve native ordering/limits and use bounded
+the receiver retains the authored guard/order and inserts a bound `TOP` with
+one successor probe. It adds a null-key validation arm without broadening valid
+key eligibility. Snapshots preserve native ordering/limits and use bounded
 streaming with an overflow probe. Writes, additional statements, lock/isolation
-hints, and user parameters are rejected in every mode. Literal text and
+hints, and undeclared parameters are rejected in every mode. Snapshots have no
+cursor parameters. Literal text and
 optimizer comments are preserved, and one trailing semicolon is accepted.
 
-Existing hand-paged SQL and checkpoints need the
-[one-time source-query migration](../../../../scraper/README.md#source-query-migration).
+Existing supported SQL and unchanged checkpoints need no migration. The
+[original checkpoint identity](../../../../scraper/README.md#checkpoint-compatibility)
+is preserved; changing business semantics still requires compatibility review.
 
 ### Validation Boundary
 
-Preparation enforces the common read-only source boundary and receiver-owned
-paging. Native metadata supplies result names/types and parameter bindings.
+Preparation enforces the common read-only boundary, mandatory authored keyset,
+and matching final order. Native metadata supplies result names/types and binds.
 Passing offline checks is **not
 proof of general SQL validity**. For example, snapshot expressions such as
 `WHERE COUNT(*) > 0` or `WHERE EVENT_ID` can pass preparation but SQL Server
@@ -468,8 +485,8 @@ will reject them.
 
 `DriverAdapter::validate_query` validates native source SQL and live metadata through
 parameterized `sys.dm_exec_describe_first_result_set`, before polling and again
-after the shared controller reconnects. Source SQL is bound, not concatenated
-into the metadata query; the source itself has no parameters. SQL Server checks
+after the shared controller reconnects. SQL and native parameter declarations
+are bound, not concatenated into the metadata query. SQL Server checks
 general expression validity, column types, object existence, and permissions;
 the adapter also checks the receiver's live cursor and metadata requirements.
 Every fetch re-describes and compares the complete plan before reading rows.

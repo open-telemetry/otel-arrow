@@ -40,6 +40,14 @@ groups:
                 statement: >
                   SELECT e.event_ts, e.event_id, e.actor
                   FROM public.receiver_events AS e
+                  WHERE (
+                    e.event_ts > :last_timestamp
+                    OR (
+                      e.event_ts = :last_timestamp
+                      AND e.event_id > :last_tie_breaker
+                    )
+                  )
+                  ORDER BY e.event_ts ASC, e.event_id ASC
                 interval: 1m
                 fetch_size_rows: 100
                 max_rows_per_poll: 1000

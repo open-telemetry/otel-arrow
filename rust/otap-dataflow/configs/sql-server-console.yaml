@@ -35,6 +35,9 @@ groups:
                 statement: >
                   SELECT ID, EVENT_TS, PAYLOAD, AMOUNT, RAW, AT_TIME
                   FROM dbo.OTAP_SQL_EVENTS
+                  WHERE EVENT_TS > @last_timestamp
+                    OR (EVENT_TS = @last_timestamp AND ID > @last_id)
+                  ORDER BY EVENT_TS ASC, ID ASC
                 interval: 1m
                 timeout: 30s
                 max_rows_per_poll: 1000

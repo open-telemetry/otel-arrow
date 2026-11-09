@@ -45,9 +45,11 @@ fn credentials() -> Box<dyn BasicAuthProvider> {
 
 fn config(mode: &str) -> Value {
     let predicate = match mode {
-        "scalar" => " ORDER BY ID ASC",
-        "timestamp" => " ORDER BY EVENT_TS ASC",
-        "composite" => " ORDER BY EVENT_TS ASC, ID ASC",
+        "scalar" => " WHERE ID > @key ORDER BY ID ASC",
+        "timestamp" => " WHERE EVENT_TS > @key ORDER BY EVENT_TS ASC",
+        "composite" => {
+            " WHERE EVENT_TS > @ts OR (EVENT_TS = @ts AND ID > @id) ORDER BY EVENT_TS ASC, ID ASC"
+        }
         "snapshot" => "",
         _ => panic!("test mode"),
     };

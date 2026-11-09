@@ -155,7 +155,7 @@ impl SqlServerReceiverConfig {
         .map_err(|e| SqlServerConfigError(e.to_string()))?;
         let statement = SqlServerStatement::compile(&query)?;
         let fingerprint_input = Fingerprint {
-            version: 2,
+            version: 1,
             database_system: "microsoft.sql_server",
             source_id: &raw.source_id,
             host: &connection.host,

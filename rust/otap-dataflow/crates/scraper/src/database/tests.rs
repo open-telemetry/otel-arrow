@@ -308,7 +308,7 @@ fn rejects_queries_outside_the_read_only_contract() {
         let query = CompiledQuery::compile(
             sql.to_owned(),
             polling(),
-            &watermark(),
+            &WatermarkConfig::Snapshot {},
             &checkpoint_config(),
             OutputConfig::default(),
         )
