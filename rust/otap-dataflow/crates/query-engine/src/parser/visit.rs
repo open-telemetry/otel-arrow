@@ -6,10 +6,10 @@
 
 use otel_arrow_contrib_data_engine_expressions::{
     CollectionScalarExpression, ConvertScalarExpression, DataExpression, InvokeFunctionArgument,
-    LogicalExpression, MapSelectionExpression, MapSelector, MathScalarExpression,
-    MutableValueExpression, ParseScalarExpression, PipelineExpression, PipelineFunction,
-    ReduceMapTransformExpression, RemoveMapKeysTransformExpression, ScalarExpression,
-    TemporalScalarExpression, TextScalarExpression, TransformExpression,
+    LogicalExpression, MapSelector, MathScalarExpression, ParseScalarExpression,
+    PipelineExpression, PipelineFunction, ReduceMapTransformExpression,
+    RemoveMapKeysTransformExpression, ScalarExpression, TemporalScalarExpression,
+    TextScalarExpression, TransformExpression,
 };
 
 use crate::error::Result;
@@ -60,12 +60,14 @@ fn visit_data_expr<T: ExprAstVisitor>(
                 }
             }
         }
-        DataExpression::Discard(d) => {
-            if let Some(predicate) = d.get_predicate() {
+        DataExpression::Discard(discard_expr) => {
+            if let Some(predicate) = discard_expr.get_predicate() {
                 visit_logical_expr(predicate, functions, visitor)?;
             }
         }
-        DataExpression::Transform(t) => {}
+        DataExpression::Transform(transform_expr) => {
+            visit_transform_expr(transform_expr, functions, visitor)?;
+        }
 
         DataExpression::Output(_) | DataExpression::Summary(_) => {
             // these have no child expressions that the visitor trait supports so
@@ -91,10 +93,6 @@ fn visit_transform_expr<T: ExprAstVisitor>(
                 }
             }
         },
-        TransformExpression::Move(_) | TransformExpression::Remove(_) => {
-            // these have no child expressions that the visitor trait supports so
-            // we simply ignore these variants of DataExpression for now
-        }
         TransformExpression::RemoveMapKeys(r) => match r {
             RemoveMapKeysTransformExpression::Remove(map_keys)
             | RemoveMapKeysTransformExpression::Retain(map_keys) => {
@@ -103,14 +101,20 @@ fn visit_transform_expr<T: ExprAstVisitor>(
                 }
             }
         },
-        _ => {
-            todo!()
+        TransformExpression::Set(set_expr) => {
+            visit_scalar_expr(set_expr.get_source(), functions, visitor)?;
+        }
+        TransformExpression::Move(_)
+        | TransformExpression::Remove(_)
+        | TransformExpression::RenameMapKeys(_)
+        | TransformExpression::Scale(_) => {
+            // these have no child expressions that the visitor trait supports so
+            // we simply ignore these variants of DataExpression for now
         }
     }
 
     Ok(())
 }
-
 
 fn visit_logical_expr<T: ExprAstVisitor>(
     logical_expr: &LogicalExpression,
@@ -215,7 +219,7 @@ fn visit_scalar_expr<T: ExprAstVisitor>(
             }
         },
         ScalarExpression::GetType(t) => {
-            visit_scalar_expr(t.get_value(), functions, visitor);
+            visit_scalar_expr(t.get_value(), functions, visitor)?;
         }
         ScalarExpression::InvokeFunction(f) => {
             for arg in f.get_arguments() {

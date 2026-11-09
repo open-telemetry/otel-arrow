@@ -48,7 +48,17 @@ use linkme::distributed_slice;
 use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
 use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otel_arrow_dfe_engine::{
-    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension, config::ProcessorConfig, context::PipelineContext, control::{AckMsg, NackCause, NackMsg, NodeControlMsg}, error::{Error as EngineError, ProcessorErrorKind}, local::processor::{EffectHandler, Processor}, message::Message, node::NodeId, pdata_context::ContextDeclarationProvider, processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper}
+    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
+    ProcessorFactory, ProducerEffectHandlerExtension,
+    config::ProcessorConfig,
+    context::PipelineContext,
+    control::{AckMsg, NackCause, NackMsg, NodeControlMsg},
+    error::{Error as EngineError, ProcessorErrorKind},
+    local::processor::{EffectHandler, Processor},
+    message::Message,
+    node::NodeId,
+    pdata_context::ContextDeclarationProvider,
+    processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper},
 };
 use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,

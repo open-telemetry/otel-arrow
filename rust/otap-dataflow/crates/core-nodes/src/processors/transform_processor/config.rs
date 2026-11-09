@@ -4,12 +4,7 @@
 use std::num::NonZeroUsize;
 
 use otel_arrow_contrib_data_engine_kql_parser::Parser;
-use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_engine::pdata_context::{
-    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration, ContextDomain,
-    ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake, ContextEntryTarget,
-    ContextNameMatching, NodeContextDeclarations,
-};
+use otel_arrow_dfe_engine::pdata_context::{ConfigNodeContextDeclaration, NodeContextDeclarations};
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::parser::visit::metadata::MetadataAccessDeclarationVisitor;
 use otel_arrow_dfe_query_engine::parser::visit::visit_expr_ast;
