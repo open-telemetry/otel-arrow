@@ -1,23 +1,24 @@
 {
   "schema_version": 1,
-  "base_sha": "57cf7fd2089d820bfd01a74efb7ed377d67ad32a",
-  "branch": "otelbot/release-rust-v0.64.0",
-  "summary": "Rust v0.64.0",
+  "base_sha": "64ee1434abfbc578646f38e251a8b4a13c1d9845",
+  "branch": "otelbot/release-rust-v0.65.0",
+  "summary": "Rust v0.65.0",
   "go": {
+    "target": "go",
     "has_changes": false,
     "impact": null,
     "entry_count": 0,
-    "last_tag": "",
-    "last_version": "",
+    "last_tag": "go/v0.60.2",
+    "last_version": "0.60.2",
     "next_version": null
   },
   "rust": {
     "target": "rust",
     "has_changes": true,
     "impact": "minor",
-    "entry_count": 3,
-    "last_tag": "rust/otap-dataflow/v0.63.0",
-    "last_version": "0.63.0",
-    "next_version": "0.64.0"
+    "entry_count": 7,
+    "last_tag": "rust/otap-dataflow/v0.64.0",
+    "last_version": "0.64.0",
+    "next_version": "0.65.0"
   }
 }
