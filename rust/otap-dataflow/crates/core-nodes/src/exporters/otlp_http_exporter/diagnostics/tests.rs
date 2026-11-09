@@ -1,12 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::*;
+use super::super::metrics::OtlpHttpExporterErrorType;
 use crate::exporters::otlp_http_exporter::{
     CompletedExport, ServiceRequestError, finalize_completed_export,
     metrics::OtlpHttpExporterMetrics, notify_nack_with_diagnostics,
 };
 use bytes::Bytes;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::control::{
     NackMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
@@ -18,14 +19,21 @@ use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::testing::TestCallData;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
+    common::v1::{AnyValue, any_value},
+    logs::v1::LogRecord as ProtoRecord,
+};
+use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
 use otel_arrow_dfe_telemetry::diagnostics::SignalSet;
+use otel_arrow_dfe_telemetry::diagnostics::{DiagnosticErrorKind, EpisodeSampler, IntervalSampler};
+use otel_arrow_dfe_telemetry::event::{ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::self_tracing::LogContext;
+use otel_arrow_dfe_telemetry::tracing_init::{ProviderSetup, TracingSetup};
+use prost::Message as _;
 use serde_json::{Map, Value, json};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::{Layer, layer::Context, prelude::*};
+use std::time::{Duration, Instant};
+use tracing::Level;
 
 #[derive(Debug)]
 struct CapturedEvent {
@@ -35,41 +43,13 @@ struct CapturedEvent {
     fields: Map<String, Value>,
 }
 
-impl Visit for CapturedEvent {
-    fn record_str(&mut self, field: &Field, value: &str) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_f64(&mut self, field: &Field, value: f64) {
-        _ = self.fields.insert(field.name().into(), json!(value));
-    }
-
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        _ = self
-            .fields
-            .insert(field.name().into(), json!(format!("{value:?}")));
-    }
-}
-
 impl CapturedEvent {
     fn assert_contract(&self, name: &str, level: Level, kind: &str) {
         assert_eq!(self.name, name);
         assert_eq!(self.target, "otel.exporter.otlp_http");
         assert_eq!(self.level, level);
         assert_eq!(self.fields["diagnostic_kind"], kind);
-        for field in [
-            "episode_seconds",
-            "interval_seconds",
-            "error_sample_age_seconds",
-        ] {
+        for field in ["episode_seconds", "interval_seconds"] {
             assert!(self.fields[field].is_f64(), "{field} must be a number");
         }
         for field in [
@@ -87,64 +67,146 @@ impl CapturedEvent {
     }
 }
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<CapturedEvent>>>);
+struct Capture {
+    setup: TracingSetup,
+    receiver: flume::Receiver<ObservedEvent>,
+}
 
-impl<S: Subscriber> Layer<S> for Capture {
-    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-        let metadata = event.metadata();
-        let mut captured = CapturedEvent {
-            name: metadata.name(),
-            target: metadata.target(),
-            level: *metadata.level(),
-            fields: Map::new(),
-        };
-        event.record(&mut captured);
-        self.0.lock().unwrap().push(captured);
+impl Default for Capture {
+    fn default() -> Self {
+        let (tx, rx) = flume::bounded(16);
+        let setup = TracingSetup::new(
+            ProviderSetup::InternalAsync {
+                reporter: ObservedEventReporter::new(Default::default(), tx),
+            },
+            Default::default(),
+            LogContext::new,
+        );
+        Self {
+            setup,
+            receiver: rx,
+        }
+    }
+}
+
+fn value_json(value: AnyValue) -> Value {
+    match value.value {
+        None => Value::Null,
+        Some(any_value::Value::StringValue(v)) => json!(v),
+        Some(any_value::Value::BoolValue(v)) => json!(v),
+        Some(any_value::Value::IntValue(v)) => json!(v),
+        Some(any_value::Value::DoubleValue(v)) => json!(v),
+        Some(any_value::Value::BytesValue(v)) => json!(v),
+        Some(any_value::Value::ArrayValue(v)) => {
+            Value::Array(v.values.into_iter().map(value_json).collect())
+        }
+        Some(any_value::Value::KvlistValue(v)) => Value::Object(
+            v.values
+                .into_iter()
+                .map(|kv| (kv.key, kv.value.map(value_json).unwrap_or(Value::Null)))
+                .collect(),
+        ),
+    }
+}
+
+impl Capture {
+    fn events(&self) -> Vec<CapturedEvent> {
+        let mut events = Vec::new();
+        for event in self.receiver.drain() {
+            let ObservedEvent::Log(event) = event else {
+                panic!("expected log")
+            };
+            let meta = event.record.callsite_id.0.metadata();
+            let record = ProtoRecord::decode(event.record.body_attrs_bytes).unwrap();
+            assert_eq!(
+                record
+                    .attributes
+                    .iter()
+                    .filter(|a| a.key == "signal")
+                    .count(),
+                1
+            );
+            let mut fields: Map<_, _> = record
+                .attributes
+                .into_iter()
+                .map(|kv| (kv.key, kv.value.map(value_json).unwrap_or(Value::Null)))
+                .collect();
+            if let Some(body) = record.body {
+                _ = fields.insert("message".into(), value_json(body));
+            }
+            events.push(CapturedEvent {
+                name: meta.name(),
+                target: meta.target(),
+                level: *meta.level(),
+                fields,
+            });
+        }
+        events
     }
 }
 
 /// Scenario: Mixed failures and stale successes select summaries across independent signals.
-/// Guarantees: HTTP events preserve typed legacy fields and matching sample metadata through recovery.
+/// Guarantees: HTTP records preserve typed counters and first-event memory through recovery.
 #[test]
 fn delivery_event_contract_and_retained_samples() {
     use OtlpHttpExporterErrorType::{PartialRejection, Transport};
     let capture = Capture::default();
-    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
+    capture.setup.with_subscriber(|| {
         let start = Instant::now();
         let at = |seconds| start + Duration::from_secs(seconds);
-        let mut diagnostics = SignalSet::<DeliveryDiagnostic>::default();
+        let mut diagnostics = SignalSet::new(|| EpisodeSampler::new(capture.setup.log_emitter()));
         let logs = diagnostics.signal(SignalType::Logs);
-        let report = logs.failure(at(0), Transport, true, || "connection refused");
-        logs.emit(report, SignalType::Logs);
-        assert!(
-            logs.failure(at(10), PartialRejection, false, || panic!("suppressed"))
-                .is_none()
+        delivery(
+            logs,
+            SignalType::Logs,
+            at(0),
+            at(0),
+            Err((Transport, true, "connection refused")),
         );
-        let report = logs.success(at(0), at(60));
-        logs.emit(report, SignalType::Logs);
-        assert!(
-            logs.failure(at(61), Transport, true, || panic!("suppressed"))
-                .is_none()
+        delivery(
+            logs,
+            SignalType::Logs,
+            at(10),
+            at(10),
+            Err((PartialRejection, false, "suppressed")),
         );
-        let report = logs.failure(at(120), PartialRejection, false, || "partial acceptance");
-        logs.emit(report, SignalType::Logs);
-        assert!(
-            logs.failure(at(121), Transport, true, || panic!("suppressed"))
-                .is_none()
+        delivery(logs, SignalType::Logs, at(0), at(60), Ok(()));
+        delivery(
+            logs,
+            SignalType::Logs,
+            at(61),
+            at(61),
+            Err((Transport, true, "suppressed")),
+        );
+        delivery(
+            logs,
+            SignalType::Logs,
+            at(120),
+            at(120),
+            Err((PartialRejection, false, "partial acceptance")),
+        );
+        delivery(
+            logs,
+            SignalType::Logs,
+            at(121),
+            at(121),
+            Err((Transport, true, "suppressed")),
         );
 
         let traces = diagnostics.signal(SignalType::Traces);
-        let report = traces.failure(at(130), Transport, true, || "trace connection refused");
-        traces.emit(report, SignalType::Traces);
+        delivery(
+            traces,
+            SignalType::Traces,
+            at(130),
+            at(130),
+            Err((Transport, true, "trace connection refused")),
+        );
 
         let logs = diagnostics.signal(SignalType::Logs);
-        let report = logs.success(at(0), at(180));
-        logs.emit(report, SignalType::Logs);
-        let report = logs.success(at(122), at(181));
-        logs.emit(report, SignalType::Logs);
+        delivery(logs, SignalType::Logs, at(0), at(180), Ok(()));
+        delivery(logs, SignalType::Logs, at(122), at(181), Ok(()));
     });
-    let events = capture.0.lock().unwrap();
+    let events = capture.events();
     assert_eq!(events.len(), 6);
     for (index, kind) in [
         (0, "first_failure"),
@@ -159,21 +221,17 @@ fn delivery_event_contract_and_retained_samples() {
         assert_eq!(events[index].fields["message"], "connection refused");
         assert_eq!(events[index].fields["retryable"], true);
     }
-    assert_eq!(events[1].fields["error_sample_age_seconds"], 60.0);
     assert_eq!(events[1].fields["error_counts"], "partial_rejection=1");
     assert_eq!(
         events[1].fields["total_error_counts"],
         "transport=1,partial_rejection=1"
     );
-    for index in [2, 4] {
-        assert_eq!(events[index].fields["message"], "partial acceptance");
-        assert_eq!(events[index].fields["retryable"], false);
-        assert_eq!(events[index].fields["signal"], "logs");
-    }
-    assert_eq!(events[2].fields["error_sample_age_seconds"], 0.0);
+    assert_eq!(events[2].fields["message"], "partial acceptance");
+    assert_eq!(events[2].fields["retryable"], false);
+    assert_eq!(events[4].fields["message"], "connection refused");
+    assert_eq!(events[4].fields["retryable"], true);
     assert_eq!(events[3].fields["retryable"], true);
     assert_eq!(events[3].fields["signal"], "traces");
-    assert_eq!(events[4].fields["error_sample_age_seconds"], 60.0);
     assert_eq!(events[4].fields["failed_attempts"], 1);
     assert_eq!(events[4].fields["successful_attempts"], 1);
     assert_eq!(events[4].fields["suppressed_diagnostics"], 1);
@@ -182,8 +240,10 @@ fn delivery_event_contract_and_retained_samples() {
         Level::INFO,
         "recovery",
     );
-    assert_eq!(events[5].fields["error"], "partial acceptance");
-    assert_eq!(events[5].fields["error_sample_age_seconds"], 61.0);
+    assert_eq!(
+        events[5].fields["episode.start_event"]["body"],
+        "connection refused"
+    );
     assert_eq!(events[5].fields["episode_seconds"], 181.0);
     assert_eq!(events[5].fields["total_failed_attempts"], 5);
     assert_eq!(events[5].fields["total_successful_attempts"], 3);
@@ -191,66 +251,48 @@ fn delivery_event_contract_and_retained_samples() {
     assert!(!events[5].fields.contains_key("retryable"));
 }
 
+fn delivery(
+    state: &mut EpisodeSampler<OtlpHttpExporterErrorType>,
+    signal: SignalType,
+    started: Instant,
+    now: Instant,
+    result: Result<(), (OtlpHttpExporterErrorType, bool, &str)>,
+) {
+    let mut diagnostic = state.observe(result.map_err(|(category, _, _)| category), started, now);
+    if diagnostic.is_recovery() {
+        otel_info!(logger: diagnostic, "otlp.exporter.http.export_recovered",
+            signal = signal.as_str(), message = "recovered");
+    } else {
+        otel_warn!(logger: diagnostic, "otlp.exporter.http.export_error",
+            signal = signal.as_str(), retryable = result.is_err_and(|(_, retryable, _)| retryable),
+            message = result.err().map(|(_, _, message)| message));
+    }
+}
+
 /// Scenario: Preparation, Ack routing, and Nack routing fail during one reporting interval.
 /// Guarantees: Separate bounded events retain compact Ack/Nack context and preparation errors.
 #[test]
 fn preparation_and_notification_event_contracts() {
     let capture = Capture::default();
-    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
+    capture.setup.with_subscriber(|| {
         let start = Instant::now();
-        let mut preparation = DiagnosticTracker::default();
-        let mut notifications = DiagnosticTracker::default();
-        emit_preparation(
-            preparation.failure(
-                start,
-                OtlpHttpExporterErrorType::Encoding,
-                || "encoding failed",
-            ),
-            SignalType::Logs,
-        );
-        emit_notification(
-            notifications.failure(
-                start,
-                DiagnosticErrorKind::Notification,
-                || "Ack channel closed",
-            ),
-            SignalType::Logs,
-            NotificationOperation::Ack,
-        );
-        assert!(
-            preparation
-                .failure(start, OtlpHttpExporterErrorType::Compression, || panic!(
-                    "suppressed"
-                ))
-                .is_none()
-        );
-        assert!(
-            notifications
-                .failure(start, DiagnosticErrorKind::Notification, || panic!(
-                    "suppressed"
-                ))
-                .is_none()
-        );
+        let mut preparation = IntervalSampler::new(capture.setup.log_emitter());
+        let mut notifications = IntervalSampler::new(capture.setup.log_emitter());
+        otel_warn!(logger: preparation.failure(start, OtlpHttpExporterErrorType::Encoding),
+            "otlp.exporter.http.preparation_error", signal = "logs", error = "encoding failed");
+        otel_warn!(logger: notifications.failure(start, DiagnosticErrorKind::Notification),
+            "otlp.exporter.http.notification_error", signal = "logs",
+            operation = "ack", error = "Ack channel closed");
+        let _ = preparation.failure(start, OtlpHttpExporterErrorType::Compression);
+        let _ = notifications.failure(start, DiagnosticErrorKind::Notification);
         let later = start + Duration::from_secs(60);
-        emit_preparation(
-            preparation.failure(
-                later,
-                OtlpHttpExporterErrorType::Compression,
-                || "compression failed",
-            ),
-            SignalType::Logs,
-        );
-        emit_notification(
-            notifications.failure(
-                later,
-                DiagnosticErrorKind::Notification,
-                || "Nack channel closed",
-            ),
-            SignalType::Logs,
-            NotificationOperation::Nack,
-        );
+        otel_warn!(logger: preparation.failure(later, OtlpHttpExporterErrorType::Compression),
+            "otlp.exporter.http.preparation_error", signal = "logs", error = "compression failed");
+        otel_warn!(logger: notifications.failure(later, DiagnosticErrorKind::Notification),
+            "otlp.exporter.http.notification_error", signal = "logs",
+            operation = "nack", error = "Nack channel closed");
     });
-    let events = capture.0.lock().unwrap();
+    let events = capture.events();
     assert_eq!(events.len(), 4);
     for (index, kind) in [(0, "first_failure"), (2, "summary")] {
         events[index].assert_contract("otlp.exporter.http.preparation_error", Level::WARN, kind);
@@ -298,94 +340,92 @@ fn delivery_retryability_matches_auth_aware_nacks() {
             (400, None, false),
         ] {
             let capture = Capture::default();
-            tracing::subscriber::with_default(
-                tracing_subscriber::registry().with(capture.clone()),
-                || {
-                    runtime.block_on(async {
-                        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
-                        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
-                        let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-                        let mut effects = EffectHandler::new(
-                            test_node("test-exporter"),
-                            reporter,
-                            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-                        );
-                        let (tx, mut rx) = pipeline_completion_msg_channel(1);
-                        effects.set_pipeline_completion_msg_sender(tx);
-                        let pdata = OtapPdata::new_default(
-                            OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
-                        )
-                        .test_subscribe_to(
-                            Interests::NACKS,
-                            TestCallData::default().into(),
-                            123,
-                        );
-                        let delivery = pdata.into_delivery();
-                        let response = reqwest::Response::from(
-                            http::Response::builder().status(status).body("").unwrap(),
-                        );
-                        let error = ServiceRequestError::RequestError {
-                            err: response.error_for_status().unwrap_err(),
-                            detail: "test response".into(),
-                        };
-                        let category = error.error_type();
-                        let message = error.to_string();
-                        let attempt = metrics
-                            .boundary
-                            .attempt(SignalType::Logs)
-                            .run(async |attempt| {
-                                Err(if category.is_refusal() {
-                                    attempt.refused(error)
-                                } else {
-                                    attempt.failed(error)
-                                })
+            capture.setup.with_subscriber(|| {
+                runtime.block_on(async {
+                    let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+                    pipeline_ctx.set_structured_log_emitter(capture.setup.log_emitter());
+                    let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
+                    let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+                    let mut effects = EffectHandler::new(
+                        test_node("test-exporter"),
+                        reporter,
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                    );
+                    let (tx, mut rx) = pipeline_completion_msg_channel(1);
+                    effects.set_pipeline_completion_msg_sender(tx);
+                    let pdata = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::NACKS,
+                        TestCallData::default().into(),
+                        123,
+                    );
+                    let delivery = pdata.into_delivery();
+                    let response = reqwest::Response::from(
+                        http::Response::builder().status(status).body("").unwrap(),
+                    );
+                    let error = ServiceRequestError::RequestError {
+                        err: response.error_for_status().unwrap_err(),
+                        detail: "test response".into(),
+                    };
+                    let category = error.error_type();
+                    let message = error.to_string();
+                    let attempt = metrics
+                        .boundary
+                        .attempt(SignalType::Logs)
+                        .run(async |attempt| {
+                            Err(if category.is_refusal() {
+                                attempt.refused(error)
+                            } else {
+                                attempt.failed(error)
                             })
-                            .await;
-                        let rejected = finalize_completed_export(
-                            CompletedExport {
-                                diagnostic_started_at: Instant::now(),
-                                attempt,
-                                delivery,
-                                signal_type: SignalType::Logs,
-                                auth_generation,
-                            },
-                            &effects,
-                            &mut metrics,
-                        )
+                        })
                         .await;
-                        assert_eq!(
-                            rejected,
-                            (status == 401).then_some(auth_generation).flatten()
-                        );
-                        let PipelineCompletionMsg::DeliverNack { nack } = rx.recv().await.unwrap()
-                        else {
-                            panic!("failed export must Nack");
-                        };
-                        assert_eq!(nack.permanent, !retryable);
-                        assert_eq!(nack.reason, message);
-                        let events = capture.0.lock().unwrap();
-                        assert_eq!(events.len(), 1);
-                        events[0].assert_contract(
-                            "otlp.exporter.http.export_error",
-                            Level::WARN,
-                            "first_failure",
-                        );
-                        assert_eq!(events[0].fields["message"], message);
-                        assert_eq!(events[0].fields["retryable"], retryable);
-                        let snapshots = metrics.terminal_snapshots(None);
-                        assert!(snapshots.iter().any(|snapshot| {
-                            snapshot.descriptor().name == "exporter.otlp_http.failures"
-                                && snapshot.get_metrics()[0].to_u64_lossy() == 1
-                        }));
-                        assert_eq!(
-                            snapshots
-                                .iter()
-                                .any(|snapshot| snapshot.descriptor().name == "exporter.attempted"),
-                            interests.contains(Interests::NODE_INPUT_METRICS)
-                        );
-                    });
-                },
-            );
+                    let rejected = finalize_completed_export(
+                        CompletedExport {
+                            diagnostic_started_at: Instant::now(),
+                            attempt,
+                            delivery,
+                            signal_type: SignalType::Logs,
+                            auth_generation,
+                        },
+                        &effects,
+                        &mut metrics,
+                    )
+                    .await;
+                    assert_eq!(
+                        rejected,
+                        (status == 401).then_some(auth_generation).flatten()
+                    );
+                    let PipelineCompletionMsg::DeliverNack { nack } = rx.recv().await.unwrap()
+                    else {
+                        panic!("failed export must Nack");
+                    };
+                    assert_eq!(nack.permanent, !retryable);
+                    assert_eq!(nack.reason, message);
+                    let events = capture.events();
+                    assert_eq!(events.len(), 1);
+                    events[0].assert_contract(
+                        "otlp.exporter.http.export_error",
+                        Level::WARN,
+                        "first_failure",
+                    );
+                    assert_eq!(events[0].fields["message"], message);
+                    assert_eq!(events[0].fields["retryable"], retryable);
+                    let snapshots = metrics.terminal_snapshots(None);
+                    assert!(snapshots.iter().any(|snapshot| {
+                        snapshot.descriptor().name == "exporter.otlp_http.failures"
+                            && snapshot.get_metrics()[0].to_u64_lossy() == 1
+                    }));
+                    assert_eq!(
+                        snapshots
+                            .iter()
+                            .any(|snapshot| snapshot.descriptor().name == "exporter.attempted"),
+                        interests.contains(Interests::NODE_INPUT_METRICS)
+                    );
+                });
+            });
         }
     }
 }
@@ -400,60 +440,57 @@ fn notification_failure_does_not_redefine_delivery() {
         .unwrap();
     for rejected in [false, true] {
         let capture = Capture::default();
-        tracing::subscriber::with_default(
-            tracing_subscriber::registry().with(capture.clone()),
-            || {
-                runtime.block_on(async {
-                    let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
-                    let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
-                    let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-                    let mut effects = EffectHandler::new(
-                        test_node("test-exporter"),
-                        reporter,
-                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-                    );
-                    let (tx, rx) = pipeline_completion_msg_channel(1);
-                    drop(rx);
-                    effects.set_pipeline_completion_msg_sender(tx);
-                    let pdata = OtapPdata::new_default(
-                        OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
-                    )
-                    .test_subscribe_to(
-                        Interests::ACKS | Interests::NACKS,
-                        TestCallData::default().into(),
-                        123,
-                    );
-                    let delivery = pdata.into_delivery();
-                    let attempt = metrics
-                        .boundary
-                        .attempt(SignalType::Logs)
-                        .run(async |attempt| {
-                            if rejected {
-                                Err(attempt.refused(ServiceRequestError::PartialRejection {
-                                    rejected: 1,
-                                    error_message: "partial rejection".into(),
-                                }))
-                            } else {
-                                Ok::<_, ErrorWithOutcome<ServiceRequestError>>(())
-                            }
-                        })
-                        .await;
-                    let _ = finalize_completed_export(
-                        CompletedExport {
-                            diagnostic_started_at: Instant::now(),
-                            attempt,
-                            delivery,
-                            signal_type: SignalType::Logs,
-                            auth_generation: None,
-                        },
-                        &effects,
-                        &mut metrics,
-                    )
+        capture.setup.with_subscriber(|| {
+            runtime.block_on(async {
+                let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+                pipeline_ctx.set_structured_log_emitter(capture.setup.log_emitter());
+                let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
+                let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+                let mut effects = EffectHandler::new(
+                    test_node("test-exporter"),
+                    reporter,
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
+                let (tx, rx) = pipeline_completion_msg_channel(1);
+                drop(rx);
+                effects.set_pipeline_completion_msg_sender(tx);
+                let pdata =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+                        .test_subscribe_to(
+                            Interests::ACKS | Interests::NACKS,
+                            TestCallData::default().into(),
+                            123,
+                        );
+                let delivery = pdata.into_delivery();
+                let attempt = metrics
+                    .boundary
+                    .attempt(SignalType::Logs)
+                    .run(async |attempt| {
+                        if rejected {
+                            Err(attempt.refused(ServiceRequestError::PartialRejection {
+                                rejected: 1,
+                                error_message: "partial rejection".into(),
+                            }))
+                        } else {
+                            Ok::<_, ErrorWithOutcome<ServiceRequestError>>(())
+                        }
+                    })
                     .await;
-                });
-            },
-        );
-        let events = capture.0.lock().unwrap();
+                let _ = finalize_completed_export(
+                    CompletedExport {
+                        diagnostic_started_at: Instant::now(),
+                        attempt,
+                        delivery,
+                        signal_type: SignalType::Logs,
+                        auth_generation: None,
+                    },
+                    &effects,
+                    &mut metrics,
+                )
+                .await;
+            });
+        });
+        let events = capture.events();
         assert_eq!(events.len(), if rejected { 2 } else { 1 });
         if rejected {
             events[0].assert_contract(
@@ -493,9 +530,10 @@ fn early_nack_notification_failure_is_observable() {
         .build()
         .unwrap();
     let capture = Capture::default();
-    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture.clone()), || {
+    capture.setup.with_subscriber(|| {
         runtime.block_on(async {
-            let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+            let (mut pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+            pipeline_ctx.set_structured_log_emitter(capture.setup.log_emitter());
             let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
             let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut effects = EffectHandler::new(
@@ -520,7 +558,7 @@ fn early_nack_notification_failure_is_observable() {
         });
     });
 
-    let events = capture.0.lock().unwrap();
+    let events = capture.events();
     assert_eq!(events.len(), 1);
     events[0].assert_contract(
         "otlp.exporter.http.notification_error",

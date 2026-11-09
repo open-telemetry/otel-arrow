@@ -60,3 +60,8 @@ prost = { workspace = true }
 [[bench]]
 name = "distribution_record"
 harness = false
+
+[[bench]]
+name = "diagnostics"
+harness = false
+required-features = ["testing"]

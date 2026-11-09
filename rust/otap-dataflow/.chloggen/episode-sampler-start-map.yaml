@@ -1,0 +1,25 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: observability
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: OTLP HTTP recovery logs include a structured snapshot of the first failure instead of escaped error text.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [4151, 4253, 4279]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
+# section with the specific action consumers are required to take. Keep notes to 200
+# characters and subtext to 300 characters.
+subtext: |
+  Recovery uses episode.start_event instead of error and error_sample_age_seconds.
+  Success-triggered summaries reuse the first failure. WARN-only logging still
+  observes recovery and starts new episodes. Nested snapshots are bounded and
+  preserve typed attributes.
