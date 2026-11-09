@@ -543,7 +543,6 @@ impl Pipeline {
 
 #[cfg(test)]
 mod test {
-    use std::io::Write;
     use std::sync::Arc;
 
     use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
@@ -561,7 +560,7 @@ mod test {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otel_arrow_dfe_pdata::testing::round_trip::{
-        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics,
+        otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics,
     };
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
