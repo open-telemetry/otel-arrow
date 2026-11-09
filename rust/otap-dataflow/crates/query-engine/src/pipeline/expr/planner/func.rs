@@ -30,7 +30,7 @@ use crate::consts::{
 use crate::error::Result;
 use crate::pipeline::expr::batch::BatchEval;
 use crate::pipeline::expr::batch::metadata::{
-    HasTransportHeaderPredicateFactory, MetadataUdfFactory,
+    HasTransportHeaderPredicate, MetadataFunctionFactory, MetadataFunctionFactoryImpl,
 };
 use crate::pipeline::expr::types::ExprLogicalType;
 #[cfg(feature = "sha1-hash")]
@@ -181,9 +181,11 @@ impl FunctionDefinition {
                 None,
             )),
 
-            HAS_TRANSPORT_HEADER_FUNC_NAME => Self::BatchEval(BatchEvalFuncDef::new(
-                HasTransportHeaderPredicateFactory::new(),
-            )),
+            HAS_TRANSPORT_HEADER_FUNC_NAME => {
+                Self::BatchEval(BatchEvalFuncDef::new(MetadataFunctionFactoryImpl::<
+                    HasTransportHeaderPredicate,
+                >::new()))
+            }
             _ => return None,
         })
     }
@@ -216,11 +218,11 @@ impl DataFusionFunctionDef {
 // TODO - this type might not be needed, and we could probably move
 // this code back into the expr planner?
 pub struct BatchEvalFuncDef {
-    factory: Box<dyn MetadataUdfFactory>,
+    factory: Box<dyn MetadataFunctionFactory>,
 }
 
 impl BatchEvalFuncDef {
-    fn new(factory: impl MetadataUdfFactory + 'static) -> Self {
+    fn new(factory: impl MetadataFunctionFactory + 'static) -> Self {
         Self {
             factory: Box::new(factory),
         }

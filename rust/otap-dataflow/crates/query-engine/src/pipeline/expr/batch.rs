@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module contains types and utilities for expressions that evaluate on an entire batch at a
-//! time as opposed to (columns of data contained within the batch). For example, these types of
+//! time as opposed to columns of data contained within the batch. For example, these types of
 //! expressions could be evaluating the type of signal contained in the batch, retrieving values
-//! from batch metadata. Generally when evaluated, these types of expressions will produce a scalar
-//! value.
+//! from batch metadata. Generally, when evaluated, these types of expressions will produce a
+//! scalar value.
 
 use datafusion::scalar::ScalarValue;
 
