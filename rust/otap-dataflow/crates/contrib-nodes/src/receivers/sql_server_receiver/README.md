@@ -456,15 +456,16 @@ WHERE (
 ORDER BY e.EVENT_TS ASC, e.EVENT_ID ASC
 ```
 
-The final result must have a unique, stable cursor per row. A join that fans
+The returned result must have a unique, stable cursor per row. A join that fans
 out needs a cursor distinguishing each output row. Nullable metadata and
-column aliases are accepted; actual null or duplicate cursor values
+column aliases are accepted; actual returned null or duplicate cursor values
 fail explicitly, including at a deferred-row boundary.
 
 Incremental `TOP`/offset/fetch and incompatible final ordering are rejected;
 the receiver retains the authored guard/order and inserts a bound `TOP` with
-one successor probe. It adds a null-key validation arm without broadening valid
-key eligibility. Snapshots preserve native ordering/limits and use bounded
+one successor probe. It does not add null guards or change null ordering.
+Rows excluded by the authored SQL, including null keys filtered by comparisons,
+cannot be diagnosed. Snapshots preserve native ordering/limits and use bounded
 streaming with an overflow probe. Writes, additional statements, lock/isolation
 hints, and undeclared parameters are rejected in every mode. Snapshots have no
 cursor parameters. Literal text and

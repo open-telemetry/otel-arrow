@@ -162,8 +162,10 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
                 }
             }
         };
+        let statement =
+            SourceQuery::trim_statement(&config.query.statement, DatabaseSystem::Oracle)?;
         let query = CompiledQuery::compile(
-            config.query.statement.clone(),
+            statement,
             config.query.polling(),
             &config.watermark,
             &config.checkpoint,

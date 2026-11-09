@@ -83,7 +83,7 @@ fn scalar_sql_rejects_unsafe_lookalikes() {
 }
 
 /// Scenario: A string query explicitly supplies its BINARY comparison and ordering.
-/// Guarantees: The authored collation remains in the bound SQL and null-key checks do not change it.
+/// Guarantees: Binding preserves the authored collation and does not add a null-order modifier.
 #[test]
 fn string_queries_require_explicit_binary_collation() {
     use otel_arrow_dfe_scraper::database::{ColumnMetadata, DatabaseSystem, SourceQuery};
@@ -103,7 +103,9 @@ fn string_queries_require_explicit_binary_collation() {
         .unwrap();
     assert_eq!(sql.matches("COLLATE BINARY").count(), 3);
     assert!(sql.contains(":last_key COLLATE BINARY"));
-    assert!(sql.ends_with("COLLATE BINARY ASC NULLS FIRST"));
+    assert!(sql.ends_with("COLLATE BINARY ASC"));
+    assert!(!sql.contains("NULLS"));
+    assert!(!sql.contains("IS NULL"));
 }
 
 /// Scenario: Oracle scalar initialization includes empty strings, NUL, oversized text, or excess timestamp precision.

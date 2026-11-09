@@ -108,7 +108,8 @@ pub trait DriverAdapter {
     ///   row or normalized-byte bounds would truncate it.
     /// - Validate the mandatory authored keyset predicate and matching final
     ///   ascending order, using configured cursor roles and typed native binds.
-    /// - Surface null cursor rows rather than silently filtering them out.
+    /// - Preserve authored null filtering and ordering. Reject any returned null
+    ///   cursor; rows excluded by the query cannot be diagnosed.
     /// - For keysets, require present, explicitly projected cursor columns compatible with the declared
     ///   types without rounding, truncation, or signed/unsigned coercion.
     /// - Scalar keys must be unique across the result, not merely within a page.

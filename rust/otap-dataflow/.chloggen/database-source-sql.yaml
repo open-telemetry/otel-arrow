@@ -11,7 +11,7 @@ component: pipeline
 note: Database receivers support broader native queries, including joins and datetime filters, while retaining explicit checkpoint predicates and existing checkpoint compatibility.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3918]
+issues: [4695]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -21,4 +21,4 @@ issues: [3918]
 subtext: |
   Existing supported SQL, cursor parameters, and unchanged checkpoint identities continue to work.
   Keep the required keyset predicate and ascending ORDER BY; combine business filters with AND.
-  Invalid cursor boundaries fail without advancing progress.
+  Authored null filtering and ordering are preserved; returned null or non-advancing cursors fail.

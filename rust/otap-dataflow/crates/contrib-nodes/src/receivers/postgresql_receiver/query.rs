@@ -88,7 +88,7 @@ impl ResolvedSchema {
                 name: column.name().to_owned(),
                 source_type: native.name().to_owned(),
                 // RowDescription has no nullability proof for arbitrary expressions/views.
-                // Generated predicates surface null cursors for value-level rejection.
+                // Authored SQL decides eligibility; decoding rejects returned null cursors.
                 nullable: true,
                 type_modifier: modifier,
             });

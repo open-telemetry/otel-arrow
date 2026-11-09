@@ -63,7 +63,8 @@ fn integer_scalar_configuration_uses_native_result_metadata() {
     assert_eq!(validated.common.fetch_size_rows(), 1000);
     let (plan, _) = resolve(&validated, Type::INT8, -1).unwrap();
     assert!(plan.sql.contains("a.audit_id > $1"));
-    assert!(plan.sql.contains("a.audit_id IS NULL"));
+    assert!(!plan.sql.contains("IS NULL"));
+    assert!(!plan.sql.contains("NULLS"));
     assert!(plan.sql.ends_with("LIMIT 10001"));
     assert_eq!(
         plan.cursor,

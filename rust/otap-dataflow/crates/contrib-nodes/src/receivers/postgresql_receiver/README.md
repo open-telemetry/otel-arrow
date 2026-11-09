@@ -289,9 +289,11 @@ connection uses `search_path=pg_catalog`. Native row-security policies are honor
 The receiver discovers the final output schema through PostgreSQL, not through
 table/projection lineage or unique-index catalog checks. Cursor columns are
 explicitly selected references, optionally aliased, with supported native types.
-Their values must be non-null, stable, and unique per output row. Execution
-checks add a null-key arm at the recognized guard to surface null
-keys, and runtime checks reject duplicate/non-increasing keys before returning
+Returned cursor values must be non-null, stable, and unique per output row.
+The receiver preserves authored null filters and `NULLS FIRST`/`NULLS LAST`
+ordering without adding either. Nullable metadata is accepted, but actual
+returned null cursors fail; keys excluded by the authored SQL cannot be
+diagnosed. Runtime checks reject duplicate/non-increasing keys before returning
 a page, including its successor at a row or normalized-byte cut.
 
 For composite/scalar modes, the at-least-once guarantee also requires cursor-ordered commit visibility: no row may become visible later at or before a committed cursor. The initial cursor excludes rows at or before that position. Snapshot instead repeats complete observations of current data.

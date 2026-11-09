@@ -383,6 +383,9 @@ expressions; cursor columns must be explicitly selected references to the same
 columns used by the guard, optionally renamed through result aliases.
 The selected dialect must be parseable and composable; native preparation still
 checks database syntax, permissions, and result types.
+SQL Server and Oracle `--` comments must use LF or CRLF line endings; lone CR
+comment boundaries are rejected because the parser cannot represent them safely.
+Carriage returns inside string literals and block comments are preserved.
 
 For example, PostgreSQL source SQL can include:
 
@@ -409,7 +412,11 @@ rejected. Put a parenthesized composite keyset before adding `AND` filters.
 The final order must use the selected cursor columns ascending, with Oracle
 `COLLATE BINARY` for string cursors. The guard must reference the actual selected
 source column, not an unrelated same-named column from another joined table.
-Result aliases may be used for ordering. For CTEs/subqueries/set operations,
+Result aliases may be used for ordering, with the database's identifier-case
+rules. A bare order name must resolve to the cursor result, not a different
+output alias shadowing its input column. When unnamed expressions make that
+resolution ambiguous, use the cursor's explicit result alias or a qualified
+source reference. For CTEs/subqueries/set operations,
 place the guard on the final `SELECT` whose cursor columns are returned; an
 unguarded top-level `UNION` is not an incremental keyset.
 
@@ -431,12 +438,14 @@ and non-tabular clauses that cannot be composed safely. Input is limited to
 nonempty names and supported native types; use aliases or explicit casts where
 necessary.
 
-Incremental cursors must be non-null and unique in the **final result**, not
-just in the driving table. Nullable metadata is accepted: the execution plan
-adds a null-key validation arm at the recognized guard and orders null keys
-first where necessary. This does not change eligibility for valid keys or
-remove business filters, but makes invalid null keys fail rather than disappear
-through SQL's three-valued comparison behavior.
+Incremental cursors must be non-null and unique in the **returned result**, not
+just in the driving table. Nullable metadata is accepted; it does not impose a
+new database `NOT NULL` requirement. The receiver leaves the authored `WHERE`
+and `ORDER BY` null semantics unchanged, including native `NULLS FIRST` or
+`NULLS LAST` where supported. It adds neither `OR key IS NULL` nor a null-order
+modifier. Null cursor values actually returned by the query fail explicitly.
+Rows excluded by the query (including null keys excluded by its comparison)
+cannot be diagnosed by the receiver.
 Adapters inspect a successor cursor before cutting at row or normalized-byte
 limits. Duplicate/backward cursors fail before a prefix is returned. The
 controller checks every returned cursor before encoding can make a further
@@ -456,8 +465,8 @@ Existing supported queries and configurations continue to work without
 rewriting SQL, resetting cursors, or moving checkpoint directories. The same
 dialect-specific identity algorithms are retained: SQL Server's v1 token
 canonicalization, Oracle's trimmed authored SQL and original mode-specific
-fields, and PostgreSQL's v5 raw-SQL identity. Generated parameter spellings,
-null checks, and successor probes do not enter the fingerprint.
+fields, and PostgreSQL's v5 raw-SQL identity. Generated parameter spellings
+and successor probes do not enter the fingerprint.
 
 Changing the query, watermark, or source identity still requires the existing
 compatibility review. A new filter or join can define a different stream;

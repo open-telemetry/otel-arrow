@@ -56,7 +56,7 @@ fn execution(sql: &str, mode: &str, system: DatabaseSystem) -> String {
 }
 
 /// Scenario: Each dialect keeps the explicit scalar bind, ORDER BY, and native business expressions.
-/// Guarantees: Only parameter spelling and bounded fetch/null checks change, never the source joins or filters.
+/// Guarantees: Only parameter spelling and fetch bounds change; no null predicates or order modifiers are added.
 #[test]
 fn explicit_native_queries_share_one_path() {
     for (system, bind, datetime) in [
@@ -84,8 +84,18 @@ fn explicit_native_queries_share_one_path() {
         assert!(plan.contains(datetime));
         assert!(plan.contains("LEFT JOIN customers"));
         assert!(plan.contains("AND (c.status IN ('ready','retry') OR c.priority > 5)"));
-        assert!(plan.contains("e.id IS NULL"));
+        assert!(!plan.contains("IS NULL"));
+        assert!(!plan.contains("NULLS"));
         assert!(!plan.contains("__otap_source"));
+        let expected = match system {
+            DatabaseSystem::SqlServer => {
+                sql.replace("@last_id", "@P1")
+                    .replacen("SELECT e.id", "SELECT TOP (@P2) e.id", 1)
+            }
+            DatabaseSystem::Oracle => sql.clone(),
+            DatabaseSystem::PostgreSQL => format!("{}\nLIMIT 3", sql.replace(":last_id", "$1")),
+        };
+        assert_eq!(plan, expected);
         let dialect: &dyn Dialect = match system {
             DatabaseSystem::SqlServer => &MsSqlDialect {},
             DatabaseSystem::Oracle => &OracleDialect {},
@@ -96,9 +106,9 @@ fn explicit_native_queries_share_one_path() {
 }
 
 /// Scenario: Composite OR and PostgreSQL tuple keysets have differently nested operands.
-/// Guarantees: Null probes cover the whole mandatory guard and never bind to only its equality arm.
+/// Guarantees: Authored Boolean structure and cursor order remain unchanged through parameter binding.
 #[test]
-fn composite_guard_spans_preserve_boolean_precedence() {
+fn composite_guards_preserve_authored_boolean_precedence() {
     for predicate in [
         "e.ts > :last_ts OR (e.ts = :last_ts AND e.id > :last_id)",
         "((e.ts) > (:last_ts)) OR (((e.ts) = (:last_ts)) AND ((e.id) > (:last_id)))",
@@ -108,26 +118,9 @@ fn composite_guard_spans_preserve_boolean_precedence() {
             "SELECT e.ts, e.id FROM events e WHERE ({predicate}) AND e.status = 'ready' ORDER BY e.ts, e.id"
         );
         let result = execution(&sql, "composite", DatabaseSystem::PostgreSQL);
-        let ast = Parser::parse_sql(&PostgreSqlDialect {}, &result).unwrap();
-        let Statement::Query(q) = &ast[0] else {
-            panic!("query")
-        };
-        let SetExpr::Select(select) = q.body.as_ref() else {
-            panic!("select")
-        };
-        let Expr::BinaryOp {
-            left,
-            op: Op::And,
-            right,
-        } = unnest(select.selection.as_ref().unwrap())
-        else {
-            panic!("AND protects business filter: {result}")
-        };
-        assert_eq!(right.to_string(), "e.status = 'ready'");
-        assert!(
-            matches!(unnest(left),Expr::BinaryOp {right,op:Op::Or,..} if matches!(unnest(right),Expr::IsNull(_)))
-        );
-        assert!(result.ends_with("e.ts NULLS FIRST, e.id NULLS FIRST\nLIMIT 3"));
+        let bound = sql.replace(":last_ts", "$1").replace(":last_id", "$2");
+        assert_eq!(result, format!("{bound}\nLIMIT 3"));
+        assert!(Parser::parse_sql(&PostgreSqlDialect {}, &result).is_ok());
     }
 }
 
@@ -170,7 +163,8 @@ fn cursor_projection_and_order_match_the_guard() {
         "SELECT e.source_id AS id FROM events e WHERE e.id > :last_id ORDER BY id",
         "SELECT e.id+1 AS id FROM events e WHERE e.id > :last_id ORDER BY id",
         "SELECT e.id FROM events e WHERE e.id > :last_id ORDER BY e.id DESC",
-        "SELECT e.id FROM events e WHERE e.id > :last_id ORDER BY e.id NULLS LAST",
+        "SELECT e.id FROM events e WHERE e.id > :last_id ORDER BY e.id USING >",
+        "SELECT e.id FROM events e WHERE e.id > :last_id ORDER BY e.id USING <",
         "SELECT e.id FROM events e WHERE e.id > :last_id",
         "SELECT e.id FROM events e ORDER BY e.id",
     ] {
@@ -178,6 +172,128 @@ fn cursor_projection_and_order_match_the_guard() {
             SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::PostgreSQL).is_err(),
             "{sql}"
         );
+    }
+}
+
+/// Scenario: An ORDER BY name differs from the cursor output under native identifier case rules.
+/// Guarantees: An unrelated same-spelled source column cannot be mistaken for the cursor result alias.
+#[test]
+fn order_aliases_follow_native_identifier_case() {
+    for (system, bind, wrong_order) in [
+        (DatabaseSystem::PostgreSQL, ":last_id", "\"ID\""),
+        (DatabaseSystem::Oracle, ":last_id", "\"id\""),
+        (DatabaseSystem::SqlServer, "@last_id", "ID"),
+    ] {
+        let sql = format!("SELECT e.id FROM events e WHERE e.id > {bind} ORDER BY {wrong_order}");
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "int64"), system).unwrap_err(),
+            SourceQueryError::Ordering,
+        );
+    }
+    for (system, bind, alias) in [
+        (DatabaseSystem::PostgreSQL, ":last_id", "\"ID\""),
+        (DatabaseSystem::Oracle, ":last_id", "\"id\""),
+        (DatabaseSystem::SqlServer, "@last_id", "[id]"),
+    ] {
+        let sql = format!(
+            "SELECT e.source_key AS {alias} FROM events e WHERE e.source_key > {bind} ORDER BY {alias}"
+        );
+        assert!(SourceQuery::compile(&query(&sql, "int64"), system).is_ok());
+    }
+}
+
+/// Scenario: Another result alias shadows the unqualified input column used as the cursor.
+/// Guarantees: ORDER BY cannot sort by the shadowing result value and checkpoint past unread keys.
+#[test]
+fn order_aliases_cannot_shadow_the_source_cursor() {
+    for (system, bind) in [
+        (DatabaseSystem::PostgreSQL, ":last_id"),
+        (DatabaseSystem::Oracle, ":last_id"),
+        (DatabaseSystem::SqlServer, "@last_id"),
+    ] {
+        let sql = format!(
+            "SELECT source_id AS id, other_id AS source_id FROM events WHERE source_id > {bind} ORDER BY source_id"
+        );
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "int64"), system).unwrap_err(),
+            SourceQueryError::Ordering,
+        );
+        for sql in [
+            format!(
+                "SELECT source_id AS id, other_id FROM events WHERE source_id > {bind} ORDER BY source_id"
+            ),
+            format!(
+                "SELECT e.source_id AS id, e.other_id AS source_id FROM events e WHERE e.source_id > {bind} ORDER BY e.source_id"
+            ),
+        ] {
+            assert!(SourceQuery::compile(&query(&sql, "int64"), system).is_ok());
+        }
+    }
+    let implicit_alias = "SELECT source_id AS id, source_id() FROM events WHERE source_id > :last_id ORDER BY source_id";
+    assert_eq!(
+        SourceQuery::compile(&query(implicit_alias, "int64"), DatabaseSystem::PostgreSQL)
+            .unwrap_err(),
+        SourceQueryError::Ordering,
+    );
+    assert!(
+        SourceQuery::compile(
+            &query(
+                &implicit_alias.replace("ORDER BY source_id", "ORDER BY id"),
+                "int64"
+            ),
+            DatabaseSystem::PostgreSQL,
+        )
+        .is_ok()
+    );
+}
+
+/// Scenario: A valid ascending ORDER BY wraps its cursor in one or more pairs of parentheses.
+/// Guarantees: Parenthesized ordering is preserved exactly and the executed SQL remains valid.
+#[test]
+fn parenthesized_ordering_is_not_rewritten() {
+    for (system, dialect) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            &PostgreSqlDialect {} as &dyn Dialect,
+        ),
+        (DatabaseSystem::Oracle, &OracleDialect {} as &dyn Dialect),
+    ] {
+        for order in ["(id)", "((id)) ASC", "(((id)))"] {
+            let sql = format!("SELECT id FROM events WHERE (id > :last_id) ORDER BY {order}");
+            let compiled = execution(&sql, "int64", system);
+            assert!(
+                Parser::parse_sql(dialect, &compiled).is_ok(),
+                "invalid generated ordering: {compiled}"
+            );
+            assert!(compiled.contains(&format!("ORDER BY {order}")));
+            assert!(!compiled.contains("NULLS"));
+        }
+    }
+    let sql = "SELECT id FROM events WHERE id COLLATE BINARY > :last_id COLLATE BINARY ORDER BY ((id COLLATE BINARY)) ASC";
+    let compiled = execution(sql, "string", DatabaseSystem::Oracle);
+    assert!(Parser::parse_sql(&OracleDialect {}, &compiled).is_ok());
+    assert_eq!(compiled, sql);
+}
+
+/// Scenario: The author specifies native null filters and default, NULLS FIRST, or NULLS LAST ordering.
+/// Guarantees: PostgreSQL and Oracle retain the user's WHERE and ORDER BY null semantics without metadata NOT NULL requirements.
+#[test]
+fn authored_null_semantics_are_preserved() {
+    for system in [DatabaseSystem::PostgreSQL, DatabaseSystem::Oracle] {
+        for placement in ["", " NULLS FIRST", " NULLS LAST"] {
+            let sql = format!(
+                "SELECT e.id, e.payload FROM events e WHERE e.id > :last_id AND (e.payload IS NULL OR e.status = 'ready') ORDER BY e.id ASC{placement}"
+            );
+            let compiled = execution(&sql, "int64", system);
+            let expected = if system == DatabaseSystem::PostgreSQL {
+                format!("{}\nLIMIT 3", sql.replace(":last_id", "$1"))
+            } else {
+                sql
+            };
+            assert_eq!(compiled, expected);
+            assert_eq!(compiled.matches("IS NULL").count(), 1);
+            assert!(!compiled.contains("e.id IS NULL"));
+        }
     }
 }
 
@@ -228,7 +344,14 @@ fn oracle_binary_string_keys_remain_explicit() {
     let sql = "SELECT id FROM events WHERE id COLLATE BINARY > :last_id COLLATE BINARY ORDER BY id COLLATE BINARY ASC";
     let plan = execution(sql, "string", DatabaseSystem::Oracle);
     assert!(plan.contains("id COLLATE BINARY > :last_id COLLATE BINARY"));
-    assert!(plan.ends_with("id COLLATE BINARY ASC NULLS FIRST"));
+    assert_eq!(plan, sql);
+    for placement in [" NULLS FIRST", " NULLS LAST"] {
+        let authored = format!("{sql}{placement}");
+        assert_eq!(
+            execution(&authored, "string", DatabaseSystem::Oracle),
+            authored
+        );
+    }
     for modified in [
         sql.replace(" COLLATE BINARY", ""),
         sql.replacen("COLLATE BINARY", "COLLATE BINARY_CI", 1),
@@ -287,6 +410,49 @@ fn rejects_mutation_locking_and_pagination() {
             SourceQueryError::Locking
         );
     }
+}
+
+/// Scenario: A lone carriage return ends a native line comment but is swallowed by the parser's SQL Server/Oracle lexer.
+/// Guarantees: Text hidden by that lexer cannot conceal another executable statement from validation.
+#[test]
+fn carriage_return_comments_cannot_hide_statements() {
+    for system in [DatabaseSystem::SqlServer, DatabaseSystem::Oracle] {
+        let hidden = "SELECT id FROM events -- comment\r; DELETE FROM events";
+        assert!(SourceQuery::compile(&query(hidden, "snapshot"), system).is_err());
+        for ending in ["\n", "\r\n"] {
+            let sql = format!("SELECT id FROM events -- comment{ending}WHERE id > 0");
+            let source = SourceQuery::compile(&query(&sql, "snapshot"), system).unwrap();
+            assert_eq!(source.sql(), sql);
+        }
+        for sql in [
+            "SELECT 'a\rb' AS payload FROM events",
+            "SELECT id FROM events /* comment\rstill a comment */",
+        ] {
+            assert_eq!(
+                SourceQuery::compile(&query(sql, "snapshot"), system)
+                    .unwrap()
+                    .sql(),
+                sql
+            );
+        }
+    }
+    let postgres = "SELECT id FROM events -- comment\rWHERE id > 0";
+    assert_eq!(
+        SourceQuery::compile(&query(postgres, "snapshot"), DatabaseSystem::PostgreSQL)
+            .unwrap()
+            .sql(),
+        postgres,
+    );
+    assert!(
+        SourceQuery::compile(
+            &query(
+                "SELECT id FROM events -- comment\r; DELETE FROM events",
+                "snapshot"
+            ),
+            DatabaseSystem::PostgreSQL,
+        )
+        .is_err()
+    );
 }
 
 /// Scenario: Result metadata is missing, duplicated, or does not include the configured cursor.

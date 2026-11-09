@@ -8,8 +8,8 @@ use super::{
 };
 use sqlparser::{
     ast::{
-        BinaryOperator as Op, Expr, FunctionArg, FunctionArgExpr, Ident, OrderByKind, OrderBySort, Query,
-        Select, SelectItem, SetExpr, Spanned, Statement, TableFactor, Visit, Visitor,
+        BinaryOperator as Op, Expr, FunctionArg, FunctionArgExpr, Ident, OrderByKind, OrderBySort,
+        Query, Select, SelectItem, SetExpr, Statement, TableFactor, Visit, Visitor,
     },
     dialect::{Dialect, MsSqlDialect, OracleDialect, PostgreSqlDialect},
     parser::Parser,
@@ -46,6 +46,44 @@ impl fmt::Debug for SourceQuery {
 }
 
 impl SourceQuery {
+    /// Removes one real final statement terminator before applying an adapter's
+    /// legacy trimmed-input bound, without stripping semicolons inside literals.
+    pub fn trim_statement(sql: &str, system: DatabaseSystem) -> Result<String, SourceQueryError> {
+        let sql = sql.trim();
+        let Some(before_terminator) = sql.strip_suffix(';') else {
+            if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
+                return Err(SourceQueryError::Size);
+            }
+            return Ok(sql.to_owned());
+        };
+        let body = before_terminator.trim_end();
+        if body.is_empty() || body.len() > MAX_QUERY_BYTES {
+            return Err(SourceQueryError::Size);
+        }
+        let dialect: &dyn Dialect = match system {
+            DatabaseSystem::Oracle => &OracleDialect {},
+            DatabaseSystem::SqlServer => &MsSqlDialect {},
+            DatabaseSystem::PostgreSQL => &PostgreSqlDialect {},
+        };
+        // Tokenize only the bounded body, not arbitrarily long whitespace before
+        // its terminator. A trailing line comment may itself end in a semicolon.
+        let tokens = tokenize(body, dialect)?;
+        if matches!(
+            tokens.last().map(|t| &t.token),
+            Some(Token::Whitespace(Whitespace::SingleLineComment { .. }))
+        ) && !before_terminator[body.len()..].contains(['\r', '\n'])
+        {
+            if sql.len() > MAX_QUERY_BYTES {
+                return Err(SourceQueryError::Size);
+            }
+            return Ok(sql.to_owned());
+        }
+        if tokens.iter().any(|token| token.token == Token::SemiColon) {
+            return Err(SourceQueryError::Statement);
+        }
+        Ok(body.to_owned())
+    }
+
     /// Validates native read-only SQL, declared binds, and the required incremental guard.
     pub fn compile(
         query: &CompiledQuery,
@@ -162,6 +200,24 @@ fn tokenize(sql: &str, dialect: &dyn Dialect) -> Result<Vec<TokenWithSpan>, Sour
     let tokens = Tokenizer::new(dialect, sql)
         .tokenize_with_location()
         .map_err(|_| SourceQueryError::Syntax)?;
+    // sqlparser 0.63 stops -- comments at CR only in its PostgreSQL dialect.
+    // SQL Server also treats CR as a line end, so accepting the opaque token
+    // could hide native executable SQL. Do not normalize literal contents.
+    if !dialect.is::<PostgreSqlDialect>()
+        && tokens.iter().enumerate().any(|(token_index, token)| {
+            matches!(&token.token, Token::Whitespace(Whitespace::SingleLineComment { comment, .. })
+                if comment.as_bytes().iter().enumerate().any(|(index, byte)|
+                    *byte == b'\r'
+                        && comment.as_bytes().get(index + 1) != Some(&b'\n')
+                        // The lexer now leaves LF in the following whitespace token.
+                        && !(index + 1 == comment.len()
+                            && tokens.get(token_index + 1).is_some_and(|next|
+                                matches!(next.token, Token::Whitespace(Whitespace::Newline))
+                                    && token.span.end == next.span.start))))
+        })
+    {
+        return Err(SourceQueryError::CommentLineEnding);
+    }
     if tokens
         .iter()
         .filter(|t| !matches!(t.token, Token::Whitespace(_)))
@@ -404,25 +460,55 @@ fn same_column(left: &Expr, right: &Expr, system: DatabaseSystem) -> bool {
     }
 }
 
-fn projected_cursor<'a>(select: &'a Select, output: &str) -> Result<&'a Expr, SourceQueryError> {
-    let mut matches = select.projection.iter().filter_map(|item| match item {
-        SelectItem::UnnamedExpr(expr)
-            if identifiers(expr)
-                .and_then(|ids| ids.last())
-                .is_some_and(|id| id.value.eq_ignore_ascii_case(output)) =>
-        {
-            Some(expr)
-        }
-        SelectItem::ExprWithAlias { expr, alias } if alias.value.eq_ignore_ascii_case(output) => {
-            Some(expr)
-        }
+fn named_projection(item: &SelectItem) -> Option<(&Expr, &Ident)> {
+    match item {
+        SelectItem::UnnamedExpr(expr) => identifiers(expr)
+            .and_then(|ids| ids.last())
+            .map(|name| (expr, name)),
+        SelectItem::ExprWithAlias { expr, alias } => Some((expr, alias)),
         _ => None,
-    });
-    let expr = matches.next().ok_or(SourceQueryError::Columns)?;
+    }
+}
+
+fn projected_cursor<'a>(select: &'a Select, output: &str) -> Result<&'a Expr, SourceQueryError> {
+    let mut matches = select
+        .projection
+        .iter()
+        .filter_map(named_projection)
+        .filter(|(_, name)| name.value.eq_ignore_ascii_case(output));
+    let (expr, _) = matches.next().ok_or(SourceQueryError::Columns)?;
     if matches.next().is_some() || identifiers(expr).is_none() {
         return Err(SourceQueryError::Columns);
     }
     Ok(expr)
+}
+
+fn order_matches_cursor(order: &Expr, key: &Expr, select: &Select, system: DatabaseSystem) -> bool {
+    if let Expr::Identifier(id) = order {
+        // A bare ORDER BY name resolves output aliases before input columns.
+        // Unknown native expression names must not silently shadow an input key.
+        let mut output_match = false;
+        let mut unknown_names = false;
+        for item in &select.projection {
+            let Some((expr, name)) = named_projection(item) else {
+                unknown_names = true;
+                continue;
+            };
+            if same_ident(id, name, system) {
+                output_match = true;
+                if !same_column(expr, key, system) {
+                    return false;
+                }
+            }
+        }
+        if output_match {
+            return true;
+        }
+        if unknown_names {
+            return false;
+        }
+    }
+    same_column(order, key, system)
 }
 
 fn binary_collation(expr: &Expr) -> Option<&Expr> {
@@ -526,50 +612,6 @@ fn guards<'a>(
     }
 }
 
-// Expr spans omit parentheses on several AST nodes. Expand to their matching
-// tokens before applying a surgical edit; never leave an inserted OR inside
-// only one arm of the customer's composite predicate.
-fn expression_range(
-    tokens: &[&TokenWithSpan],
-    expression: &Expr,
-    positions: &BTreeMap<(u64, u64), usize>,
-) -> Result<Range<usize>, SourceQueryError> {
-    let span = expression.span();
-    let mut first = tokens
-        .iter()
-        .position(|t| t.span.start == span.start)
-        .ok_or(SourceQueryError::Composition)?;
-    let mut last = tokens
-        .iter()
-        .rposition(|t| t.span.end == span.end)
-        .ok_or(SourceQueryError::Composition)?;
-    let mut stack = Vec::new();
-    let mut pairs = BTreeMap::new();
-    for (i, t) in tokens.iter().enumerate() {
-        match t.token {
-            Token::LParen => stack.push(i),
-            Token::RParen => {
-                let start = stack.pop().ok_or(SourceQueryError::Syntax)?;
-                let _ = pairs.insert(start, i);
-                let _ = pairs.insert(i, start);
-            }
-            _ => {}
-        }
-    }
-    loop {
-        let old = (first, last);
-        for (_, partner) in pairs.range(first..=last) {
-            first = first.min(*partner);
-            last = last.max(*partner);
-        }
-        if old == (first, last) {
-            break;
-        }
-    }
-    Ok(byte_range(positions, tokens[first].span)?.start
-        ..byte_range(positions, tokens[last].span)?.end)
-}
-
 fn compile_keyset(
     sql: &str,
     tokens: &[TokenWithSpan],
@@ -604,9 +646,9 @@ fn compile_keyset(
         system,
         &mut found,
     );
-    let [guard] = found.as_slice() else {
+    if found.len() != 1 {
         return Err(SourceQueryError::Keyset);
-    };
+    }
     let order = query.order_by.as_ref().ok_or(SourceQueryError::Ordering)?;
     let OrderByKind::Expressions(expressions) = &order.kind else {
         return Err(SourceQueryError::Ordering);
@@ -614,56 +656,26 @@ fn compile_keyset(
     if order.interpolate.is_some() || expressions.len() != keys.len() {
         return Err(SourceQueryError::Ordering);
     }
-    let positions = offsets(sql);
-    let significant: Vec<_> = tokens
-        .iter()
-        .filter(|t| !matches!(t.token, Token::Whitespace(_)))
-        .collect();
-    let mut edits = Vec::new();
-    for ((order, key), name) in expressions.iter().zip(&keys).zip(names) {
+    for (order, key) in expressions.iter().zip(&keys) {
         let expr = if string_key {
             binary_collation(&order.expr).ok_or(SourceQueryError::Ordering)?
         } else {
             unnest(&order.expr)
         };
-        let alias = matches!(expr,Expr::Identifier(id) if id.value.eq_ignore_ascii_case(name));
-        if !(same_column(expr, key, system) || alias)
+        if !order_matches_cursor(expr, key, select, system)
             || !matches!(order.options.sort, None | Some(OrderBySort::Asc))
-            || order.options.nulls_first == Some(false)
             || order.with_fill.is_some()
         {
             return Err(SourceQueryError::Ordering);
         }
-        if system != DatabaseSystem::SqlServer && order.options.nulls_first.is_none() {
-            let range = expression_range(&significant, &order.expr, &positions)?;
-            let next = significant
-                .iter()
-                .find(|t| byte_range(&positions, t.span).is_ok_and(|r| r.start >= range.end));
-            let end = if let Some(next) = next.filter(|t| is_word(&t.token, "ASC")) {
-                byte_range(&positions, next.span)?.end
-            } else {
-                range.end
-            };
-            edits.push(Edit {
-                range: end..end,
-                text: " NULLS FIRST".into(),
-            });
-        }
     }
-    let guard_range = expression_range(&significant, guard, &positions)?;
-    let nulls = keys
-        .iter()
-        .map(|key| {
-            let range = expression_range(&significant, key, &positions)?;
-            Ok(format!("{} IS NULL", &sql[range]))
-        })
-        .collect::<Result<Vec<_>, SourceQueryError>>()?
-        .join(" OR ");
-    edits.push(Edit {
-        text: format!("({} OR {nulls})", &sql[guard_range.clone()]),
-        range: guard_range,
-    });
+    let mut edits = Vec::new();
     if system == DatabaseSystem::SqlServer {
+        let positions = offsets(sql);
+        let significant: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.token, Token::Whitespace(_)))
+            .collect();
         let mut depth = 0;
         let mut top = None;
         for (index, t) in significant.iter().enumerate() {
@@ -762,6 +774,11 @@ pub enum SourceQueryError {
     /// Unparseable native syntax.
     #[error("query.statement could not be parsed in the selected database dialect")]
     Syntax,
+    /// The parser cannot safely represent a native line-comment boundary.
+    #[error(
+        "use LF or CRLF line endings in SQL Server and Oracle -- comments; lone carriage returns cannot be validated safely"
+    )]
+    CommentLineEnding,
     /// Bounded parser work exceeded.
     #[error("query.statement must use at most 4096 SQL tokens and 128 nested expressions")]
     Complexity,

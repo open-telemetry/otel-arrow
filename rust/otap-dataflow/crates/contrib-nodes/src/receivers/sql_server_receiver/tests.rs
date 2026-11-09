@@ -127,7 +127,7 @@ fn composite_defaults_and_native_binding_plan() {
     assert!(sql.contains("SELECT TOP (@P3) EVENT_ID"));
     assert!(sql.contains("EVENT_TS > @P1"));
     assert!(sql.contains("EVENT_ID > @P2"));
-    assert!(sql.contains("EVENT_ID IS NULL"));
+    assert!(!sql.contains("IS NULL"));
     assert!(config.query().sql().contains("@last_timestamp"));
     assert!(!sql.contains("2026"));
 }

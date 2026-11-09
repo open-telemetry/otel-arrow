@@ -154,7 +154,7 @@ reuse a checkpoint for a different schema or source.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `query.statement` | string | **required** | One read-only [native query](#native-source-sql), retaining explicit cursor predicates/order in incremental modes, at most 16 KiB. |
+| `query.statement` | string | **required** | One read-only [native query](#native-source-sql), retaining explicit cursor predicates/order in incremental modes, at most 16 KiB after trimming surrounding whitespace and the optional final semicolon. |
 | `query.interval` | duration string | `1m` | Between `1m` and `24h`, inclusive, with whole-second precision. `1.5m` is valid (90 seconds); `60.5s` is not. Delay after a poll cycle ends; acknowledged catch-up pages do not wait this interval. |
 | `query.fetch_size_rows` | integer | `300` | Between `1` and `10000`, and no greater than `max_rows_per_poll`. Target rows per native fetch, further capped by row and byte budgets. |
 | `query.max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Maximum rows fetched per page, including catch-up pages. |
@@ -211,7 +211,7 @@ Names may contain spaces or punctuation; the receiver resolves live metadata
 and checks them against the explicitly selected cursor references. Use the name itself, without
 adding SQL quoting. Names are limited to 128 bytes without control characters.
 
-Both cursor values must be non-null; nullable metadata is accepted. Supported timestamp metadata
+Both returned cursor values must be non-null; nullable metadata is accepted. Supported timestamp metadata
 is Oracle `DATE`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE`, or
 `TIMESTAMP WITH LOCAL TIME ZONE`. Tie-breaker metadata must be `Int64` or
 `NUMBER(p,0)` with `1 <= p <= 18`; unconstrained, fractional, unsigned, and
@@ -467,10 +467,13 @@ business filters through `AND`, never a bypassing `OR`. Conflicting order and
 top-level incremental row limits are rejected. Writes, extra statements, locks, and undeclared
 parameters are rejected in every mode.
 
-The final incremental result must have a stable, non-null, unique cursor per
+The returned incremental result must have a stable, non-null, unique cursor per
 output row. No catalog/index proof is required, but a one-to-many join needs a
-cursor distinguishing each output row. Null, duplicate, or backward keys fail
-explicitly, including the successor at a row or normalized-byte boundary.
+cursor distinguishing each output row. Returned null, duplicate, or backward
+keys fail explicitly, including the successor at a row or normalized-byte
+boundary. Authored null filtering and `NULLS FIRST`/`NULLS LAST` ordering are
+preserved; the receiver adds neither. It cannot diagnose null keys filtered out
+by the authored SQL and does not require `NOT NULL` metadata.
 Snapshot results do not require cursor uniqueness or ordering.
 
 The adapter uses read-only transactions and re-describes source metadata before
