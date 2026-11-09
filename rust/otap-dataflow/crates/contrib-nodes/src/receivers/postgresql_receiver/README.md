@@ -321,6 +321,23 @@ remains supported. Keep the final ascending order. The receiver adds a bounded
 `LIMIT` and checks a successor cursor; it does not invent the checkpoint
 predicate. Top-level conflicting order or limits are rejected.
 
+Array slices retain native PostgreSQL syntax, including omitted and expression
+bounds such as `tags[1:2]`, `tags[:upper_bound]`, and `tags[lower_bound:]`.
+A slice delimiter is not a bind, even if its following identifier matches a
+configured bind name. Use parentheses for a named bind as an index or bound:
+`tags[(:last_id)]` or `tags[1:(:last_id)]`. Real parameters in array expressions,
+including `ARRAY[:last_id]`, still require declared binds; snapshots remain
+parameter-free.
+
+**Known parser limitation:** `sqlparser` 0.63 misinterprets
+`tags[bounds[1]:bounds[2]]` as a typed literal with a `:bounds` parameter, so
+parameter validation rejects this form. Parenthesize the nested lower bound:
+`tags[(bounds[1]):bounds[2]]`. The receiver does not rewrite the unsupported
+form or relax bind validation to bypass the parser. Bounds named like SQL
+types, such as `date`, can also be ambiguous; parenthesize them as in
+`tags[(date):last_id]`. Ambiguous forms are rejected even when the apparent
+parameter matches a configured bind.
+
 Existing supported queries and [checkpoint identities](../../../../scraper/README.md#checkpoint-compatibility)
 remain compatible. No new fields, SQL rewrites, or checkpoint resets are needed.
 

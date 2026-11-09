@@ -9,7 +9,8 @@ use super::{
 use sqlparser::{
     ast::{
         BinaryOperator as Op, Expr, FunctionArg, FunctionArgExpr, Ident, OrderByKind, OrderBySort,
-        Query, Select, SelectItem, SetExpr, Statement, TableFactor, Visit, Visitor,
+        Query, Select, SelectItem, SetExpr, Statement, TableFactor, Value, ValueWithSpan, Visit,
+        Visitor,
     },
     dialect::{Dialect, MsSqlDialect, OracleDialect, PostgreSqlDialect},
     parser::Parser,
@@ -314,12 +315,63 @@ fn native_bind(system: DatabaseSystem, roles: &[&str], index: usize) -> String {
     }
 }
 
+struct ParameterLocations {
+    starts: HashSet<(u64, u64)>,
+}
+
+impl Visitor for ParameterLocations {
+    type Break = SourceQueryError;
+
+    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
+        // PostgreSQL typed literals cannot contain binds. A placeholder here
+        // can be a misparsed slice delimiter, even if its name is configured.
+        if matches!(expr, Expr::TypedString(typed) if matches!(typed.value.value, Value::Placeholder(_)))
+        {
+            return ControlFlow::Break(SourceQueryError::Parameters);
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_value(&mut self, value: &ValueWithSpan) -> ControlFlow<Self::Break> {
+        if matches!(value.value, Value::Placeholder(_)) {
+            let _ = self
+                .starts
+                .insert((value.span.start.line, value.span.start.column));
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 fn compile_parameters(
     sql: &str,
     tokens: &[TokenWithSpan],
     roles: &[&str],
     system: DatabaseSystem,
 ) -> Result<String, SourceQueryError> {
+    // PostgreSQL slice colons are syntax, not binds. Use expression context to
+    // distinguish them from real parameters inside array elements and bounds.
+    let postgres_parameters = if system == DatabaseSystem::PostgreSQL
+        && tokens.iter().any(|token| token.token == Token::LBracket)
+        && tokens.iter().any(|token| token.token == Token::Colon)
+    {
+        let statements = Parser::new(&PostgreSqlDialect {})
+            .with_recursion_limit(MAX_NESTING)
+            .with_tokens_with_locations(tokens.to_vec())
+            .parse_statements()
+            .map_err(|_| SourceQueryError::Syntax)?;
+        if let ControlFlow::Break(error) = statements.visit(&mut ReadOnly { system, depth: 0 }) {
+            return Err(error);
+        }
+        let mut parameters = ParameterLocations {
+            starts: HashSet::new(),
+        };
+        if let ControlFlow::Break(error) = statements.visit(&mut parameters) {
+            return Err(error);
+        }
+        Some(parameters)
+    } else {
+        None
+    };
     let positions = offsets(sql);
     let significant: Vec<_> = tokens
         .iter()
@@ -347,7 +399,13 @@ fn compile_parameters(
         }
         let mut range = byte_range(&positions, token.span)?;
         let parameter = match &token.token {
-            Token::Colon => {
+            Token::Colon
+                if postgres_parameters.as_ref().is_none_or(|parameters| {
+                    parameters
+                        .starts
+                        .contains(&(token.span.start.line, token.span.start.column))
+                }) =>
+            {
                 let next = significant
                     .get(index + 1)
                     .ok_or(SourceQueryError::Parameters)?;
@@ -524,7 +582,7 @@ fn parameter(expr: &Expr, expected: &str) -> bool {
     match unnest(expr) {
         Expr::Identifier(id) => id.quote_style.is_none() && id.value == expected,
         Expr::Value(value) => {
-            matches!(&value.value, sqlparser::ast::Value::Placeholder(name) if name == expected)
+            matches!(&value.value, Value::Placeholder(name) if name == expected)
         }
         _ => false,
     }

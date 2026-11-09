@@ -337,6 +337,220 @@ fn parameter_binding_is_token_aware() {
     );
 }
 
+/// Scenario: PostgreSQL snapshots use numeric, omitted, expression, and nested array-slice bounds.
+/// Guarantees: Slice delimiters are not binds, and authored SQL and checkpoint identity stay unchanged.
+#[test]
+fn postgresql_slices_preserve_snapshot_expressions() {
+    for expression in [
+        "tags[1:2]",
+        "tags[:2]",
+        "tags[1:]",
+        "tags[:]",
+        "tags[lower_bound:upper_bound]",
+        "tags[:upper_bound]",
+        "tags[lower_bound:]",
+        "tags[(lower_bound + 1):COALESCE(upper_bound, array_upper(tags, 1))]",
+        "tags[:CASE WHEN id > 0 THEN upper_bound ELSE 2 END]",
+        "tags[1:2][lower_bound:upper_bound]",
+        "(tags[1:2])[:upper_bound]",
+        "tags[1 /* :unknown */ : CAST('2' AS integer)]",
+        "tags[:last_id]",
+    ] {
+        let sql = format!("SELECT cardinality({expression}) AS n FROM public.events");
+        let query = query(&sql, "snapshot");
+        let source = SourceQuery::compile(&query, DatabaseSystem::PostgreSQL)
+            .unwrap_or_else(|error| panic!("{sql}: {error:?}"));
+        assert_eq!(source.sql(), sql);
+        assert_eq!(source.fingerprint_sql(), sql);
+        assert_eq!(source.paged_sql(&query, &columns()).unwrap(), sql);
+    }
+}
+
+/// Scenario: sqlparser 0.63 mistakes an unparenthesized nested slice bound for an array-typed bind.
+/// Guarantees: The unsupported form is rejected without bypassing bind checks; parenthesizing the lower bound works unchanged.
+#[test]
+fn postgresql_slices_nested_bounds_require_parentheses() {
+    let unsupported = "SELECT cardinality(tags[bounds[1]:bounds[2]]) AS n FROM public.events";
+    assert_eq!(
+        SourceQuery::compile(&query(unsupported, "snapshot"), DatabaseSystem::PostgreSQL)
+            .unwrap_err(),
+        SourceQueryError::Parameters
+    );
+
+    let supported = "SELECT cardinality(tags[(bounds[1]):bounds[2]]) AS n FROM public.events";
+    let query = query(supported, "snapshot");
+    let source = SourceQuery::compile(&query, DatabaseSystem::PostgreSQL).unwrap();
+    assert_eq!(source.sql(), supported);
+    assert_eq!(source.fingerprint_sql(), supported);
+    assert_eq!(source.paged_sql(&query, &columns()).unwrap(), supported);
+}
+
+/// Scenario: An ambiguous typed slice bound makes its delimiter look like a configured bind.
+/// Guarantees: Unsupported bounds fail closed instead of being rewritten; parentheses preserve their native meaning.
+#[test]
+fn postgresql_slices_reject_ambiguous_configured_bounds() {
+    for lower in ["date", "time", "bounds[1]"] {
+        let unsupported = format!(
+            "SELECT id, tags[{lower}:last_id] AS payload FROM events WHERE id > :last_id ORDER BY id"
+        );
+        assert_eq!(
+            SourceQuery::compile(&query(&unsupported, "int64"), DatabaseSystem::PostgreSQL)
+                .map(|source| source.sql().to_owned()),
+            Err(SourceQueryError::Parameters),
+            "{unsupported}"
+        );
+
+        let supported = format!(
+            "SELECT id, tags[({lower}):last_id] AS payload FROM events WHERE id > :last_id ORDER BY id"
+        );
+        assert_eq!(
+            execution(&supported, "int64", DatabaseSystem::PostgreSQL),
+            format!("{}\nLIMIT 3", supported.replace("id > :last_id", "id > $1"))
+        );
+    }
+}
+
+/// Scenario: Declared named or positional binds occur inside array elements, indices, and slice bounds.
+/// Guarantees: Real parameters are bound in every expression while native text, keysets, and bounds are preserved.
+#[test]
+fn postgresql_slices_bind_parameters_in_expressions() {
+    for expression in [
+        "ARRAY[{bind}, 2]",
+        "tags[({bind})]",
+        "tags[({bind}):2]",
+        "tags[1:({bind})]",
+        "tags[: {bind}]",
+        "tags[1: {bind}]",
+        "tags[CAST({bind} AS integer):2]",
+        "tags[({bind})::integer:2]",
+        "tags[COALESCE({bind}, 1):]",
+        "tags[:COALESCE({bind}, 2)]",
+        "tags[:CASE WHEN {bind} > 0 THEN {bind} ELSE 2 END]",
+        "tags[1:2][({bind}):upper_bound]",
+        "tags[(ARRAY[{bind}, 1])[1]:bounds[({bind})]]",
+    ] {
+        let sql = |bind| {
+            format!(
+                "SELECT id, '\u{1f30d} :unknown' AS marker, {} AS payload\nFROM public.events /* :unknown */\nWHERE id > {bind} ORDER BY id",
+                expression.replace("{bind}", bind)
+            )
+        };
+        for bind in [":last_id", "$1"] {
+            let authored = sql(bind);
+            let query = query(&authored, "int64");
+            let source = SourceQuery::compile(&query, DatabaseSystem::PostgreSQL)
+                .unwrap_or_else(|error| panic!("{authored}: {error:?}"));
+            assert_eq!(source.sql(), sql("$1"));
+            assert_eq!(source.fingerprint_sql(), authored);
+            assert_eq!(
+                source.paged_sql(&query, &columns()).unwrap(),
+                format!("{}\nLIMIT 3", sql("$1"))
+            );
+        }
+    }
+}
+
+/// Scenario: Quoted slice bounds, dollar-quoted text, and comments surround real binds across native line endings.
+/// Guarantees: Only actual parameters and the final terminator change; all other source bytes and fingerprints are preserved.
+#[test]
+fn postgresql_slices_preserve_quoted_text_and_comment_spans() {
+    for newline in ["\n", "\r\n", "\r"] {
+        let sql = |bind, terminator| {
+            format!(
+                "SELECT id, tags[1:\"last_id\"] AS payload, $text$[:last_id] :unknown $2;$text$ AS marker\nFROM events -- :last_id :unknown\nWHERE id > {bind} AND cardinality(tags[: {bind}]) > 0\nORDER BY id{terminator} -- :unknown",
+            )
+            .replace('\n', newline)
+        };
+        for bind in [":last_id", "$1"] {
+            let authored = sql(bind, ";");
+            let query = query(&authored, "int64");
+            let source = SourceQuery::compile(&query, DatabaseSystem::PostgreSQL)
+                .unwrap_or_else(|error| panic!("{authored}: {error:?}"));
+            assert_eq!(source.sql(), sql("$1", ""));
+            assert_eq!(source.fingerprint_sql(), authored);
+            assert_eq!(
+                source.paged_sql(&query, &columns()).unwrap(),
+                format!("{}\nLIMIT 3", sql("$1", ""))
+            );
+        }
+    }
+}
+
+/// Scenario: A native slice bound has the same identifier as a configured named cursor bind.
+/// Guarantees: The identifier is neither substituted nor treated as a named bind mixed with a positional keyset.
+#[test]
+fn postgresql_slices_do_not_bind_bound_identifiers() {
+    for expression in [
+        "tags[:last_id]",
+        "tags[1:last_id]",
+        "tags[lower_bound:last_id]",
+    ] {
+        let sql = format!(
+            "SELECT id, {expression} AS payload FROM public.events WHERE id > $1 ORDER BY id"
+        );
+        assert_eq!(
+            execution(&sql, "int64", DatabaseSystem::PostgreSQL),
+            format!("{sql}\nLIMIT 3")
+        );
+    }
+}
+
+/// Scenario: Actual parameters appear inside array expressions in snapshots or are undeclared or mixed.
+/// Guarantees: Brackets cannot conceal forbidden parameters from the existing binding contract.
+#[test]
+fn postgresql_slices_reject_forbidden_parameters() {
+    for expression in [
+        "ARRAY[{bind}, 2]",
+        "tags[({bind})]",
+        "tags[1:({bind})]",
+        "tags[: {bind}]",
+        "tags[1: {bind}]",
+        "tags[:COALESCE({bind}, 2)]",
+        "tags[(ARRAY[{bind}, 1])[1]:2]",
+    ] {
+        for bind in [":last_id", ":unknown", "$1", "$2"] {
+            let expression = expression.replace("{bind}", bind);
+            let snapshot = format!("SELECT {expression} AS payload FROM public.events");
+            assert_eq!(
+                SourceQuery::compile(&query(&snapshot, "snapshot"), DatabaseSystem::PostgreSQL)
+                    .unwrap_err(),
+                SourceQueryError::Parameters,
+                "{snapshot}"
+            );
+            let guard = if bind == ":last_id" { "$1" } else { ":last_id" };
+            let incremental = format!(
+                "SELECT id, {expression} AS payload FROM public.events WHERE id > {guard} ORDER BY id"
+            );
+            assert_eq!(
+                SourceQuery::compile(&query(&incremental, "int64"), DatabaseSystem::PostgreSQL)
+                    .unwrap_err(),
+                SourceQueryError::Parameters,
+                "{incremental}"
+            );
+        }
+    }
+}
+
+/// Scenario: SQL Server and Oracle quoted identifiers contain slice-like text alongside real cursor binds.
+/// Guarantees: PostgreSQL slice detection does not change the other dialects' binding or identifier semantics.
+#[test]
+fn postgresql_slices_do_not_change_other_dialect_binds() {
+    for (system, sql, expected) in [
+        (
+            DatabaseSystem::SqlServer,
+            "SELECT id, [tags:unknown] AS payload FROM events WHERE id > @last_id ORDER BY id",
+            "SELECT TOP (@P2) id, [tags:unknown] AS payload FROM events WHERE id > @P1 ORDER BY id",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            "SELECT id, \"tags[:unknown]\" AS payload FROM events WHERE id > :LAST_ID ORDER BY id",
+            "SELECT id, \"tags[:unknown]\" AS payload FROM events WHERE id > :last_id ORDER BY id",
+        ),
+    ] {
+        assert_eq!(execution(sql, "int64", system), expected);
+    }
+}
+
 /// Scenario: Oracle string cursors use the documented BINARY comparison and order.
 /// Guarantees: The existing spelling compiles while linguistic or missing collations fail.
 #[test]
