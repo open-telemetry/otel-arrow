@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794184025939,
+  "lastUpdate": 1794256643345,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -82311,6 +82311,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 108.83,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "289780372+otelbot-arrow[bot]@users.noreply.github.com",
+            "name": "otelbot-arrow[bot]",
+            "username": "otelbot-arrow[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "342e2d6768f6e74d46934c57a4c8a0e12f8b29d0",
+          "message": "chore(release): Prepare Rust v0.65.0 (#4692)\n\n## Rust v0.65.0\n\nThis PR contains the automatically calculated release plan.\n\n```json\n{\n  \"schema_version\": 1,\n  \"base_sha\": \"64ee1434abfbc578646f38e251a8b4a13c1d9845\",\n  \"branch\": \"otelbot/release-rust-v0.65.0\",\n  \"summary\": \"Rust v0.65.0\",\n  \"go\": {\n    \"target\": \"go\",\n    \"has_changes\": false,\n    \"impact\": null,\n    \"entry_count\": 0,\n    \"last_tag\": \"go/v0.60.2\",\n    \"last_version\": \"0.60.2\",\n    \"next_version\": null\n  },\n  \"rust\": {\n    \"target\": \"rust\",\n    \"has_changes\": true,\n    \"impact\": \"minor\",\n    \"entry_count\": 7,\n    \"last_tag\": \"rust/otap-dataflow/v0.64.0\",\n    \"last_version\": \"0.64.0\",\n    \"next_version\": \"0.65.0\"\n  }\n}\n```\n\n## What's Changed (Rust :crab:)\n\n### :stop_sign: Breaking changes :stop_sign:\n\n- `observability`: Migrate user_events receiver drop metrics to enum\nattributes\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))\n\n### :rocket: New components :rocket:\n\n- `pipeline`: Add `urn:otel:extension:gcp_auth` extension providing\n`BearerTokenProvider` backed by the Google Cloud (GCE/GKE) compute\nmetadata server.\n([#4650](https://github.com/open-telemetry/otel-arrow/issues/4650))\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Rust dependencies.\n([#4666](https://github.com/open-telemetry/otel-arrow/issues/4666))\n- `engine`: Live updates require unchanged context declarations and\nselected composite definitions for deployed pipelines.\n([#4541](https://github.com/open-telemetry/otel-arrow/issues/4541))\n- `engine`: Adds the engine.telemetry.metric_unregister_grace_period\nsetting\n([#2731](https://github.com/open-telemetry/otel-arrow/issues/2731))\n\n- `pdata`: Configure codecs independently with optional pipeline\nbindings and reusable named configurations.\n([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))\n\n### :toolbox: Bug fixes :toolbox:\n\n- `pipeline`: The retry processor now returns a `cannot requeue` NACK to\nthe upstream sender when its pending-retry queue is full, instead of\nrouting the NACK back into itself.\n([#3630](https://github.com/open-telemetry/otel-arrow/issues/3630))\n\n\nAfter this PR merges, Push Release starts automatically and waits for\napproval from the protected `release` environment.\n\nCo-authored-by: otelbot-arrow[bot] <289780372+otelbot-arrow[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-09T19:47:56Z",
+          "tree_id": "620dc53aefeef74834b39338f57cd515f48737d1",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/342e2d6768f6e74d46934c57a4c8a0e12f8b29d0"
+        },
+        "date": 1794256627336,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.77,
             "unit": "MB"
           }
         ]
