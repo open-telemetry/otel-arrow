@@ -3,12 +3,18 @@
 
 use std::num::NonZeroUsize;
 
+use otel_arrow_contrib_data_engine_kql_parser::Parser;
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration, ContextDomain,
     ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake, ContextEntryTarget,
     ContextNameMatching, NodeContextDeclarations,
 };
+use otel_arrow_dfe_query_engine::parser::default_parser_options;
+use otel_arrow_dfe_query_engine::parser::visit::metadata::MetadataAccessDeclarationVisitor;
+use otel_arrow_dfe_query_engine::parser::visit::visit_expr_ast;
+
+use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 use serde::Deserialize;
 
 /// Configuration for the [`TransformProcessor`](super::TransformProcessor)
@@ -84,25 +90,44 @@ const fn default_filter_attribute_keys_case_sensitive() -> bool {
 
 impl ConfigNodeContextDeclaration for Config {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        NodeContextDeclarations::from_iter([
-            ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::AllCaptured {
-                    domain: ContextDomain::TransportHeader,
-                },
-            },
-            ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: Box::new([ContextEntrySelector {
-                        target: ContextEntryTarget::Primitive {
-                            domain: ContextDomain::TransportHeader,
-                            name: ContextEntryName::try_from("todo").unwrap(),
-                            matching: ContextNameMatching::Exact,
-                        },
-                        form: ContextEntrySelectorForm::StoredKeyValue,
-                        take: ContextEntryTake::First,
-                    }]),
-                },
-            },
-        ])
+        let mut metadata_access_ast_visitor = MetadataAccessDeclarationVisitor::new();
+
+        match &self.query {
+            Query::KqlQuery(kql_query) => {
+                todo!()
+            }
+            Query::OplQuery(opl_query) => {
+                // TODO no unwrap - this trait needs to be made fallible
+                let parser_result =
+                    OplParser::parse_with_options(&opl_query, default_parser_options()).unwrap();
+                visit_expr_ast(&parser_result.pipeline, &mut metadata_access_ast_visitor).unwrap();
+            }
+            Query::Ottl(ottl) => {
+                todo!()
+            }
+        };
+
+        NodeContextDeclarations::from_iter(metadata_access_ast_visitor.into_context_declarations())
+
+        // NodeContextDeclarations::from_iter([
+        //     ContextDeclaration::Consumes {
+        //         selector: ContextConsumerSelector::AllCaptured {
+        //             domain: ContextDomain::TransportHeader,
+        //         },
+        //     },
+        //     ContextDeclaration::Consumes {
+        //         selector: ContextConsumerSelector::Entries {
+        //             entries: Box::new([ContextEntrySelector {
+        //                 target: ContextEntryTarget::Primitive {
+        //                     domain: ContextDomain::TransportHeader,
+        //                     name: ContextEntryName::try_from("todo").unwrap(),
+        //                     matching: ContextNameMatching::Exact,
+        //                 },
+        //                 form: ContextEntrySelectorForm::StoredKeyValue,
+        //                 take: ContextEntryTake::First,
+        //             }]),
+        //         },
+        //     },
+        // ])
     }
 }

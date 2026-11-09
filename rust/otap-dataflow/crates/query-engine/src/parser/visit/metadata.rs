@@ -7,17 +7,38 @@
 //! query.
 
 use otel_arrow_contrib_data_engine_expressions::{
-    PipelineFunction, PipelineFunctionImplementation, ScalarExpression,
+    Expression, PipelineFunction, PipelineFunctionImplementation, ScalarExpression,
 };
-use otel_arrow_dfe_engine::pdata_context::ContextEntrySelector;
+use otel_arrow_dfe_engine::pdata_context::{
+    ContextConsumerSelector, ContextDeclaration, ContextEntrySelector,
+};
+
+use crate::error::Result;
+use crate::pipeline::expr::planner::func::FunctionDefinition;
 
 use super::ExprAstVisitor;
-use crate::pipeline::expr::planner::func::FunctionDefinition;
 
 /// [`ExprAstVisitor`] implementation for determining which metadata will be accessed by the
 /// parsed query and tracking required context declarations.
-struct MetadataAccessDeclarationVisitor {
+#[derive(Default)]
+pub struct MetadataAccessDeclarationVisitor {
     entry_reads: Vec<ContextEntrySelector>,
+}
+
+impl MetadataAccessDeclarationVisitor {
+    /// Create a new instance
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Convert list of declared contexts entry accesses performed by the parsed query
+    pub fn into_context_declarations(self) -> Vec<ContextDeclaration> {
+        vec![ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: self.entry_reads.into_boxed_slice(),
+            },
+        }]
+    }
 }
 
 impl ExprAstVisitor for MetadataAccessDeclarationVisitor {
@@ -25,7 +46,7 @@ impl ExprAstVisitor for MetadataAccessDeclarationVisitor {
         &mut self,
         scalar_expr: &ScalarExpression,
         functions: &[PipelineFunction],
-    ) {
+    ) -> Result<()> {
         match scalar_expr {
             ScalarExpression::InvokeFunction(invoke_expr) => {
                 // get the definition of the function by its name
@@ -42,10 +63,12 @@ impl ExprAstVisitor for MetadataAccessDeclarationVisitor {
                 // if it is a BatchEval function, it may be evaluating on batch metadata...
                 // capture any metadata accesses it may perform via a context entry selector
                 if let Some(FunctionDefinition::BatchEval(func_impl_factory)) = func_def
-                    && let Some(context_entry_selector) =
-                        func_impl_factory.context_entry_selector().unwrap()
+                    && let Some(context_entry_selector) = func_impl_factory.context_entry_selector(
+                        invoke_expr.get_arguments(),
+                        Some(invoke_expr.get_query_location()),
+                    )?
                 {
-                    self.entry_reads.push(context_entry_selector);
+                    self.entry_reads.push(context_entry_selector)
                 }
             }
             _ => {
@@ -53,5 +76,7 @@ impl ExprAstVisitor for MetadataAccessDeclarationVisitor {
                 // of special well known functions.
             }
         }
+
+        Ok(())
     }
 }

@@ -6,7 +6,9 @@
 
 use datafusion::scalar::ScalarValue;
 
-use otel_arrow_contrib_data_engine_expressions::QueryLocation;
+use otel_arrow_contrib_data_engine_expressions::{
+    InvokeFunctionArgument, QueryLocation, ScalarExpression, StaticScalarExpression, StringValue,
+};
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::pdata_context::{
@@ -26,7 +28,10 @@ pub trait MetadataUdfImpl {
     fn function_name() -> &'static str;
 
     /// TODO commentary
-    fn context_entry_selector() -> Result<Option<ContextEntrySelector>>;
+    fn context_entry_selector(
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Option<ContextEntrySelector>>;
 
     fn logical_type() -> ExprLogicalType;
 
@@ -50,11 +55,20 @@ pub trait MetadataUdfImpl {
 }
 
 pub trait MetadataUdfFactory {
-    fn context_entry_selector(&self) -> Result<Option<ContextEntrySelector>>;
-
     fn logical_type(&self) -> ExprLogicalType;
 
-    fn create(&self, node_bindings: &NodeBindings) -> Result<Box<dyn BatchEval>>;
+    fn context_entry_selector(
+        &self,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Option<ContextEntrySelector>>;
+
+    fn create(
+        &self,
+        node_bindings: &NodeBindings,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>
+    ) -> Result<Box<dyn BatchEval>>;
 }
 
 #[derive(Default)]
@@ -71,15 +85,24 @@ impl MetadataUdfFactory for HasTransportHeaderPredicateFactory {
         HasTransportHeaderPredicate::logical_type()
     }
 
-    fn context_entry_selector(&self) -> Result<Option<ContextEntrySelector>> {
-        HasTransportHeaderPredicate::context_entry_selector()
+    fn context_entry_selector(
+        &self,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>
+    ) -> Result<Option<ContextEntrySelector>> {
+        HasTransportHeaderPredicate::context_entry_selector(args, query_location)
     }
 
-    fn create(&self, node_bindings: &NodeBindings) -> Result<Box<dyn BatchEval>> {
+    fn create(
+        &self,
+        node_bindings: &NodeBindings,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Box<dyn BatchEval>> {
         Ok(Box::new(HasTransportHeaderPredicate::try_new(
-            "todo",
             node_bindings,
-            None,
+            args,
+            query_location,
         )?))
     }
 }
@@ -99,18 +122,21 @@ impl MetadataUdfImpl for HasTransportHeaderPredicate {
         ExprLogicalType::Boolean
     }
 
-    fn context_entry_selector() -> Result<Option<ContextEntrySelector>> {
-        todo!()
+    fn context_entry_selector(
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Option<ContextEntrySelector>> {
+        Self::context_entry_selector_for_header_name(args, query_location).map(Some)
     }
 }
 
 impl HasTransportHeaderPredicate {
     pub fn try_new(
-        header_name: &str,
         node_context_bindings: &NodeBindings,
+        args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Self> {
-        let entry_selector = create_transport_header_context_selector(header_name, query_location)?;
+        let entry_selector = Self::context_entry_selector_for_header_name(args, query_location)?;
         let declared_metadata_read = Self::create_declared_metadata_read(
             &entry_selector,
             node_context_bindings,
@@ -120,6 +146,36 @@ impl HasTransportHeaderPredicate {
         Ok(Self {
             declared_metadata_read,
         })
+    }
+
+    fn context_entry_selector_for_header_name(
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<ContextEntrySelector> {
+        if args.len() != 1 {
+            return Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Invalid num argument for {}. Expected 1, got {}",
+                    Self::function_name(),
+                    args.len()
+                ),
+                query_location: query_location.cloned(),
+            });
+        }
+
+        // safety: we've checked that there is one arg in "if" block above
+        match args.first().expect("one arg") {
+            InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                StaticScalarExpression::String(header_name),
+            )) => create_transport_header_context_selector(header_name.get_value(), query_location),
+            other => Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "Invalid argument for {} at position 0. Expected static string, received {other:?}",
+                    Self::function_name(),
+                ),
+                query_location: query_location.cloned(),
+            }),
+        }
     }
 }
 

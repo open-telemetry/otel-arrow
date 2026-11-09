@@ -15,6 +15,7 @@ use datafusion::functions::encoding::encode;
 use datafusion::functions::math::log10;
 use datafusion::functions::string::{ends_with, lower, ltrim, rtrim, starts_with, upper, uuid};
 use datafusion::logical_expr::ScalarUDF;
+use otel_arrow_contrib_data_engine_expressions::{InvokeFunctionArgument, QueryLocation};
 use otel_arrow_dfe_engine::pdata_context::{ContextEntrySelector, NodeBindings};
 
 #[cfg(feature = "sha1-hash")]
@@ -29,7 +30,7 @@ use crate::consts::{
 use crate::error::Result;
 use crate::pipeline::expr::batch::BatchEval;
 use crate::pipeline::expr::batch::metadata::{
-    HasTransportHeaderPredicate, HasTransportHeaderPredicateFactory, MetadataUdfFactory,
+    HasTransportHeaderPredicateFactory, MetadataUdfFactory,
 };
 use crate::pipeline::expr::types::ExprLogicalType;
 #[cfg(feature = "sha1-hash")]
@@ -182,7 +183,6 @@ impl FunctionDefinition {
 
             HAS_TRANSPORT_HEADER_FUNC_NAME => Self::BatchEval(BatchEvalFuncDef::new(
                 HasTransportHeaderPredicateFactory::new(),
-
             )),
             _ => return None,
         })
@@ -213,6 +213,8 @@ impl DataFusionFunctionDef {
     }
 }
 
+// TODO - this type might not be needed, and we could probably move
+// this code back into the expr planner?
 pub struct BatchEvalFuncDef {
     factory: Box<dyn MetadataUdfFactory>,
 }
@@ -228,14 +230,20 @@ impl BatchEvalFuncDef {
         self.factory.logical_type()
     }
 
-    pub fn context_entry_selector(&self) -> Result<Option<ContextEntrySelector>> {
-        self.factory.context_entry_selector()
+    pub fn context_entry_selector(
+        &self,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Option<ContextEntrySelector>> {
+        self.factory.context_entry_selector(args, query_location)
     }
 
     pub fn create_batch_eval_instance(
         &self,
         node_bindings: &NodeBindings,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
     ) -> Result<Box<dyn BatchEval>> {
-        self.factory.create(node_bindings)
+        self.factory.create(node_bindings, args, query_location)
     }
 }
