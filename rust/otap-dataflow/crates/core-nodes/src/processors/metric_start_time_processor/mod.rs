@@ -2088,12 +2088,15 @@ mod tests {
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
-        AnyValue, InstrumentationScope, KeyValue,
+        AnyValue, InstrumentationScope, KeyValue, KeyValueList,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
-        AggregationTemporality, DataPointFlags, ExponentialHistogram,
+        AggregationTemporality, DataPointFlags, Exemplar, ExponentialHistogram,
         ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint, Metric, MetricsData,
         NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
     };
@@ -2687,6 +2690,625 @@ mod tests {
             run_batch(&mut proc, make_resource_batch("svc-b", 50_000_000, 100), t3);
         assert!(out_b_fresh.is_none());
         assert_eq!(stats_b_fresh.dropped_initial, 1);
+
+        // Also verify per-series sweep within an active resource: introduce method=POST under svc-a at t3,
+        // then only touch the unattributed series across two GC intervals so method=POST is swept.
+        let svc_a_with_post = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build()
+                .attributes(vec![kv_str("service.name", "svc-a")])
+                .finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("requests_total")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(50_000_000u64)
+                                    .attributes(vec![kv_str("method", "POST")])
+                                    .value_int(50)
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out_post1, stats_post1) = run_batch(&mut proc, svc_a_with_post.clone(), t3);
+        assert!(out_post1.is_none());
+        assert_eq!(stats_post1.dropped_initial, 1);
+
+        let t4 = t3 + Duration::from_secs(61);
+        let _ = run_batch(&mut proc, make_resource_batch("svc-a", 60_000_000, 35), t4);
+        let t5 = t4 + Duration::from_secs(30);
+        let _ = run_batch(&mut proc, make_resource_batch("svc-a", 70_000_000, 40), t5);
+        let t6 = t4 + Duration::from_secs(61);
+        let _ = run_batch(&mut proc, make_resource_batch("svc-a", 80_000_000, 45), t6);
+
+        // Now method=POST under svc-a was swept while the unattributed series under svc-a stayed active.
+        let (out_post_reseeded, stats_post_reseeded) = run_batch(&mut proc, svc_a_with_post, t6);
+        assert!(out_post_reseeded.is_none());
+        assert_eq!(stats_post_reseeded.dropped_initial, 1);
+    }
+
+    /// Scenario: Summary, Histogram, and ExponentialHistogram series with passthrough rows, staleness flags, resets, and post-reset scrapes.
+    /// Guarantees: Delta and pre-adjusted points pass through, FLAG_NO_RECORDED_VALUE sets start_time without changing state, resets set start_time to time - 1ms, and post-reset points subtract zero baseline.
+    #[test]
+    fn test_summary_histogram_and_exp_histogram_resets_staleness_and_passthrough() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        // Scrape 1: mix of unadjusted cumulative points (dropped as initial) and passthrough points
+        // (Delta or already-populated start_time_unix_nano) in the same tables so partial-table
+        // filtering (0 < kept_count < num_rows) runs for Summary, Histogram, and ExpHistogram.
+        let scrape1 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("summary_m")
+                        .data_summary(Summary::new(vec![
+                            SummaryDataPoint::build()
+                                .time_unix_nano(10_000_000u64)
+                                .attributes(vec![kv_str("s", "tracked")])
+                                .count(10u64)
+                                .sum(100.0)
+                                .finish(),
+                            SummaryDataPoint::build()
+                                .start_time_unix_nano(1_000_000u64)
+                                .time_unix_nano(10_000_000u64)
+                                .attributes(vec![kv_str("s", "preset")])
+                                .count(5u64)
+                                .sum(50.0)
+                                .finish(),
+                        ]))
+                        .finish(),
+                    Metric::build()
+                        .name("hist_cum")
+                        .data_histogram(Histogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                HistogramDataPoint::build()
+                                    .time_unix_nano(10_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .count(10u64)
+                                    .sum(50.0)
+                                    .explicit_bounds(vec![1.0, 5.0])
+                                    .bucket_counts(vec![2, 5, 3])
+                                    .finish(),
+                                HistogramDataPoint::build()
+                                    .start_time_unix_nano(1_000_000u64)
+                                    .time_unix_nano(10_000_000u64)
+                                    .attributes(vec![kv_str("s", "preset")])
+                                    .count(4u64)
+                                    .sum(20.0)
+                                    .explicit_bounds(vec![1.0, 5.0])
+                                    .bucket_counts(vec![1, 2, 1])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("hist_delta")
+                        .data_histogram(Histogram::new(
+                            AggregationTemporality::Delta,
+                            vec![
+                                HistogramDataPoint::build()
+                                    .time_unix_nano(10_000_000u64)
+                                    .count(3u64)
+                                    .sum(15.0)
+                                    .explicit_bounds(vec![1.0, 5.0])
+                                    .bucket_counts(vec![1, 1, 1])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("eh_cum")
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                ExponentialHistogramDataPoint::build()
+                                    .time_unix_nano(10_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .scale(2)
+                                    .count(10u64)
+                                    .sum(50.0)
+                                    .zero_count(2u64)
+                                    .positive(Buckets::new(1, vec![3, 5]))
+                                    .negative(Buckets::new(0, vec![1]))
+                                    .finish(),
+                                ExponentialHistogramDataPoint::build()
+                                    .start_time_unix_nano(1_000_000u64)
+                                    .time_unix_nano(10_000_000u64)
+                                    .attributes(vec![kv_str("s", "preset")])
+                                    .scale(2)
+                                    .count(4u64)
+                                    .sum(20.0)
+                                    .zero_count(1u64)
+                                    .positive(Buckets::new(0, vec![3]))
+                                    .negative(Buckets::new(0, vec![]))
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("eh_delta")
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Delta,
+                            vec![
+                                ExponentialHistogramDataPoint::build()
+                                    .time_unix_nano(10_000_000u64)
+                                    .scale(1)
+                                    .count(2u64)
+                                    .sum(10.0)
+                                    .zero_count(0u64)
+                                    .positive(Buckets::new(0, vec![2]))
+                                    .negative(Buckets::new(0, vec![]))
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+
+        let (out1, stats1) = run_batch(&mut proc, scrape1, t0);
+        assert!(out1.is_some());
+        assert_eq!(stats1.dropped_initial, 3);
+        assert_eq!(stats1.adjusted_points, 0);
+
+        // Scrape 2: FLAG_NO_RECORDED_VALUE on tracked Summary, Histogram, and ExpHistogram.
+        let scrape2_stale = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("summary_m")
+                        .data_summary(Summary::new(vec![
+                            SummaryDataPoint::build()
+                                .time_unix_nano(20_000_000u64)
+                                .attributes(vec![kv_str("s", "tracked")])
+                                .flags(DataPointFlags::NoRecordedValueMask as u32)
+                                .finish(),
+                        ]))
+                        .finish(),
+                    Metric::build()
+                        .name("hist_cum")
+                        .data_histogram(Histogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                HistogramDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .flags(DataPointFlags::NoRecordedValueMask as u32)
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("eh_cum")
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                ExponentialHistogramDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .flags(DataPointFlags::NoRecordedValueMask as u32)
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out2, stats2) = run_batch(&mut proc, scrape2_stale, t0);
+        assert!(out2.is_some());
+        assert_eq!(stats2.adjusted_points, 3);
+        assert_eq!(stats2.resets_detected, 0);
+
+        // Scrape 3: resets on all 3 tracked series (count decrease on Summary, bucket decrease on
+        // Histogram, and offset shift that drops logical bucket 1 on ExpHistogram).
+        let scrape3_reset = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("summary_m")
+                        .data_summary(Summary::new(vec![
+                            SummaryDataPoint::build()
+                                .time_unix_nano(30_000_000u64)
+                                .attributes(vec![kv_str("s", "tracked")])
+                                .count(4u64)
+                                .sum(40.0)
+                                .finish(),
+                        ]))
+                        .finish(),
+                    Metric::build()
+                        .name("hist_cum")
+                        .data_histogram(Histogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                HistogramDataPoint::build()
+                                    .time_unix_nano(30_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .count(12u64)
+                                    .sum(60.0)
+                                    .explicit_bounds(vec![1.0, 5.0])
+                                    .bucket_counts(vec![1, 6, 5])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("eh_cum")
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                ExponentialHistogramDataPoint::build()
+                                    .time_unix_nano(30_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .scale(2)
+                                    .count(12u64)
+                                    .sum(60.0)
+                                    .zero_count(3u64)
+                                    .positive(Buckets::new(2, vec![4, 5]))
+                                    .negative(Buckets::new(0, vec![1]))
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out3, stats3) = run_batch(&mut proc, scrape3_reset, t0);
+        assert!(out3.is_some());
+        assert_eq!(stats3.adjusted_points, 3);
+        assert_eq!(stats3.resets_detected, 3);
+
+        // Scrape 4: post-reset increase uses reset_start (29_000_000) and zero reference baseline.
+        let scrape4_post_reset = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("summary_m")
+                        .data_summary(Summary::new(vec![
+                            SummaryDataPoint::build()
+                                .time_unix_nano(40_000_000u64)
+                                .attributes(vec![kv_str("s", "tracked")])
+                                .count(7u64)
+                                .sum(70.0)
+                                .finish(),
+                        ]))
+                        .finish(),
+                    Metric::build()
+                        .name("hist_cum")
+                        .data_histogram(Histogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                HistogramDataPoint::build()
+                                    .time_unix_nano(40_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .count(15u64)
+                                    .sum(75.0)
+                                    .explicit_bounds(vec![1.0, 5.0])
+                                    .bucket_counts(vec![2, 7, 6])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("eh_cum")
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                ExponentialHistogramDataPoint::build()
+                                    .time_unix_nano(40_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .scale(2)
+                                    .count(14u64)
+                                    .sum(70.0)
+                                    .zero_count(4u64)
+                                    .positive(Buckets::new(2, vec![5, 6]))
+                                    .negative(Buckets::new(0, vec![1]))
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out4, stats4) = run_batch(&mut proc, scrape4_post_reset, t0);
+        assert_eq!(stats4.resets_detected, 0);
+        assert_eq!(stats4.adjusted_points, 3);
+        let expected4 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("summary_m")
+                        .data_summary(Summary::new(vec![
+                            SummaryDataPoint::build()
+                                .start_time_unix_nano(29_000_000u64)
+                                .time_unix_nano(40_000_000u64)
+                                .attributes(vec![kv_str("s", "tracked")])
+                                .count(7u64)
+                                .sum(70.0)
+                                .finish(),
+                        ]))
+                        .finish(),
+                    Metric::build()
+                        .name("hist_cum")
+                        .data_histogram(Histogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                HistogramDataPoint::build()
+                                    .start_time_unix_nano(29_000_000u64)
+                                    .time_unix_nano(40_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .count(15u64)
+                                    .sum(75.0)
+                                    .explicit_bounds(vec![1.0, 5.0])
+                                    .bucket_counts(vec![2, 7, 6])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                    Metric::build()
+                        .name("eh_cum")
+                        .data_exponential_histogram(ExponentialHistogram::new(
+                            AggregationTemporality::Cumulative,
+                            vec![
+                                ExponentialHistogramDataPoint::build()
+                                    .start_time_unix_nano(29_000_000u64)
+                                    .time_unix_nano(40_000_000u64)
+                                    .attributes(vec![kv_str("s", "tracked")])
+                                    .scale(2)
+                                    .count(14u64)
+                                    .sum(70.0)
+                                    .zero_count(4u64)
+                                    .positive(Buckets::new(2, vec![5, 6]))
+                                    .negative(Buckets::new(0, vec![1]))
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        assert_equivalent(
+            &[OtlpProtoMessage::Metrics(out4.unwrap())],
+            &[OtlpProtoMessage::Metrics(expected4)],
+        );
+    }
+
+    /// Scenario: A batch contains both an existing series and a newly introduced series with data point attributes and exemplars.
+    /// Guarantees: Dropping the new series' initial point filters out its child attributes, exemplars, and exemplar attributes while preserving the surviving point's children.
+    #[test]
+    fn test_partial_drop_filters_dp_attrs_and_exemplars() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        // Scrape 1: seed series A.
+        let batch1 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("work_total")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(10_000_000u64)
+                                    .attributes(vec![kv_str("series", "A")])
+                                    .value_int(10)
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out1, _) = run_batch(&mut proc, batch1, t0);
+        assert!(out1.is_none());
+
+        // Scrape 2: series A (adjusted, kept) + series B (initial, dropped), both carrying attributes and exemplars.
+        let batch2 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("work_total")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(vec![kv_str("series", "A")])
+                                    .value_int(25)
+                                    .exemplars(vec![
+                                        Exemplar::build()
+                                            .time_unix_nano(20_000_000u64)
+                                            .value_int(15)
+                                            .filtered_attributes(vec![kv_str("trace", "keep")])
+                                            .finish(),
+                                    ])
+                                    .finish(),
+                                NumberDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(vec![kv_str("series", "B")])
+                                    .value_int(100)
+                                    .exemplars(vec![
+                                        Exemplar::build()
+                                            .time_unix_nano(20_000_000u64)
+                                            .value_int(100)
+                                            .filtered_attributes(vec![kv_str("trace", "drop")])
+                                            .finish(),
+                                    ])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out2, stats2) = run_batch(&mut proc, batch2, t0);
+        assert_eq!(stats2.dropped_initial, 1);
+        assert_eq!(stats2.adjusted_points, 1);
+
+        let expected2 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("work_total")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![
+                                NumberDataPoint::build()
+                                    .start_time_unix_nano(10_000_000u64)
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(vec![kv_str("series", "A")])
+                                    .value_int(15)
+                                    .exemplars(vec![
+                                        Exemplar::build()
+                                            .time_unix_nano(20_000_000u64)
+                                            .value_int(15)
+                                            .filtered_attributes(vec![kv_str("trace", "keep")])
+                                            .finish(),
+                                    ])
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        assert_equivalent(
+            &[OtlpProtoMessage::Metrics(out2.unwrap())],
+            &[OtlpProtoMessage::Metrics(expected2)],
+        );
+    }
+
+    /// Scenario: Hashing multi-type attributes (str, int, double, bool, bytes, map, slice) across reordered batches and default-zero values.
+    /// Guarantees: AttrHasher produces identical 128-bit multiset hashes regardless of attribute row order or omitted default-zero value columns, while distinguishing distinct bytes/map values.
+    #[test]
+    fn test_attr_hasher_order_independence_all_value_types_and_defaults() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        let attrs_order_1 = vec![
+            kv_str("k_str", "v"),
+            KeyValue::new("k_int_zero", AnyValue::new_int(0)),
+            KeyValue::new("k_double_zero", AnyValue::new_double(0.0)),
+            KeyValue::new("k_bool", AnyValue::new_bool(true)),
+            KeyValue::new("k_bytes", AnyValue::new_bytes(b"abc".to_vec())),
+            KeyValue::new("k_map", AnyValue::new_kvlist(vec![kv_str("nested", "m1")])),
+            KeyValue::new("k_slice", AnyValue::new_array(vec![AnyValue::new_int(7)])),
+        ];
+        let mut attrs_order_2 = attrs_order_1.clone();
+        attrs_order_2.reverse();
+
+        // Batch 1 has only default 0 / 0.0 int and double values (so int/double columns are omitted
+        // by AdaptiveArrayBuilder).
+        let batch1 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().attributes(attrs_order_1).finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("typed_counter")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(10_000_000u64)
+                                    .attributes(attrs_order_2.clone())
+                                    .value_int(50)
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out1, stats1) = run_batch(&mut proc, batch1, t0);
+        assert!(out1.is_none());
+        assert_eq!(stats1.dropped_initial, 1);
+
+        // Batch 2 reverses attribute order AND includes a second point with non-zero int/double
+        // attributes (forcing int and double columns to be materialized in the RecordBatch).
+        // Also includes a third point whose k_bytes differs ("xyz" vs "abc") to verify Bytes
+        // values do not collide.
+        let mut attrs_diff_bytes = attrs_order_2.clone();
+        for kv in &mut attrs_diff_bytes {
+            if kv.key == "k_bytes" {
+                kv.value = Some(AnyValue::new_bytes(b"xyz".to_vec()));
+            }
+        }
+        let _ = KeyValueList::default();
+
+        let batch2 = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().attributes(attrs_order_2.clone()).finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::default(),
+                vec![
+                    Metric::build()
+                        .name("typed_counter")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Cumulative,
+                            true,
+                            vec![
+                                NumberDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(attrs_order_2)
+                                    .value_int(80)
+                                    .finish(),
+                                NumberDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(vec![
+                                        KeyValue::new("k_int_nonzero", AnyValue::new_int(42)),
+                                        KeyValue::new(
+                                            "k_double_nonzero",
+                                            AnyValue::new_double(3.5),
+                                        ),
+                                    ])
+                                    .value_int(10)
+                                    .finish(),
+                                NumberDataPoint::build()
+                                    .time_unix_nano(20_000_000u64)
+                                    .attributes(attrs_diff_bytes)
+                                    .value_int(10)
+                                    .finish(),
+                            ],
+                        ))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let (out2, stats2) = run_batch(&mut proc, batch2, t0);
+        assert!(out2.is_some());
+        // The first point matches the series seeded in batch1 (80 - 50 = 30), while the 2 new
+        // series (non-zero int/double and distinct bytes) are dropped as initial points.
+        assert_eq!(stats2.adjusted_points, 1);
+        assert_eq!(stats2.dropped_initial, 2);
     }
 
     /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial and follow-up metric batches.
@@ -2694,6 +3316,7 @@ mod tests {
     #[test]
     fn test_pipeline_runtime_drops_initial_and_emits_subsequent_batch() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
+        let metrics_reporter = test_runtime.metrics_reporter();
         let controller = ControllerContext::new(test_runtime.metrics_registry());
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -2714,7 +3337,7 @@ mod tests {
 
         test_runtime
             .set_processor(processor)
-            .run_test(|mut ctx| async move {
+            .run_test(move |mut ctx| async move {
                 let make_pdata = |ts: u64, val: i64| {
                     let md = MetricsData::new(vec![ResourceMetrics::new(
                         Resource::default(),
@@ -2753,6 +3376,28 @@ mod tests {
                     .unwrap();
                 let emitted2 = ctx.drain_pdata().await;
                 assert_eq!(emitted2.len(), 1);
+
+                // Non-metrics signal (Logs) passes through unchanged.
+                let logs = LogsData::new(vec![ResourceLogs::new(
+                    Resource::default(),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![LogRecord::build().time_unix_nano(1_000u64).finish()],
+                    )],
+                )]);
+                let logs_pdata =
+                    OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Logs(logs)).into());
+                ctx.process(Message::PData(logs_pdata)).await.unwrap();
+                let emitted_logs = ctx.drain_pdata().await;
+                assert_eq!(emitted_logs.len(), 1);
+                assert_eq!(emitted_logs[0].signal_type(), SignalType::Logs);
+
+                // CollectTelemetry control message succeeds.
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .unwrap();
             })
             .validate(|_ctx| async move {});
     }
