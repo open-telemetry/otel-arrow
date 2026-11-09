@@ -57,8 +57,7 @@ use otel_arrow_dfe_pdata::otap::filter::{
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
-use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
-use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
 pub mod config;
@@ -66,7 +65,7 @@ mod metrics;
 mod state;
 
 use self::config::Config;
-use self::metrics::MetricStartTimeMetrics;
+use self::metrics::{MetricStartTimeMetrics, MetricStartTimeRegistrationAttributes};
 use self::state::{
     AttrHasher, ExpBucketsState, ExpHistogramSeriesState, HistogramSeriesState, NumberSeriesState,
     SubtractInitialCache, SummarySeriesState,
@@ -180,7 +179,7 @@ struct SubtractInitialEngine {
 /// `subtract_initial_point` strategy.
 pub struct MetricStartTimeProcessor {
     engine: SubtractInitialEngine,
-    metrics: MeasurementMetricSet<MetricStartTimeMetrics>,
+    metrics: MetricSet<MetricStartTimeMetrics>,
     compute_duration: ComputeDuration,
 }
 
@@ -227,7 +226,12 @@ impl MetricStartTimeProcessor {
     /// Creates a new [`MetricStartTimeProcessor`] from a typed [`Config`].
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Result<Self, ConfigError> {
         config.validate()?;
-        let metrics = MetricStartTimeMetrics::register(&pipeline_ctx);
+        let metrics = MetricStartTimeMetrics::register(
+            &pipeline_ctx,
+            &MetricStartTimeRegistrationAttributes {
+                signal: SignalType::Metrics,
+            },
+        );
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         Ok(Self {
             engine: SubtractInitialEngine {
@@ -2018,7 +2022,7 @@ impl NativePdataProcessor for MetricStartTimeProcessor {
             mut metrics_reporter,
         } = control
         {
-            _ = metrics_reporter.report_measurement(&mut self.metrics);
+            _ = metrics_reporter.report(&mut self.metrics);
             self.compute_duration.report(&mut metrics_reporter);
         }
         Ok(())
@@ -2054,10 +2058,9 @@ impl NativePdataProcessor for MetricStartTimeProcessor {
                 })
         })?;
 
-        let metric = self.metrics.with(SignalAttributes { signal });
-        metric.dropped_items.add(stats.dropped_initial);
-        metric.adjusted_data_points.add(stats.adjusted_points);
-        metric.resets_detected.add(stats.resets_detected);
+        self.metrics.dropped_items.add(stats.dropped_initial);
+        self.metrics.adjusted_data_points.add(stats.adjusted_points);
+        self.metrics.resets_detected.add(stats.resets_detected);
 
         if stats.dropped_initial > 0 {
             effect_handler.record_flow_dropped_items(signal, stats.dropped_initial);
