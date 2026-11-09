@@ -16,17 +16,9 @@ use otel_arrow_dfe_pdata::arrays::{
     ByteArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array,
 };
 use otel_arrow_dfe_pdata::error::Error as PdataError;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::schema::consts;
 use xxhash_rust::xxh3::xxh3_128;
-
-/// Attribute value type discriminants from the OTAP specification.
-const ATTR_TYPE_STR: u8 = 1;
-const ATTR_TYPE_INT: u8 = 2;
-const ATTR_TYPE_DOUBLE: u8 = 3;
-const ATTR_TYPE_BOOL: u8 = 4;
-const ATTR_TYPE_BYTES: u8 = 5;
-const ATTR_TYPE_MAP: u8 = 6;
-const ATTR_TYPE_SLICE: u8 = 7;
 
 /// Upper bound for direct flat-vector indexing of `parent_id` values before falling
 /// back to the sparse hash map. OTAP batches assign dense IDs starting at 0, so
@@ -216,42 +208,42 @@ impl<'a> AttrColumns<'a> {
         buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
 
-        match val_type {
-            ATTR_TYPE_STR => {
+        match AttributeValueType::try_from(val_type) {
+            Ok(AttributeValueType::Str) => {
                 if let Some(s) = self.strs.as_ref().and_then(|c| c.str_at(row)) {
                     buf.extend_from_slice(s.as_bytes());
                 }
             }
-            ATTR_TYPE_INT => {
+            Ok(AttributeValueType::Int) => {
                 if let Some(v) = self.ints.as_ref().and_then(|c| c.value_at(row)) {
                     buf.extend_from_slice(&v.to_le_bytes());
                 }
             }
-            ATTR_TYPE_DOUBLE => {
+            Ok(AttributeValueType::Double) => {
                 if let Some(c) = self.doubles
                     && c.is_valid(row)
                 {
                     buf.extend_from_slice(&c.value(row).to_bits().to_le_bytes());
                 }
             }
-            ATTR_TYPE_BOOL => {
+            Ok(AttributeValueType::Bool) => {
                 if let Some(c) = self.bools
                     && c.is_valid(row)
                 {
                     buf.push(u8::from(c.value(row)));
                 }
             }
-            ATTR_TYPE_BYTES => {
+            Ok(AttributeValueType::Bytes) => {
                 if let Some(b) = self.bytes.as_ref().and_then(|c| c.slice_at(row)) {
                     buf.extend_from_slice(b);
                 }
             }
-            ATTR_TYPE_MAP | ATTR_TYPE_SLICE => {
+            Ok(AttributeValueType::Map | AttributeValueType::Slice) => {
                 if let Some(b) = self.sers.as_ref().and_then(|c| c.slice_at(row)) {
                     buf.extend_from_slice(b);
                 }
             }
-            _ => {}
+            Ok(AttributeValueType::Empty) | Err(_) => {}
         }
 
         let h = xxh3_128(buf);
