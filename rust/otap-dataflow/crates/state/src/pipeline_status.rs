@@ -173,10 +173,16 @@ impl PipelineStatus {
         self.rollout = None;
     }
 
-    /// Compacts retained runtime instances down to the generations currently
-    /// selected for status aggregation.
-    pub(crate) fn compact_instances_to_selected(&mut self) {
-        let retained: HashSet<_> = self.selected_runtime_keys().into_iter().collect();
+    /// Retains serving instances and any still-active overlaps for diagnostics.
+    pub(crate) fn compact_instances_to_selected(
+        &mut self,
+        active_instances: impl IntoIterator<Item = RuntimeInstanceKey>,
+    ) {
+        let retained: HashSet<_> = self
+            .selected_runtime_keys()
+            .into_iter()
+            .chain(active_instances)
+            .collect();
         self.instances.retain(|key, _| retained.contains(key));
     }
 
@@ -886,13 +892,78 @@ mod tests {
         status.set_serving_generation(0, 1);
         status.set_serving_generation(1, 0);
 
-        status.compact_instances_to_selected();
+        status.compact_instances_to_selected([]);
 
         assert_eq!(status.per_instance().len(), 2);
         assert!(status.instance_status(0, 1).is_some());
         assert!(status.instance_status(1, 0).is_some());
         assert!(status.instance_status(0, 0).is_none());
         assert!(status.instance_status(1, 1).is_none());
+    }
+
+    /// Scenario: a non-serving candidate remains active after rollback while its
+    /// healthy predecessor is selected for readiness.
+    /// Guarantees: compaction retains the overlap for diagnostics without changing
+    /// readiness, and removes it once the controller confirms its exit.
+    #[test]
+    fn compact_instances_retains_active_non_serving_overlap() {
+        let mut status = new_status(HealthPolicy::default());
+        insert_runtime(&mut status, 0, 0, runtime(PipelinePhase::Running));
+        insert_runtime(&mut status, 0, 1, runtime(PipelinePhase::Starting));
+        insert_runtime(&mut status, 0, 2, runtime(PipelinePhase::Stopped));
+        status.set_active_generation(0);
+        status.set_active_cores([0]);
+        let candidate = RuntimeInstanceKey {
+            core_id: 0,
+            deployment_generation: 1,
+        };
+
+        status.compact_instances_to_selected([candidate]);
+
+        assert_eq!(status.per_instance().len(), 2);
+        assert!(status.instance_status(0, 0).is_some());
+        assert!(status.instance_status(0, 1).is_some());
+        assert_eq!(status.total_cores(), 1);
+        assert!(status.readiness());
+
+        status.compact_instances_to_selected([]);
+
+        assert_eq!(status.per_instance().len(), 1);
+        assert!(status.instance_status(0, 0).is_some());
+        assert!(status.instance_status(0, 1).is_none());
+        assert!(status.readiness());
+    }
+
+    /// Scenario: the serving instance has stopped but a non-serving overlap is
+    /// still draining.
+    /// Guarantees: retained diagnostics do not change serving health or core
+    /// counts, but termination remains false until the overlap exits.
+    #[test]
+    fn compact_instances_keeps_termination_waiting_for_active_overlap() {
+        let mut status = new_status(HealthPolicy::default());
+        insert_runtime(&mut status, 0, 0, runtime(PipelinePhase::Stopped));
+        insert_runtime(&mut status, 0, 1, runtime(PipelinePhase::Draining));
+        status.set_active_generation(0);
+        status.set_active_cores([0]);
+        let candidate = RuntimeInstanceKey {
+            core_id: 0,
+            deployment_generation: 1,
+        };
+
+        status.compact_instances_to_selected([candidate]);
+
+        assert_eq!(status.per_instance().len(), 2);
+        assert_eq!(status.total_cores(), 1);
+        assert_eq!(status.running_cores(), 0);
+        assert!(!status.readiness());
+        assert!(!status.is_terminated());
+
+        insert_runtime(&mut status, 0, 1, runtime(PipelinePhase::Stopped));
+        assert!(status.is_terminated());
+        status.compact_instances_to_selected([]);
+
+        assert_eq!(status.per_instance().len(), 1);
+        assert!(status.is_terminated());
     }
 
     /// Scenario: observed state has multiple generations but there is no
@@ -908,7 +979,7 @@ mod tests {
         insert_runtime(&mut status, 1, 1, runtime(PipelinePhase::Running));
         status.set_active_generation(1);
 
-        status.compact_instances_to_selected();
+        status.compact_instances_to_selected([]);
 
         assert_eq!(status.per_instance().len(), 2);
         assert!(status.instance_status(0, 1).is_some());
@@ -930,7 +1001,7 @@ mod tests {
         insert_runtime(&mut status, 1, 3, runtime(PipelinePhase::Stopped));
         status.set_active_generation(9);
 
-        status.compact_instances_to_selected();
+        status.compact_instances_to_selected([]);
 
         assert_eq!(status.per_instance().len(), 2);
         assert!(status.instance_status(0, 2).is_some());
@@ -953,7 +1024,7 @@ mod tests {
         status.set_active_generation(1);
         status.set_active_cores([0]);
 
-        status.compact_instances_to_selected();
+        status.compact_instances_to_selected([]);
 
         assert_eq!(status.per_instance().len(), 1);
         assert_eq!(status.total_cores(), 1);
@@ -985,7 +1056,7 @@ mod tests {
         assert_eq!(status.total_cores(), 1);
         assert_eq!(status.running_cores(), 1);
 
-        status.compact_instances_to_selected();
+        status.compact_instances_to_selected([]);
 
         assert_eq!(status.per_instance().len(), 1);
         assert!(status.instance_status(0, 0).is_some());

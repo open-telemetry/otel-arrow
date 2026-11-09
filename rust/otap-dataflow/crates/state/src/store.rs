@@ -325,9 +325,12 @@ impl ObservedStateStore {
         let _ = policies.remove(pipeline_key);
     }
 
-    /// Compacts retained observed instances for one logical pipeline to the
-    /// generations currently selected for status aggregation.
-    pub fn compact_pipeline_instances(&self, pipeline_key: &PipelineKey) {
+    /// Retains serving instances and any still-active overlaps for diagnostics.
+    pub fn compact_pipeline_instances(
+        &self,
+        pipeline_key: &PipelineKey,
+        active_instances: impl IntoIterator<Item = RuntimeInstanceKey>,
+    ) {
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             otel_error!(
                 "state.mutex_poisoned",
@@ -336,7 +339,7 @@ impl ObservedStateStore {
             poisoned.into_inner()
         });
         if let Some(status) = pipelines.get_mut(pipeline_key) {
-            status.compact_instances_to_selected();
+            status.compact_instances_to_selected(active_instances);
         }
     }
 

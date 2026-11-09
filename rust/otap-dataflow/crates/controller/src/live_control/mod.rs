@@ -27,7 +27,9 @@ use otel_arrow_dfe_admin::{
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_state::conditions::ConditionStatus;
 use otel_arrow_dfe_state::phase::PipelinePhase;
-use otel_arrow_dfe_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
+use otel_arrow_dfe_state::pipeline_status::{
+    PipelineRolloutState, PipelineRolloutSummary, RuntimeInstanceKey,
+};
 use std::any::Any;
 use std::backtrace::Backtrace;
 use std::collections::VecDeque;
@@ -523,9 +525,33 @@ impl<
             should_compact
         };
         if should_compact {
-            self.observed_state_store
-                .compact_pipeline_instances(pipeline_key);
+            self.compact_pipeline_observed_instances(pipeline_key);
         }
+    }
+
+    /// Keeps active non-serving instances visible without changing probe selection.
+    fn compact_pipeline_observed_instances(&self, pipeline_key: &PipelineKey) {
+        let active_instances = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .runtime_instances
+                .iter()
+                .filter(|(key, instance)| {
+                    key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                        && key.pipeline_id == *pipeline_key.pipeline_id()
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                })
+                .map(|(key, _)| RuntimeInstanceKey {
+                    core_id: key.core_id,
+                    deployment_generation: key.deployment_generation,
+                })
+                .collect::<Vec<_>>()
+        };
+        self.observed_state_store
+            .compact_pipeline_instances(pipeline_key, active_instances);
     }
 }
 

@@ -1095,9 +1095,9 @@ impl<
             );
         }
 
-        // This set includes both cores added by the rollout and allocation-common
-        // cores that had no live predecessor when execution began. With nothing
-        // to restore, they are all stopped together under one drain deadline.
+        // This set also includes common-core candidates that failed readiness
+        // before cutover. Their incumbent remains selected even if cleanup fails.
+        // All these candidates can be stopped together under one drain deadline.
         let added_keys = activated_added_cores
             .iter()
             .rev()
@@ -1127,7 +1127,12 @@ impl<
                     error,
                     &mut rollback_errors,
                 );
-                kept_candidate_cores.push(new_key.core_id);
+                if !plan
+                    .current_serving_generations
+                    .contains_key(&new_key.core_id)
+                {
+                    kept_candidate_cores.push(new_key.core_id);
+                }
                 continue;
             }
             self.observed_state_store

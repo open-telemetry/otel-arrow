@@ -1941,11 +1941,20 @@ impl<
             .collect::<Vec<_>>();
         while settled.iter().any(|done| !done) {
             thread::sleep(Duration::from_millis(50));
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self::prune_terminal_operation_history_locked(&mut state, Instant::now());
             for (status, done) in statuses.iter_mut().zip(settled.iter_mut()) {
                 if *done {
                     continue;
                 }
-                match self.rollout_status_snapshot(&status.rollout_id) {
+                match state
+                    .rollouts
+                    .get(&status.rollout_id)
+                    .map(RolloutRecord::status)
+                {
                     Some(next_status) => {
                         *done = Self::rollout_terminal(&next_status);
                         *status = next_status;

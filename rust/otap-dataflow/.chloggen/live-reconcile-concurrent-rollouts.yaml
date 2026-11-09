@@ -20,5 +20,6 @@ issues: [4302]
 # characters and subtext to 300 characters.
 subtext: |
   Rollbacks now attempt every core instead of stopping at the first error.
+  Rollback status keeps still-active instances visible.
   Live-created pipelines apply their health policy, and shutdown no longer
   waits for pipeline readiness timeouts.

@@ -4480,6 +4480,113 @@ fn replace_rollback_keeps_failed_added_core_candidate_visible() {
     );
 }
 
+/// Scenario: a common-core candidate fails before cutover and cannot be stopped.
+/// Guarantees: rollback keeps the healthy incumbent selected for readiness, and
+/// finishing the rollout retains both active instances for diagnostics.
+#[test]
+fn replace_rollback_preserves_incumbent_when_unready_candidate_cleanup_fails() {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _incumbent =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(1, true), 1, 1);
+    let target_generation = plan.target_deployment.baseline_generation;
+    let key = deployed_key("g1", "p1", 0, target_generation);
+    let harness = install_undesired_instance(
+        &runtime,
+        &key,
+        UndesiredInstanceScenario::RemainsActive,
+        "rollback cleanup",
+    );
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::admitted(key, None));
+    let _ = wait_for_observed_status(&runtime, &plan.pipeline_key, |status| {
+        status.per_instance().len() == 2 && status.readiness()
+    });
+
+    let result = runtime.rollback_replace_rollout(&plan, &[], &[0], &[], "not ready".to_owned());
+    harness.join();
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+    runtime.finish_rollout(&plan.pipeline_key, &plan.rollout.rollout_id);
+
+    let status = runtime
+        .observed_state_handle
+        .pipeline_status(&plan.pipeline_key)
+        .expect("pipeline status should remain available");
+    assert_ne!(
+        status.serving_generations().get(&0),
+        Some(&target_generation)
+    );
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(0, target_generation).is_some());
+    assert_eq!(status.total_cores(), 1);
+    assert!(
+        status.readiness(),
+        "unready overlap must not replace the incumbent"
+    );
+}
+
+/// Scenario: replace rollback restores the predecessor but its candidate cannot
+/// be stopped.
+/// Guarantees: finishing the rollout keeps both generations visible while the
+/// restored predecessor, not the stuck candidate, determines readiness.
+#[test]
+fn replace_rollback_retains_stuck_candidate_after_restoring_predecessor() {
+    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _incumbent =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(1, true), 1, 1);
+    runtime.note_instance_exit(deployed_key("g1", "p1", 0, 0), RuntimeInstanceExit::Success);
+    let target_generation = plan.target_deployment.baseline_generation;
+    let key = deployed_key("g1", "p1", 0, target_generation);
+    let harness = install_undesired_instance(
+        &runtime,
+        &key,
+        UndesiredInstanceScenario::RemainsActive,
+        "rollback drain",
+    );
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::admitted(key.clone(), None));
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let result =
+            runtime.rollback_replace_rollout(&plan, &[0], &[], &[], "original failure".to_owned());
+        runtime.finish_rollout(&plan.pipeline_key, &plan.rollout.rollout_id);
+        let status =
+            wait_for_observed_status(&runtime, &plan.pipeline_key, PipelineStatus::readiness);
+        (result, status)
+    }));
+
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    harness.join();
+    shut_down_test_instances(&runtime);
+    let (result, status) = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::RollbackFailed(_))
+    ));
+    assert!(status.instance_status(0, 0).is_some());
+    assert!(status.instance_status(0, target_generation).is_some());
+    assert_ne!(
+        status.serving_generations().get(&0),
+        Some(&target_generation)
+    );
+    assert_eq!(status.total_cores(), 1);
+    assert!(status.readiness());
+}
+
 /// Scenario: replace rollback restores two switched cores, and the previous
 /// instance relaunched on the first core never becomes ready.
 /// Guarantees: rollback does not relaunch the previous instance on the next
@@ -5269,7 +5376,7 @@ connections:
 
     runtime
         .observed_state_store
-        .compact_pipeline_instances(&pipeline_key);
+        .compact_pipeline_instances(&pipeline_key, []);
     let compacted = runtime
         .observed_state_handle
         .pipeline_status(&pipeline_key)
@@ -7027,6 +7134,44 @@ fn shut_down_test_instances(runtime: &Arc<ControllerRuntime<()>>) {
     }
 }
 
+struct DelayedReconcileGuard<'a> {
+    runtime: &'a Arc<ControllerRuntime<()>>,
+    worker: Option<thread::JoinHandle<EngineConfigReconcileStatus>>,
+}
+
+impl DelayedReconcileGuard<'_> {
+    fn join(&mut self) -> EngineConfigReconcileStatus {
+        DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+        self.worker
+            .take()
+            .expect("reconcile worker should still be owned")
+            .join()
+            .expect("reconcile thread should not panic")
+    }
+}
+
+impl Drop for DelayedReconcileGuard<'_> {
+    fn drop(&mut self) {
+        // Release the fixture and join its worker before the caller's lock drops,
+        // including when a progress assertion unwinds.
+        DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+        let shutdown = self.runtime.request_shutdown_all(5);
+        let worker = self.worker.take().map(|worker| worker.join());
+        let drained = self.runtime.wait_for_global_shutdown_completion()
+            && self.runtime.all_instances_exited();
+        if !thread::panicking() {
+            shutdown.expect("test instances should accept shutdown");
+            if let Some(result) = worker {
+                let _ = result.expect("reconcile thread should not panic");
+            }
+            assert!(
+                drained,
+                "test instances should exit before releasing the fixture"
+            );
+        }
+    }
+}
+
 /// Scenario: one reconcile creates a pipeline that fails before readiness and
 /// a healthy pipeline that sorts after it.
 /// Guarantees: the failing create does not stop the healthy one; the healthy
@@ -7115,11 +7260,14 @@ fn reconcile_engine_config_starts_rollouts_concurrently() {
         ),
     ]);
     let reconcile_runtime = Arc::clone(&runtime);
-    let reconcile = thread::spawn(move || {
-        reconcile_runtime
-            .reconcile_engine_config(reconcile_request(desired, true))
-            .expect("reconcile should run every create")
-    });
+    let mut reconcile = DelayedReconcileGuard {
+        runtime: &runtime,
+        worker: Some(thread::spawn(move || {
+            reconcile_runtime
+                .reconcile_engine_config(reconcile_request(desired, true))
+                .expect("reconcile should run every create")
+        })),
+    };
 
     let held_key = PipelineKey::new("g1".into(), "a_held".into());
     let ready_key = PipelineKey::new("g1".into(), "b_ready".into());
@@ -7151,12 +7299,15 @@ fn reconcile_engine_config_starts_rollouts_concurrently() {
         "held pipeline must not commit before readiness"
     );
     assert!(
-        !reconcile.is_finished(),
+        !reconcile
+            .worker
+            .as_ref()
+            .expect("worker should be owned")
+            .is_finished(),
         "reconcile must wait for the held rollout"
     );
 
-    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
-    let status = reconcile.join().expect("reconcile thread should not panic");
+    let status = reconcile.join();
 
     assert_eq!(
         status.state,
@@ -7178,7 +7329,67 @@ fn reconcile_engine_config_starts_rollouts_concurrently() {
             (Some("b_ready"), "succeeded")
         ]
     );
-    shut_down_test_instances(&runtime);
+}
+
+/// Scenario: a progress assertion unwinds while a reconcile receiver is held
+/// before readiness.
+/// Guarantees: the guard releases the receiver, joins reconciliation, and drains
+/// the runtime before the shared fixture can be reused.
+#[test]
+fn reconcile_engine_config_guard_cleans_up_on_unwind() {
+    let _delayed_lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_delayed_ready_receiver();
+    let runtime = test_runtime_with_factory(
+        &reconcile_create_config(&[]),
+        &RECONCILE_CREATE_TEST_PIPELINE_FACTORY,
+    );
+    let desired = reconcile_create_config(&[(
+        "held",
+        reconcile_create_pipeline_yaml("urn:test:receiver:delayed_ready"),
+    )]);
+    let reconcile_runtime = Arc::clone(&runtime);
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = DelayedReconcileGuard {
+            runtime: &runtime,
+            worker: Some(thread::spawn(move || {
+                let result = reconcile_runtime
+                    .reconcile_engine_config(reconcile_request(desired, true))
+                    .expect("reconcile should complete during cleanup");
+                completed_tx
+                    .send(())
+                    .expect("completion should be observed");
+                result
+            })),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "receiver must enter startup");
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("simulated progress assertion failure");
+    }));
+
+    assert_eq!(
+        result
+            .expect_err("simulated failure should unwind")
+            .downcast_ref::<&str>(),
+        Some(&"simulated progress assertion failure")
+    );
+    completed_rx
+        .try_recv()
+        .expect("reconcile worker must finish");
+    assert!(runtime.all_instances_exited());
+    assert!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_rollouts
+            .is_empty()
+    );
 }
 
 /// Scenario: full-config reconciliation changes a startup-owned engine telemetry setting.

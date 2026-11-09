@@ -314,8 +314,7 @@ impl<
                 launched.pipeline_key.pipeline_group_id.clone(),
                 launched.pipeline_key.pipeline_id.clone(),
             );
-            self.observed_state_store
-                .compact_pipeline_instances(&logical_pipeline_key);
+            self.compact_pipeline_observed_instances(&logical_pipeline_key);
         }
         if let Some(RuntimeInstanceExit::Error(error)) = pending_exit {
             self.schedule_runtime_recovery(launched.pipeline_key, context_bindings, error);
@@ -374,8 +373,7 @@ impl<
                 pipeline_key.pipeline_group_id.clone(),
                 pipeline_key.pipeline_id.clone(),
             );
-            self.observed_state_store
-                .compact_pipeline_instances(&logical_pipeline_key);
+            self.compact_pipeline_observed_instances(&logical_pipeline_key);
         }
         self.state_changed.notify_all();
         if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
