@@ -142,8 +142,6 @@ impl TransformProcessor {
             .cloned()
             .unwrap_or_default();
 
-        println!("node_bindings = {node_bindings:#?}");
-
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
         // https://github.com/open-telemetry/otel-arrow/issues/1530
@@ -595,8 +593,6 @@ impl Processor<OtapPdata> for TransformProcessor {
                     }
                 };
 
-                // set metadata
-                // TODO - don't clone this
                 let metadata = delivery.context().metadata();
                 self.execution_state.set_metadata(metadata.clone());
 

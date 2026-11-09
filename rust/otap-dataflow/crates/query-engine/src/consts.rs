@@ -8,8 +8,6 @@ pub(crate) const RESOURCES_FIELD_NAME: &str = "resource";
 pub(crate) const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
 pub(crate) const VALUE_FIELD_NAME: &str = "value";
 
-/// well-known function names
-
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
 pub(crate) const ENDS_WITH_FUNC_NAME: &str = "ends_with";
 pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";

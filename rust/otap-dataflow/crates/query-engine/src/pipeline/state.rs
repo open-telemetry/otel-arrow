@@ -29,7 +29,7 @@ use otel_arrow_dfe_engine::pdata_context::Metadata;
 pub struct ExecutionState {
     extensions: Option<ExtensionMap>,
     counters: ExecutionCounters,
-    
+
     /// Metadata associated with the batch being evaluated
     metadata: Metadata,
 }
@@ -55,7 +55,7 @@ impl ExecutionState {
         Self {
             extensions: None,
             counters: ExecutionCounters::default(),
-            metadata: Metadata::default()
+            metadata: Metadata::default(),
         }
     }
 

@@ -67,7 +67,7 @@ pub trait MetadataUdfFactory {
         &self,
         node_bindings: &NodeBindings,
         args: &[InvokeFunctionArgument],
-        query_location: Option<&QueryLocation>
+        query_location: Option<&QueryLocation>,
     ) -> Result<Box<dyn BatchEval>>;
 }
 
@@ -88,7 +88,7 @@ impl MetadataUdfFactory for HasTransportHeaderPredicateFactory {
     fn context_entry_selector(
         &self,
         args: &[InvokeFunctionArgument],
-        query_location: Option<&QueryLocation>
+        query_location: Option<&QueryLocation>,
     ) -> Result<Option<ContextEntrySelector>> {
         HasTransportHeaderPredicate::context_entry_selector(args, query_location)
     }

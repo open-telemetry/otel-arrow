@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Utilities for visiting parser's expression AST for determining which batch metadata may be
-//! during accessed execution of the query. This is needed so it can be determined which
-//! [`ContextDeclaration`]s must be given to the DFE engine by the node wishing to execute the
-//! query.
+//! during accessed execution of the query.
+//!
+//! This is needed so it can be determined which [`ContextDeclaration`]s must be given to the DFE
+//! engine by the node wishing to execute the query.
 
 use otel_arrow_contrib_data_engine_expressions::{
     Expression, PipelineFunction, PipelineFunctionImplementation, ScalarExpression,
@@ -31,7 +32,7 @@ impl MetadataAccessDeclarationVisitor {
         Self::default()
     }
 
-    /// Convert list of declared contexts entry accesses performed by the parsed query
+    /// Convert into a list of declared contexts entry accesses performed by the query
     pub fn into_context_declarations(self) -> Vec<ContextDeclaration> {
         vec![ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {

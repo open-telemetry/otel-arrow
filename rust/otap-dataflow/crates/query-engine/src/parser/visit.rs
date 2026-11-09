@@ -1,8 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module contains utilities for inferring how batch metadata will be accessed from the
-//! result of a parsed program.
+//! Utilities for visiting nodes in the from the parsed query expression AST
 
 use otel_arrow_contrib_data_engine_expressions::{
     CollectionScalarExpression, ConvertScalarExpression, DataExpression, InvokeFunctionArgument,
@@ -16,7 +15,7 @@ use crate::error::Result;
 
 pub mod metadata;
 
-/// Implementor can visit the Expression AST resulting from some parsed query
+/// Implementations of this trait can visit the expression AST of parsed query.
 ///
 /// Currently the only method is for visiting scalar expressions. More trait methods may be added
 /// in the future as the need for visiting other types of expressions arises.
@@ -71,7 +70,7 @@ fn visit_data_expr<T: ExprAstVisitor>(
 
         DataExpression::Output(_) | DataExpression::Summary(_) => {
             // these have no child expressions that the visitor trait supports so
-            // we simply ignore these variants of DataExpression for now
+            // for now we can simply ignore these variants of DataExpression
         }
     }
 
@@ -109,7 +108,7 @@ fn visit_transform_expr<T: ExprAstVisitor>(
         | TransformExpression::RenameMapKeys(_)
         | TransformExpression::Scale(_) => {
             // these have no child expressions that the visitor trait supports so
-            // we simply ignore these variants of DataExpression for now
+            // for now we can simply ignore these variants of TransformExpression
         }
     }
 
@@ -178,9 +177,8 @@ fn visit_scalar_expr<T: ExprAstVisitor>(
         | ScalarExpression::Temporal(TemporalScalarExpression::Now(_))
         | ScalarExpression::Static(_)
         | ScalarExpression::Variable(_) => {
-            // These types of scalar expression do contain children, but not the such as
-            // value accessors or static constants, etc. but they are not the types that
-            // the visitor supports, so we don't traverse into them.
+            // These variants of scalar expression do not contain children that the visitor
+            // trait supports visiting, so we can simply ignore them for now.
         }
         ScalarExpression::Collection(c) => match c {
             CollectionScalarExpression::Concat(c) => {
