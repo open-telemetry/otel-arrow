@@ -28,11 +28,13 @@ pub struct MetadataAccessDeclarationVisitor {
 
 impl MetadataAccessDeclarationVisitor {
     /// Create a new instance
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Convert into a list of declared contexts entry accesses performed by the query
+    #[must_use]
     pub fn into_context_declarations(self) -> Vec<ContextDeclaration> {
         vec![ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {

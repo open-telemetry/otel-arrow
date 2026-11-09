@@ -66,12 +66,12 @@ pub(crate) struct EvalContext<'a> {
     /// DataFusion Session context. Used for planning physical expression from logical exprs
     session_context: &'a SessionContext,
 
-    /// TODO doesn't need to be mutable
-    exec_state: &'a mut ExecutionState,
+    /// Execution State. Contains extensions and batch metadata.
+    exec_state: &'a ExecutionState,
 }
 
 impl<'a> EvalContext<'a> {
-    pub fn new(session_ctx: &'a SessionContext, exec_state: &'a mut ExecutionState) -> Self {
+    pub fn new(session_ctx: &'a SessionContext, exec_state: &'a ExecutionState) -> Self {
         Self {
             data_point_type: None,
             session_context: session_ctx,
@@ -82,7 +82,7 @@ impl<'a> EvalContext<'a> {
     pub fn new_for_metrics_data_points(
         data_point_type: MetricDataPointType,
         session_ctx: &'a SessionContext,
-        exec_state: &'a mut ExecutionState,
+        exec_state: &'a ExecutionState,
     ) -> Self {
         Self {
             data_point_type: Some(data_point_type),
@@ -117,7 +117,7 @@ impl<'a> EvalContext<'a> {
     }
 
     pub fn state(&'a self) -> &'a ExecutionState {
-        &self.exec_state
+        self.exec_state
     }
 }
 

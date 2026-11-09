@@ -781,7 +781,7 @@ impl<'a> ExprPlanner<'a> {
                 self.plan_batch_eval_function_invocation(invoke_expr, batch_eval_func_def)
             }
             Some(FunctionDefinition::DataFusion(df_udf)) => {
-                self.plan_df_function_invocation(invoke_expr, functions, &func_name, df_udf)
+                self.plan_df_function_invocation(invoke_expr, functions, func_name, df_udf)
             }
             None => Err(Error::InvalidPipelineError {
                 cause: format!("Unknown function '{func_name}"),
@@ -801,14 +801,14 @@ impl<'a> ExprPlanner<'a> {
             Some(invoke_expr.get_query_location()),
         )?;
 
-        return Ok(PlannedOp {
+        Ok(PlannedOp {
             expr: ScopedExpr::Eval {
                 scope: DataScope::StaticScalar,
                 eval: LeafEval::BatchEval(batch_eval),
             },
             expr_type: batch_eval_func_def.logical_type().clone(),
             requires_dict_downcast: false,
-        });
+        })
     }
 
     fn plan_df_function_invocation(
@@ -2558,8 +2558,7 @@ mod test {
         attr_key_case_sensitive: bool,
         record_type: RecordType,
     ) -> ExprPlanner<'static> {
-        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> =
-            LazyLock::new(|| NodeBindings::default());
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> = LazyLock::new(NodeBindings::default);
         ExprPlanner::new(attr_key_case_sensitive, record_type, &DEFAULT_NODE_BINDINGS)
     }
 
@@ -2610,8 +2609,8 @@ mod test {
         // execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
         let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
@@ -2645,8 +2644,8 @@ mod test {
         // execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
         let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert!(matches!(
@@ -2677,8 +2676,8 @@ mod test {
 
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
         let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
@@ -2716,8 +2715,8 @@ mod test {
         // execute and verify: severity_numbers are [13, 17, 13], +2 = [15, 19, 15]
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
         let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
@@ -2779,8 +2778,8 @@ mod test {
         // execute and verify: rows 0 and 2 have severity_text="WARN"
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = op;
         let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         let bool_arr = as_boolean_array(match &result.values {
@@ -2829,8 +2828,8 @@ mod test {
         // -> rows 0 and 2 pass (row 1 has severity_text="ERROR")
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -2869,8 +2868,8 @@ mod test {
         // on a logs batch -> IdMask::All
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -2899,8 +2898,8 @@ mod test {
         // execute and verify it produces a boolean result
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
         let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
@@ -2938,8 +2937,8 @@ mod test {
         // execute: NOT(WARN) should match row 1 (ERROR)
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -2979,8 +2978,8 @@ mod test {
         // Execute and verify: rows 0 and 2 have x="a", row 1 has x="b"
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -3019,8 +3018,8 @@ mod test {
         // Execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -3076,8 +3075,8 @@ mod test {
         ));
 
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -3126,8 +3125,8 @@ mod test {
 
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
@@ -3189,8 +3188,8 @@ mod test {
 
         // Still should execute correctly
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
         let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();

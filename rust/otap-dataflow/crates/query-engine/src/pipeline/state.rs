@@ -114,6 +114,7 @@ impl ExecutionState {
     }
 
     /// Get a borrowed reference to the batch metadata
+    #[must_use]
     pub fn get_metadata(&self) -> &Metadata {
         &self.metadata
     }

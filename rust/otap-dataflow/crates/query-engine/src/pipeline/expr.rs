@@ -668,13 +668,13 @@ mod test {
     fn test_root_field_eval_as_value() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
+        let exec_state = ExecutionState::default();
 
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
         let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx, &mut exec_state))
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx, &exec_state))
             .unwrap()
             .unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
@@ -690,8 +690,8 @@ mod test {
     fn test_root_field_eval_as_id_mask() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         // severity_number > 14
@@ -716,8 +716,8 @@ mod test {
     fn test_attribute_eval_as_value() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
 
         // attributes["code.namespace"] (returns the AnyValue struct as value column)
         let mut op = attrs_eval(
@@ -750,8 +750,8 @@ mod test {
     fn test_batch_predicate_logs_true() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         let mut op = signal_type_eval(SignalType::Logs);
@@ -772,8 +772,8 @@ mod test {
     fn test_batch_predicate_wrong_type() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         // checking for Traces on a Logs batch -> false
@@ -793,8 +793,8 @@ mod test {
     fn test_join_and_eval_cross_scope() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
 
         // severity_number > attributes["code.line.number"]
         // This requires joining root (severity_number) with attributes (code.line.number value).
@@ -858,8 +858,8 @@ mod test {
     fn test_bitmap_and_root_and_attribute() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         // severity_text == "WARN" AND attributes["code.namespace"] == "main"
@@ -915,8 +915,8 @@ mod test {
     fn test_bitmap_or_with_missing_data() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         // attributes["nonexistent"] == "x" OR severity_text == "WARN"
@@ -950,8 +950,8 @@ mod test {
     fn test_bitmap_not() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         // NOT(severity_text == "WARN")
@@ -991,8 +991,8 @@ mod test {
     fn test_compound_bitmap_and_chain() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
 
         // attributes["code.namespace"] == "main"
@@ -1042,8 +1042,8 @@ mod test {
     fn test_join_and_eval_and_short_circuit() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
 
         // Left child: severity_text == "NONEXISTENT" -> all false for all 3 rows
         let left_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("NONEXISTENT")));
@@ -1085,8 +1085,8 @@ mod test {
     fn test_join_and_eval_or_short_circuit() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
 
         // Left child: severity_number > 0 -> all true for all 3 rows
         let left_child = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(0)));
@@ -1125,8 +1125,8 @@ mod test {
     fn test_join_and_eval_no_short_circuit_on_mixed_values() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
 
         // Left child: severity_text == "WARN" -> rows 0,2 true, row 1 false (mixed)
         let left_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
@@ -1169,8 +1169,8 @@ mod test {
     fn test_join_or_eval_no_short_circuit_on_non_root_scoped_left() {
         let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
 
         // something scoped to attributes that will pass for all rows having the attribute
         let left_child = attrs_eval(
@@ -1206,8 +1206,8 @@ mod test {
         };
 
         let session_ctx = Pipeline::create_session_context();
-        let mut exec_state = ExecutionState::default();
-        let eval_ctx = EvalContext::new(&session_ctx, &mut exec_state);
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         assert!(eval_ctx.data_point_type().is_none());
 
         let err = expr

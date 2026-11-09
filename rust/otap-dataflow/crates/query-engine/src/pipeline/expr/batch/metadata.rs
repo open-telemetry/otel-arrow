@@ -60,7 +60,7 @@ pub trait MetadataFunction: BatchEval + Sized {
         node_context_bindings: &NodeBindings,
         query_location: Option<&QueryLocation>,
     ) -> Result<Option<ValueRead>> {
-        match node_context_bindings.value(&entry_selector) {
+        match node_context_bindings.value(entry_selector) {
             Ok(r) => Ok(Some(r.clone())),
             Err(ConfigError::InvalidUserConfig { .. }) => {
                 // No context entry will be preserved in metadata such that the passed entry

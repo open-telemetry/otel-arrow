@@ -230,7 +230,7 @@ fn visit_scalar_expr<T: ExprAstVisitor>(
             visit_scalar_expr(l.get_inner_expression(), functions, visitor)?;
         }
         ScalarExpression::Logical(l) => {
-            visit_logical_expr(&l, functions, visitor)?;
+            visit_logical_expr(l, functions, visitor)?;
         }
         ScalarExpression::Math(m) => match m {
             MathScalarExpression::Add(b)

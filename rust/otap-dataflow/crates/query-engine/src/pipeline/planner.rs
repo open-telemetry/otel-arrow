@@ -1482,8 +1482,7 @@ mod test {
 
     /// Create a planner for log signal pipelines (used in tests).
     fn logs_planner() -> PipelinePlanner<'static> {
-        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> =
-            LazyLock::new(|| NodeBindings::default());
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> = LazyLock::new(NodeBindings::default);
         PipelinePlanner::new(
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
             &DEFAULT_NODE_BINDINGS,
