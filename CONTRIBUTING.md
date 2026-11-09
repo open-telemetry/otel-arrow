@@ -348,9 +348,9 @@ that are affecting multiple areas, or topics that may warrant more discussion.
 ### Using Stacked pull requests
 
 Stacked pull requests are a [github feature](https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests)
- for managing a series of changes that need to be merged in seqeunce. Stacked
-PRs allow fast navigation between related PRs which helps reviewers and also
-automates workflows like rebasing multiple branches in a stack at one time.
+for managing a series of related changes that need to be merged in sequence.
+Stacked PRs allow fast navigation between related PRs which helps reviewers and
+also automates workflows like rebasing multiple branches in a stack at one time.
 
 At the time of writing, Stacked PRs cannot be built from branches in a fork,
 and so this feature can only be used by contributors with access to create
