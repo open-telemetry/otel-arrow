@@ -751,7 +751,8 @@ impl SubtractInitialEngine {
                         state.prev_sum = cur_sum;
                         new_start_times.push(Some(state.start_time_ns));
                         if counts.is_some() {
-                            new_counts.push(cur_count_opt.map(|v| v.wrapping_sub(state.ref_count)));
+                            new_counts
+                                .push(cur_count_opt.map(|v| v.saturating_sub(state.ref_count)));
                         }
                         if sums.is_some() {
                             new_sums.push(cur_sum_opt.map(|v| v - state.ref_sum));
@@ -992,7 +993,8 @@ impl SubtractInitialEngine {
 
                         new_start_times.push(Some(state.start_time_ns));
                         if counts.is_some() {
-                            new_counts.push(cur_count_opt.map(|v| v.wrapping_sub(state.ref_count)));
+                            new_counts
+                                .push(cur_count_opt.map(|v| v.saturating_sub(state.ref_count)));
                         }
                         if sums.is_some() {
                             new_sums.push(cur_sum_opt.map(|v| v - state.ref_sum));
@@ -1005,7 +1007,7 @@ impl SubtractInitialEngine {
                                     {
                                         new_buckets
                                             .values()
-                                            .append_value(cur_b.wrapping_sub(ref_b));
+                                            .append_value(cur_b.saturating_sub(ref_b));
                                     }
                                     new_buckets.append(true);
                                 }
@@ -1265,16 +1267,8 @@ impl SubtractInitialEngine {
                         || cur_sum < state.prev_sum
                         || cur_zero < state.prev_zero_count
                         || cur_scale != state.scale
-                        || pos_counts.len() != state.prev_positive.counts.len()
-                        || neg_counts.len() != state.prev_negative.counts.len()
-                        || pos_counts
-                            .iter()
-                            .zip(state.prev_positive.counts.iter())
-                            .any(|(&cur_b, &prev_b)| cur_b < prev_b)
-                        || neg_counts
-                            .iter()
-                            .zip(state.prev_negative.counts.iter())
-                            .any(|(&cur_b, &prev_b)| cur_b < prev_b);
+                        || exp_buckets_decreased(cur_pos.offset, pos_counts, &state.prev_positive)
+                        || exp_buckets_decreased(cur_neg.offset, neg_counts, &state.prev_negative);
 
                     if is_reset {
                         let reset_start = time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
@@ -1331,14 +1325,15 @@ impl SubtractInitialEngine {
 
                         new_start_times.push(Some(state.start_time_ns));
                         if counts.is_some() {
-                            new_counts.push(cur_count_opt.map(|v| v.wrapping_sub(state.ref_count)));
+                            new_counts
+                                .push(cur_count_opt.map(|v| v.saturating_sub(state.ref_count)));
                         }
                         if sums.is_some() {
                             new_sums.push(cur_sum_opt.map(|v| v - state.ref_sum));
                         }
                         if zero_counts.is_some() {
                             new_zero_counts
-                                .push(cur_zero_opt.map(|v| v.wrapping_sub(state.ref_zero_count)));
+                                .push(cur_zero_opt.map(|v| v.saturating_sub(state.ref_zero_count)));
                         }
                         if let Some(b) = pos_builder.as_mut() {
                             b.append_subtracted(cur_pos, &state.ref_positive);
@@ -1722,6 +1717,23 @@ fn bounds_eq_bits(bounds: &[f64], expected_bits: &[u64]) -> bool {
 }
 
 #[inline]
+fn exp_buckets_decreased(cur_offset: i32, cur_counts: &[u64], prev: &ExpBucketsState) -> bool {
+    let offset_diff = (prev.offset as isize) - (cur_offset as isize);
+    for (prev_idx, &prev_val) in prev.counts.iter().enumerate() {
+        let cur_idx = (prev_idx as isize) + offset_diff;
+        let cur_val = if cur_idx >= 0 && (cur_idx as usize) < cur_counts.len() {
+            cur_counts[cur_idx as usize]
+        } else {
+            0
+        };
+        if cur_val < prev_val {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline]
 fn append_opt_u64_slice(builder: &mut ListBuilder<UInt64Builder>, opt_slice: Option<&[u64]>) {
     match opt_slice {
         Some(slice) => {
@@ -1894,7 +1906,7 @@ impl ExpBucketsColumnBuilder {
         for (i, &cur_val) in cur_counts.iter().enumerate() {
             let ref_idx = (i as isize) + offset_diff;
             let adjusted = if ref_idx >= 0 && (ref_idx as usize) < ref_counts.len() {
-                cur_val.wrapping_sub(ref_counts[ref_idx as usize])
+                cur_val.saturating_sub(ref_counts[ref_idx as usize])
             } else {
                 cur_val
             };
@@ -2520,7 +2532,8 @@ mod tests {
 
         // 2. Second scrape (with ExpHistogram positive bucket offset shifted from 1 -> 0):
         // At offset 0, bucket 0 has ref_idx = 0 + (0 - 1) = -1 (unadjusted = 4),
-        // bucket 1 has ref_idx = 1 - 1 = 0 (subtract ref[0]=3 -> 7 - 3 = 4).
+        // bucket 1 has ref_idx = 1 - 1 = 0 (subtract ref[0]=3 -> 7 - 3 = 4),
+        // bucket 2 has ref_idx = 2 - 1 = 1 (subtract ref[1]=5 -> 5 - 5 = 0).
         let (out2, stats2) = run_batch(
             &mut proc,
             make_complex_batch(
@@ -2534,7 +2547,7 @@ mod tests {
                 90.0,
                 3,
                 0,
-                vec![4, 7],
+                vec![4, 7, 5],
             ),
             t0,
         );
@@ -2587,7 +2600,7 @@ mod tests {
                                     .count(8u64)
                                     .sum(40.0)
                                     .zero_count(1u64)
-                                    .positive(Buckets::new(0, vec![4, 4]))
+                                    .positive(Buckets::new(0, vec![4, 4, 0]))
                                     .negative(Buckets::new(0, vec![]))
                                     .finish(),
                             ],
