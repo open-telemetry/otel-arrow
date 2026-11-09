@@ -63,7 +63,8 @@ pub trait MetadataFunction: BatchEval + Sized {
         match node_context_bindings.value(&entry_selector) {
             Ok(r) => Ok(Some(r.clone())),
             Err(ConfigError::InvalidUserConfig { .. }) => {
-                // No context entry will be preserved in metadata with the given name
+                // No context entry will be preserved in metadata such that the passed entry
+                // selector has something to select
                 Ok(None)
             }
             Err(e) => Err(Error::InvalidPipelineError {
