@@ -95,6 +95,8 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 fn load_semconv_registry() -> ResolvedRegistry {
     let registry_path = std::env::var("OTAP_SEMCONV_REGISTRY")
         .map(|path| {
+            // Overrides may refer to a remote registry and require a TLS provider.
+            otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
             path.parse::<VirtualDirectoryPath>()
                 .expect("valid OTAP_SEMCONV_REGISTRY")
         })
