@@ -2634,7 +2634,8 @@ fn config_registry_paths() {
     let config = Config::new(
         TrafficConfig::new(None, None, 10, 1, 1, 1),
         vendored_registry_path(),
-    );
+    )
+    .with_annotations(true);
     let compiled = config
         .get_semconv_model()
         .expect("valid")
@@ -2642,6 +2643,196 @@ fn config_registry_paths() {
     assert_eq!(compiled.spans.len(), model().spans.len());
     let synthetic = config.with_data_source(super::config::DataSource::Synthetic);
     assert!(synthetic.get_semconv_model().expect("valid").is_none());
+}
+
+// ===========================================================================
+// Annotations disabled
+// ===========================================================================
+
+/// Compile the vendored registry with annotations disabled.
+fn unannotated_model() -> SemconvModel {
+    SemconvModel::compile_without_annotations(registry())
+}
+
+/// Scenario: `get_semconv_model` is called on the vendored, annotated
+/// registry with `annotations` disabled (the default) and enabled.
+/// Guarantees: Both produce the same groups, but only the enabled model
+/// carries annotation-driven samplers, so the flag alone selects whether
+/// annotations drive generation.
+#[test]
+fn config_annotations_flag_selects_compilation() {
+    let config = Config::new(
+        TrafficConfig::new(None, None, 10, 1, 1, 1),
+        vendored_registry_path(),
+    );
+    assert!(!config.annotations());
+    let disabled = config
+        .clone()
+        .get_semconv_model()
+        .expect("valid")
+        .expect("semantic conventions data source");
+    let enabled = config
+        .with_annotations(true)
+        .get_semconv_model()
+        .expect("valid")
+        .expect("semantic conventions data source");
+
+    assert_eq!(disabled.spans.len(), enabled.spans.len());
+    assert_eq!(disabled.metrics.len(), enabled.metrics.len());
+    assert_eq!(disabled.events.len(), enabled.events.len());
+    assert!(enabled.spans.iter().any(|s| s.status.is_some()));
+    assert!(enabled.metrics.iter().any(|m| m.value.is_some()));
+    assert!(enabled.events.iter().any(|e| e.severity.is_some()));
+    assert!(disabled.spans.iter().all(|s| s.status.is_none()));
+    assert!(disabled.spans.iter().all(|s| s.duration_ms.is_none()));
+    assert!(disabled.metrics.iter().all(|m| m.value.is_none()));
+    assert!(disabled.metrics.iter().all(|m| m.observations.is_none()));
+    assert!(disabled.events.iter().all(|e| e.severity.is_none()));
+}
+
+/// Scenario: A registry whose span group and attribute carry invalid
+/// `traffic-generator` annotations is compiled with and without annotations.
+/// Guarantees: With annotations disabled, compilation never reads the
+/// annotations and succeeds with the invalid attribute kept as a fallback
+/// generator; with annotations enabled, the same registry still fails.
+#[test]
+fn compile_without_annotations_ignores_invalid_annotations() {
+    let mut bad = registry().clone();
+    let span = bad
+        .groups
+        .iter_mut()
+        .find(|g| g.r#type == GroupType::Span)
+        .expect("a span group");
+    let mut ann = span.annotations.clone().unwrap_or_default();
+    let _ = ann.insert(
+        annotation::NAMESPACE.to_owned(),
+        YamlValue(yaml_from_str("{ severity: { values: [INFO] } }")),
+    );
+    span.annotations = Some(ann);
+    let span_id = span.id.clone();
+    let attr_count = span.attributes.len() + 1;
+    span.attributes.push(attribute(
+        "bad.attr",
+        primitive(PrimitiveOrArrayTypeSpec::String),
+        Some("{ range: { min: 0, max: 1 } }"),
+    ));
+    // A non-signal group with an annotation is rejected only when enabled.
+    let attr_group = bad
+        .groups
+        .iter_mut()
+        .find(|g| g.r#type == GroupType::AttributeGroup)
+        .expect("an attribute group");
+    let mut ann = attr_group.annotations.clone().unwrap_or_default();
+    let _ = ann.insert(
+        annotation::NAMESPACE.to_owned(),
+        YamlValue(yaml_from_str("{ value: { values: [1] } }")),
+    );
+    attr_group.annotations = Some(ann);
+
+    assert!(SemconvModel::compile(&bad).is_err());
+    let model = SemconvModel::compile_without_annotations(&bad);
+    let span = model
+        .spans
+        .iter()
+        .find(|s| s.name == span_id)
+        .expect("span compiled");
+    assert_eq!(span.attributes.len(), attr_count);
+    let kv = span.attributes.last().expect("bad.attr").sample(&mut rng());
+    assert_eq!(kv.key, "bad.attr");
+    assert_eq!(kv_scalar(&kv), Scalar::String("value".into()));
+}
+
+/// Scenario: Spans, metrics, and logs are generated from the vendored,
+/// annotated registry with annotations disabled.
+/// Guarantees: Output matches the pre-annotation generator: spans last the
+/// fixed default delay with no status, logs are INFO with no severity text,
+/// number points are 1.0 with `Unspecified` temporality and no start time,
+/// histogram points carry no buckets, bounds, count, sum, min, or max, and
+/// annotated attributes use their non-annotated fallback values.
+#[test]
+fn generation_without_annotations_matches_unannotated_output() {
+    use super::fake_data::delay;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
+
+    let model = unannotated_model();
+    let mut r = rng();
+
+    let n_spans = model.spans.len() * 2;
+    let traces = semconv_otlp_traces_with_rng(n_spans, &model, &mut r);
+    let spans = &traces.resource_spans[0].scope_spans[0].spans;
+    assert_eq!(spans.len(), n_spans);
+    for span in spans {
+        assert_eq!(
+            span.end_time_unix_nano - span.start_time_unix_nano,
+            delay(),
+            "{}",
+            span.name
+        );
+        assert!(span.status.is_none(), "{}", span.name);
+    }
+
+    let n_logs = model.events.len() * 2;
+    let logs = semconv_otlp_logs_with_rng(n_logs, &model, &mut r);
+    let records = &logs.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(records.len(), n_logs);
+    for rec in records {
+        assert_eq!(rec.severity_number, SeverityNumber::Info as i32);
+        assert!(rec.severity_text.is_empty());
+    }
+
+    let n_metrics = model.metrics.len() * 2;
+    let data = semconv_otlp_metrics_with_rng(n_metrics, &model, &mut r);
+    let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
+    assert_eq!(metrics.len(), n_metrics);
+    let mut saw_histogram = false;
+    let mut daemon_values = HashSet::new();
+    for metric in metrics {
+        let number_points = match metric.data.as_ref().expect("data") {
+            Data::Sum(s) => {
+                assert_eq!(
+                    s.aggregation_temporality,
+                    AggregationTemporality::Unspecified as i32
+                );
+                &s.data_points
+            }
+            Data::Gauge(g) => &g.data_points,
+            Data::Histogram(h) => {
+                saw_histogram = true;
+                assert_eq!(
+                    h.aggregation_temporality,
+                    AggregationTemporality::Unspecified as i32
+                );
+                for p in &h.data_points {
+                    assert!(p.bucket_counts.is_empty(), "{}", metric.name);
+                    assert!(p.explicit_bounds.is_empty(), "{}", metric.name);
+                    assert_eq!(p.count, 0, "{}", metric.name);
+                    assert!(p.sum.is_none() && p.min.is_none() && p.max.is_none());
+                    assert_eq!(p.start_time_unix_nano, 0);
+                }
+                continue;
+            }
+            other => panic!("{}: unexpected data {other:?}", metric.name),
+        };
+        for p in number_points {
+            assert_eq!(number_value(p.value.as_ref(), &metric.name), 1.0);
+            assert_eq!(p.start_time_unix_nano, 0);
+        }
+        if metric.name == REPRESENTATIVE_UPDOWNCOUNTER {
+            for p in number_points {
+                let _ = daemon_values.insert(format!(
+                    "{:?}",
+                    attr_scalar(&p.attributes, "jvm.thread.daemon")
+                ));
+            }
+        }
+    }
+    assert!(saw_histogram, "vendored registry has a histogram");
+    // `jvm.thread.daemon` is annotated in the registry; disabled, it uses the
+    // boolean type default only.
+    assert_eq!(
+        daemon_values,
+        HashSet::from([format!("{:?}", Scalar::Bool(true))])
+    );
 }
 
 // ===========================================================================

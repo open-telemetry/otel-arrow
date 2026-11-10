@@ -14,7 +14,12 @@
 //! so it is also the registry validation pass: an invalid annotation fails
 //! receiver startup.
 //!
+//! [`SemconvModel::compile_without_annotations`] skips annotations entirely
+//! (the receiver's `annotations: false` mode): values come from enum members,
+//! examples, and type defaults only.
+//!
 //! [`SemconvModel::compile`]: crate::receivers::traffic_generator::semconv_model::SemconvModel::compile
+//! [`SemconvModel::compile_without_annotations`]: crate::receivers::traffic_generator::semconv_model::SemconvModel::compile_without_annotations
 
 use weaver_forge::v1::registry::{ResolvedGroup, ResolvedRegistry};
 use weaver_semconv::v1::group::{GroupType, InstrumentSpec, SpanKindSpec};
@@ -65,8 +70,22 @@ pub struct MetricTemplate {
     pub observations: Option<ValueSampler>,
     /// Histogram bucket bounds (`bounds`, or the SDK defaults).
     pub bounds: Vec<f64>,
+    /// How histogram data points are populated.
+    pub histogram_mode: HistogramMode,
     /// Sum and histogram temporality (`temporality`, or `Unspecified`).
     pub temporality: AggregationTemporality,
+}
+
+/// How histogram data points are populated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HistogramMode {
+    /// Sample observations into `bounds` and emit bucket counts, count, sum,
+    /// min, and max (annotation-driven generation).
+    #[default]
+    Aggregated,
+    /// Emit points with empty bucket counts and bounds and no count, sum,
+    /// min, or max (generation with annotations disabled).
+    Empty,
 }
 
 /// An event group compiled for generation.
@@ -116,12 +135,38 @@ impl SemconvModel {
     /// Returns every invalid annotation (group, attribute, key path) so they
     /// can be reported together at startup.
     pub fn compile(registry: &ResolvedRegistry) -> Result<Self, Vec<RegistryAnnotationError>> {
+        Self::compile_inner(registry, true)
+    }
+
+    /// Compile `registry` ignoring every `traffic-generator` annotation.
+    ///
+    /// Annotations are never read, so invalid annotations cannot fail.
+    /// Attribute values come from enum members, examples, and type defaults;
+    /// signal-level settings use their defaults, and histogram points are
+    /// emitted without buckets ([`HistogramMode::Empty`]).
+    #[must_use]
+    pub fn compile_without_annotations(registry: &ResolvedRegistry) -> Self {
+        Self::compile_inner(registry, false).expect("compilation without annotations cannot fail")
+    }
+
+    fn compile_inner(
+        registry: &ResolvedRegistry,
+        use_annotations: bool,
+    ) -> Result<Self, Vec<RegistryAnnotationError>> {
         let mut model = SemconvModel::default();
         let mut errors = Vec::new();
         for group in &registry.groups {
             let mut attribute_errors = Vec::new();
-            let attributes = compile_attributes(group, &mut attribute_errors);
-            match compile_group(group, attributes) {
+            let attributes = if use_annotations {
+                compile_attributes(group, &mut attribute_errors)
+            } else {
+                group
+                    .attributes
+                    .iter()
+                    .map(AttributeGen::fallback)
+                    .collect()
+            };
+            match compile_group(group, attributes, use_annotations) {
                 Ok(Some(Template::Span(t))) => model.spans.push(t),
                 Ok(Some(Template::Metric(t))) => model.metrics.push(t),
                 Ok(Some(Template::Event(t))) => model.events.push(t),
@@ -173,8 +218,18 @@ fn compile_attributes(
 fn compile_group(
     group: &ResolvedGroup,
     attributes: Vec<AttributeGen>,
+    use_annotations: bool,
 ) -> AnnotationResult<Option<Template>> {
-    let map = annotation::lookup(group.annotations.as_ref())?;
+    let map = if use_annotations {
+        annotation::lookup(group.annotations.as_ref())?
+    } else {
+        None
+    };
+    let histogram_mode = if use_annotations {
+        HistogramMode::Aggregated
+    } else {
+        HistogramMode::Empty
+    };
     match (&group.r#type, &group.instrument) {
         (GroupType::Span, _) => {
             let spec = match map {
@@ -230,7 +285,13 @@ fn compile_group(
                     .observations
                     .as_ref()
                     .map(|v| ValueSampler::new(v, true)),
-                bounds: spec.bounds.unwrap_or_else(|| HISTOGRAM_BOUNDS.to_vec()),
+                bounds: match histogram_mode {
+                    HistogramMode::Aggregated => {
+                        spec.bounds.unwrap_or_else(|| HISTOGRAM_BOUNDS.to_vec())
+                    }
+                    HistogramMode::Empty => Vec::new(),
+                },
+                histogram_mode,
                 temporality: spec
                     .temporality
                     .unwrap_or(AggregationTemporality::Unspecified),

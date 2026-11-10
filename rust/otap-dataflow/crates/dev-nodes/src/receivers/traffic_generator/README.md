@@ -45,6 +45,10 @@ config:
   # tag, cloned at startup). See "Annotations" below.
   registry_path: ./semantic-conventions
 
+  # Generate values from the registry's traffic-generator annotations when
+  # data_source is semantic_conventions (default: false). See "Annotations".
+  annotations: true
+
   # Batch generation strategy: "fresh" or "pre_generated" (default: fresh).
   generation_strategy: pre_generated
 
@@ -79,10 +83,23 @@ only by case remain distinct stored context entries.
 
 With `data_source: semantic_conventions`, the receiver emits one signal per
 registry group (spans from `span` groups, metrics from `metric` groups, logs
-from `event` groups) and fills attribute values, metric values, histogram
-buckets, span durations and status, and log severities from
-`traffic-generator` annotations in the registry. Without annotations, values
-fall back to enum members, `examples`, and type defaults.
+from `event` groups). With `annotations: true`, it fills attribute values,
+metric values, histogram buckets, span durations and status, and log
+severities from `traffic-generator` annotations in the registry; groups and
+attributes without annotations fall back to enum members, `examples`, and type
+defaults.
+
+`annotations` defaults to `false`. When disabled, annotations in the registry
+are ignored entirely (not parsed or validated, so invalid annotations do not
+fail startup) and the receiver generates:
+
+- attribute values from the first enum member, `examples`, or type defaults;
+- spans with a fixed 10 microsecond duration and no status;
+- logs with severity `INFO` and no severity text;
+- number points with value `1` and `Unspecified` temporality;
+- histogram points with no buckets, bounds, count, sum, min, or max.
+
+`annotations` has no effect with `data_source: synthetic`.
 
 ### Registry
 
@@ -91,7 +108,10 @@ semantic conventions registry, cloning
 `https://github.com/open-telemetry/semantic-conventions.git` at the pinned tag
 (`SEMCONV_REGISTRY_REFSPEC`) at startup. This requires network access and a TLS
 crypto provider, and the upstream registry carries no `traffic-generator`
-annotations, so values fall back to enum members, examples, and type defaults.
+annotations, so values fall back to enum members, examples, and type defaults
+even with `annotations: true`. To use annotations, point `registry_path` at an
+annotated registry (such as `vendor/semconv/model`) and set
+`annotations: true`.
 
 ### Placement
 
@@ -223,7 +243,8 @@ distribution is rejected.
       severity: { values: [ERROR, WARN, FATAL], weights: [80, 15, 5] }
 ```
 
-Metric output, with or without annotations:
+Metric output with `annotations: true`, with or without annotations on the
+group:
 
 - Number points are `as_double`.
 - Counters and updowncounters are emitted as sums. Their temporality, and
@@ -242,7 +263,8 @@ Metric output, with or without annotations:
 
 ### Value precedence
 
-For each attribute the receiver uses the first source that applies:
+For each attribute the receiver uses the first source that applies (step 1
+only with `annotations: true`):
 
 1. The `traffic-generator` annotation on the signal's attribute reference, or
    else on the attribute definition.
@@ -252,8 +274,8 @@ For each attribute the receiver uses the first source that applies:
 
 ### Validation
 
-Annotations are parsed, validated, and compiled into samplers once, when the
-receiver starts. Generation only draws from the compiled samplers. Any invalid
+With `annotations: true`, annotations are parsed, validated, and compiled
+into samplers once, when the receiver starts. Generation only draws from the compiled samplers. Any invalid
 annotation fails receiver startup, and the error lists every invalid
 annotation with its group, attribute, and key path:
 
@@ -372,8 +394,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - `semantic_conventions` data source requires access to the configured registry
   path at startup. The default (the upstream git repository) requires network
   access; the vendored registry is only available from the source tree.
-- Invalid `traffic-generator` annotations in the registry fail receiver
-  startup.
+- With `annotations: true`, invalid `traffic-generator` annotations in the
+  registry fail receiver startup.
 - `pre_generated` mode repeats timestamps and IDs from pregenerated batches.
 - `production_mode: open` can produce as fast as the runtime allows.
 

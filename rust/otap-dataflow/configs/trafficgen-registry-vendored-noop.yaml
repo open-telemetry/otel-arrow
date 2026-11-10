@@ -44,6 +44,7 @@ groups:
             config:
               data_source: semantic_conventions
               registry_path: vendor/semconv/model
+              annotations: true
               generation_strategy: fresh
               traffic_config:
                 production_mode: open

@@ -5,11 +5,12 @@
 //! The semconv signal module provides methods for generating OTLP signals based on
 //! the OpenTelemetry Semantic Conventions registry.
 //!
-//! Values are driven by `traffic-generator` annotations on the registry groups
-//! and attributes. The registry is compiled once into a [`SemconvModel`]
-//! (annotations parsed, samplers built); generation only draws from the
-//! compiled templates. Groups or attributes without annotations fall back to
-//! the first enum member, examples, and type defaults.
+//! When the receiver's `annotations` option is enabled, values are driven by
+//! `traffic-generator` annotations on the registry groups and attributes. The
+//! registry is compiled once into a [`SemconvModel`] (annotations parsed,
+//! samplers built); generation only draws from the compiled templates. Groups
+//! or attributes without annotations (or every group, when the option is
+//! disabled) fall back to the first enum member, examples, and type defaults.
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 //!
@@ -20,7 +21,7 @@ use crate::receivers::traffic_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
 use crate::receivers::traffic_generator::semconv_model::{
-    EventTemplate, MetricTemplate, SemconvModel, SpanTemplate,
+    EventTemplate, HistogramMode, MetricTemplate, SemconvModel, SpanTemplate,
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -278,6 +279,15 @@ fn histogram_point<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> HistogramDataPoint {
     let attrs = attributes(&metric.attributes, rng);
+    if metric.histogram_mode == HistogramMode::Empty {
+        // Annotations disabled: no observations, buckets, or aggregates.
+        return HistogramDataPoint::build()
+            .time_unix_nano(now)
+            .bucket_counts(Vec::<u64>::new())
+            .explicit_bounds(Vec::<f64>::new())
+            .attributes(attrs)
+            .finish();
+    }
     let n = metric
         .observations
         .as_ref()

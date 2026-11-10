@@ -26,8 +26,9 @@ pub enum DataSource {
     /// Use OpenTelemetry semantic conventions registry via weaver
     /// - Fetches and parses semantic conventions from registry_path
     ///   (default: the upstream registry, cloned at startup)
-    /// - Values driven by `traffic-generator` annotations; invalid
-    ///   annotations fail startup
+    /// - With `annotations: true`, values are driven by `traffic-generator`
+    ///   annotations and invalid annotations fail startup; otherwise values
+    ///   come from enum members, examples, and type defaults
     /// - Requires network/file access at startup
     #[default]
     SemanticConventions,
@@ -111,6 +112,20 @@ pub struct Config {
     /// local folder, archive, or git repository to use it instead.
     #[serde(default = "default_registry_path")]
     registry_path: VirtualDirectoryPath,
+
+    /// Generate values from the registry's `traffic-generator` annotations
+    /// (only used when data_source = semantic_conventions).
+    ///
+    /// When `true`, annotations are parsed and validated at startup (invalid
+    /// annotations fail startup) and drive attribute values, metric values,
+    /// histogram buckets, span durations and status, and log severities.
+    /// Groups and attributes without annotations fall back to enum members,
+    /// examples, and type defaults.
+    ///
+    /// When `false` (the default), annotations are ignored entirely and values
+    /// come from enum members, examples, and type defaults only.
+    #[serde(default)]
+    annotations: bool,
 
     /// Strategy for generating telemetry batches
     #[serde(default)]
@@ -233,6 +248,7 @@ impl Config {
         Self {
             traffic_config,
             registry_path,
+            annotations: false,
             data_source: DataSource::default(),
             generation_strategy: GenerationStrategy::default(),
             enable_ack_nack: default_enable_ack_nack(),
@@ -246,6 +262,20 @@ impl Config {
     pub const fn with_data_source(mut self, data_source: DataSource) -> Self {
         self.data_source = data_source;
         self
+    }
+
+    /// Builder-style method to enable or disable annotation-driven generation
+    /// (semantic conventions data source only).
+    #[must_use]
+    pub const fn with_annotations(mut self, annotations: bool) -> Self {
+        self.annotations = annotations;
+        self
+    }
+
+    /// Returns whether `traffic-generator` annotations drive generation.
+    #[must_use]
+    pub const fn annotations(&self) -> bool {
+        self.annotations
     }
 
     /// Builder-style method to set generation strategy
@@ -302,17 +332,24 @@ impl Config {
     /// Resolve the registry and compile it for signal generation.
     /// Returns None if data_source is Synthetic.
     ///
-    /// Every `traffic-generator` annotation is parsed, validated, and
-    /// compiled into samplers once; the resolved registry is dropped
-    /// afterwards. An error lists each invalid annotation.
+    /// When `annotations` is enabled, every `traffic-generator` annotation is
+    /// parsed, validated, and compiled into samplers once and an error lists
+    /// each invalid annotation. When disabled, annotations are ignored. The
+    /// resolved registry is dropped afterwards.
     pub fn get_semconv_model(&self) -> Result<Option<SemconvModel>, String> {
         match self.data_source {
             DataSource::Synthetic => Ok(None),
             DataSource::SemanticConventions => {
                 let resolved_registry = self.resolve_registry()?;
-                SemconvModel::compile(&resolved_registry)
-                    .map(Some)
-                    .map_err(|errors| format_errors(&errors))
+                if self.annotations {
+                    SemconvModel::compile(&resolved_registry)
+                        .map(Some)
+                        .map_err(|errors| format_errors(&errors))
+                } else {
+                    Ok(Some(SemconvModel::compile_without_annotations(
+                        &resolved_registry,
+                    )))
+                }
             }
         }
     }
@@ -626,6 +663,39 @@ mod tests {
         );
         assert_eq!(sub_folder.as_deref(), Some("model"));
         assert_eq!(refspec.as_deref(), Some(super::SEMCONV_REGISTRY_REFSPEC));
+    }
+
+    /// Scenario: A config omits `annotations`, and another sets it to `true`.
+    /// Guarantees: `annotations` defaults to `false`, so existing configs keep
+    /// generating values without reading registry annotations, and an
+    /// explicit `true` opts into annotation-driven generation.
+    #[test]
+    fn parse_config_annotations_defaults_to_false() {
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": { "log_weight": 1 }
+        }))
+        .expect("config should parse");
+        assert!(!cfg.annotations());
+
+        let cfg: Config = serde_json::from_value(json!({
+            "traffic_config": { "log_weight": 1 },
+            "annotations": true
+        }))
+        .expect("config should parse");
+        assert!(cfg.annotations());
+        assert!(!cfg.with_annotations(false).annotations());
+    }
+
+    /// Scenario: A config sets `annotations` to a non-boolean value.
+    /// Guarantees: Parsing fails, so a typo cannot silently fall back to the
+    /// default.
+    #[test]
+    fn parse_config_rejects_non_bool_annotations() {
+        let result: Result<Config, _> = serde_json::from_value(json!({
+            "traffic_config": { "log_weight": 1 },
+            "annotations": "yes"
+        }));
+        assert!(result.is_err());
     }
 
     /// Scenario: A user opts into the vendored, annotated registry via

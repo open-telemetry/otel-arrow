@@ -1041,6 +1041,7 @@ mod tests {
         for strategy in [GenerationStrategy::Fresh, GenerationStrategy::PreGenerated] {
             let cfg = TrafficConfig::new(Some(1), Some(1), 1, 1, 0, 0);
             let config = Config::new(cfg, super::super::config::vendored_registry_path())
+                .with_annotations(true)
                 .with_generation_strategy(strategy.clone());
             let mut producer = TrafficProducer::from_config(&config).expect("valid config");
             assert_eq!(drain_items(&mut producer), vec![1], "{strategy:?}");
@@ -1057,9 +1058,29 @@ mod tests {
     fn test_semconv_metrics_replay_partial_batch_respects_limit() {
         let cfg = TrafficConfig::new(Some(4), Some(3), 2, 1, 0, 0);
         let config = Config::new(cfg, super::super::config::vendored_registry_path())
+            .with_annotations(true)
             .with_generation_strategy(GenerationStrategy::PreGenerated);
         let mut producer = TrafficProducer::from_config(&config).expect("valid config");
         assert_eq!(drain_items(&mut producer), vec![2, 1]);
+    }
+
+    /// Scenario: Semantic-convention metrics are produced from the vendored,
+    /// annotated registry with `annotations` left at its default (disabled),
+    /// `max_signal_count: 3`, and `max_batch_size: 2`, using both `fresh` and
+    /// `pre_generated` strategies.
+    /// Guarantees: The receiver starts without reading annotations and emits
+    /// exactly three data points in batches of at most two, so disabling
+    /// annotations keeps one data point per requested metric.
+    #[test]
+    fn test_semconv_metrics_without_annotations_respect_limits() {
+        for strategy in [GenerationStrategy::Fresh, GenerationStrategy::PreGenerated] {
+            let cfg = TrafficConfig::new(Some(4), Some(3), 2, 1, 0, 0);
+            let config = Config::new(cfg, super::super::config::vendored_registry_path())
+                .with_generation_strategy(strategy.clone());
+            assert!(!config.annotations());
+            let mut producer = TrafficProducer::from_config(&config).expect("valid config");
+            assert_eq!(drain_items(&mut producer), vec![2, 1], "{strategy:?}");
+        }
     }
 
     #[test]

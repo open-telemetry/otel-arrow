@@ -166,7 +166,9 @@ fn traffic_config() -> TrafficConfig {
 
 /// Resolve and compile the registry into a model, panicking on failure.
 fn compile_model(registry: Registry) -> SemconvModel {
-    let config = Config::new(traffic_config(), registry.path());
+    // Annotations are enabled for both registries so the annotation-driven
+    // compile and generation paths are measured (upstream carries none).
+    let config = Config::new(traffic_config(), registry.path()).with_annotations(true);
     config
         .get_semconv_model()
         .unwrap_or_else(|e| panic!("resolve/compile {} registry: {e}", registry.id()))
