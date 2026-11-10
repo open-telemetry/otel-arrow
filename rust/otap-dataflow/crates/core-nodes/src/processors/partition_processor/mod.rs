@@ -16,9 +16,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::error::Error as ConfigError;
-use otel_arrow_dfe_config::{context::ContextEntryName, node::NodeUserConfig};
+use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
@@ -27,6 +27,7 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
+    ContextDomain, ContextError, EditBinding, EditEntry, EditValue, Metadata,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
@@ -134,8 +135,7 @@ fn try_create_partitioner(
 pub struct PartitionProcessor {
     contexts: Contexts,
     partitioner: Partitioner,
-    header_name: ContextEntryName,
-    serialization_strategy: PartitionValueSerializeStrategy,
+    partition_header: PartitionHeader,
     metrics: MeasurementMetricSet<Metrics>,
 
     /// batches containing this type of signal will be partitioned by this instance, other batches
@@ -154,6 +154,16 @@ impl PartitionProcessor {
             }
         })?;
         config.validate_context_declarations(pipeline_ctx)?;
+        let context_edit = pipeline_ctx
+            .node_bindings()
+            .and_then(|bindings| bindings.edit().cloned())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "partition processor has no context edit binding".into(),
+            })?;
+        let entry = context_edit.entry(
+            ContextDomain::TransportHeader,
+            &config.partition_header_name,
+        )?;
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
@@ -164,8 +174,11 @@ impl PartitionProcessor {
         Ok(Self {
             partitioner,
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
-            header_name: config.partition_header_name,
-            serialization_strategy: config.header_serialization_strategy,
+            partition_header: PartitionHeader {
+                context_edit,
+                entry,
+                serialization_strategy: config.header_serialization_strategy,
+            },
             metrics: Metrics::register(pipeline_ctx),
             signal_type: config.signal_type,
         })
@@ -196,6 +209,35 @@ impl PartitionProcessor {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Adds the partition value to output context as a transport header.
+struct PartitionHeader {
+    /// Binding that forms each output context from the input context.
+    context_edit: EditBinding,
+    /// Handle for the configured partition header entry.
+    entry: EditEntry,
+    serialization_strategy: PartitionValueSerializeStrategy,
+}
+
+impl PartitionHeader {
+    /// Returns the input metadata with the partition value appended as a transport header.
+    fn add(
+        &self,
+        input: &Metadata,
+        partition_value: PartitionValue,
+    ) -> Result<Metadata, ContextError> {
+        let (kind, bytes) =
+            serialize_partition_value(&self.serialization_strategy, partition_value);
+        self.context_edit.form(
+            input,
+            &[EditValue {
+                entry: &self.entry,
+                kind,
+                bytes: &bytes,
+            }],
+        )
     }
 }
 
@@ -267,17 +309,17 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (mut delivery, mut otap_batch) =
-                    match effect_handler.prepare_otap_work(pdata).await {
-                        Ok(prepared) => prepared,
-                        Err(error) => {
-                            let (error, pdata) = error.into_parts();
-                            effect_handler
-                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                                .await?;
-                            return Ok(());
-                        }
-                    };
+                let (delivery, mut otap_batch) = match effect_handler.prepare_otap_work(pdata).await
+                {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
                 let signal_type = delivery.signal_type();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
@@ -324,25 +366,52 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // partition so call to `next` will be `Some`
                         let partition = partitions.next().expect("at least one partition");
 
-                        // update the header values
-                        let mut headers = delivery
-                            .context_mut()
-                            .take_transport_headers()
-                            .unwrap_or_default();
-                        headers.push(partition_value_to_transport_header(
-                            &self.header_name,
-                            &self.serialization_strategy,
-                            partition.value,
-                        ));
-                        delivery.context_mut().set_transport_headers(headers);
-
-                        let pdata = delivery.with_payload(partition.batch.into());
-                        effect_handler.send_message_with_source_node(pdata).await?;
+                        match self
+                            .partition_header
+                            .add(delivery.context().metadata(), partition.value)
+                        {
+                            Ok(metadata) => {
+                                let pdata = delivery
+                                    .with_payload(partition.batch.into())
+                                    .with_metadata(metadata);
+                                effect_handler.send_message_with_source_node(pdata).await?;
+                            }
+                            Err(error) => {
+                                let pdata = delivery.with_payload(partition.batch.into());
+                                effect_handler
+                                    .notify_nack(NackMsg::new_permanent(
+                                        format!("context edit failed: {error}"),
+                                        pdata,
+                                    ))
+                                    .await?;
+                            }
+                        }
                     }
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
-                        let outbound_context = delivery.context().clone_detached();
+                        // form every output context before emitting so that a failed edit
+                        // rejects the whole input
+                        let partitions = match partitions
+                            .map(|partition| {
+                                let metadata = self
+                                    .partition_header
+                                    .add(delivery.context().metadata(), partition.value)?;
+                                Ok((metadata, partition.batch))
+                            })
+                            .collect::<Result<Vec<_>, ContextError>>()
+                        {
+                            Ok(partitions) => partitions,
+                            Err(error) => {
+                                effect_handler
+                                    .notify_nack(NackMsg::new_permanent(
+                                        format!("context edit failed: {error}"),
+                                        delivery.into_pdata(),
+                                    ))
+                                    .await?;
+                                return Ok(());
+                            }
+                        };
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
@@ -358,7 +427,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                         // send each partition with an outbound context and the partition value
                         // populated on the transport headers
-                        for partition in partitions {
+                        for (metadata, batch) in partitions {
                             let outbound_ctx_key = self
                                 .contexts
                                 .insert_outbound(inbound_ctx_key)
@@ -390,19 +459,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                 }
                             })?;
 
-                            // set the transport header
-                            let mut pdata_context = outbound_context.clone_detached();
-                            let mut headers =
-                                pdata_context.take_transport_headers().unwrap_or_default();
-                            headers.push(partition_value_to_transport_header(
-                                &self.header_name,
-                                &self.serialization_strategy,
-                                partition.value,
-                            ));
-                            pdata_context.set_transport_headers(headers);
-
-                            let outbound_batch_num_items = partition.batch.num_items();
-                            let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
+                            let outbound_batch_num_items = batch.num_items();
+                            let mut pdata = OtapPdata::new(metadata.into(), batch.into());
                             if let Some(flow_metrics_counter) = flow_metrics_counter {
                                 pdata.start_flow_metric();
 
@@ -452,11 +510,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
     }
 }
 
-fn partition_value_to_transport_header(
-    name: &ContextEntryName,
+fn serialize_partition_value(
     strategy: &PartitionValueSerializeStrategy,
     partition_value: PartitionValue,
-) -> TransportHeader {
+) -> (ValueKind, Vec<u8>) {
     let (value_kind, value_bytes) = match strategy {
         PartitionValueSerializeStrategy::ToBytesLossy {
             text_as_binary_header,
@@ -515,7 +572,7 @@ fn partition_value_to_transport_header(
             (ValueKind::Text, header_bytes)
         }
     };
-    TransportHeader::new(name.clone(), value_kind, value_bytes)
+    (value_kind, value_bytes)
 }
 
 impl ConfigNodeContextDeclaration for Config {
@@ -548,6 +605,18 @@ mod test {
             test_node,
         },
     };
+
+    use otel_arrow_dfe_config::context::ContextEntryName;
+    use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
+
+    fn partition_value_to_transport_header(
+        name: &ContextEntryName,
+        strategy: &PartitionValueSerializeStrategy,
+        partition_value: PartitionValue,
+    ) -> TransportHeader {
+        let (kind, bytes) = serialize_partition_value(strategy, partition_value);
+        TransportHeader::new(name.clone(), kind, bytes)
+    }
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
