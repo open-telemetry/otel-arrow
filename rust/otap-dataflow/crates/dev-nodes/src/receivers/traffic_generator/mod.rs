@@ -39,7 +39,7 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata_codec::OtapPayload;
+use otel_arrow_dfe_pdata_codec::{CodecRegistry, OtapPayload};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,6 +74,9 @@ const NANOS_PER_SECOND: u128 = 1_000_000_000;
 pub struct TrafficGeneratorReceiver {
     /// Configuration for the traffic generator
     config: Config,
+
+    /// Immutable codec selection shared with this pipeline's runtime services.
+    codec_registry: Arc<CodecRegistry>,
 
     /// Metrics for the traffic generator
     metrics: TrafficGeneratorMetrics,
@@ -151,9 +154,16 @@ fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config:
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, ConfigError> {
+        let codec_registry =
+            pipeline_ctx
+                .codec_registry()
+                .map_err(|error| ConfigError::InvalidUserConfig {
+                    error: error.to_string(),
+                })?;
         let metrics = TrafficGeneratorMetrics::register(&pipeline_ctx);
         Ok(Self {
             config,
+            codec_registry,
             metrics,
             pending_completions: 0,
         })
@@ -739,11 +749,13 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let producer =
-            TrafficProducer::from_config(&self.config).map_err(|e| Error::ReceiverError {
-                receiver: effect_handler.receiver_id(),
-                kind: ReceiverErrorKind::Configuration,
-                error: format!("Failed to generate producer: {}", e),
-                source_detail: String::new(),
+            TrafficProducer::from_config(&self.config, &self.codec_registry).map_err(|e| {
+                Error::ReceiverError {
+                    receiver: effect_handler.receiver_id(),
+                    kind: ReceiverErrorKind::Configuration,
+                    error: format!("Failed to generate producer: {}", e),
+                    source_detail: String::new(),
+                }
             })?;
 
         let transport_headers = build_transport_headers(self.config.transport_headers());

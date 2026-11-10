@@ -304,10 +304,10 @@ impl Config {
         &self.data_source
     }
 
-    /// Validates codec generation settings before a receiver starts.
+    /// Validates structural settings without selecting or constructing codec generators.
     pub fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
         self.traffic_config.validate()?;
-        let _ = self.codec_generators().map_err(|error| {
+        let _ = self.validate_codec_config().map_err(|error| {
             otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: error.to_string(),
             }
@@ -315,21 +315,23 @@ impl Config {
         Ok(())
     }
 
-    /// Creates one independent codec generator for each enabled primary signal.
-    pub(super) fn codec_generators(
-        &self,
-    ) -> Result<Vec<(SignalType, CodecGenerator)>, GenerationError> {
+    fn validate_codec_config(&self) -> Result<Option<&CodecConfig>, GenerationError> {
         if self.data_source != DataSource::Codec {
             if self.codec.is_some() {
                 return Err(GenerationError::Configuration(
                     "`codec` settings require data_source: codec".into(),
                 ));
             }
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let config = self.codec.as_ref().ok_or_else(|| {
             GenerationError::Configuration("data_source: codec requires `codec` settings".into())
         })?;
+        if config.max_batch_bytes == 0 {
+            return Err(GenerationError::Configuration(
+                "max_batch_bytes must be positive".into(),
+            ));
+        }
         if config.timestamp_unix_nano.is_some_and(|value| value < 0) {
             return Err(GenerationError::Configuration(
                 "timestamp_unix_nano must not be negative".into(),
@@ -348,7 +350,18 @@ impl Config {
                     .into(),
             ));
         }
-        let registry = CodecRegistry::global()?;
+        Ok(Some(config))
+    }
+
+    /// Constructs and validates retained generators using the pipeline's codec selection.
+    pub(super) fn codec_generators(
+        &self,
+        registry: &CodecRegistry,
+    ) -> Result<Vec<(SignalType, CodecGenerator)>, GenerationError> {
+        let Some(config) = self.validate_codec_config()? else {
+            return Ok(Vec::new());
+        };
+        let traffic = &self.traffic_config;
         let codec = registry.resolve(&PdataEncoding::from(config.encoding.clone()))?;
         [
             (SignalType::Logs, traffic.log_weight),

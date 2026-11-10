@@ -104,11 +104,12 @@ config:
     log_weight: 1
 ```
 
-`codec.encoding` selects a registered encoding and `codec.profile` selects one
-of its advertised generation profiles. Codecs opt in to generation separately
-from ordinary encoding support. Unknown encodings, unavailable profiles,
-unsupported signals, and codecs without a generator fail configuration
-validation.
+`codec.encoding` selects a registered encoding, honoring pipeline `codecs.bindings`,
+and `codec.profile` selects one of that implementation's advertised generation
+profiles. Codecs opt in to generation separately from ordinary encoding support.
+Structural settings are validated at config load time. Unknown encodings,
+unavailable profiles, unsupported signals, and codecs without a generator fail
+producer setup, after pipeline bindings are available and before traffic is emitted.
 
 The receiver seeds each codec generator internally.
 By default, each generated batch receives the current time. Fresh

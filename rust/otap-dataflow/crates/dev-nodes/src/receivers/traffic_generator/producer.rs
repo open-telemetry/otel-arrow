@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
-use otel_arrow_dfe_pdata_codec::{CodecGenerator, GenerationError, OtapPayload};
+use otel_arrow_dfe_pdata_codec::{CodecGenerator, CodecRegistry, GenerationError, OtapPayload};
 use prost::EncodeError;
 use weaver_forge::v1::registry::ResolvedRegistry;
 
@@ -43,7 +43,10 @@ impl TrafficProducer {
     /// This selects the appropriate `SignalGenerator` implementation based on
     /// `data_source` and builds either a `Fresh` or `Replay` production
     /// strategy from `generation_strategy`.
-    pub fn from_config(config: &Config) -> Result<Self, GenerateError> {
+    pub fn from_config(
+        config: &Config,
+        codec_registry: &CodecRegistry,
+    ) -> Result<Self, GenerateError> {
         config
             .validate()
             .map_err(|error| GenerateError::Configuration(error.to_string()))?;
@@ -73,7 +76,7 @@ impl TrafficProducer {
                 })
             }
             DataSource::Codec => Box::new(CodecSignalGenerator {
-                generators: config.codec_generators()?,
+                generators: config.codec_generators(codec_registry)?,
                 timestamp_unix_nano: config.codec_timestamp_unix_nano(),
             }),
         };
@@ -626,6 +629,7 @@ impl SignalGenerator for SyntheticGenerator {
 mod tests {
     use super::super::config::TrafficConfig;
     use super::*;
+    use otel_arrow_dfe_config::codecs::CodecsConfig;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, any_value::Value as AnyValueValue,
     };
@@ -634,11 +638,13 @@ mod tests {
     };
     use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
     use otel_arrow_dfe_pdata_codec::{
-        CodecGeneratorRegistration, CodecMetadata, CodecRegistration, GenerationProfile,
-        PdataEncoding, PdataGenerator, ResolvedCodec, builtins::OtlpBestEffortDecoder,
-        register_pdata_codec,
+        CodecGeneratorRegistration, CodecMetadata, CodecRegistration, CodecServiceBuilder,
+        GenerationProfile, PdataEncoding, PdataGenerator, RegistryError, ResolvedCodec,
+        builtins::OtlpBestEffortDecoder, register_pdata_codec,
     };
     use prost::Message;
+    use std::cell::Cell;
+    use std::sync::Arc;
 
     static FIXTURE_METADATA: CodecMetadata =
         CodecMetadata::new(PdataEncoding::new("trafficgen-test"), &[SignalType::Logs]);
@@ -669,6 +675,39 @@ mod tests {
                 },
             )),
     );
+
+    // The binding regression and its generator factory run synchronously on the same test thread.
+    thread_local! {
+        static BOUND_GENERATORS_CREATED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    const fn binding_fixture_codec(implementation: &'static str) -> CodecRegistration {
+        CodecRegistration::new(&FIXTURE_METADATA)
+            .with_implementation(implementation)
+            .with_decoder(|_| Box::new(OtlpBestEffortDecoder))
+            .with_item_counter(|_, bytes| {
+                LogsData::decode(bytes).ok().map(|logs| {
+                    logs.resource_logs
+                        .iter()
+                        .flat_map(|resource| &resource.scope_logs)
+                        .map(|scope| scope.log_records.len())
+                        .sum()
+                })
+            })
+    }
+
+    const fn bound_fixture_codec() -> CodecRegistration {
+        binding_fixture_codec("bound").with_generator(CodecGeneratorRegistration::new(
+            &[GenerationProfile {
+                name: "bound-only",
+                signals: &[SignalType::Logs],
+            }],
+            |codec, _| {
+                BOUND_GENERATORS_CREATED.with(|created| created.set(created.get() + 1));
+                Ok(Box::new(FixtureGenerator { codec, sequence: 0 }))
+            },
+        ))
+    }
 
     struct FixtureGenerator {
         codec: ResolvedCodec,
@@ -740,6 +779,69 @@ mod tests {
         LogsData::decode(bytes).unwrap()
     }
 
+    /// Scenario: An explicit codec binding overrides a distribution default or resolves an ambiguous encoding.
+    /// Guarantees: Config validation creates no generators; both strategies construct the bound implementation once and retain it for generation.
+    #[test]
+    fn codec_generation_honors_pipeline_bindings_without_reinitializing() {
+        static WITH_DEFAULT: [CodecRegistration; 2] = [
+            binding_fixture_codec("default").with_default_for_encoding(),
+            bound_fixture_codec(),
+        ];
+        static WITHOUT_DEFAULT: [CodecRegistration; 2] =
+            [binding_fixture_codec("default"), bound_fixture_codec()];
+        let bindings: CodecsConfig = serde_json::from_value(serde_json::json!({
+            "bindings": {"trafficgen-test": {"implementation": "bound"}}
+        }))
+        .unwrap();
+        for (registrations, has_default) in [(&WITH_DEFAULT, true), (&WITHOUT_DEFAULT, false)] {
+            let registry = CodecRegistry::validate(registrations).unwrap();
+            if has_default {
+                assert_eq!(
+                    registry
+                        .resolve(FIXTURE_METADATA.encoding())
+                        .unwrap()
+                        .implementation(),
+                    "default"
+                );
+            } else {
+                assert!(matches!(
+                    registry.resolve(FIXTURE_METADATA.encoding()),
+                    Err(RegistryError::AmbiguousImplementation { .. })
+                ));
+            }
+            let service = CodecServiceBuilder::from_registry(Arc::new(registry))
+                .with_configuration(CodecsConfig::resolve([&bindings]))
+                .build()
+                .unwrap();
+            for strategy in ["fresh", "pre_generated"] {
+                BOUND_GENERATORS_CREATED.with(|created| created.set(0));
+                let mut value = codec_config_value();
+                value["codec"]["profile"] = "bound-only".into();
+                value["generation_strategy"] = strategy.into();
+                super::super::validate_config(&value).unwrap();
+                BOUND_GENERATORS_CREATED.with(|created| assert_eq!(created.get(), 0));
+                let config: Config = serde_json::from_value(value).unwrap();
+                let mut producer =
+                    TrafficProducer::from_config(&config, service.registry()).unwrap();
+                BOUND_GENERATORS_CREATED.with(|created| assert_eq!(created.get(), 1));
+                for _ in 0..2 {
+                    let payload = producer
+                        .next_run()
+                        .unwrap()
+                        .unwrap()
+                        .next()
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(payload.format().codec().unwrap().implementation(), "bound");
+                    let logs = decode_codec_logs(payload, &service);
+                    assert_eq!(logs.resource_logs[0].scope_logs[0].log_records.len(), 2);
+                    producer.record_production(2);
+                }
+                BOUND_GENERATORS_CREATED.with(|created| assert_eq!(created.get(), 1));
+            }
+        }
+    }
+
     /// Scenario: Codec-backed trafficgen uses a controlled per-batch clock or a fixed override.
     /// Guarantees: Default timestamps refresh per batch, fixed overrides bypass the clock, and clock errors propagate.
     #[test]
@@ -750,7 +852,7 @@ mod tests {
             value["codec"]["timestamp_unix_nano"] = serde_json::json!(fixed);
             let config: Config = serde_json::from_value(value).unwrap();
             let mut generator = CodecSignalGenerator {
-                generators: config.codec_generators().unwrap(),
+                generators: config.codec_generators(service.registry()).unwrap(),
                 timestamp_unix_nano: config.codec_timestamp_unix_nano(),
             };
             for now in [42, 43] {
@@ -785,7 +887,7 @@ mod tests {
             let mut value = codec_config_value();
             value["generation_strategy"] = strategy.into();
             let config: Config = serde_json::from_value(value).unwrap();
-            let mut producer = TrafficProducer::from_config(&config).unwrap();
+            let mut producer = TrafficProducer::from_config(&config, service.registry()).unwrap();
             let mut first = producer
                 .next_run()
                 .unwrap()
@@ -836,7 +938,7 @@ mod tests {
             value["codec"]["timestamp_unix_nano"] = timestamp.into();
             value["generation_strategy"] = strategy.into();
             let config: Config = serde_json::from_value(value).unwrap();
-            let mut producer = TrafficProducer::from_config(&config).unwrap();
+            let mut producer = TrafficProducer::from_config(&config, service.registry()).unwrap();
             for _ in 0..2 {
                 let payload = producer
                     .next_run()
@@ -867,7 +969,7 @@ mod tests {
             value["generation_strategy"] = strategy.into();
             value["traffic_config"]["max_signal_count"] = 3.into();
             let config: Config = serde_json::from_value(value).unwrap();
-            let mut producer = TrafficProducer::from_config(&config).unwrap();
+            let mut producer = TrafficProducer::from_config(&config, service.registry()).unwrap();
             let mut counts = Vec::new();
             while let Some(run) = producer.next_run().unwrap() {
                 let count = run
@@ -886,12 +988,58 @@ mod tests {
         }
     }
 
-    /// Scenario: Trafficgen is configured with missing or incompatible codec generation options.
-    /// Guarantees: Validation rejects unsupported encodings, profiles, signals, and synthetic-only settings before receiver startup.
+    /// Scenario: Trafficgen is configured with missing codec settings, invalid limits, or synthetic-only options.
+    /// Guarantees: Structural errors are rejected at config load time without requiring a selected codec registry.
     #[test]
     fn codec_generation_validates_trafficgen_configuration() {
         let changes = [
             ("codec", serde_json::Value::Null, "requires `codec`"),
+            (
+                "codec",
+                serde_json::json!({
+                    "encoding": "trafficgen-test",
+                    "profile": "default",
+                    "timestamp_unix_nano": -1
+                }),
+                "timestamp_unix_nano must not be negative",
+            ),
+            (
+                "codec",
+                serde_json::json!({
+                    "encoding": "trafficgen-test",
+                    "profile": "default",
+                    "max_batch_bytes": 0
+                }),
+                "max_batch_bytes must be positive",
+            ),
+            ("data_source", "synthetic".into(), "require data_source"),
+            (
+                "resource_attributes",
+                serde_json::json!({"tenant.id": "test"}),
+                "does not support synthetic",
+            ),
+            (
+                "traffic_config",
+                serde_json::json!({"log_weight": 1, "log_body_size_bytes": 100}),
+                "does not support synthetic",
+            ),
+        ];
+        for (field, replacement, expected) in changes {
+            let mut value = codec_config_value();
+            value[field] = replacement;
+            let error = super::super::validate_config(&value)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    /// Scenario: Structurally valid codec settings request unsupported encodings, profiles, or signals.
+    /// Guarantees: Implementation-specific errors are deferred until producer setup and propagate before any traffic is emitted.
+    #[test]
+    fn codec_generation_validates_selected_implementation() {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+        let changes = [
             (
                 "codec",
                 serde_json::json!({"encoding": "missing", "profile": "default"}),
@@ -908,36 +1056,20 @@ mod tests {
                 "no profile",
             ),
             (
-                "codec",
-                serde_json::json!({
-                    "encoding": "trafficgen-test",
-                    "profile": "default",
-                    "timestamp_unix_nano": -1
-                }),
-                "timestamp_unix_nano must not be negative",
-            ),
-            ("data_source", "synthetic".into(), "require data_source"),
-            (
-                "resource_attributes",
-                serde_json::json!({"tenant.id": "test"}),
-                "does not support synthetic",
-            ),
-            (
                 "traffic_config",
                 serde_json::json!({"log_weight": 0, "metric_weight": 1, "max_batch_size": 2}),
                 "cannot decode Metrics",
-            ),
-            (
-                "traffic_config",
-                serde_json::json!({"log_weight": 1, "log_body_size_bytes": 100}),
-                "does not support synthetic",
             ),
         ];
         for (field, replacement, expected) in changes {
             let mut value = codec_config_value();
             value[field] = replacement;
+            super::super::validate_config(&value).unwrap();
             let config: Config = serde_json::from_value(value).unwrap();
-            let error = config.validate().unwrap_err().to_string();
+            let error = match TrafficProducer::from_config(&config, service.registry()) {
+                Ok(_) => panic!("invalid configuration was accepted: {field}"),
+                Err(error) => error.to_string(),
+            };
             assert!(error.contains(expected), "{error}");
         }
     }
