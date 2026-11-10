@@ -3752,6 +3752,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37d0827349ebe9ab2c39ad669a597a1515b4f94dd21f9d0d7f9589d57603ea2a"
 
 [[package]]
+name = "expfmt"
+version = "0.1.0"
+source = "git+https://github.com/prometheus/scrape.rs.git?rev=8fb0b8210d8e639a288d248e437e2201200dde70#8fb0b8210d8e639a288d248e437e2201200dde70"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7718,6 +7729,7 @@ dependencies = [
  "criterion",
  "csv-core",
  "dhat",
+ "expfmt",
  "flate2",
  "fluke-hpack",
  "flume",

@@ -97,6 +97,7 @@ arrow-schema = { version = "59.3" }
 arrow-array = { version = "59.3" }
 arrow-cast = { version = "59.3" }
 arrow-select = { version = "59.3" }
+expfmt = { git = "https://github.com/prometheus/scrape.rs.git", rev = "8fb0b8210d8e639a288d248e437e2201200dde70", default-features = false, features = ["arrow"] }
 wasmtime = { version = "49.0.3", default-features = false, features = ["runtime", "component-model", "component-model-async", "cranelift", "std"] }
 wasmtime-wasi = { version = "49.0.3", default-features = false, features = ["p3"] }
 wat = "1.262.0"
@@ -344,6 +345,7 @@ topic = ["otel-arrow-dfe-core-nodes/topic"]
 # Core receivers.
 host-metrics = ["otel-arrow-dfe-core-nodes/host-metrics"]
 journald = ["otel-arrow-dfe-core-nodes/journald"]
+prometheus = ["otel-arrow-dfe-core-nodes/prometheus"]
 syslog-cef = ["otel-arrow-dfe-core-nodes/syslog-cef"]
 
 # Core processors.
