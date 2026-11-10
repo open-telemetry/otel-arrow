@@ -20,7 +20,6 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
-otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-codec = { workspace = true }
@@ -144,10 +143,7 @@ contrib-exporters = [
 # Integrations with both sources and destinations.
 kafka = [
     "dep:chrono",
-    "dep:otel-arrow-dfe-core-nodes",
-    # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
-    # work will remove the need to include the full Syslog CEF receiver.
-    "otel-arrow-dfe-core-nodes/syslog-cef",
+    "otel-arrow-dfe-pdata-codec/syslog-cef",
     "dep:rdkafka",
     "dep:futures-channel",
     "dep:futures-util",

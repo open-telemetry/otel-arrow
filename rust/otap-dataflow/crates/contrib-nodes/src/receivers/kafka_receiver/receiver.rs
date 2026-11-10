@@ -28,7 +28,6 @@ use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
-use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::SYSLOG_JSON_ENCODING;
 use otel_arrow_dfe_engine::capability::auth::SaslCredential;
 use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
     SASL_CREDENTIAL_USABLE_MARGIN, SaslCredentialProvider as SaslCredentialProviderCapability,
@@ -45,6 +44,7 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata_codec::builtins::syslog::{MAX_JSON_INPUT_BYTES, SYSLOG_JSON_ENCODING};
 use otel_arrow_dfe_pdata_codec::{DecodeContext, ResolvedCodec};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
 use rdkafka::Message as _;
@@ -482,9 +482,7 @@ impl KafkaReceiver {
         data: &[u8],
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<OtapPdata, EngineError> {
-        if data.len()
-            > otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::MAX_JSON_INPUT_BYTES
-        {
+        if data.len() > MAX_JSON_INPUT_BYTES {
             return Err(EngineError::PdataConversionError {
                 error: "JSON payload exceeds 2 MiB".to_owned(),
             });

@@ -45,8 +45,10 @@ service that lazily creates and reuses decoder, encoder, and batcher instances.
 Nodes access that service through effect handlers; stateless item counters do
 not require an instance.
 
-The `syslog-batch` and `syslog-json` codecs are available when the
-syslog/CEF receiver is linked.
+The `syslog-batch` and `syslog-json` codecs are available when the `syslog-cef`
+feature of `otel-arrow-dfe-pdata-codec` is enabled. The syslog/CEF receiver and
+Kafka enable this feature transitively; direct codec consumers do not need to
+link the receiver.
 Native OTAP is the common processing representation, not a registered byte codec.
 
 ## Design model
@@ -599,10 +601,16 @@ decoding, encoding, borrowed views, stateless item counting, reusable buffers,
 native batching, and all three telemetry signals.
 
 The
-[syslog/CEF codec](../core-nodes/src/receivers/syslog_cef_receiver/codec.rs)
+[syslog/CEF codec](src/codecs/syslog/codec.rs)
 is a decode-only example. Its receiver emits independently decodable framed
 batches, its decoder materializes native log records only when required, and
 its native batcher merges frames without parsing their syslog contents.
+
+Enable `syslog-cef` to link the shared codec, parsers, and Arrow builders
+through `builtins::syslog`. The core receiver forwards its
+existing feature and retains socket handling, admission, flushing, and telemetry.
+See [Syslog Parsing Behavior](src/codecs/syslog/syslog-parsing-behavior.md)
+for format detection, edge cases, and output mappings.
 
 ## Cooperative syslog decoding
 

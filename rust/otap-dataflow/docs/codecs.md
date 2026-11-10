@@ -41,9 +41,10 @@ There is no global `defaults` section and no node-level codec configuration.
 A **binding** selects one configuration per encoding per pipeline. An
 **implementation** identifies registered code, independently of the bytes it
 supports. Built-in IDs are `otel.otlp`, `otel.syslog_cef`, and
-`otel.syslog_cef_json`.
-The latter two are available when the syslog/CEF receiver is linked, including
-through the Kafka feature.
+`otel.syslog_cef_json`. The latter two are available when the `syslog-cef` feature
+of `otel-arrow-dfe-pdata-codec` is enabled.
+The syslog/CEF receiver and Kafka enable this feature transitively; direct codec
+consumers do not need to link the receiver.
 
 Configure just OTLP, leaving other encodings unchanged:
 

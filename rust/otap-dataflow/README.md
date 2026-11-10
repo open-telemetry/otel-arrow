@@ -165,7 +165,10 @@ crates/otap/lib.rs:      OTAP Dataflow pipeline factory
 |-- encoder.rs:          Computes OTAP from OTLP view representations
 |-- metrics.rs           Metrics logic shared by several components
 |-- pdata.rs             The OtapPdata type, effect handler extensions
-|-- otap_grpc/           OTLP and OTAP shared gRPC support
+|-- grpc/                gRPC settings, clients, and OTLP/OTAP servers
+|-- http/                HTTP settings and the OTLP HTTP server
+|-- otlp/                Transport-independent OTLP helpers
+|-- receiver/            Cross-transport acknowledgement tracking
 |-- fixtures.rs          Test support
 |-- otap_mock.rs         Test support
 |-- testing/             Test support
