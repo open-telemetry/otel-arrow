@@ -42,7 +42,9 @@ invalidate absence conclusions from an otherwise complete pass.
   descriptor slots together. Registered reader and discovery demand alternate at
   release. Discovery waits for notification for at most 10 ms per handoff, checking
   cancellation after wakes. Expiry removes its pending demand and reports
-  `ProbeBusy`, making the pass incomplete; the worker retries on a later pass.
+  `ProbeBusy`. The first busy probe ends the pass as incomplete after delivering
+  collected observations; later candidates and roots do not repeat the wait.
+  The worker retries on a later pass.
   Resident readers continue independently. Unregistered external pressure returns
   `ProbeBusy` immediately. Identity preparation uses opportunistic nonblocking
   acquisition and cannot steal a registered handoff.

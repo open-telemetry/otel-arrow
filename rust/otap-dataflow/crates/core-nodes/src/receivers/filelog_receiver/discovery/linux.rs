@@ -145,7 +145,8 @@ impl<P: MatchPolicy> Scanner<P> {
     /// copying and check cancellation while blocked. No directory or source
     /// descriptor is held during delivery. Filesystem errors are not retried;
     /// registered reader contention waits for fair permit handoff with a 10 ms
-    /// cancellation-check timeout. Unregistered pressure returns ProbeBusy.
+    /// cancellation-check timeout. Any ProbeBusy ends the pass as incomplete
+    /// after delivering collected observations, including unregistered pressure.
     /// Environmental backoff and scheduling belong to the worker.
     pub fn scan(
         &mut self,
@@ -249,7 +250,7 @@ impl<P: MatchPolicy> Scanner<P> {
             budget,
             policy_available,
         };
-        for index in 0..self.config.include_roots.len() {
+        'roots: for index in 0..self.config.include_roots.len() {
             if work_left == 0 {
                 self.batch
                     .emit(&self.config.include_roots[index], ScanReason::Limit, None);
@@ -301,7 +302,7 @@ impl<P: MatchPolicy> Scanner<P> {
                     completion.cancelled = true;
                     break;
                 }
-                self.walker.step(
+                let progress = self.walker.step(
                     &context,
                     &mut self.batch,
                     &mut self.scratch,
@@ -310,8 +311,10 @@ impl<P: MatchPolicy> Scanner<P> {
                     &mut request,
                     &mut cancelled,
                 );
-                if !deliver(&mut self.batch, &mut completion, &mut consume) {
-                    break;
+                // Deliver positive observations and the ProbeBusy evidence before
+                // ending this pass. Do not pay another handoff wait in later roots.
+                if !deliver(&mut self.batch, &mut completion, &mut consume) || progress.is_break() {
+                    break 'roots;
                 }
             }
             if !completion.cancelled && !deliver(&mut self.batch, &mut completion, &mut consume) {

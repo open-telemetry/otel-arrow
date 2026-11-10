@@ -1855,3 +1855,49 @@ fn applied_evidence_changes_restart_inflight_validation() {
         }
     }
 }
+
+/// Scenario: Reopen validation halts a reader holding an unused grant or an empty partial.
+/// Guarantees: A one-slot budget serves the next reader while the halted reader keeps its lease and identity.
+#[test]
+fn halted_reader_releases_empty_slot_for_waiter() {
+    for allocated in [false, true] {
+        let mut s = scheduler(&[b"", b"next\n"], 8, 32, 1, 1, FramingConfig::Line(line()));
+        let mut sink = Sink::default();
+        let now = Instant::now();
+        let reader = s.readers[0].as_mut().unwrap();
+        let locator = reader.lease.locator();
+        let file_id = reader.file_id;
+        if allocated {
+            reader.partial = Some(
+                s.framing
+                    .create(0, true, &reader.window, reader.resume)
+                    .unwrap(),
+            );
+            s.slots = 1;
+        }
+        s.io.files[0].locator.inode += 10;
+        // Put B in the actual capacity queue before A's validation failure.
+        if allocated {
+            s.ready.swap(0, 1);
+            assert!(matches!(
+                tick(&mut s, &mut sink, now).reason,
+                Reason::Capacity
+            ));
+        }
+        let turn = tick(&mut s, &mut sink, now);
+        assert!(matches!(
+            turn.reason,
+            Reason::Transition(Transition::Replaced)
+        ));
+        let reader = s.readers[0].as_ref().unwrap();
+        assert!(reader.halted);
+        assert!(reader.partial.is_none());
+        assert!(!s.grants.contains(&0));
+        assert_eq!(reader.lease.locator(), locator);
+        assert_eq!(reader.file_id, file_id);
+        assert_eq!(reader.epoch, 7);
+        frames(&mut s, &mut sink, 1, now);
+        assert_eq!(sink.frames[0].key, ReaderKey(1));
+        assert_eq!(body(&sink.frames[0]), b"next");
+    }
+}

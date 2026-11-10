@@ -2700,3 +2700,72 @@ fn stalled_reader_handoff_returns_incomplete_pass() {
     assert_eq!(observations.len(), 1);
     assert_eq!(observations[0].3, b"data");
 }
+
+/// Scenario: Reader priority stalls the second candidate in a scan with several files and roots.
+/// Guarantees: The first busy probe ends incomplete coverage, delivers prior evidence, and leaves later candidates for a fresh pass.
+#[test]
+fn busy_probe_stops_pass_across_candidates_and_roots() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    let roots: Vec<_> = ["a", "b"]
+        .iter()
+        .map(|name| dir.path().join(name))
+        .collect();
+    for root in &roots {
+        fs::create_dir(root).unwrap();
+        for name in ["one", "two", "three"] {
+            fs::write(root.join(name), b"data").unwrap();
+        }
+    }
+    let mut cfg = config(&roots[0]);
+    cfg.include_roots = roots;
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    let mut reader = None;
+    let mut requests = 0;
+    let mut reasons = Vec::new();
+    let started = Instant::now();
+    let end = scanner.scan_with_requests(
+        1,
+        &budget,
+        |_| {
+            requests += 1;
+            if requests == 2 {
+                reader = Some(budget.request_reader(Waker::noop().clone()).unwrap());
+            }
+            ProbeRequest::Full
+        },
+        // Real thread parking is exercised without a timing assertion. This is
+        // only a failure guard; the request count proves there is no repeated wait.
+        || started.elapsed() >= Duration::from_secs(30),
+        |batch| {
+            reasons.extend(
+                batch
+                    .iter()
+                    .filter(|o| o.reason != Some(ScanReason::Directory))
+                    .map(|o| o.reason),
+            );
+            true
+        },
+    );
+    assert!(!end.complete);
+    assert!(!end.cancelled);
+    assert_eq!(requests, 2);
+    assert_eq!(reasons, [None, Some(ScanReason::ProbeBusy)]);
+    assert!(!budget.discovery_waiting());
+    drop(reader);
+    assert!(budget.try_reserve().is_some());
+    let (end, observations) = run(&mut scanner);
+    assert!(end.complete);
+    assert_eq!(observations.len(), 6);
+    assert!(observations.iter().all(|o| o.1.is_none() && o.3 == b"data"));
+}

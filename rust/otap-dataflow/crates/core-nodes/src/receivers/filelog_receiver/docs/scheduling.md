@@ -11,7 +11,14 @@ resumes. Unresolved batch deltas prevent eviction. Rotation pin controls and
 reader retirement remain receiver-integration prerequisites: retirement must
 resolve retained output and authorize partial-state disposal before releasing
 the lease and capacity. Until those controls exist, halted readers retain bounded
-capacity, and receiver integration must remain disabled.
+capacity for unfinished or rejected output, and receiver integration must remain
+disabled. Empty partial slots are released even when a reader halts; the lease
+and logical reader remain retained.
+
+Idle partial flush is not wired: nonzero `framing.force_flush_period` is not
+serviced by this scheduler. Idle-flush deadlines and source revalidation,
+startup descriptor-budget checks, and admission gating during global descriptor
+backoff remain receiver-integration prerequisites alongside retirement and pins.
 
 The caller supplies a policy-checked source opener, processing permission,
 cancellation and [batch sink](../scheduler/batch.rs). Sink preflight must account

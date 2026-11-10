@@ -56,6 +56,7 @@ enum WalkStep {
     Deliver,
     Finished,
     Failed,
+    ProbeBusy,
 }
 
 impl Walker {
@@ -111,20 +112,22 @@ impl Walker {
         work_left: &mut u64,
         request: &mut impl FnMut(&Path) -> ProbeRequest,
         cancelled: &mut impl FnMut() -> bool,
-    ) {
+    ) -> ControlFlow<()> {
         // Never perform work that can emit an observation without a free slot.
         if batch.is_full() {
-            return;
+            return ControlFlow::Continue(());
         }
         match self.visit(
             context, batch, scratch, buffer, work_left, request, cancelled,
         ) {
             WalkStep::Descend(child) => self.stack.push(child),
             WalkStep::Deliver => (),
+            WalkStep::ProbeBusy => return ControlFlow::Break(()),
             WalkStep::Finished | WalkStep::Failed => {
                 recycle_frame(&mut self.stack, &mut self.free_frames)
             }
         }
+        ControlFlow::Continue(())
     }
     fn visit<P: MatchPolicy>(
         &mut self,
@@ -261,6 +264,9 @@ impl Walker {
                     scratch,
                     cancelled,
                 );
+                if batch.last_mut().reason == Some(ScanReason::ProbeBusy) {
+                    return WalkStep::ProbeBusy;
+                }
                 if batch.last_mut().reason == Some(ScanReason::Cancelled) {
                     return WalkStep::Failed;
                 }
@@ -649,7 +655,7 @@ mod tests {
         };
         let mut work = 10;
         for attempt in 0..2 {
-            walker.step(
+            let _ = walker.step(
                 &context,
                 &mut batch,
                 &mut scratch,

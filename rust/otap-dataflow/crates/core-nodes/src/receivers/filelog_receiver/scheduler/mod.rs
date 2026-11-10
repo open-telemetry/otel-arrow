@@ -26,7 +26,7 @@ pub(crate) use framing::{Frame, FramingConfig, FramingFailure};
 pub(crate) use io::{AccessFailure, ReaderIo};
 use io::{Evidence, Validation};
 
-/// Opaque runtime key supplied by identity/composition, not a durable ID generator.
+/// Opaque runtime key allocated by the scheduler, not a durable file identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub(crate) struct ReaderKey(u64);
 
@@ -87,7 +87,7 @@ struct Limits {
     readers: usize,
     descriptors: usize,
     read_bytes: usize,
-    pub steps: usize,
+    steps: usize,
     partial_bytes: usize,
     eof_interval: Duration,
 }
@@ -556,12 +556,23 @@ impl<I: ReaderIo> Scheduler<I> {
         ) {
             self.clear_probe(Some(id));
         }
-        // Resource parking must not hold an empty payload slot. A split
-        // continuation or any buffered input keeps its reservation.
+        // Resource parking or a halt must not hold an empty payload slot.
+        // Unfinished input and rejected output keep their reservation; releasing
+        // empty capacity does not release the lease or authorize retirement.
         if matches!(
             reason,
-            Reason::Descriptors | Reason::Probe | Reason::OpenBackoff | Reason::Retry(_)
+            Reason::Descriptors
+                | Reason::Probe
+                | Reason::OpenBackoff
+                | Reason::Retry(_)
+                | Reason::Transition(_)
+                | Reason::Framing(_)
+                | Reason::Source(_)
         ) && reader.partial.as_ref().is_none_or(|p| !p.unfinished())
+            && !self
+                .rejected
+                .as_ref()
+                .is_some_and(|output| output.key == reader.key && output.epoch == reader.epoch)
         {
             self.release_slot(id, &mut reader);
         }

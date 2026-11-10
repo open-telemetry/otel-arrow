@@ -30,6 +30,9 @@ pub(crate) struct Rejected {
 /// Preflight includes retained batch/carry-over state
 /// and all known record/byte/progress-mark limits. It runs before *every* framing
 /// step, including empty-input replay, and before every source operation.
+/// A preflight Stop pauses all readers, including readers already represented in
+/// the batch. Composition must seal/resolve the batch or service its flush
+/// deadline, then call `resume_sink` once the blocking condition clears.
 ///
 /// Before the first turn, composition registers bounded context for each reader
 /// key: file ID, epoch, initial offset and framing resume from its identity seed,
