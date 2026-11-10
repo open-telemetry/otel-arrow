@@ -18,4 +18,4 @@ issues: [4504]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Use value.source selectors for captured headers, verified claims, or named composites. Capture is explicit and values are projected as strings without normalization. Log timestamps remain unchanged."
+subtext: "Use value.literal with type and value, or retain scalar and typed-shorthand literals. Select captured headers or verified claims with value.source.domain, or omit domain for named composites. Context and timestamps stay unchanged. Resolution and mutation record separate compute samples."

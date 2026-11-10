@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::enrichment::AttributeSource;
-use super::enrichment::{context_entries, resolve_source, validate_source};
+use super::enrichment::{SourceReader, context_entries};
 use super::*;
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context::policy::{
-    ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
-};
 use otel_arrow_dfe_config::context::transport_headers::{
     TransportHeader, TransportHeaders, ValueKind,
 };
@@ -18,6 +15,7 @@ use otel_arrow_dfe_engine::control::{
 };
 use otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan;
 use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
+use otel_arrow_dfe_otap::pdata::Context;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     collector::{
@@ -88,7 +86,11 @@ fn declared_pipeline_context(config: &Value) -> PipelineContext {
             )
         })
         .collect();
-    let prepared = prepare_context(config, json!(entries)).unwrap();
+    entries_pipeline_context(config, json!(entries))
+}
+
+fn entries_pipeline_context(config: &Value, entries: Value) -> PipelineContext {
+    let prepared = prepare_context(config, entries).unwrap();
     let mut ctx = pipeline_context().with_node_context(
         "attributes".into(),
         ATTRIBUTES_PROCESSOR_URN.into(),
@@ -103,12 +105,13 @@ fn prepare_context(
     config: &Value,
     entries: Value,
 ) -> Result<otel_arrow_dfe_engine::pdata_context::PreparedContext, EngineError> {
+    // Only compile context bindings; use a receiver available without optional features.
     let spec: otel_arrow_dfe_config::engine::OtelDataflowSpec = serde_json::from_value(json!({
         "version":"otel_dataflow/v1", "engine":{},
         "policies":{"context":{"entries":entries}},
         "groups":{"test":{"pipelines":{"attribute":{
             "nodes":{
-                "receiver":{"type":"receiver:otlp","config":{"protocols":{"http":{"listening_addr":"127.0.0.1:0"}}}},
+                "receiver":{"type":"receiver:internal_telemetry","config":{}},
                 "attributes":{"type":"processor:attribute","config":config},
                 "exporter":{"type":"exporter:noop","config":{}}
             },
@@ -122,6 +125,24 @@ fn prepare_context(
         &[],
     );
     factory.compile_initial_context(&spec.resolve())
+}
+
+fn bind_source(source: Value, entries: Value) -> (SourceReader, ContextMaterializationPlan) {
+    let config =
+        json!({"actions":[{"action":"insert","key":"x","value":{"source":source.clone()}}]});
+    let prepared = prepare_context(&config, entries).unwrap();
+    let pipeline = pipeline_context().pipeline_key();
+    let bindings = prepared
+        .bindings
+        .node_bindings(&pipeline, &"attributes".into())
+        .unwrap();
+    let reader = SourceReader::bind(&serde_json::from_value(source).unwrap(), bindings).unwrap();
+    let plan = prepared
+        .bindings
+        .context_materialization_plan(&pipeline)
+        .cloned()
+        .unwrap_or_default();
+    (reader, plan)
 }
 
 fn header_context(headers: &[(&str, ValueKind, &[u8])]) -> Context {
@@ -138,20 +159,36 @@ fn header_context(headers: &[(&str, ValueKind, &[u8])]) -> Context {
     context
 }
 
-fn store_context_text(context: &mut Context, name: &str, text: String) {
-    let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-        scope: ContextScope::Engine,
-        name: ContextEntryName::try_from(name).unwrap(),
-        definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
-            name: ContextEntryName::try_from("value").unwrap(),
-            value: text,
-        }]),
-    }])
-    .unwrap();
-    context.materialize_context(&plan);
+fn pipeline_plan(config: &Value, entries: Value) -> ContextMaterializationPlan {
+    prepare_context(config, entries)
+        .unwrap()
+        .bindings
+        .context_materialization_plan(&pipeline_context().pipeline_key())
+        .cloned()
+        .unwrap()
 }
 
 fn run(
+    config: Value,
+    messages: Vec<Message<OtapPdata>>,
+    check: impl FnOnce(Vec<OtapPdata>) + 'static,
+) {
+    let pipeline_ctx = declared_pipeline_context(&config);
+    run_in(pipeline_ctx, config, messages, check);
+}
+
+fn run_with_entries(
+    config: Value,
+    entries: Value,
+    messages: Vec<Message<OtapPdata>>,
+    check: impl FnOnce(Vec<OtapPdata>) + 'static,
+) {
+    let pipeline_ctx = entries_pipeline_context(&config, entries);
+    run_in(pipeline_ctx, config, messages, check);
+}
+
+fn run_in(
+    pipeline_ctx: PipelineContext,
     config: Value,
     messages: Vec<Message<OtapPdata>>,
     check: impl FnOnce(Vec<OtapPdata>) + 'static,
@@ -160,7 +197,7 @@ fn run(
     let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
     node_config.config = config;
     let processor = create_attributes_processor(
-        declared_pipeline_context(&node_config.config),
+        pipeline_ctx,
         test_node("attribute-enrichment"),
         Arc::new(node_config),
         rt.config(),
@@ -323,22 +360,33 @@ fn rejects_invalid_enrichment_configuration() {
         json!({"action":"update","key":"x","value":{"from_context":"x","from_headers":["host"]}}),
         json!({"action":"insert","key":"x","value":{"source":{"type":"none"}}}),
         json!({"action":"insert","key":"x","value":{"source":{"type":"all_captured"}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["entry:member"]}}}),
-        json!({"action":"upsert","key":"x","value":{"source":{"type":"transport_header","named":[]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":[""]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":[" "]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"transform":"unknown"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"value_type":"int"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"transform":null}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"transform":"authority_host","selection":"middle"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"transform":"authority_host","selection":null}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"selection":"first"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]},"transform":"int","selection":"last"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"none","named":["x"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"all_captured","named":["x"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"named","named":["x"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":null,"named":["x"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"type":null,"named":["x"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","type":"transport_header","named":["host"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","type":"named","named":["host"]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"],"extra":true}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["entry:member"]}}}),
+        json!({"action":"upsert","key":"x","value":{"source":{"domain":"transport_header","named":[]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":[""]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"named":[" "]}}}),
+        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"transform":"unknown"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"value_type":"int"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"transform":null}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"transform":"authority_host","selection":"middle"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"transform":"authority_host","selection":null}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"selection":"first"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"transform":"int","selection":"last"}}),
         json!({"action":"insert","key":"x","value":{"string":"host","selection":"last"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]},"transform":"unknown"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"transform":"unknown"}}),
         json!({"action":"insert","key":"x","value":1,"signals":[]}),
         json!({"action":"delete","key":"x","signals":["unknown"]}),
         json!({"action":"insert","key":"x","signals":null}),
+        json!({"action":"delete","key":"x","singals":["logs"]}),
+        json!({"action":"insert","key":"x","value":1,"from_headers":["host"]}),
+        json!({"action":"rename","source_key":"x","destination_key":"y","extra":true}),
     ] {
         let config = json!({"actions":[action]});
         assert!(validate_config(&config).is_err(), "{config}");
@@ -353,8 +401,26 @@ fn rejects_invalid_enrichment_configuration() {
     }
 }
 
-/// Scenario: Documented typed literals and existing scalar literals configure each value action.
-/// Guarantees: Both forms preserve scalar types through every signal, domain, and encoding; ambiguous objects fail.
+/// Scenario: Forward-compatible unsupported actions carry their own operation-specific fields.
+/// Guarantees: Unsupported actions remain accepted and ignored despite strict validation of supported actions.
+#[test]
+fn unsupported_actions_remain_ignored() {
+    let config = json!({"actions":[
+        {"action":"extract","key":"x","pattern":"(.*)","signals":["logs"]},
+        {"action":"convert","key":"y","converted_type":"string"}
+    ]});
+    validate_config(&config).unwrap();
+    let parsed: Config = serde_json::from_value(config).unwrap();
+    assert!(
+        compile_config(&parsed, SourceBindings::ValidateOnly)
+            .unwrap()
+            .iter()
+            .all(CompiledTransform::is_noop)
+    );
+}
+
+/// Scenario: Explicit literals, typed shorthand, and scalar literals configure each value action.
+/// Guarantees: All forms preserve scalar types through every signal, domain, and encoding; ambiguous objects fail.
 #[test]
 fn documented_typed_literals_preserve_scalar_behavior() {
     for (typed, scalar, expected) in [
@@ -378,6 +444,7 @@ fn documented_typed_literals_preserve_scalar_behavior() {
             json!(false),
             LiteralValue::Bool(false),
         ),
+        (json!({"bool":true}), json!(true), LiteralValue::Bool(true)),
         (
             json!({"int":i64::MIN}),
             json!(i64::MIN),
@@ -394,14 +461,28 @@ fn documented_typed_literals_preserve_scalar_behavior() {
             LiteralValue::Double(1.25),
         ),
     ] {
+        let literal_type = match &expected {
+            LiteralValue::Str(_) => "string",
+            LiteralValue::Bool(_) => "bool",
+            LiteralValue::Int(_) => "int64",
+            LiteralValue::Double(_) => "double",
+        };
+        let explicit = json!({"literal":{"type":literal_type,"value":scalar}});
+        let forms = [&typed, &scalar, &explicit];
         for action in ["insert", "upsert", "update"] {
-            for value in [&typed, &scalar] {
+            for value in forms {
                 let config = json!({"actions":[{"action":action,"key":"x","value":value}]});
                 validate_config(&config).unwrap();
                 let parsed: ConfiguredValue = serde_json::from_value(value.clone()).unwrap();
                 assert_eq!(serde_json::to_value(&parsed).unwrap(), *value);
+                let yaml = serde_yaml::to_string(value).unwrap();
+                let yaml_parsed: ConfiguredValue = serde_yaml::from_str(&yaml).unwrap();
+                assert_eq!(serde_json::to_value(&yaml_parsed).unwrap(), *value);
+                assert_eq!(serde_yaml::to_string(&yaml_parsed).unwrap(), yaml,);
                 match parsed {
-                    ConfiguredValue::Literal(value) | ConfiguredValue::Typed(value) => {
+                    ConfiguredValue::Literal(value)
+                    | ConfiguredValue::Typed(value)
+                    | ConfiguredValue::Explicit(value) => {
                         assert_eq!(value, expected);
                     }
                     ConfiguredValue::Dynamic { .. } => panic!("expected literal"),
@@ -414,7 +495,7 @@ fn documented_typed_literals_preserve_scalar_behavior() {
             LiteralValue::Int(value) => AnyValue::new_int(value),
             LiteralValue::Double(value) => AnyValue::new_double(value),
         };
-        for configured_value in [&typed, &scalar] {
+        for configured_value in forms {
             for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
                 for native in [false, true] {
                     let mut payload = fixture(signal, &[0]);
@@ -460,18 +541,174 @@ fn documented_typed_literals_preserve_scalar_behavior() {
         }
     }
     for value in [
-        json!({"string":"prod","source":{"type":"transport_header","named":["host"]}}),
+        json!({"string":"prod","source":{"domain":"transport_header","named":["host"]}}),
         json!({"string":"prod","transform":"authority_host"}),
         json!({"string":"prod","int":1}),
         json!({"int":"1"}),
         json!({"bool":null}),
         json!({"int":u64::MAX}),
+        json!({"literal":{"type":"string","value":true}}),
+        json!({"literal":{"type":"bool","value":"true"}}),
+        json!({"literal":{"type":"int64","value":"1234"}}),
+        json!({"literal":{"type":"int64","value":1.5}}),
+        json!({"literal":{"type":"int64","value":u64::MAX}}),
+        json!({"literal":{"type":"uint64","value":1234}}),
+        json!({"literal":{"type":"double","value":"0.5"}}),
+        json!({"literal":{"type":"string","value":null}}),
+        json!({"literal":{"type":"string"}}),
+        json!({"literal":{"value":"prod"}}),
+        json!({"literal":{"type":"string","value":"prod","extra":true}}),
+        json!({"literal":{"type":"string","value":"prod"},"extra":true}),
+        json!({"literal":{"type":"string","value":"prod"},"string":"prod"}),
+        json!({"literal":{"type":"string","value":"prod"},"source":{"named":["x"]}}),
+        json!({}),
+        json!([]),
     ] {
         assert!(
             validate_config(&json!({"actions":[
                 {"action":"insert","key":"x","value":value}
             ]}))
             .is_err()
+        );
+    }
+}
+
+/// Scenario: A literal or source object repeats keys or combines value representations in either order.
+/// Guarantees: Deserialization rejects ambiguous objects instead of selecting or overwriting one value.
+#[test]
+fn rejects_duplicate_and_ambiguous_value_fields() {
+    for value in [
+        r#"{"literal":{"type":"string","value":"prod"},"source":{"named":["x"]}}"#,
+        r#"{"source":{"named":["x"]},"literal":{"type":"string","value":"prod"}}"#,
+        r#"{"string":"prod","literal":{"type":"string","value":"prod"}}"#,
+        r#"{"literal":{"type":"string","value":"prod"},"literal":{"type":"string","value":"dev"}}"#,
+        r#"{"literal":{"type":"string","type":"bool","value":true}}"#,
+        r#"{"literal":{"type":"string","value":"prod","value":"dev"}}"#,
+        r#"{"string":"prod","string":"dev"}"#,
+        r#"{"source":{"named":["x"]},"source":{"named":["y"]}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<ConfiguredValue>(value).is_err(),
+            "{value}"
+        );
+    }
+}
+
+/// Scenario: Every supported action is flattened into a scoped action with or without a signal filter.
+/// Guarantees: Valid fields deserialize and round-trip, while unknown fields fail in parsing, validation, and construction.
+#[test]
+fn scoped_actions_reject_unknown_fields() {
+    for action in [
+        json!({"action":"rename","source_key":"old","destination_key":"new"}),
+        json!({"action":"delete","key":"x"}),
+        json!({"action":"insert","key":"x","value":{"literal":{"type":"string","value":"prod"}}}),
+        json!({"action":"upsert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]}}}),
+        json!({"action":"update","key":"x","value":{"string":"prod"}}),
+        json!({"action":"hash","key":"x","algorithm":"sha256","salt":"test"}),
+    ] {
+        for signals in [None, Some(json!(["logs", "metrics", "traces"]))] {
+            let mut action = action.clone();
+            if let Some(signals) = signals {
+                action["signals"] = signals;
+            }
+            let parsed: ScopedAction = serde_json::from_value(action.clone()).unwrap();
+            assert_eq!(parsed.signals.is_some(), action.get("signals").is_some());
+            assert_eq!(serde_json::to_value(parsed).unwrap(), action);
+            let config = json!({"actions":[action.clone()]});
+            validate_config(&config).unwrap();
+            _ = AttributesProcessor::from_config(declared_pipeline_context(&config), &config)
+                .unwrap();
+
+            for unknown in ["extra", "singals", "from_headers"] {
+                let mut invalid = action.clone();
+                invalid[unknown] = json!(true);
+                let error = serde_json::from_value::<ScopedAction>(invalid.clone()).unwrap_err();
+                assert!(error.to_string().contains("unknown field"), "{error}");
+                let config = json!({"actions":[invalid]});
+                assert!(validate_config(&config).is_err(), "{config}");
+                assert!(
+                    AttributesProcessor::from_config(pipeline_context(), &config).is_err(),
+                    "{config}"
+                );
+            }
+        }
+    }
+}
+
+/// Scenario: Source selectors use domain syntax or the existing type aliases.
+/// Guarantees: Both forms bind the same reads and serialize with domain for primitives or no domain for composites.
+#[test]
+fn existing_source_configs_remain_compatible() {
+    for (existing, canonical) in [
+        (
+            json!({"type":"transport_header","named":["X-Forwarded-Host","host"]}),
+            json!({"domain":"transport_header","named":["X-Forwarded-Host","host"]}),
+        ),
+        (
+            json!({"type":"authorized_identity","named":["missing","UserId"]}),
+            json!({"domain":"authorized_identity","named":["missing","UserId"]}),
+        ),
+        (
+            json!({"type":"named","named":["request"]}),
+            json!({"named":["request"]}),
+        ),
+        (
+            json!({"type":"named","named":["request:value"]}),
+            json!({"named":["request:value"]}),
+        ),
+    ] {
+        let expected = json!({"source":canonical});
+        let mut declarations = None;
+        for source in [existing, canonical] {
+            let value = json!({"source":source});
+            let parsed: ConfiguredValue = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&parsed).unwrap(), expected);
+            let config = json!({"actions":[{"action":"insert","key":"x","value":value}]});
+            validate_config(&config).unwrap();
+            let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+            let selected = parsed.context_declarations();
+            if let Some(expected) = &declarations {
+                assert_eq!(&selected, expected);
+            } else {
+                declarations = Some(selected);
+            }
+            let processor =
+                AttributesProcessor::from_config(declared_pipeline_context(&config), &config)
+                    .unwrap();
+            assert!(processor.plans.iter().all(|plan| !plan.is_noop()));
+        }
+    }
+}
+
+/// Scenario: A live update switches between domain syntax and a type alias for the same header.
+/// Guarantees: Both update directions reuse installed reads and activate the replacement action.
+#[test]
+fn source_type_alias_updates_reuse_compiled_reads() {
+    let domain = json!({"domain":"transport_header","named":["host"]});
+    let alias = json!({"type":"transport_header","named":["host"]});
+    for (initial, updated) in [(domain.clone(), alias.clone()), (alias, domain)] {
+        run(
+            json!({"actions":[{"action":"insert","key":"old","value":{"source":initial}}]}),
+            vec![
+                Message::Control(NodeControlMsg::Config {
+                    config: json!({"actions":[
+                        {"action":"insert","key":"selected","value":{"source":updated}}
+                    ]}),
+                }),
+                Message::PData(OtapPdata::new(
+                    header_context(&[("host", ValueKind::Text, b"example.test")]),
+                    fixture(SignalType::Logs, &[0]),
+                )),
+            ],
+            |mut output| {
+                assert_eq!(output.len(), 1);
+                let attributes = domains(output.remove(0).payload());
+                assert_eq!(value(&attributes[2], "old"), None);
+                assert_eq!(
+                    value(&attributes[2], "selected"),
+                    Some(&AnyValue::new_string("example.test"))
+                );
+            },
         );
     }
 }
@@ -488,28 +725,20 @@ fn ordered_headers_skip_unusable_candidates() {
         ("preferred", ValueKind::Text, b"first.example:443"),
         ("preferred", ValueKind::Text, b"second.example:443"),
     ]);
-    let source: AttributeSource = serde_json::from_value(json!({
-        "type":"transport_header","named":["absent", "preferred", "host"]
-    }))
-    .unwrap();
-    assert_eq!(
-        resolve_source(&source, &context).unwrap(),
-        Some(LiteralValue::Str("first.example:443".into()))
-    );
-    let fallback: AttributeSource = serde_json::from_value(json!({
-        "type":"transport_header","named":["missing", "host"]
-    }))
-    .unwrap();
-    assert_eq!(
-        resolve_source(&fallback, &context).unwrap(),
-        Some(LiteralValue::Str("last.example:80".into()))
-    );
-    let text: AttributeSource =
-        serde_json::from_value(json!({"type":"transport_header","named":["host"]})).unwrap();
-    assert_eq!(
-        resolve_source(&text, &context).unwrap(),
-        Some(LiteralValue::Str("last.example:80".into()))
-    );
+    for (named, expected) in [
+        (json!(["absent", "preferred", "host"]), "first.example:443"),
+        (json!(["missing", "host"]), "last.example:80"),
+        (json!(["host"]), "last.example:80"),
+    ] {
+        let (source, _) = bind_source(
+            json!({"domain":"transport_header","named":named}),
+            json!({}),
+        );
+        assert_eq!(
+            source.resolve(context.metadata()).unwrap(),
+            Some(LiteralValue::Str(expected.into()))
+        );
+    }
 }
 
 /// Scenario: Header candidates and repeated captured names use different ASCII casing.
@@ -528,12 +757,12 @@ fn mixed_case_headers_preserve_candidate_and_capture_order() {
             (captured_name, ValueKind::Text, b"first.example:443"),
             (candidate_name, ValueKind::Text, b"second.example:443"),
         ]);
-        let source: AttributeSource = serde_json::from_value(json!({
-            "type":"transport_header","named":[candidate_name, "host"]
-        }))
-        .unwrap();
+        let (source, _) = bind_source(
+            json!({"domain":"transport_header","named":[candidate_name, "host"]}),
+            json!({}),
+        );
         assert_eq!(
-            resolve_source(&source, &context).unwrap(),
+            source.resolve(context.metadata()).unwrap(),
             Some(LiteralValue::Str("first.example:443".into()))
         );
     }
@@ -553,29 +782,25 @@ fn stored_header_text_otlp_otap_parity() {
                         .unwrap()
                         .into();
                 }
+                let entries = json!({"request":[
+                    {"type":"transport_header","name":"host","store_as":"value"}
+                ]});
+                let config = json!({
+                    "apply_to":["resource","scope","signal"],
+                    "actions":[
+                        {"action":"insert","key":"insert_new","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                        {"action":"insert","key":"insert_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                        {"action":"upsert","key":"upsert_existing","value":{"source":{"named":["request:value"]}}},
+                        {"action":"update","key":"update_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                        {"action":"update","key":"update_missing","value":{"source":{"named":["request:value"]}}}
+                    ]
+                });
                 let mut context = header_context(&[("host", ValueKind::Text, text.as_bytes())]);
-                let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-                    scope: ContextScope::Engine,
-                    name: ContextEntryName::try_from("request").unwrap(),
-                    definition: ContextEntryDefinition(vec![ContextEntryPart::TransportHeader {
-                        name: ContextEntryName::try_from("host").unwrap(),
-                        store_as: Some(ContextEntryName::try_from("value").unwrap()),
-                    }]),
-                }])
-                .unwrap();
-                context.materialize_context(&plan);
+                context.materialize_context(&pipeline_plan(&config, entries.clone()));
                 let original_context = context.clone();
-                run(
-                    json!({
-                        "apply_to":["resource","scope","signal"],
-                        "actions":[
-                            {"action":"insert","key":"insert_new","value":{"source":{"type":"transport_header","named":["host"]}}},
-                            {"action":"insert","key":"insert_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
-                            {"action":"upsert","key":"upsert_existing","value":{"source":{"type":"named","named":["request:value"]}}},
-                            {"action":"update","key":"update_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
-                            {"action":"update","key":"update_missing","value":{"source":{"type":"named","named":["request:value"]}}}
-                        ]
-                    }),
+                run_with_entries(
+                    config,
+                    entries,
                     vec![Message::PData(OtapPdata::new(context, payload))],
                     move |mut output| {
                         assert_eq!(output.len(), 1);
@@ -702,52 +927,112 @@ fn static_dynamic_composition() {
     ] {
         assert!(
             validate_config(&json!({"actions":[
-                {"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["missing"]}}}, other
+                {"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["missing"]}}}, other
             ]}))
             .is_err()
         );
     }
     validate_config(&json!({"actions":[
-        {"action":"insert","key":"x","value":{"source":{"type":"named","named":["x"]}},"signals":["logs"]},
+        {"action":"insert","key":"x","value":{"source":{"named":["x"]}},"signals":["logs"]},
         {"action":"upsert","key":"x","value":1,"signals":["metrics","traces"]}
     ]}))
     .unwrap();
-    let config: Config = serde_json::from_value(json!({"actions":[
+    let value = json!({"actions":[
         {"action":"insert","key":"x","value":1},
-        {"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["missing"]}}}
-    ]}))
-    .unwrap();
-    let plans = compile_config(&config).unwrap();
+        {"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["missing"]}}}
+    ]});
+    let config: Config = serde_json::from_value(value.clone()).unwrap();
+    let mut plans = bind_config(&config, &declared_pipeline_context(&value)).unwrap();
     assert!(plan::is_noop(&plans[0].transform));
     assert!(plan::is_noop(
-        &plans[0].resolve(&Context::default()).unwrap()
+        plans[0].resolve(Context::default().metadata()).unwrap()
     ));
     let reversed: Config = serde_json::from_value(json!({"actions":[
-        {"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["missing"]}}},
+        {"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["missing"]}}},
         {"action":"insert","key":"x","value":1}
     ]}))
     .unwrap();
     assert!(!plan::is_noop(
-        &compile_config(&reversed).unwrap()[0].transform
+        &compile_config(&reversed, SourceBindings::ValidateOnly).unwrap()[0].transform
     ));
+}
+
+/// Scenario: Mixed value actions resolve present, missing, and changed headers on consecutive messages.
+/// Guarantees: One transform applies both value kinds with exact statistics, retains non-value rules, and never reuses a previous message's values.
+#[test]
+fn mixed_values_resolve_into_one_transform_without_stale_sources() {
+    let config_value = json!({"actions":[
+        {"action":"insert","key":"static_new","value":true},
+        {"action":"insert","key":"dynamic_new","value":{"source":{"domain":"transport_header","named":["host"]}}},
+        {"action":"upsert","key":"upsert_existing","value":42},
+        {"action":"upsert","key":"dynamic_upsert","value":{"source":{"domain":"transport_header","named":["host"]}}},
+        {"action":"update","key":"insert_existing","value":false},
+        {"action":"update","key":"update_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
+        {"action":"rename","source_key":"absent","destination_key":"renamed"},
+        {"action":"delete","key":"delete_absent"},
+        {"action":"hash","key":"hash_absent"}
+    ]});
+    let config: Config = serde_json::from_value(config_value.clone()).unwrap();
+    let mut plans = bind_config(&config, &declared_pipeline_context(&config_value)).unwrap();
+    for host in [Some("first.test"), None, Some("second.test")] {
+        let context = match host {
+            Some(host) => header_context(&[("host", ValueKind::Text, host.as_bytes())]),
+            None => Context::default(),
+        };
+        let transform = plans[0].resolve(context.metadata()).unwrap();
+        assert!(transform.rename.is_some());
+        assert!(transform.delete.is_some());
+        assert!(transform.hash.is_some());
+        let mut records = fixture(SignalType::Logs, &[0])
+            .try_into_otap(&CodecService::new().unwrap())
+            .unwrap();
+        let stats =
+            apply_attribute_transform(&mut records, ArrowPayloadType::LogAttrs, transform, true)
+                .unwrap()
+                .unwrap();
+        let expected_count = if host.is_some() { 2 } else { 1 };
+        assert_eq!(stats.inserted_entries, expected_count);
+        assert_eq!(stats.upserted_entries, expected_count);
+        assert_eq!(stats.updated_entries, expected_count);
+        let attributes = &domains(records.into())[2];
+        assert_eq!(
+            value(attributes, "static_new"),
+            Some(&AnyValue::new_bool(true))
+        );
+        assert_eq!(
+            value(attributes, "upsert_existing"),
+            Some(&AnyValue::new_int(42))
+        );
+        assert_eq!(
+            value(attributes, "insert_existing"),
+            Some(&AnyValue::new_bool(false))
+        );
+        let expected_dynamic = host.map(AnyValue::new_string);
+        for key in ["dynamic_new", "dynamic_upsert"] {
+            assert_eq!(value(attributes, key), expected_dynamic.as_ref());
+        }
+        let expected_update = expected_dynamic.unwrap_or_else(|| AnyValue::new_string("old"));
+        assert_eq!(value(attributes, "update_existing"), Some(&expected_update));
+    }
 }
 
 /// Scenario: Numeric-looking context strings include values outside signed OTAP integer range.
 /// Guarantees: Projection preserves the original text without interpreting, wrapping, or rejecting it.
 #[test]
 fn checked_context_attribute_range() {
-    let source: AttributeSource =
-        serde_json::from_value(json!({"type":"named","named":["received:value"]})).unwrap();
     for integer in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+        let (source, plan) = bind_source(
+            json!({"named":["received:value"]}),
+            json!({"received":[{"type":"constant","name":"value","value":integer.to_string()}]}),
+        );
         let mut context = Context::default();
-        store_context_text(&mut context, "received", integer.to_string());
+        context.materialize_context(&plan);
         assert_eq!(
-            resolve_source(&source, &context).unwrap(),
+            source.resolve(context.metadata()).unwrap(),
             Some(LiteralValue::Str(integer.to_string()))
         );
+        assert_eq!(source.resolve(Context::default().metadata()).unwrap(), None);
     }
-    let context = Context::default();
-    assert_eq!(resolve_source(&source, &context).unwrap(), None);
 }
 
 /// Scenario: Context text drives insert, upsert, and update for all signals and encodings.
@@ -780,21 +1065,25 @@ fn typed_context_actions_otlp_otap_parity() {
                         .unwrap()
                         .into();
                 }
+                let entries =
+                    json!({"scalar":[{"type":"constant","name":"value","value":text.clone()}]});
+                let config = json!({
+                    "apply_to":["resource","scope","signal"],
+                    "actions":[
+                        {"action":"insert","key":"insert_new","value":{"source":{"named":["scalar:value"]}}},
+                        {"action":"insert","key":"insert_existing","value":{"source":{"named":["scalar"]}}},
+                        {"action":"upsert","key":"upsert_existing","value":{"source":{"named":["scalar"]}}},
+                        {"action":"update","key":"update_existing","value":{"source":{"named":["scalar"]}}},
+                        {"action":"update","key":"update_missing","value":{"source":{"named":["scalar"]}}}
+                    ]
+                });
                 let mut context = Context::default();
-                store_context_text(&mut context, "scalar", text.clone());
+                context.materialize_context(&pipeline_plan(&config, entries.clone()));
                 let original_context = context.clone();
                 let expected = expected.clone();
-                run(
-                    json!({
-                        "apply_to":["resource","scope","signal"],
-                        "actions":[
-                            {"action":"insert","key":"insert_new","value":{"source":{"type":"named","named":["scalar:value"]}}},
-                            {"action":"insert","key":"insert_existing","value":{"source":{"type":"named","named":["scalar"]}}},
-                            {"action":"upsert","key":"upsert_existing","value":{"source":{"type":"named","named":["scalar"]}}},
-                            {"action":"update","key":"update_existing","value":{"source":{"type":"named","named":["scalar"]}}},
-                            {"action":"update","key":"update_missing","value":{"source":{"type":"named","named":["scalar"]}}}
-                        ]
-                    }),
+                run_with_entries(
+                    config,
+                    entries,
                     vec![Message::PData(OtapPdata::new(context, payload))],
                     move |mut output| {
                         assert_eq!(output.len(), 1);
@@ -835,24 +1124,27 @@ fn dynamic_actions_otlp_otap_signal_domain_parity() {
                         .unwrap()
                         .into();
                 }
-                let mut context = header_context(&[("host", ValueKind::Text, b"new.example:443")]);
-                store_context_text(&mut context, "received", "456".into());
+                let entries =
+                    json!({"received":[{"type":"constant","name":"value","value":"456"}]});
                 let config = json!({
                     "apply_to":[selected_domain],
                     "actions":[
                         {"action":"insert","key":"literal","value":true},
-                        {"action":"insert","key":"insert_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
-                        {"action":"insert","key":"insert_new","value":{"source":{"type":"transport_header","named":["host"]}}},
-                        {"action":"upsert","key":"upsert_existing","value":{"source":{"type":"transport_header","named":["host"]}}},
-                        {"action":"update","key":"update_existing","value":{"source":{"type":"named","named":["received"]}}},
-                        {"action":"update","key":"update_missing","value":{"source":{"type":"named","named":["received"]}}},
-                        {"action":"insert","key":"missing","value":{"source":{"type":"transport_header","named":["uncaptured"]}}},
-                        {"action":"insert","key":"logs_only","value":{"source":{"type":"named","named":["received"]}},"signals":["logs"]},
+                        {"action":"insert","key":"insert_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                        {"action":"insert","key":"insert_new","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                        {"action":"upsert","key":"upsert_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                        {"action":"update","key":"update_existing","value":{"source":{"named":["received"]}}},
+                        {"action":"update","key":"update_missing","value":{"source":{"named":["received"]}}},
+                        {"action":"insert","key":"missing","value":{"source":{"domain":"transport_header","named":["uncaptured"]}}},
+                        {"action":"insert","key":"logs_only","value":{"source":{"named":["received"]}},"signals":["logs"]},
                         {"action":"insert","key":"traces_only","value":true,"signals":["traces"]}
                     ]
                 });
-                run(
+                let mut context = header_context(&[("host", ValueKind::Text, b"new.example:443")]);
+                context.materialize_context(&pipeline_plan(&config, entries.clone()));
+                run_with_entries(
                     config,
+                    entries,
                     vec![Message::PData(OtapPdata::new(context, payload))],
                     move |mut output| {
                         assert_eq!(output.len(), 1);
@@ -917,8 +1209,8 @@ fn attribute_actions_preserve_log_timestamps_and_context() {
         let original_context = context.clone();
         run(
             json!({"apply_to":["resource"],"actions":[
-                {"action":"insert","key":"server.address","value":{"source":{"type":"transport_header","named":["host"]}}},
-                {"action":"insert","key":"missing","value":{"source":{"type":"named","named":["missing"]}}}
+                {"action":"insert","key":"server.address","value":{"source":{"domain":"transport_header","named":["host"]}}},
+                {"action":"insert","key":"missing","value":{"source":{"named":["missing"]}}}
             ]}),
             vec![Message::PData(OtapPdata::new(context, payload))],
             move |mut output| {
@@ -958,8 +1250,8 @@ fn attribute_actions_preserve_log_timestamps_and_context() {
 fn noop_retains_unconverted_payload() {
     for config in [
         json!({}),
-        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"type":"named","named":["absent"]}}}]}),
-        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"type":"transport_header","named":["host"]}}}]}),
+        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"named":["absent"]}}}]}),
+        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]}}}]}),
         json!({"actions":[{"action":"insert","key":"x","value":1,"signals":["metrics"]}]}),
     ] {
         let bytes = bytes::Bytes::from_static(b"not valid protobuf");
@@ -994,7 +1286,7 @@ fn configuration_update_preserves_last_valid_plan() {
             }),
             Message::Control(NodeControlMsg::Config {
                 config: json!({"actions":[
-                    {"action":"insert","key":"invalid","value":{"source":{"type":"transport_header","named":[]}}}
+                    {"action":"insert","key":"invalid","value":{"source":{"domain":"transport_header","named":[]}}}
                 ]}),
             }),
             Message::PData(OtapPdata::new(
@@ -1020,7 +1312,7 @@ fn removed_source_transform_updates_are_rejected() {
     let config = |transform: &str| {
         json!({"actions":[
             {"action":"insert","key":"selected","value":{
-                "source":{"type":"transport_header","named":["host"]},"transform":transform
+                "source":{"domain":"transport_header","named":["host"]},"transform":transform
             }}
         ]})
     };
@@ -1032,7 +1324,7 @@ fn removed_source_transform_updates_are_rejected() {
     };
     run(
         json!({"actions":[{"action":"insert","key":"selected","value":{
-            "source":{"type":"transport_header","named":["host"]}
+            "source":{"domain":"transport_header","named":["host"]}
         }}]}),
         vec![
             pdata(),
@@ -1066,78 +1358,69 @@ fn removed_source_transform_updates_are_rejected() {
     );
 }
 
-/// Scenario: Context lookups encounter absent entries, absent members, ambiguous entries, and multi-valued headers.
-/// Guarantees: Missing values remain no-ops while nonscalar and ambiguous values produce explicit errors.
+/// Scenario: Compiled context reads encounter absent composites, undeclared members, and nonscalar values.
+/// Guarantees: Missing data remains a no-op, undeclared members fail binding, and nonscalar or ambiguous values produce explicit errors.
 #[test]
 fn context_lookup_shape_validation() {
-    let source = |name: &str| {
-        serde_json::from_value::<AttributeSource>(json!({
-            "type":"named","named":[name]
-        }))
-        .unwrap()
-    };
-    let mut context = Context::default();
-    assert_eq!(
-        resolve_source(&source("request:value"), &context).unwrap(),
-        None
-    );
-    store_context_text(&mut context, "request", "first.example,last.example".into());
-    assert_eq!(resolve_source(&source("absent"), &context).unwrap(), None);
-    assert_eq!(
-        resolve_source(&source("absent:value"), &context).unwrap(),
-        None
-    );
-    assert_eq!(
-        resolve_source(&source("request:absent"), &context).unwrap(),
-        None
-    );
-    assert_eq!(
-        resolve_source(&source("request"), &context).unwrap(),
-        Some(LiteralValue::Str("first.example,last.example".into()))
-    );
-    let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-        scope: ContextScope::Engine,
-        name: ContextEntryName::try_from("request").unwrap(),
-        definition: ContextEntryDefinition(vec![
-            ContextEntryPart::Constant {
-                name: ContextEntryName::try_from("first").unwrap(),
-                value: "first.example".into(),
-            },
-            ContextEntryPart::Constant {
-                name: ContextEntryName::try_from("last").unwrap(),
-                value: "last.example".into(),
-            },
-        ]),
-    }])
-    .unwrap();
+    let scalar = json!({
+        "request":[{"type":"constant","name":"value","value":"first.example,last.example"}],
+        "absent":[{"type":"transport_header","name":"missing","store_as":"value"}]
+    });
+    for (reference, expected) in [
+        ("request:value", Some("first.example,last.example")),
+        ("request", Some("first.example,last.example")),
+        ("absent", None),
+        ("absent:value", None),
+    ] {
+        let (source, plan) = bind_source(json!({"named":[reference]}), scalar.clone());
+        assert_eq!(
+            source.resolve(Context::default().metadata()).unwrap(),
+            None,
+            "{reference}"
+        );
+        let mut context = Context::default();
+        context.materialize_context(&plan);
+        assert_eq!(
+            source.resolve(context.metadata()).unwrap(),
+            expected.map(|text| LiteralValue::Str(text.into())),
+            "{reference}"
+        );
+    }
+    let unknown = json!({"actions":[{"action":"insert","key":"x","value":{
+        "source":{"named":["request:absent"]}
+    }}]});
+    assert!(prepare_context(&unknown, scalar).is_err());
+    let multi = json!({"request":[
+        {"type":"constant","name":"first","value":"first.example"},
+        {"type":"constant","name":"last","value":"last.example"}
+    ]});
+    let (whole, plan) = bind_source(json!({"named":["request"]}), multi.clone());
     let mut context = Context::default();
     context.materialize_context(&plan);
     assert!(
-        resolve_source(&source("request"), &context)
+        whole
+            .resolve(context.metadata())
             .unwrap_err()
             .to_string()
             .contains("entry:member")
     );
+    let (member, _) = bind_source(json!({"named":["request:last"]}), multi);
     assert_eq!(
-        resolve_source(&source("request:last"), &context).unwrap(),
+        member.resolve(context.metadata()).unwrap(),
         Some(LiteralValue::Str("last.example".into()))
     );
-    let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-        scope: ContextScope::Engine,
-        name: ContextEntryName::try_from("request").unwrap(),
-        definition: ContextEntryDefinition(vec![ContextEntryPart::TransportHeader {
-            name: ContextEntryName::try_from("host").unwrap(),
-            store_as: None,
-        }]),
-    }])
-    .unwrap();
+    let (source, plan) = bind_source(
+        json!({"named":["request:host"]}),
+        json!({"request":[{"type":"transport_header","name":"host"}]}),
+    );
     let mut context = header_context(&[
         ("host", ValueKind::Text, b"first.example"),
         ("host", ValueKind::Text, b"last.example"),
     ]);
     context.materialize_context(&plan);
     assert!(
-        resolve_source(&source("request:host"), &context)
+        source
+            .resolve(context.metadata())
             .unwrap_err()
             .to_string()
             .contains("scalar")
@@ -1149,7 +1432,8 @@ fn context_lookup_shape_validation() {
         let mut context = header_context(&[("host", kind, bytes)]);
         context.materialize_context(&plan);
         assert!(
-            resolve_source(&source("request:host"), &context)
+            source
+                .resolve(context.metadata())
                 .unwrap_err()
                 .to_string()
                 .contains(reason)
@@ -1158,35 +1442,28 @@ fn context_lookup_shape_validation() {
 }
 
 /// Scenario: Dynamic request metadata has nonscalar context in an otherwise valid message.
-/// Guarantees: The processor sends a permanent Nack with the original payload and request context.
+/// Guarantees: Resolution records one failed compute sample and permanently Nacks the original payload and context.
 #[test]
 fn context_shape_error_permanently_nacks_original_message() {
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
     let rt = TestRuntime::new();
     let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-    config.config = json!({"actions":[{"action":"insert","key":"received","value":{"source":{"type":"named","named":["received"]}}}]});
+    config.config = json!({"actions":[{"action":"insert","key":"received","value":{"source":{"named":["received"]}}}]});
+    let entries = json!({"received":[
+        {"type":"constant","name":"first","value":"one"},
+        {"type":"constant","name":"second","value":"two"}
+    ]});
+    let plan = pipeline_plan(&config.config, entries.clone());
     let processor = create_attributes_processor(
-        declared_pipeline_context(&config.config),
+        entries_pipeline_context(&config.config, entries),
         test_node("range-nack"),
         Arc::new(config),
         rt.config(),
     )
     .unwrap();
     let mut context = Context::default();
-    let plan = ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-        scope: ContextScope::Engine,
-        name: ContextEntryName::try_from("received").unwrap(),
-        definition: ContextEntryDefinition(vec![
-            ContextEntryPart::Constant {
-                name: ContextEntryName::try_from("first").unwrap(),
-                value: "one".into(),
-            },
-            ContextEntryPart::Constant {
-                name: ContextEntryName::try_from("second").unwrap(),
-                value: "two".into(),
-            },
-        ]),
-    }])
-    .unwrap();
     context.materialize_context(&plan);
     let original_context = context.clone();
     let input = OtapPdata::new(context, fixture(SignalType::Logs, &[0])).test_subscribe_to(
@@ -1197,6 +1474,7 @@ fn context_shape_error_permanently_nacks_original_message() {
     let original = input.payload_ref().encoded_bytes().unwrap().clone();
     rt.set_processor(processor)
         .run_test(|mut ctx| async move {
+            ctx.set_node_interests(Interests::NODE_LOCAL_DURATION);
             let (sender, mut receiver) = pipeline_completion_msg_channel(1);
             ctx.set_pipeline_completion_sender(sender);
             ctx.process(Message::PData(input)).await.unwrap();
@@ -1212,22 +1490,126 @@ fn context_shape_error_permanently_nacks_original_message() {
             );
             let (context, _) = nack.refused.into_parts();
             assert_eq!(context.clone_detached(), original_context);
+            let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+            ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                metrics_reporter,
+            }))
+            .await
+            .unwrap();
+            let snapshots: Vec<_> = receiver
+                .try_iter()
+                .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
+                .collect();
+            assert_eq!(snapshots.len(), 1);
+            assert_eq!(
+                snapshots[0].measurement_attribute_value("outcome"),
+                Some("failure")
+            );
+            let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
+                panic!("expected duration distribution");
+            };
+            assert_eq!(duration.count(), 1);
         })
         .validate(|_| async {});
 }
 
-/// Scenario: encoded input resolves successfully but a fault-injected transform fails after decoding.
-/// Guarantees: RETURN_DATA recovers the original encoded payload and context, and mutation timing records one failure.
+/// Scenario: Literal or successfully resolved dynamic values precede malformed encoded input.
+/// Guarantees: Decode failure Nacks the original payload, emits no mutation metrics, and records only completed source resolution.
 #[test]
-fn encoded_transform_failure_returns_original_and_records_one_failure() {
+fn decode_failure_does_not_record_mutation_metrics() {
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+    for (value, resolution_count) in [
+        (json!("literal"), 0),
+        (
+            json!({"source":{"domain":"transport_header","named":["host"]}}),
+            1,
+        ),
+    ] {
+        let rt = TestRuntime::new();
+        let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        config.config = json!({"actions":[{"action":"insert","key":"added","value":value}]});
+        let processor = create_attributes_processor(
+            declared_pipeline_context(&config.config),
+            test_node("decode-failure"),
+            Arc::new(config),
+            rt.config(),
+        )
+        .unwrap();
+        let bytes = bytes::Bytes::from_static(b"not valid protobuf");
+        let input = OtapPdata::new(
+            header_context(&[("host", ValueKind::Text, b"example.test")]),
+            OtlpProtoBytes::ExportLogsRequest(bytes.clone()).into(),
+        )
+        .test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            CallData::new(),
+            11,
+        );
+        rt.set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                ctx.set_node_interests(Interests::NODE_LOCAL_DURATION);
+                let (sender, mut receiver) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(sender);
+                ctx.process(Message::PData(input)).await.unwrap();
+                assert!(ctx.drain_pdata().await.is_empty());
+                let PipelineCompletionMsg::DeliverNack { nack } = receiver.try_recv().unwrap()
+                else {
+                    panic!("expected Nack");
+                };
+                assert!(nack.permanent);
+                assert_eq!(nack.refused.payload_ref().encoded_bytes().unwrap(), &bytes);
+                let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .unwrap();
+                let snapshots: Vec<_> = receiver.try_iter().collect();
+                assert!(
+                    snapshots
+                        .iter()
+                        .all(|snapshot| snapshot.descriptor().name != "processor.attributes")
+                );
+                let compute: Vec<_> = snapshots
+                    .iter()
+                    .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
+                    .collect();
+                assert_eq!(compute.len(), resolution_count);
+                if resolution_count > 0 {
+                    assert_eq!(
+                        compute[0].measurement_attribute_value("outcome"),
+                        Some("success")
+                    );
+                    let MetricValue::Distribution(duration) = &compute[0].get_metrics()[0] else {
+                        panic!("expected duration distribution");
+                    };
+                    assert_eq!(duration.count(), 1);
+                }
+            })
+            .validate(|_| async {});
+    }
+}
+
+/// Scenario: Dynamic and literal values resolve but a fault-injected transform fails after decoding.
+/// Guarantees: RETURN_DATA recovers the original payload and context; resolution records one success and mutation records one failure.
+#[test]
+fn encoded_transform_failure_records_separate_outcomes() {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let rt = TestRuntime::new();
     let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-    config.config = json!({"actions":[{"action":"insert","key":"added","value":"literal"}]});
+    config.config = json!({"actions":[
+        {"action":"insert","key":"added","value":"literal"},
+        {"action":"insert","key":"dynamic","value":{
+            "source":{"domain":"transport_header","named":["host"]}
+        }}
+    ]});
     let mut processor =
-        AttributesProcessor::from_config(pipeline_context(), &config.config).unwrap();
+        AttributesProcessor::from_config(declared_pipeline_context(&config.config), &config.config)
+            .unwrap();
     // Inject a post-compilation collision to exercise mutation failure independently of decoding.
     processor.plans[0].transform.delete =
         Some(DeleteTransform::new(BTreeSet::from(["added".to_string()])));
@@ -1236,15 +1618,15 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
         .clone()
         .try_into_otap(&CodecService::new().unwrap())
         .unwrap();
-    let expected_error = processor
-        .apply_transform_with_stats(
-            &mut decoded,
-            SignalType::Logs,
-            &AttributesTransform::default(),
-            Interests::empty(),
-        )
-        .unwrap_err()
-        .to_string();
+    let expected_error = apply_attribute_transform(
+        &mut decoded,
+        ArrowPayloadType::LogAttrs,
+        &processor.plans[0].transform,
+        true,
+    )
+    .map_err(EngineError::from)
+    .unwrap_err()
+    .to_string();
     let context = header_context(&[("host", ValueKind::Text, b"example.test")]);
     let original_context = context.clone();
     let input = OtapPdata::new(context, payload).test_subscribe_to(
@@ -1287,76 +1669,97 @@ fn encoded_transform_failure_returns_original_and_records_one_failure() {
                 .try_iter()
                 .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
                 .collect();
-            assert_eq!(snapshots.len(), 1);
-            assert_eq!(
-                snapshots[0].measurement_attribute_value("outcome"),
-                Some("failure")
-            );
-            let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
-                panic!("expected duration distribution");
-            };
-            assert_eq!(duration.count(), 1);
+            assert_eq!(snapshots.len(), 2);
+            let mut outcomes = Vec::new();
+            for snapshot in &snapshots {
+                outcomes.push(
+                    snapshot
+                        .measurement_attribute_value("outcome")
+                        .expect("compute outcome"),
+                );
+                let MetricValue::Distribution(duration) = &snapshot.get_metrics()[0] else {
+                    panic!("expected duration distribution");
+                };
+                assert_eq!(duration.count(), 1);
+            }
+            outcomes.sort_unstable();
+            assert_eq!(outcomes, ["failure", "success"]);
         })
         .validate(|_| async {});
 }
 
-/// Scenario: literal, dynamic, and no-op mutation plans run with explicit duration interests.
-/// Guarantees: the processor's mutation path records one success sample per operation and none for no-op plans.
+/// Scenario: Literal, dynamic, mixed, and empty plans run with duration interests enabled or disabled.
+/// Guarantees: Dynamic resolution and mutation each record a sample; literal-only plans record one and empty or disabled plans record none.
 #[test]
-fn compute_duration_records_once_or_skips_noop() {
+fn compute_duration_records_each_compute_section() {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
-    for (config_value, expected_count) in [
+    for (config_value, samples) in [
         (json!({"actions":[]}), 0),
         (
-            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"type":"transport_header","named":["missing"]}}}]}),
-            0,
+            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"domain":"transport_header","named":["missing"]}}}]}),
+            1,
         ),
         (
             json!({"actions":[{"action":"insert","key":"added","value":"literal"}]}),
             1,
         ),
         (
-            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"type":"transport_header","named":["host"]}}}]}),
-            1,
+            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"domain":"transport_header","named":["host"]}}}]}),
+            2,
+        ),
+        (
+            json!({"actions":[
+                {"action":"insert","key":"static","value":"literal"},
+                {"action":"insert","key":"dynamic","value":{"source":{"domain":"transport_header","named":["host"]}}}
+            ]}),
+            2,
         ),
     ] {
-        let mut processor = AttributesProcessor::from_config(
-            declared_pipeline_context(&config_value),
-            &config_value,
-        )
-        .unwrap();
-        let context = header_context(&[("host", ValueKind::Text, b"example.test")]);
-        let dynamic = processor.plans[0].resolve(&context).unwrap();
-        let mut records = fixture(SignalType::Logs, &[0])
-            .try_into_otap(&CodecService::new().unwrap())
-            .unwrap();
-        let _ = processor
-            .apply_transform_with_stats(
-                &mut records,
-                SignalType::Logs,
-                &dynamic,
-                Interests::NODE_LOCAL_DURATION,
+        for interests in [Interests::empty(), Interests::NODE_LOCAL_DURATION] {
+            let rt = TestRuntime::new();
+            let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+            config.config = config_value.clone();
+            let processor = create_attributes_processor(
+                declared_pipeline_context(&config_value),
+                test_node("compute-duration"),
+                Arc::new(config),
+                rt.config(),
             )
             .unwrap();
-        let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
-        let mut metrics_reporter = metrics_reporter;
-        processor.compute_duration.report(&mut metrics_reporter);
-        let snapshots: Vec<_> = receiver
-            .try_iter()
-            .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
-            .collect();
-        assert_eq!(snapshots.len(), expected_count);
-        if expected_count == 1 {
-            assert_eq!(
-                snapshots[0].measurement_attribute_value("outcome"),
-                Some("success")
-            );
-            let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0] else {
-                panic!("expected duration distribution");
-            };
-            assert_eq!(duration.count(), 1);
+            let context = header_context(&[("host", ValueKind::Text, b"example.test")]);
+            let input = OtapPdata::new(context, fixture(SignalType::Logs, &[0]));
+            let expected_count = if interests.is_empty() { 0 } else { samples };
+            rt.set_processor(processor)
+                .run_test(move |mut ctx| async move {
+                    ctx.set_node_interests(interests);
+                    ctx.process(Message::PData(input)).await.unwrap();
+                    assert_eq!(ctx.drain_pdata().await.len(), 1);
+                    let (receiver, metrics_reporter) = MetricsReporter::create_new_and_receiver(32);
+                    ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter,
+                    }))
+                    .await
+                    .unwrap();
+                    let snapshots: Vec<_> = receiver
+                        .try_iter()
+                        .filter(|snapshot| snapshot.descriptor().name == "processor.compute")
+                        .collect();
+                    assert_eq!(snapshots.len(), usize::from(expected_count > 0));
+                    if expected_count > 0 {
+                        assert_eq!(
+                            snapshots[0].measurement_attribute_value("outcome"),
+                            Some("success")
+                        );
+                        let MetricValue::Distribution(duration) = &snapshots[0].get_metrics()[0]
+                        else {
+                            panic!("expected duration distribution");
+                        };
+                        assert_eq!(duration.count(), expected_count);
+                    }
+                })
+                .validate(|_| async {});
         }
     }
 }
@@ -1365,7 +1768,7 @@ fn compute_duration_records_once_or_skips_noop() {
 /// Guarantees: declarations materialize only selected composites, preserve fallback order, and reject unknown references.
 #[test]
 fn named_selector_declares_and_materializes_required_composites() {
-    let source = json!({"source":{"type":"named","named":["absent","request:number"]}});
+    let source = json!({"source":{"named":["absent","request:number"]}});
     let config = json!({"actions":[{"action":"insert","key":"sequence","value":source}]});
     let entries = json!({
         "absent":[{"type":"transport_header","name":"missing"}],
@@ -1400,12 +1803,21 @@ fn named_selector_declares_and_materializes_required_composites() {
             .is_none()
     );
     let selected: AttributeSource = serde_json::from_value(source["source"].clone()).unwrap();
+    let selected = SourceReader::bind(
+        &selected,
+        prepared
+            .bindings
+            .node_bindings(&pipeline, &"attributes".into())
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        resolve_source(&selected, &context).unwrap(),
+        selected.resolve(context.metadata()).unwrap(),
         Some(LiteralValue::Str("42".into()))
     );
-    run(
+    run_with_entries(
         config,
+        entries.clone(),
         vec![Message::PData(OtapPdata::new(
             context,
             fixture(SignalType::Logs, &[0]),
@@ -1418,7 +1830,7 @@ fn named_selector_declares_and_materializes_required_composites() {
         },
     );
     for reference in ["unknown", "request:unknown"] {
-        let config = json!({"actions":[{"action":"insert","key":"x","value":{"source":{"type":"named","named":[reference]}}}]});
+        let config = json!({"actions":[{"action":"insert","key":"x","value":{"source":{"named":[reference]}}}]});
         assert!(prepare_context(&config, entries.clone()).is_err());
     }
 }
@@ -1448,25 +1860,25 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
             Some(LiteralValue::Str("42".into())),
         ),
     ] {
-        let source: AttributeSource = serde_json::from_value(json!({
-            "type":"authorized_identity","named":names
-        }))
-        .unwrap();
-        validate_source(&source).unwrap();
-        assert_eq!(resolve_source(&source, &context).unwrap(), expected);
+        let (source, _) = bind_source(
+            json!({"domain":"authorized_identity","named":names}),
+            json!({}),
+        );
+        assert_eq!(source.resolve(context.metadata()).unwrap(), expected);
     }
-    let groups: AttributeSource = serde_json::from_value(json!({
-        "type":"authorized_identity","named":["groups","UserId"]
-    }))
-    .unwrap();
+    let (groups, _) = bind_source(
+        json!({"domain":"authorized_identity","named":["groups","UserId"]}),
+        json!({}),
+    );
     assert!(
-        resolve_source(&groups, &context)
+        groups
+            .resolve(context.metadata())
             .unwrap_err()
             .to_string()
             .contains("scalar")
     );
     let config = json!({"actions":[{"action":"insert","key":"user.id","value":{
-        "source":{"type":"authorized_identity","named":["missing","UserId"]}
+        "source":{"domain":"authorized_identity","named":["missing","UserId"]}
     }}]});
     run(
         config,
@@ -1488,9 +1900,9 @@ fn selector_declarations_and_live_update_binding_validation() {
         ContextDomain, ContextEntrySelectorForm, ContextEntryTake, ContextEntryTarget,
         ContextNameMatching,
     };
-    for (kind, expected) in [
+    for (domain, expected) in [
         (
-            "transport_header",
+            Some("transport_header"),
             ContextEntryTarget::Primitive {
                 domain: ContextDomain::TransportHeader,
                 name: ContextEntryName::try_from("x").unwrap(),
@@ -1498,7 +1910,7 @@ fn selector_declarations_and_live_update_binding_validation() {
             },
         ),
         (
-            "authorized_identity",
+            Some("authorized_identity"),
             ContextEntryTarget::Primitive {
                 domain: ContextDomain::AuthorizedIdentity,
                 name: ContextEntryName::try_from("x").unwrap(),
@@ -1506,14 +1918,17 @@ fn selector_declarations_and_live_update_binding_validation() {
             },
         ),
         (
-            "named",
+            None,
             ContextEntryTarget::Composite {
                 name: ContextEntryName::try_from("x").unwrap(),
             },
         ),
     ] {
-        let source: AttributeSource =
-            serde_json::from_value(json!({"type":kind,"named":["x"]})).unwrap();
+        let mut source = json!({"named":["x"]});
+        if let Some(domain) = domain {
+            source["domain"] = json!(domain);
+        }
+        let source: AttributeSource = serde_json::from_value(source).unwrap();
         let entries: Vec<_> = context_entries(&source).collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].target, expected);
@@ -1522,7 +1937,7 @@ fn selector_declarations_and_live_update_binding_validation() {
     }
     let config = |name| {
         json!({"actions":[{"action":"insert","key":"selected","value":{
-            "source":{"type":"transport_header","named":[name]}
+            "source":{"domain":"transport_header","named":[name]}
         }}]})
     };
     assert!(AttributesProcessor::from_config(pipeline_context(), &config("host")).is_err());
@@ -1558,7 +1973,7 @@ fn context_declarations_follow_effective_value_actions() {
         ("upsert", "upsert_existing"),
         ("update", "update_existing"),
     ] {
-        let source = json!({"source":{"type":"named","named":["request"]}});
+        let source = json!({"source":{"named":["request"]}});
         let config = json!({"actions":[
             {"action":operation,"key":key,"value":source},
             {"action":operation,"key":key,"value":"literal"}
@@ -1598,21 +2013,14 @@ fn context_declarations_follow_effective_value_actions() {
             {"action":operation,"key":key,"value":"literal","signals":["logs"]}
         ]});
         assert!(prepare_context(&partial, json!({})).is_err());
-        let prepared = prepare_context(
-            &partial,
-            json!({"request":[{"type":"constant","name":"value","value":"context"}]}),
-        )
-        .unwrap();
-        let pipeline = pipeline_context().pipeline_key();
-        let plan = prepared
-            .bindings
-            .context_materialization_plan(&pipeline)
-            .unwrap();
+        let entries = json!({"request":[{"type":"constant","name":"value","value":"context"}]});
+        let plan = pipeline_plan(&partial, entries.clone());
         for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
             let mut context = Context::default();
-            context.materialize_context(plan);
-            run(
+            context.materialize_context(&plan);
+            run_with_entries(
                 partial.clone(),
+                entries.clone(),
                 vec![Message::PData(OtapPdata::new(
                     context,
                     fixture(signal, &[0]),
@@ -1639,15 +2047,15 @@ fn context_declarations_follow_effective_value_actions() {
 fn live_update_preserves_bindings_when_candidate_order_and_grouping_change() {
     let initial = json!({"actions":[
         {"action":"insert","key":"first","value":{
-            "source":{"type":"transport_header","named":["forwarded","host"]}}},
+            "source":{"domain":"transport_header","named":["forwarded","host"]}}},
         {"action":"insert","key":"second","value":{
-            "source":{"type":"transport_header","named":["host"]}}}
+            "source":{"domain":"transport_header","named":["host"]}}}
     ]});
     let updated = json!({"actions":[
         {"action":"insert","key":"first","value":{
-            "source":{"type":"transport_header","named":["host","forwarded","host"]}}},
+            "source":{"domain":"transport_header","named":["host","forwarded","host"]}}},
         {"action":"insert","key":"second","value":{
-            "source":{"type":"transport_header","named":["forwarded","host"]}}}
+            "source":{"domain":"transport_header","named":["forwarded","host"]}}}
     ]});
     let parsed_initial: Config = serde_json::from_value(initial.clone()).unwrap();
     let parsed_updated: Config = serde_json::from_value(updated.clone()).unwrap();
