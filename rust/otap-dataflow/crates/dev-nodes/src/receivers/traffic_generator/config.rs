@@ -466,6 +466,16 @@ pub fn default_registry_path() -> VirtualDirectoryPath {
     }
 }
 
+/// Vendored copy of the semantic conventions registry (`vendor/semconv/model`)
+/// so tests don't need network access to load the registry.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn vendored_registry_path() -> VirtualDirectoryPath {
+    VirtualDirectoryPath::LocalFolder {
+        path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/semconv/model").to_owned(),
+    }
+}
+
 const fn default_enable_ack_nack() -> bool {
     false
 }
@@ -557,9 +567,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DataSource, GenerationStrategy, build_rotation_table};
+    use super::{
+        Config, DataSource, GenerationStrategy, SEMCONV_REGISTRY_REFSPEC, build_rotation_table,
+    };
     use otel_arrow_dfe_config::ContextEntryName;
     use serde_json::json;
+
+    /// The vendored registry must match the tag used by `default_registry_path`
+    /// so tests exercise the same registry as the receiver's default.
+    #[test]
+    fn vendored_registry_version_matches_default_refspec() {
+        let vendored_version = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendor/semconv/VERSION"
+        ));
+        assert_eq!(vendored_version.trim(), SEMCONV_REGISTRY_REFSPEC);
+    }
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
