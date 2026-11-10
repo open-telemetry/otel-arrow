@@ -955,7 +955,6 @@ mod summary_data_points {
     }
 
     static QUANTILE_ITEM_DT: DataType = DataType::Struct(&QUANTILE_ITEM_SCHEMA);
-    static VALUE_ITEM_DT: DataType = DataType::Simple(Float64);
 
     pub(super) static SCHEMA: Schema = Schema {
         fields: &[
@@ -999,11 +998,6 @@ mod summary_data_points {
                 data_type: DataType::List(&QUANTILE_ITEM_DT),
                 required: false,
             },
-            Field {
-                name: METRIC_VALUE,
-                data_type: DataType::List(&VALUE_ITEM_DT),
-                required: false,
-            },
         ],
         idx,
     };
@@ -1018,7 +1012,6 @@ mod summary_data_points {
             TIME_UNIX_NANO => Some(5),
             FLAGS => Some(6),
             SUMMARY_QUANTILE_VALUES => Some(7),
-            METRIC_VALUE => Some(8),
             _ => None,
         }
     }

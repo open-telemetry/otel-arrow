@@ -538,7 +538,6 @@ properties for the `resource` column's `id` field.
 | quantile             | List(Struct)          | -                   | No       | -                            | -        | List of quantil values                        |
 | quantile[].quantile  | Float64               | Float64             | No       | -                            | -        | Quantile quantile                             |
 | quantile[].value     | Float64               | Float64             | No       | -                            | -        | Quantile value                                |
-| value                | Float64               | List(Float64)       | No       | -                            | -        | Quantile observation values                   |
 | flags                | UInt32                | -                   | No       | -                            | -        | Data point flags                              |
 
 #### 5.3.4 HISTOGRAM_DATA_POINTS

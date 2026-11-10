@@ -1207,12 +1207,6 @@ mod test {
         ) {
             for spec_field in spec.fields() {
                 let path = format!("{context}.{}", spec_field.name);
-                if path == "SummaryDataPoints.value" {
-                    // The spec schema lists a top-level list column named `value` for summary
-                    // data points, but no OTAP encoder or decoder produces or reads it. Summary
-                    // values are carried in the `quantile` list of structs.
-                    continue;
-                }
                 let Some((_, template_field)) = template_fields.find(spec_field.name) else {
                     panic!("template schema is missing spec field {path}");
                 };
