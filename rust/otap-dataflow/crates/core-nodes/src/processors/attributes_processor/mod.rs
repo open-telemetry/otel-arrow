@@ -64,7 +64,7 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,
     opaque_string::OpaqueString,
-    pdata::{Context, OtapPdata, PdataEffectHandlerExtension},
+    pdata::{OtapPdata, OtapPdataUpdateCause, PdataEffectHandlerExtension},
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -91,14 +91,14 @@ mod plan;
 
 pub use enrichment::ConfiguredValue;
 pub use plan::{ActionSignal, ScopedAction};
-use plan::{CompiledTransform, signal_index};
+use plan::{CompiledTransform, SourceBindings, signal_index};
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Actions that can be performed on attributes.
-#[serde(tag = "action", rename_all = "lowercase")]
+#[serde(tag = "action", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Action {
     /// Rename an existing attribute key (non-standard; deviates from Go config).
     Rename {
@@ -118,7 +118,7 @@ pub enum Action {
     Insert {
         /// The attribute key to insert.
         key: String,
-        /// Existing literal value or nested dynamic source configuration.
+        /// Explicit literal, scalar literal, typed shorthand, or nested metadata source.
         value: ConfiguredValue,
     },
 
@@ -126,7 +126,7 @@ pub enum Action {
     Upsert {
         /// The attribute key to upsert.
         key: String,
-        /// Existing literal value or nested dynamic source configuration.
+        /// Explicit literal, scalar literal, typed shorthand, or nested metadata source.
         value: ConfiguredValue,
     },
 
@@ -134,7 +134,7 @@ pub enum Action {
     Update {
         /// The attribute key to update.
         key: String,
-        /// Existing literal value or nested dynamic source configuration.
+        /// Explicit literal, scalar literal, typed shorthand, or nested metadata source.
         value: ConfiguredValue,
     },
 
@@ -260,10 +260,7 @@ impl AttributesProcessor {
         pipeline_ctx: PipelineContext,
         config: Config,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let plans = compile_config(&config)?;
-        if !config.context_declarations().is_empty() {
-            config.validate_context_declarations(&pipeline_ctx)?;
-        }
+        let plans = bind_config(&config, &pipeline_ctx)?;
 
         let domains = parse_apply_to(config.apply_to.as_ref());
 
@@ -288,18 +285,16 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-        dynamic: &AttributesTransform,
-        interests: otel_arrow_dfe_engine::Interests,
     ) -> Result<SmallVec<[(metrics::TargetDomain, u64, u64, u64, u64, u64, u64); 3]>, EngineError>
     {
-        if plan::is_noop(&self.plans[signal_index(signal)].transform) && plan::is_noop(dynamic) {
+        let transform = &self.plans[signal_index(signal)].transform;
+        if plan::is_noop(transform) {
             return Ok(SmallVec::new());
         }
-        self.compute_duration.timed(interests, || {
-            let mut per_domain = SmallVec::new();
+        let mut per_domain = SmallVec::new();
 
-            // Helper closure to aggregate stats across a slice of payload types.
-            let mut apply_domain =
+        // Helper closure to aggregate stats across a slice of payload types.
+        let mut apply_domain =
             |payloads: &[ArrowPayloadType]| -> Result<(u64, u64, u64, u64, u64, u64), EngineError> {
                 let mut deleted = 0u64;
                 let mut renamed = 0u64;
@@ -308,60 +303,69 @@ impl AttributesProcessor {
                 let mut updated = 0u64;
                 let mut hashed = 0u64;
                 for &payload_ty in payloads {
-                    // Config validation guarantees disjoint keys, including rename endpoints.
-                    for transform in [&self.plans[signal_index(signal)].transform, dynamic] {
-                        if plan::is_noop(transform) {
-                            continue;
-                        }
-                        let stats =
-                            apply_attribute_transform(records, payload_ty, transform, true)?
-                                .unwrap_or_default();
-                        deleted += stats.deleted_entries;
-                        renamed += stats.renamed_entries;
-                        inserted += stats.inserted_entries;
-                        upserted += stats.upserted_entries;
-                        updated += stats.updated_entries;
-                        hashed += stats.hashed_entries;
-                    }
+                    let stats = apply_attribute_transform(records, payload_ty, transform, true)?
+                        .unwrap_or_default();
+                    deleted += stats.deleted_entries;
+                    renamed += stats.renamed_entries;
+                    inserted += stats.inserted_entries;
+                    upserted += stats.upserted_entries;
+                    updated += stats.updated_entries;
+                    hashed += stats.hashed_entries;
                 }
 
                 Ok((deleted, renamed, inserted, upserted, updated, hashed))
             };
 
-            if self.has_signal_domain {
-                let payloads = match signal {
-                    SignalType::Logs => payload_sets::LOGS_SIGNAL,
-                    SignalType::Metrics => payload_sets::METRICS_SIGNAL,
-                    SignalType::Traces => payload_sets::TRACES_SIGNAL,
-                };
-                let (d, r, i, u, upd, h) = apply_domain(payloads)?;
-                per_domain.push((metrics::TargetDomain::Signal, d, r, i, u, upd, h));
-            }
+        if self.has_signal_domain {
+            let payloads = match signal {
+                SignalType::Logs => payload_sets::LOGS_SIGNAL,
+                SignalType::Metrics => payload_sets::METRICS_SIGNAL,
+                SignalType::Traces => payload_sets::TRACES_SIGNAL,
+            };
+            let (d, r, i, u, upd, h) = apply_domain(payloads)?;
+            per_domain.push((metrics::TargetDomain::Signal, d, r, i, u, upd, h));
+        }
 
-            if self.has_resource_domain {
-                let (d, r, i, u, upd, h) = apply_domain(payload_sets::RESOURCE_ONLY)?;
-                per_domain.push((metrics::TargetDomain::Resource, d, r, i, u, upd, h));
-            }
+        if self.has_resource_domain {
+            let (d, r, i, u, upd, h) = apply_domain(payload_sets::RESOURCE_ONLY)?;
+            per_domain.push((metrics::TargetDomain::Resource, d, r, i, u, upd, h));
+        }
 
-            if self.has_scope_domain {
-                let (d, r, i, u, upd, h) = apply_domain(payload_sets::SCOPE_ONLY)?;
-                per_domain.push((metrics::TargetDomain::Scope, d, r, i, u, upd, h));
-            }
+        if self.has_scope_domain {
+            let (d, r, i, u, upd, h) = apply_domain(payload_sets::SCOPE_ONLY)?;
+            per_domain.push((metrics::TargetDomain::Scope, d, r, i, u, upd, h));
+        }
 
-            Ok(per_domain)
-        })
+        Ok(per_domain)
     }
 }
 
-fn compile_config(config: &Config) -> Result<[CompiledTransform; 3], ConfigError> {
+fn compile_config(
+    config: &Config,
+    bindings: SourceBindings<'_>,
+) -> Result<[CompiledTransform; 3], ConfigError> {
     for action in &config.actions {
         action.validate()?;
     }
     Ok([
-        CompiledTransform::new(&config.actions, SignalType::Logs)?,
-        CompiledTransform::new(&config.actions, SignalType::Metrics)?,
-        CompiledTransform::new(&config.actions, SignalType::Traces)?,
+        CompiledTransform::new(&config.actions, SignalType::Logs, bindings)?,
+        CompiledTransform::new(&config.actions, SignalType::Metrics, bindings)?,
+        CompiledTransform::new(&config.actions, SignalType::Traces, bindings)?,
     ])
+}
+
+fn bind_config(
+    config: &Config,
+    pipeline_ctx: &PipelineContext,
+) -> Result<[CompiledTransform; 3], ConfigError> {
+    if config.context_declarations().is_empty() {
+        return compile_config(config, SourceBindings::ValidateOnly);
+    }
+    config.validate_context_declarations(pipeline_ctx)?;
+    let bindings = pipeline_ctx.node_bindings().ok_or_else(|| {
+        enrichment::invalid_config("attribute context sources require compiled node bindings")
+    })?;
+    compile_config(config, SourceBindings::Node(&bindings))
 }
 
 fn validate_config(value: &Value) -> Result<(), ConfigError> {
@@ -369,7 +373,7 @@ fn validate_config(value: &Value) -> Result<(), ConfigError> {
         serde_json::from_value(value.clone()).map_err(|error| ConfigError::InvalidUserConfig {
             error: error.to_string(),
         })?;
-    compile_config(&config).map(|_| ())
+    compile_config(&config, SourceBindings::ValidateOnly).map(|_| ())
 }
 
 #[async_trait(?Send)]
@@ -387,10 +391,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                             error: error.to_string(),
                         })
                         .and_then(|config| {
-                            let plans = compile_config(&config)?;
-                            if !config.context_declarations().is_empty() {
-                                config.validate_context_declarations(&self.pipeline_ctx)?;
-                            }
+                            let plans = bind_config(&config, &self.pipeline_ctx)?;
                             Ok((config, plans))
                         });
                     match replacement {
@@ -418,7 +419,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 }
                 _ => Ok(()),
             },
-            Message::PData(mut pdata) => {
+            Message::PData(pdata) => {
                 let signal = pdata.signal_type();
                 if self.plans[signal_index(signal)].is_noop() {
                     return effect_handler
@@ -426,47 +427,40 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         .await
                         .map_err(Into::into);
                 }
-                let resolved = self.plans[signal_index(signal)].resolve(pdata.context_mut());
-                let dynamic = match resolved {
-                    Ok(dynamic) => dynamic,
-                    Err(error) => {
-                        self.metrics.record_transform_outcome(
-                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
-                        );
+                if self.plans[signal_index(signal)].has_dynamic_values() {
+                    // Resolve before decoding so missing-only plans preserve the original encoded payload.
+                    let is_noop = match effect_handler.timed(&self.compute_duration, || {
+                        self.plans[signal_index(signal)]
+                            .resolve(pdata.metadata())
+                            .map(plan::is_noop)
+                    }) {
+                        Ok(is_noop) => is_noop,
+                        Err(error) => {
+                            self.metrics.record_transform_outcome(
+                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                            );
+                            return effect_handler
+                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                                .await;
+                        }
+                    };
+                    if is_noop {
                         return effect_handler
-                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                            .await;
+                            .send_message_with_source_node(pdata)
+                            .await
+                            .map_err(Into::into);
                     }
-                };
-                if plan::is_noop(&self.plans[signal_index(signal)].transform)
-                    && plan::is_noop(&dynamic)
-                {
-                    let res = effect_handler
-                        .send_message_with_source_node(pdata)
-                        .await
-                        .map_err(|e| e.into());
-                    return res;
                 }
-
-                let (delivery, mut records) = match effect_handler.prepare_otap_work(pdata).await {
-                    Ok(work) => work,
-                    Err(error) => {
-                        let (error, pdata) = error.into_parts();
-                        effect_handler
-                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                            .await?;
-                        return Ok(());
-                    }
-                };
                 // Apply transform across selected domains and record per-(action, domain) stats.
-                let result = self.apply_transform_with_stats(
-                    &mut records,
-                    signal,
-                    &dynamic,
-                    effect_handler.node_interests(),
-                );
-                match result {
-                    Ok(domain_stats) => {
+                let result = effect_handler
+                    .update_otap(pdata, |records| {
+                        effect_handler.timed(&self.compute_duration, || {
+                            self.apply_transform_with_stats(records, signal)
+                        })
+                    })
+                    .await;
+                let pdata = match result {
+                    Ok((pdata, domain_stats)) => {
                         for (domain, deleted, renamed, inserted, upserted, updated, hashed) in
                             domain_stats
                         {
@@ -510,22 +504,23 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         self.metrics.record_transform_outcome(
                             otel_arrow_dfe_telemetry::common_attributes::Outcome::Success,
                         );
+                        pdata.into_pdata()
                     }
-                    Err(e) => {
-                        self.metrics.record_transform_outcome(
-                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
-                        );
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        if matches!(&error, OtapPdataUpdateCause::Update(_)) {
+                            self.metrics.record_transform_outcome(
+                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                            );
+                        }
                         return effect_handler
-                            .notify_nack(NackMsg::new_permanent(
-                                e.to_string(),
-                                delivery.into_pdata(),
-                            ))
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
                             .await;
                     }
-                }
+                };
 
                 effect_handler
-                    .send_message_with_source_node(delivery.with_payload(records.into()))
+                    .send_message_with_source_node(pdata)
                     .await
                     .map_err(|e| e.into())
             }

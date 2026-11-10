@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use enrichment::invalid_config;
+use enrichment::{SourceReader, invalid_config};
+use otel_arrow_dfe_engine::pdata_context::{Metadata, NodeBindings};
 
 /// One action with an optional telemetry-signal filter.
+///
+/// [`Action`] rejects unknown fields. Serde does not support
+/// `deny_unknown_fields` on this wrapper alongside `serde(flatten)`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopedAction {
     /// The attribute operation.
@@ -94,15 +98,28 @@ pub(super) fn effective_value_actions(
         })
 }
 
-struct DynamicAction {
+struct ValueAction {
     operation: Operation,
     key: String,
-    source: enrichment::AttributeSource,
+    value: CompiledValue,
+}
+
+enum CompiledValue {
+    Literal(LiteralValue),
+    Dynamic(SourceReader),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SourceBindings<'a> {
+    /// Validate destinations without retaining executable dynamic reads.
+    ValidateOnly,
+    /// Bind effective sources during construction or reconfiguration.
+    Node(&'a NodeBindings),
 }
 
 pub(super) struct CompiledTransform {
     pub(super) transform: AttributesTransform,
-    dynamic: Vec<DynamicAction>,
+    values: Vec<ValueAction>,
 }
 
 pub(super) fn is_noop(transform: &AttributesTransform) -> bool {
@@ -128,11 +145,19 @@ fn values_transform(
 }
 
 impl CompiledTransform {
-    pub(super) fn is_noop(&self) -> bool {
-        is_noop(&self.transform) && self.dynamic.is_empty()
+    pub(super) fn has_dynamic_values(&self) -> bool {
+        !self.values.is_empty()
     }
 
-    pub(super) fn new(actions: &[ScopedAction], signal: SignalType) -> Result<Self, ConfigError> {
+    pub(super) fn is_noop(&self) -> bool {
+        is_noop(&self.transform) && !self.has_dynamic_values()
+    }
+
+    pub(super) fn new(
+        actions: &[ScopedAction],
+        signal: SignalType,
+        bindings: SourceBindings<'_>,
+    ) -> Result<Self, ConfigError> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
         let mut inserts = BTreeMap::new();
@@ -190,42 +215,66 @@ impl CompiledTransform {
             ))
         })?;
 
-        let mut dynamic = Vec::new();
-        let mut split = |sources: BTreeMap<String, ConfiguredValue>, operation| {
-            sources
-                .into_iter()
-                .filter_map(|(key, value)| match value {
-                    ConfiguredValue::Literal(value) | ConfiguredValue::Typed(value) => {
-                        Some((key, value))
+        let mut values = Vec::new();
+        let mut has_dynamic = false;
+        let mut split = |sources: BTreeMap<String, ConfiguredValue>,
+                         operation|
+         -> Result<BTreeMap<String, LiteralValue>, ConfigError> {
+            let mut literals = BTreeMap::new();
+            for (key, value) in sources {
+                let value = match value {
+                    ConfiguredValue::Literal(value)
+                    | ConfiguredValue::Typed(value)
+                    | ConfiguredValue::Explicit(value) => {
+                        _ = literals.insert(key.clone(), value.clone());
+                        CompiledValue::Literal(value)
                     }
-                    ConfiguredValue::Dynamic { source } => {
-                        dynamic.push(DynamicAction {
-                            operation,
-                            key,
-                            source,
-                        });
-                        None
-                    }
-                })
-                .collect()
+                    ConfiguredValue::Dynamic { source } => match bindings {
+                        SourceBindings::Node(bindings) => {
+                            has_dynamic = true;
+                            CompiledValue::Dynamic(SourceReader::bind(&source, bindings)?)
+                        }
+                        SourceBindings::ValidateOnly => continue,
+                    },
+                };
+                values.push(ValueAction {
+                    operation,
+                    key,
+                    value,
+                });
+            }
+            Ok(literals)
         };
-        let values = values_transform(
-            split(inserts, Operation::Insert),
-            split(upserts, Operation::Upsert),
-            split(updates, Operation::Update),
+        let literals = values_transform(
+            split(inserts, Operation::Insert)?,
+            split(upserts, Operation::Upsert)?,
+            split(updates, Operation::Update)?,
         );
-        transform.insert = values.insert;
-        transform.upsert = values.upsert;
-        transform.update = values.update;
-        Ok(Self { transform, dynamic })
+        transform.insert = literals.insert;
+        transform.upsert = literals.upsert;
+        transform.update = literals.update;
+        if !has_dynamic {
+            values.clear();
+        }
+        Ok(Self { transform, values })
     }
 
-    pub(super) fn resolve(&self, context: &Context) -> Result<AttributesTransform, EngineError> {
+    pub(super) fn resolve(
+        &mut self,
+        metadata: &Metadata,
+    ) -> Result<&AttributesTransform, EngineError> {
+        if !self.has_dynamic_values() {
+            return Ok(&self.transform);
+        }
         let mut inserts = BTreeMap::new();
         let mut upserts = BTreeMap::new();
         let mut updates = BTreeMap::new();
-        for action in &self.dynamic {
-            if let Some(value) = enrichment::resolve_source(&action.source, context)? {
+        for action in &self.values {
+            let value = match &action.value {
+                CompiledValue::Literal(value) => Some(value.clone()),
+                CompiledValue::Dynamic(source) => source.resolve(metadata)?,
+            };
+            if let Some(value) = value {
                 let destination = match action.operation {
                     Operation::Insert => &mut inserts,
                     Operation::Upsert => &mut upserts,
@@ -234,6 +283,10 @@ impl CompiledTransform {
                 _ = destination.insert(action.key.clone(), value);
             }
         }
-        Ok(values_transform(inserts, upserts, updates))
+        let values = values_transform(inserts, upserts, updates);
+        self.transform.insert = values.insert;
+        self.transform.upsert = values.upsert;
+        self.transform.update = values.update;
+        Ok(&self.transform)
     }
 }

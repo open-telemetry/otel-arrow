@@ -71,8 +71,8 @@ venv
 
 # Visual Studio
 /.vs
+/data_analysis/.vs
 
 # Syncthing
 **/~syncthing~**
 *.sync-conflict-*
-/data_analysis/.vs

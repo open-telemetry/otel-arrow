@@ -23,13 +23,13 @@ groups:
                   key: server.address
                   value:
                     source:
-                      type: transport_header
+                      domain: transport_header
                       named: [x-forwarded-host, x-azure-originalhost, host]
                 - action: insert
                   key: http.host
                   value:
                     source:
-                      type: transport_header
+                      domain: transport_header
                       named: [x-forwarded-host, x-azure-originalhost, host]
           debug:
             type: processor:debug
