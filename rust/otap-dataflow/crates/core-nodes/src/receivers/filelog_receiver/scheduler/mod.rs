@@ -147,6 +147,8 @@ struct Reader<H> {
     last_service: u64,
     pinned: bool,
     halted: bool,
+    // A completed probe handoff is waiting for its first partial-state slot.
+    awaiting_slot_after_open: bool,
     lease: LeaseGuard,
 }
 
@@ -297,6 +299,7 @@ impl<I: ReaderIo> Scheduler<I> {
             last_service: 0,
             pinned: false,
             halted: false,
+            awaiting_slot_after_open: false,
             lease: seed.lease,
         }));
         self.ready.push_back(id);
@@ -432,6 +435,19 @@ impl<I: ReaderIo> Scheduler<I> {
         let _ = self.deadlines.insert((at, id));
         Ok(())
     }
+    fn reserve_slot(&mut self, id: usize, reader: &mut Reader<I::Handle>) -> bool {
+        if reader.partial.is_some() || self.grants.contains(&id) {
+            reader.awaiting_slot_after_open = false;
+            return true;
+        }
+        if self.slots == self.limits.partial_bytes / self.slot_bytes || !self.waiting.is_empty() {
+            return false;
+        }
+        let _ = self.grants.insert(id);
+        self.slots += 1;
+        reader.awaiting_slot_after_open = false;
+        true
+    }
     fn release_slot(&mut self, id: usize, reader: &mut Reader<I::Handle>) {
         let partial = reader.partial.take();
         let granted = self.grants.remove(&id);
@@ -554,9 +570,11 @@ impl<I: ReaderIo> Scheduler<I> {
                 Reason::Terminal(f)
             }
         };
+        // A capacity wait does not abandon another reader's probe handoff:
+        // that reader can finish opening before reacquiring a partial slot.
         if matches!(
             reason,
-            Reason::Paused | Reason::Cancelled | Reason::Terminal(_) | Reason::Capacity
+            Reason::Paused | Reason::Cancelled | Reason::Terminal(_)
         ) {
             self.clear_probe(Some(id));
         }
@@ -673,16 +691,33 @@ impl<I: ReaderIo> Scheduler<I> {
                 Err(error) => return self.access_failure(id, reader, error, now),
             }
         }
-        if reader.partial.is_none() && !self.grants.contains(&id) {
-            if self.slots == self.limits.partial_bytes / self.slot_bytes || !self.waiting.is_empty()
-            {
-                // Capacity waiting can outlive the observed growth. Recheck the
-                // resident source when this reader eventually gets a slot.
-                reader.check_size |= empty_eof;
-                return Ok(Reason::Capacity);
-            }
-            let _ = self.grants.insert(id);
-            self.slots += 1;
+        // A pending probe already earned an open opportunity. Complete that
+        // handoff before reacquiring partial capacity, so a resident slot holder
+        // cannot make us discard it repeatedly. Fresh opens still reserve first.
+        let completing_probe =
+            reader.handle.is_none() && self.probe_waiter.as_ref().is_some_and(|p| p.0 == id);
+        if !completing_probe
+            && reader.handle.is_none()
+            && reader.partial.is_none()
+            && self.grants.contains(&id)
+            && self.resident.len() == self.limits.descriptors
+            && self.waiting.front().is_some_and(|waiter| {
+                self.readers[*waiter]
+                    .as_ref()
+                    .is_some_and(|r| r.handle.is_some() && r.awaiting_slot_after_open)
+            })
+        {
+            // Avoid crossing an unused memory grant with the next FIFO waiter's
+            // newly opened descriptor. Otherwise each can evict the other before
+            // either validates or reads when both resource limits are tight.
+            self.release_slot(id, reader);
+            return Ok(Reason::Capacity);
+        }
+        if !completing_probe && !self.reserve_slot(id, reader) {
+            // Capacity waiting can outlive the observed growth. Recheck the
+            // resident source when this reader eventually gets a slot.
+            reader.check_size |= empty_eof;
+            return Ok(Reason::Capacity);
         }
         if reader.handle.is_none() {
             while self.resident.len() == self.limits.descriptors {
@@ -711,6 +746,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     continue;
                 }
                 drop(other.handle.take());
+                other.awaiting_slot_after_open = false;
                 other.validation = Some(Validation::default());
                 let _ = self.resident.remove(&(stamp, victim));
             }
@@ -751,6 +787,13 @@ impl<I: ReaderIo> Scheduler<I> {
                 }
                 Err(e) => return self.access_failure(id, reader, e, now),
             }
+        }
+        if completing_probe && !self.reserve_slot(id, reader) {
+            reader.awaiting_slot_after_open = true;
+            // The probe request is released and the new descriptor is evictable.
+            // Leave validation pending until FIFO partial capacity is granted;
+            // no evidence or content reads occur while waiting for that slot.
+            return Ok(Reason::Capacity);
         }
         while reader.validation.is_some() {
             if turn.steps == self.limits.steps || turn.bytes == self.limits.read_bytes {

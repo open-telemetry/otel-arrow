@@ -64,6 +64,13 @@ admits any carry-over into the next batch, refreshes reader evidence, and only
 then calls `resume_sink`. Carry-over keeps its unresolved veto, and independent
 permission checks still govern whether source work can resume.
 
+A reader already waiting for probe access can finish opening before reacquiring
+partial-state capacity. It releases probe access and keeps an evictable handle
+while waiting for a slot. Validation and content reads require that slot;
+fresh opens still reserve partial capacity first. An unused slot grant can be
+handed to the next FIFO waiter completing such an open, avoiding repeated
+descriptor turnover before either reader can make progress.
+
 Route probe-release notifications to `probe_available` and descriptor, pin or
 batch-delta changes to `resources_changed`. After authorized checkpoint
 application, `observe_applied` refreshes cached evidence from the identity

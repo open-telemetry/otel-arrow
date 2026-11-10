@@ -2051,3 +2051,166 @@ fn idle_eof_evicted_reader_still_revalidates() {
     ));
     assert!(s.io.reads > reads);
 }
+
+/// Scenario: Discovery contends on every fresh open while busy readers exhaust partial slots.
+/// Guarantees: Registered probe handoffs survive capacity contention, no empty slot is retained during probe waits, and every reader emits.
+#[test]
+fn probe_handoff_survives_partial_capacity_contention() {
+    for steps in [2, 32] {
+        for slots in [1, 2] {
+            for descriptors in [slots + 1, slots] {
+                let hot = b"hot\n".repeat(10_000);
+                let files = vec![hot.as_slice(); slots + 1];
+                let mut s = scheduler(
+                    &files,
+                    8,
+                    steps,
+                    slots,
+                    descriptors,
+                    FramingConfig::Line(line()),
+                );
+                let budget = Arc::clone(&s.probe_budget);
+                let mut sink = Sink::default();
+                let now = Instant::now();
+                let mut emitted = BTreeSet::new();
+                let mut opened_without_slot = false;
+                for _ in 0..10_000 {
+                    // A registered request prevents this new discovery attempt
+                    // from stealing its handoff. Every fresh open otherwise meets
+                    // contention; releases and notifications are explicit.
+                    let mut was_open = [false; 3];
+                    for (id, reader) in s.readers.iter().enumerate() {
+                        was_open[id] = reader.as_ref().unwrap().handle.is_some();
+                    }
+                    let frame_count = sink.frames.len();
+                    let held = budget.try_reserve();
+                    let turn = tick(&mut s, &mut sink, now);
+                    if let Some((id, _)) = &s.probe_waiter {
+                        let reader = s.readers[*id].as_ref().unwrap();
+                        if reader.partial.is_none() {
+                            assert!(!s.grants.contains(id));
+                        }
+                    }
+                    if let Some(key) = turn.key {
+                        let reader = s.readers[key.0 as usize].as_ref().unwrap();
+                        if matches!(turn.reason, Reason::Capacity)
+                            && reader.handle.is_some()
+                            && !was_open[key.0 as usize]
+                        {
+                            assert!(reader.partial.is_none());
+                            assert!(reader.validation.is_some());
+                            assert!(s.probe_waiter.is_none());
+                            assert_eq!(turn.bytes, 0);
+                            opened_without_slot = true;
+                        }
+                    }
+                    drop(held);
+                    s.probe_available();
+                    emitted.extend(sink.frames[frame_count..].iter().map(|output| output.key));
+                    if emitted.len() == files.len() {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    emitted.len(),
+                    files.len(),
+                    "steps={steps}, slots={slots}, descriptors={descriptors}"
+                );
+                if descriptors > slots {
+                    assert!(opened_without_slot);
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: A reader finishes a contended open without a slot and its source shrinks during capacity waiting.
+/// Guarantees: No validation or content read precedes the slot grant, and fresh validation rejects the changed source before emitting.
+#[test]
+fn pending_probe_open_revalidates_after_capacity_wait() {
+    let hot = b"hot\n".repeat(1000);
+    let mut s = scheduler(&[&hot, &hot], 8, 32, 1, 2, FramingConfig::Line(line()));
+    s.readers[1].as_mut().unwrap().evidence.fingerprint = b"hot".to_vec();
+    let budget = Arc::clone(&s.probe_budget);
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    let mut waiting_open = false;
+    for _ in 0..1000 {
+        let held = budget.try_reserve();
+        let turn = tick(&mut s, &mut sink, now);
+        drop(held);
+        s.probe_available();
+        if turn.key == Some(ReaderKey(1))
+            && matches!(turn.reason, Reason::Capacity)
+            && s.readers[1].as_ref().unwrap().handle.is_some()
+        {
+            waiting_open = true;
+            break;
+        }
+    }
+    assert!(waiting_open);
+    assert!(s.io.calls.borrow().iter().all(|(id, _, _)| *id != 1));
+    assert!(s.probe_waiter.is_none());
+    assert!(budget.try_reserve().is_some());
+    s.io.files[1].bytes.clear();
+    let mut changed = false;
+    for _ in 0..1000 {
+        let turn = tick(&mut s, &mut sink, now);
+        if turn.key == Some(ReaderKey(1))
+            && matches!(turn.reason, Reason::Transition(Transition::Shrunk))
+        {
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed);
+    assert!(sink.frames.iter().all(|output| output.key != ReaderKey(1)));
+    assert!(s.io.calls.borrow().iter().all(|(id, _, _)| *id != 1));
+}
+
+/// Scenario: A resident EOF reader grows and waits for memory while another reader owns a pending probe handoff.
+/// Guarantees: A peer's capacity wait cannot cancel that handoff; permit release still lets the nonresident reader open and eventually emit.
+#[test]
+fn peer_capacity_wait_preserves_pending_probe_handoff() {
+    let hot = b"hot\n".repeat(1000);
+    let mut s = scheduler(&[b"", &hot, &hot], 8, 64, 1, 3, FramingConfig::Line(line()));
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
+    frames(&mut s, &mut sink, 1, now);
+    let budget = Arc::clone(&s.probe_budget);
+    let held = budget.try_reserve().unwrap();
+    for _ in 0..100 {
+        let _ = tick(&mut s, &mut sink, now);
+        if s.probe_waiter.as_ref().is_some_and(|p| p.0 == 2) {
+            break;
+        }
+    }
+    assert_eq!(s.probe_waiter.as_ref().map(|p| p.0), Some(2));
+    s.io.files[0].bytes.extend_from_slice(b"new\n");
+    let deadline = s.next_deadline(permission()).unwrap();
+    let mut peer_waited = false;
+    for _ in 0..100 {
+        let turn = tick(&mut s, &mut sink, deadline);
+        if turn.key == Some(ReaderKey(0)) && matches!(turn.reason, Reason::Capacity) {
+            peer_waited = true;
+            break;
+        }
+    }
+    assert!(peer_waited);
+    assert_eq!(s.probe_waiter.as_ref().map(|p| p.0), Some(2));
+    drop(held);
+    s.probe_available();
+    let turn = tick(&mut s, &mut sink, deadline);
+    assert_eq!(turn.key, Some(ReaderKey(2)));
+    assert!(s.readers[2].as_ref().unwrap().handle.is_some());
+    assert!(s.probe_waiter.is_none());
+    assert!(budget.try_reserve().is_some());
+    for _ in 0..100 {
+        if sink.frames.iter().any(|output| output.key == ReaderKey(2)) {
+            break;
+        }
+        let _ = tick(&mut s, &mut sink, deadline);
+    }
+    assert!(sink.frames.iter().any(|output| output.key == ReaderKey(2)));
+}
