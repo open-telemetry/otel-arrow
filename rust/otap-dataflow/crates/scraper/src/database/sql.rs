@@ -124,7 +124,7 @@ impl SourceQuery {
                 false,
             ),
         };
-        let sql = compile_parameters(authored, &tokens, &roles, system)?;
+        let sql = compile_parameters(authored, &tokens, &roles, system, dialect)?;
         let tokens = tokenize(&sql, dialect)?;
         let mut parser = Parser::new(dialect)
             .with_recursion_limit(MAX_NESTING)
@@ -316,6 +316,7 @@ fn native_bind(system: DatabaseSystem, roles: &[&str], index: usize) -> String {
 }
 
 struct ParameterLocations {
+    system: DatabaseSystem,
     starts: HashSet<(u64, u64)>,
 }
 
@@ -325,7 +326,8 @@ impl Visitor for ParameterLocations {
     fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
         // PostgreSQL typed literals cannot contain binds. A placeholder here
         // can be a misparsed slice delimiter, even if its name is configured.
-        if matches!(expr, Expr::TypedString(typed) if matches!(typed.value.value, Value::Placeholder(_)))
+        if self.system == DatabaseSystem::PostgreSQL
+            && matches!(expr, Expr::TypedString(typed) if matches!(typed.value.value, Value::Placeholder(_)))
         {
             return ControlFlow::Break(SourceQueryError::Parameters);
         }
@@ -347,14 +349,16 @@ fn compile_parameters(
     tokens: &[TokenWithSpan],
     roles: &[&str],
     system: DatabaseSystem,
+    dialect: &dyn Dialect,
 ) -> Result<String, SourceQueryError> {
-    // PostgreSQL slice colons are syntax, not binds. Use expression context to
-    // distinguish them from real parameters inside array elements and bounds.
-    let postgres_parameters = if system == DatabaseSystem::PostgreSQL
-        && tokens.iter().any(|token| token.token == Token::LBracket)
-        && tokens.iter().any(|token| token.token == Token::Colon)
+    // Slice and JSON-constructor colons are syntax, not binds. Use native
+    // expression context, including parameters nested inside those constructs.
+    let parameter_locations = if matches!(
+        system,
+        DatabaseSystem::PostgreSQL | DatabaseSystem::SqlServer
+    ) && tokens.iter().any(|token| token.token == Token::Colon)
     {
-        let statements = Parser::new(&PostgreSqlDialect {})
+        let statements = Parser::new(dialect)
             .with_recursion_limit(MAX_NESTING)
             .with_tokens_with_locations(tokens.to_vec())
             .parse_statements()
@@ -363,6 +367,7 @@ fn compile_parameters(
             return Err(error);
         }
         let mut parameters = ParameterLocations {
+            system,
             starts: HashSet::new(),
         };
         if let ControlFlow::Break(error) = statements.visit(&mut parameters) {
@@ -400,7 +405,7 @@ fn compile_parameters(
         let mut range = byte_range(&positions, token.span)?;
         let parameter = match &token.token {
             Token::Colon
-                if postgres_parameters.as_ref().is_none_or(|parameters| {
+                if parameter_locations.as_ref().is_none_or(|parameters| {
                     parameters
                         .starts
                         .contains(&(token.span.start.line, token.span.start.column))
@@ -670,6 +675,38 @@ fn guards<'a>(
     }
 }
 
+struct OracleRownumFilter {
+    query_depth: usize,
+}
+
+impl Visitor for OracleRownumFilter {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<Self::Break> {
+        self.query_depth += 1;
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _: &Query) -> ControlFlow<Self::Break> {
+        self.query_depth -= 1;
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
+        if self.query_depth == 0
+            && identifiers(expr)
+                .and_then(|identifiers| identifiers.last())
+                .is_some_and(|id| {
+                    id.value == "ROWNUM"
+                        || (id.quote_style.is_none() && id.value.eq_ignore_ascii_case("ROWNUM"))
+                })
+        {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 fn compile_keyset(
     sql: &str,
     tokens: &[TokenWithSpan],
@@ -685,6 +722,14 @@ fn compile_keyset(
     };
     if query.limit_clause.is_some() || query.fetch.is_some() || select.top.is_some() {
         return Err(SourceQueryError::Pagination);
+    }
+    if system == DatabaseSystem::Oracle {
+        let mut rownum = OracleRownumFilter { query_depth: 0 };
+        for predicate in [&select.selection, &select.having, &select.qualify] {
+            if predicate.visit(&mut rownum).is_break() {
+                return Err(SourceQueryError::Pagination);
+            }
+        }
     }
     let keys = names
         .iter()
@@ -776,7 +821,8 @@ struct ReadOnly {
 fn locking_hint(expression: &Expr) -> bool {
     matches!(expression, Expr::Identifier(id) if [
         "NOLOCK", "READUNCOMMITTED", "UPDLOCK", "XLOCK", "HOLDLOCK", "TABLOCK", "TABLOCKX",
-        "PAGLOCK", "ROWLOCK", "READPAST", "READCOMMITTEDLOCK", "REPEATABLEREAD", "SERIALIZABLE",
+        "PAGLOCK", "ROWLOCK", "READPAST", "READCOMMITTED", "READCOMMITTEDLOCK",
+        "REPEATABLEREAD", "SERIALIZABLE", "SNAPSHOT",
     ].iter().any(|name| id.value.eq_ignore_ascii_case(name)))
 }
 
@@ -857,7 +903,7 @@ pub enum SourceQueryError {
     Keyset,
     /// Paging conflicts with bounded fetching.
     #[error(
-        "incremental query.statement must not contain a top-level TOP, LIMIT, OFFSET, or FETCH; the receiver supplies the page bound"
+        "incremental query.statement must not contain a top-level TOP, LIMIT, OFFSET, FETCH, or Oracle ROWNUM filter; the receiver supplies the page bound"
     )]
     Pagination,
     /// Missing or incompatible ascending order.

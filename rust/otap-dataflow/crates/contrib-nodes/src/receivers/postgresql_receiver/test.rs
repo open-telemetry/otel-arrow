@@ -66,7 +66,7 @@ macro_rules! postgresql_module_tests {
 
             /// Builds one backend frame: tag, big-endian length including the
             /// length field itself, then the body.
-            fn frame(tag: u8, body: &[u8]) -> Vec<u8> {
+            pub(super) fn frame(tag: u8, body: &[u8]) -> Vec<u8> {
                 let mut bytes = vec![tag];
                 bytes.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
                 bytes.extend_from_slice(body);
@@ -391,6 +391,180 @@ macro_rules! postgresql_module_tests {
                     .expect("equivalent result schema");
                 schema.native_types[0] = Type::TEXT;
                 assert!(resolve_schema(&mut cache, &validated, schema).is_err());
+            }
+
+            /// Scenario: Untyped preparation infers int4 for COALESCE($1, 0), while the selected cursor is bigint.
+            /// Guarantees: Discovery retries with bigint, caches the typed output, avoids unnecessary retries, and still rejects real schema drift.
+            #[tokio::test]
+            async fn discovery_uses_cursor_types_and_final_output_schema() {
+                use super::framing_tests::frame;
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                use serde_json::json;
+                use tokio::{
+                    io::{AsyncReadExt, AsyncWriteExt},
+                    net::TcpListener,
+                };
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        for inferred in [Type::INT4, Type::INT8] {
+                            let listener = TcpListener::bind("127.0.0.1:0")
+                                .await
+                                .expect("reserved loopback listener");
+                            let port = listener.local_addr().unwrap().port();
+                            let state = tempfile::tempdir().unwrap();
+                            let raw = json!({
+                                "source_id":"typed-discovery",
+                                "connection":{"host":"127.0.0.1","port":port,"database":"fixture","tls":{"enabled":false}},
+                                "query":{
+                                    "statement":"SELECT e.id, COALESCE(:last_id, 0) AS previous_id FROM events e WHERE e.id > :last_id ORDER BY e.id",
+                                    "fetch_size_rows":1,"max_rows_per_poll":2,"max_batch_bytes":"1 MiB"
+                                },
+                                "watermark":{"mode":"scalar","column":"id","bind":"last_id","initial":{"type":"int64","value":0}},
+                                "checkpoint":{"directory":state.path()}
+                            });
+                            let validated = super::super::config::PostgreSqlReceiverConfig::parse(&raw)
+                                .and_then(super::super::config::PostgreSqlReceiverConfig::validate)
+                                .expect("receiver config");
+                            let query = validated.common.clone();
+                            let mut adapter = PostgreSqlAdapter::new(
+                                validated,
+                                super::super::tests::test_provider(),
+                            )
+                            .unwrap();
+                            let server = async {
+                                let (mut socket, _) = listener.accept().await.unwrap();
+                                let startup_len = socket.read_u32().await.unwrap();
+                                assert!((8..8192).contains(&startup_len));
+                                let mut startup = vec![0; startup_len as usize - 4];
+                                let _ = socket.read_exact(&mut startup).await.unwrap();
+                                assert_eq!(&startup[..4], &196608u32.to_be_bytes());
+                                let mut response = frame(b'R', &0u32.to_be_bytes());
+                                response.extend(frame(b'K', &[0; 8]));
+                                response.extend(frame(b'Z', b"I"));
+                                socket.write_all(&response).await.unwrap();
+
+                                let mut transaction = 0;
+                                let mut status = b'I';
+                                let mut parsed = None;
+                                let mut prepares = Vec::new();
+                                let mut terminated = false;
+                                for _ in 0..64 {
+                                    let tag = socket.read_u8().await.unwrap();
+                                    let length = socket.read_u32().await.unwrap();
+                                    assert!((4..65536).contains(&length));
+                                    let mut body = vec![0; length as usize - 4];
+                                    let _ = socket.read_exact(&mut body).await.unwrap();
+                                    let response = match tag {
+                                        b'Q' => {
+                                            let sql = std::str::from_utf8(&body[..body.len() - 1]).unwrap();
+                                            let command = if sql == "ROLLBACK" {
+                                                status = b'I';
+                                                b"ROLLBACK\0".as_slice()
+                                            } else {
+                                                assert!(sql.contains("READ ONLY"), "{sql}");
+                                                transaction += 1;
+                                                status = b'T';
+                                                b"BEGIN\0".as_slice()
+                                            };
+                                            let mut response = frame(b'C', command);
+                                            response.extend(frame(b'Z', &[status]));
+                                            response
+                                        }
+                                        b'P' => {
+                                            let mut parts = body.splitn(3, |byte| *byte == 0);
+                                            let name = parts.next().unwrap().to_vec();
+                                            let sql = std::str::from_utf8(parts.next().unwrap()).unwrap().to_owned();
+                                            let parameters = parts.next().unwrap();
+                                            let count = u16::from_be_bytes(parameters[..2].try_into().unwrap());
+                                            assert_eq!(parameters.len(), 2 + usize::from(count) * 4);
+                                            let types: Vec<_> = parameters[2..]
+                                                .chunks_exact(4)
+                                                .map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()))
+                                                .collect();
+                                            assert!(types.is_empty() || types == [Type::INT8.oid()]);
+                                            assert!(sql.contains("COALESCE($1, 0)"), "{sql}");
+                                            prepares.push((sql, types.clone()));
+                                            parsed = Some((name, types));
+                                            frame(b'1', &[])
+                                        }
+                                        b'D' => {
+                                            let (name, declared) = parsed.as_ref().unwrap();
+                                            assert_eq!(body[0], b'S');
+                                            assert_eq!(&body[1..body.len() - 1], name);
+                                            let parameter = if declared.is_empty() {
+                                                inferred.clone()
+                                            } else {
+                                                Type::INT8
+                                            };
+                                            let previous = if transaction == 3 && parameter == Type::INT8 {
+                                                Type::TEXT
+                                            } else {
+                                                parameter.clone()
+                                            };
+                                            let mut parameters = 1u16.to_be_bytes().to_vec();
+                                            parameters.extend(parameter.oid().to_be_bytes());
+                                            let mut response = frame(b't', &parameters);
+                                            let mut columns = 2u16.to_be_bytes().to_vec();
+                                            for (name, native) in [("id", Type::INT8), ("previous_id", previous)] {
+                                                columns.extend(name.as_bytes());
+                                                columns.push(0);
+                                                columns.extend(0u32.to_be_bytes());
+                                                columns.extend(0i16.to_be_bytes());
+                                                columns.extend(native.oid().to_be_bytes());
+                                                let size: i16 = match native {
+                                                    Type::INT4 => 4,
+                                                    Type::INT8 => 8,
+                                                    _ => -1,
+                                                };
+                                                columns.extend(size.to_be_bytes());
+                                                columns.extend((-1i32).to_be_bytes());
+                                                columns.extend(0i16.to_be_bytes());
+                                            }
+                                            response.extend(frame(b'T', &columns));
+                                            response
+                                        }
+                                        b'C' => frame(b'3', &[]),
+                                        b'S' => frame(b'Z', &[status]),
+                                        b'X' => {
+                                            terminated = true;
+                                            break;
+                                        }
+                                        _ => panic!("unexpected frontend message {tag}"),
+                                    };
+                                    socket.write_all(&response).await.unwrap();
+                                }
+                                assert!(terminated, "connection must close within the bounded exchange");
+                                assert_eq!(transaction, 3);
+                                prepares
+                            };
+                            let client = async {
+                                for _ in 0..2 {
+                                    _ = adapter.begin_operation().unwrap();
+                                    let columns = adapter.validate_query(&query).await.unwrap();
+                                    assert_eq!(
+                                        columns.iter().map(|column| (column.name.as_str(), column.source_type.as_str())).collect::<Vec<_>>(),
+                                        vec![("id", "int8"), ("previous_id", "int8")]
+                                    );
+                                }
+                                _ = adapter.begin_operation().unwrap();
+                                assert_eq!(adapter.validate_query(&query).await.err(), Some(Error::Metadata));
+                                adapter.shutdown().await.unwrap();
+                                assert!(adapter.session.is_none());
+                            };
+                            let (prepares, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+                                tokio::join!(server, client)
+                            })
+                            .await
+                            .expect("bounded native-protocol discovery scenario");
+                            let typed_source = prepares.iter()
+                                .filter(|(sql, types)| !sql.contains("\nLIMIT") && !types.is_empty())
+                                .count();
+                            assert_eq!(typed_source, if inferred == Type::INT4 { 3 } else { 0 });
+                            assert_eq!(prepares.iter().filter(|(sql, _)| sql.ends_with("\nLIMIT 3")).count(), 1);
+                        }
+                    })
+                    .await;
             }
 
             /// Scenario: A source uses database-managed row policies.

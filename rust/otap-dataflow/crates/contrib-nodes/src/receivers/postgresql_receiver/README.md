@@ -289,6 +289,10 @@ connection uses `search_path=pg_catalog`. Native row-security policies are honor
 The receiver discovers the final output schema through PostgreSQL, not through
 table/projection lineage or unique-index catalog checks. Cursor columns are
 explicitly selected references, optionally aliased, with supported native types.
+If untyped preparation infers a different cursor-parameter type from an
+expression such as `COALESCE(:last_id, 0)`, discovery retries with the cursor
+column's native type. The typed preparation also determines expression output
+types before the schema is cached; later schema changes still fail.
 Returned cursor values must be non-null, stable, and unique per output row.
 The receiver preserves authored null filters and `NULLS FIRST`/`NULLS LAST`
 ordering without adding either. Nullable metadata is accepted, but actual
@@ -327,7 +331,8 @@ A slice delimiter is not a bind, even if its following identifier matches a
 configured bind name. Use parentheses for a named bind as an index or bound:
 `tags[(:last_id)]` or `tags[1:(:last_id)]`. Real parameters in array expressions,
 including `ARRAY[:last_id]`, still require declared binds; snapshots remain
-parameter-free.
+parameter-free. JSON-constructor separators such as `JSON_OBJECT('id': 1)` are
+also preserved; only genuine parameters in their keys or values are bound.
 
 **Known parser limitation:** `sqlparser` 0.63 misinterprets
 `tags[bounds[1]:bounds[2]]` as a typed literal with a `:bounds` parameter, so

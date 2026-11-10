@@ -318,13 +318,23 @@ fn parameter_binding_is_token_aware() {
         "SELECT id FROM events WHERE id > :undeclared ORDER BY id",
         "SELECT id FROM events WHERE id > $2 ORDER BY id",
         "SELECT id FROM events WHERE id > $1 AND id <> :last_id ORDER BY id",
-        "SELECT id FROM events WHERE id > : last_id ORDER BY id",
     ] {
         assert_eq!(
             SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::PostgreSQL).unwrap_err(),
             SourceQueryError::Parameters
         );
     }
+    assert_eq!(
+        SourceQuery::compile(
+            &query(
+                "SELECT id FROM events WHERE id > : last_id ORDER BY id",
+                "int64"
+            ),
+            DatabaseSystem::PostgreSQL
+        )
+        .unwrap_err(),
+        SourceQueryError::Syntax
+    );
     assert!(
         SourceQuery::compile(
             &query(
@@ -595,6 +605,171 @@ fn snapshots_remain_broad_and_parameter_free() {
         .unwrap_err(),
         SourceQueryError::Parameters
     );
+}
+
+/// Scenario: Native JSON constructors use colon separators, nested values, literals, and comments.
+/// Guarantees: PostgreSQL and SQL Server parameter-free snapshots keep their exact SQL.
+#[test]
+fn json_constructor_separators_are_not_parameters() {
+    for system in [DatabaseSystem::PostgreSQL, DatabaseSystem::SqlServer] {
+        let standalone = "SELECT JSON_OBJECT('id': 1) AS payload";
+        assert_eq!(
+            SourceQuery::compile(&query(standalone, "snapshot"), system)
+                .unwrap()
+                .sql(),
+            standalone
+        );
+        for expression in [
+            "JSON_OBJECT('id': 1)",
+            "JSON_OBJECT('id': id, 'value': COALESCE(value, 0))",
+            "JSON_OBJECT('nested': JSON_OBJECT('id': 1))",
+            "JSON_OBJECT('text: :unknown': ':last_id @last_id $1')",
+            "JSON_OBJECT('id' /* :unknown */ : /* $2 */ 1)",
+        ] {
+            let sql = format!("SELECT {expression} AS payload FROM events");
+            let source = SourceQuery::compile(&query(&sql, "snapshot"), system)
+                .unwrap_or_else(|error| panic!("{system:?}: {sql}: {error:?}"));
+            assert_eq!(source.sql(), sql);
+        }
+    }
+}
+
+/// Scenario: JSON keys and values contain actual configured, undeclared, or mixed-style parameters.
+/// Guarantees: Only genuine parameters are substituted; snapshots and invalid binds still fail.
+#[test]
+fn json_constructor_parameters_remain_strict() {
+    for (system, bind, unknown, native) in [
+        (DatabaseSystem::PostgreSQL, ":last_id", ":unknown", "$1"),
+        (DatabaseSystem::PostgreSQL, "$1", "$2", "$1"),
+        (DatabaseSystem::SqlServer, "@last_id", "@unknown", "@P1"),
+    ] {
+        for expression in [
+            "JSON_OBJECT('id': {bind}, 'copy': id)",
+            "JSON_OBJECT({bind}: 'value')",
+            "JSON_OBJECT('nested': JSON_OBJECT('id': {bind}))",
+        ] {
+            let sql = |parameter| {
+                format!(
+                    "SELECT id, {} AS payload FROM events WHERE id > {bind} ORDER BY id",
+                    expression.replace("{bind}", parameter)
+                )
+            };
+            let authored = sql(bind);
+            let source = SourceQuery::compile(&query(&authored, "int64"), system)
+                .unwrap_or_else(|error| panic!("{system:?}: {authored}: {error:?}"));
+            assert_eq!(source.sql(), authored.replace(bind, native));
+            for (authored, mode) in [(authored, "snapshot"), (sql(unknown), "int64")] {
+                assert_eq!(
+                    SourceQuery::compile(&query(&authored, mode), system).unwrap_err(),
+                    SourceQueryError::Parameters,
+                    "{system:?}: {authored}"
+                );
+            }
+        }
+    }
+    let mixed =
+        "SELECT id, JSON_OBJECT('id': $1) AS payload FROM events WHERE id > :last_id ORDER BY id";
+    assert_eq!(
+        SourceQuery::compile(&query(mixed, "int64"), DatabaseSystem::PostgreSQL).unwrap_err(),
+        SourceQueryError::Parameters
+    );
+}
+
+/// Scenario: Oracle applies ROWNUM filtering before sorting the final incremental result.
+/// Guarantees: Final-query row-number predicates cannot checkpoint past lower IDs omitted by a pre-sort cut.
+#[test]
+fn oracle_incremental_rownum_filters_are_rejected() {
+    for predicate in [
+        "ROWNUM <= 2",
+        "2 >= (rownum)",
+        "ROWNUM BETWEEN 1 AND 2",
+        "MOD(ROWNUM, 2) = 0",
+        "(ROWNUM <= 2 OR enabled = 1)",
+        "CASE WHEN ROWNUM <= 2 THEN 1 ELSE 0 END = 1",
+        "e.ROWNUM <= 2",
+        "\"ROWNUM\" <= 2",
+        "e.\"ROWNUM\" <= 2",
+    ] {
+        let sql = format!(
+            "SELECT e.id FROM events e WHERE e.id > :last_id AND {predicate} ORDER BY e.id"
+        );
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "int64"), DatabaseSystem::Oracle).unwrap_err(),
+            SourceQueryError::Pagination,
+            "{sql}"
+        );
+    }
+    for (sql, mode) in [
+        (
+            "SELECT ts, id FROM events WHERE (ts > :last_ts OR (ts = :last_ts AND id > :last_id)) AND ROWNUM <= 2 ORDER BY ts, id",
+            "composite",
+        ),
+        (
+            "SELECT id FROM events WHERE id > :last_id GROUP BY id HAVING MIN(ROWNUM) <= 2 ORDER BY id",
+            "int64",
+        ),
+    ] {
+        assert_eq!(
+            SourceQuery::compile(&query(sql, mode), DatabaseSystem::Oracle).unwrap_err(),
+            SourceQueryError::Pagination,
+            "{sql}"
+        );
+    }
+}
+
+/// Scenario: ROWNUM belongs to a snapshot, an independent source/subquery, a projection, or quoted text.
+/// Guarantees: The Oracle paging restriction applies only to final incremental predicates, not unrelated SQL.
+#[test]
+fn oracle_rownum_filter_scope_preserves_native_sources() {
+    for sql in [
+        "SELECT id, ROWNUM AS ordinal FROM events WHERE id > :last_id ORDER BY id",
+        "SELECT e.id FROM (SELECT id FROM events WHERE ROWNUM <= 2) e WHERE e.id > :last_id ORDER BY e.id",
+        "SELECT id FROM events WHERE id > :last_id AND EXISTS (SELECT 1 FROM dual WHERE ROWNUM <= 1) ORDER BY id",
+        "SELECT id FROM events WHERE id > :last_id AND \"rownum\" <= 2 ORDER BY id",
+        "SELECT id FROM events WHERE id > :last_id AND \"RowNum\" <= 2 ORDER BY id",
+        "SELECT id FROM events WHERE id > :last_id AND message <> 'ROWNUM <= 2' /* ROWNUM */ ORDER BY id",
+    ] {
+        assert_eq!(execution(sql, "int64", DatabaseSystem::Oracle), sql);
+    }
+    let snapshot = "SELECT id FROM events WHERE ROWNUM <= 2 ORDER BY id";
+    assert_eq!(
+        execution(snapshot, "snapshot", DatabaseSystem::Oracle),
+        snapshot
+    );
+    let postgres = "SELECT id FROM events WHERE id > :last_id AND rownum <= 2 ORDER BY id";
+    assert_eq!(
+        execution(postgres, "int64", DatabaseSystem::PostgreSQL),
+        format!("{}\nLIMIT 3", postgres.replace(":last_id", "$1"))
+    );
+}
+
+/// Scenario: SQL Server READCOMMITTED or SNAPSHOT table hints override receiver-owned isolation.
+/// Guarantees: Both hints are rejected in snapshot, scalar, composite, and nested-source queries.
+#[test]
+fn sql_server_isolation_hints_are_rejected_in_every_mode() {
+    for hint in ["READCOMMITTED", "SNAPSHOT", "readcommitted", "snapshot"] {
+        for (columns, suffix, mode) in [
+            ("id", "", "snapshot"),
+            ("id", " WHERE id > @last_id ORDER BY id", "int64"),
+            (
+                "ts, id",
+                " WHERE ts > @last_ts OR (ts = @last_ts AND id > @last_id) ORDER BY ts, id",
+                "composite",
+            ),
+        ] {
+            let sql = format!("SELECT {columns} FROM events WITH ({hint}){suffix}");
+            assert_eq!(
+                SourceQuery::compile(&query(&sql, mode), DatabaseSystem::SqlServer).unwrap_err(),
+                SourceQueryError::Locking,
+                "{sql}"
+            );
+        }
+        let sql = format!("SELECT id FROM (SELECT id FROM events WITH ({hint})) e");
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "snapshot"), DatabaseSystem::SqlServer).unwrap_err(),
+            SourceQueryError::Locking
+        );
+    }
 }
 
 /// Scenario: Mutation, locks, multiple statements, or conflicting top-level paging are requested.

@@ -423,16 +423,22 @@ unguarded top-level `UNION` is not an incremental keyset.
 SQL Server keeps `@configured_name`, Oracle keeps `:configured_name`, and
 PostgreSQL accepts either `:configured_name` or native `$1`/`$2`, not both in
 one statement. Driver-native parameter rewriting does not touch literals,
-comments, or quoted identifiers. Top-level incremental `TOP`, `LIMIT`,
-`OFFSET`, and `FETCH` are rejected because the receiver supplies bounded
-fetching. Native ordering/limits inside source subqueries keep their meaning.
+comments, or quoted identifiers. PostgreSQL array-slice delimiters and
+PostgreSQL/SQL Server JSON-constructor separators, such as
+`JSON_OBJECT('id': 1)`, are not parameter markers.
+Top-level incremental `TOP`, `LIMIT`, `OFFSET`, and `FETCH` are rejected because
+the receiver supplies bounded fetching. Oracle `ROWNUM` predicates in the final
+incremental query are also rejected: they can discard rows before cursor sorting
+and skip data. Native ordering/limits inside independent source subqueries keep
+their meaning.
 
 Snapshots execute the native source unchanged. They may use their own ordering,
 limits, duplicate rows, and nullable values, but the complete requested result
 must fit the receiver's row and byte bounds.
 
 The shared parser rejects additional executable statements, writes (including
-data-modifying CTEs), `INTO`, row locks/isolation overrides, unbound parameters,
+data-modifying CTEs), `INTO`, row locks/isolation overrides (including SQL Server
+`READCOMMITTED` and `SNAPSHOT` hints), unbound parameters,
 and non-tabular clauses that cannot be composed safely. Input is limited to
 16 KiB and bounded parser/expression nesting. Result columns must have unique,
 nonempty names and supported native types; use aliases or explicit casts where

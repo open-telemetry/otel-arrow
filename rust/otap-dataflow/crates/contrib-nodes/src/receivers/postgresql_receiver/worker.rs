@@ -38,7 +38,7 @@ use tokio_postgres::{
     CancelToken, Client, IsolationLevel, Statement,
     config::SslMode,
     tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream},
-    types::ToSql,
+    types::{ToSql, Type},
 };
 use tokio_postgres_rustls::MakeRustlsConnect;
 
@@ -333,6 +333,33 @@ fn resolve_schema<'a>(
         *cache = Some(CachedSchema { plan, resolved });
     }
     cache.as_ref().ok_or(Error::Metadata)
+}
+
+fn cursor_parameter_types(
+    watermark: &CompiledWatermark,
+    columns: &[tokio_postgres::Column],
+) -> Result<Vec<Type>> {
+    let names = match watermark {
+        CompiledWatermark::Snapshot => vec![],
+        CompiledWatermark::Scalar(cursor) => vec![cursor.column.as_str()],
+        CompiledWatermark::Composite(cursor) => vec![
+            cursor.timestamp_column.as_str(),
+            cursor.tie_breaker_column.as_str(),
+        ],
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let mut matching = columns
+                .iter()
+                .filter(|column| column.name().eq_ignore_ascii_case(name));
+            let column = matching.next().ok_or(Error::Metadata)?;
+            if matching.next().is_some() {
+                return Err(Error::Metadata);
+            }
+            Ok(column.type_().clone())
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -836,11 +863,23 @@ impl PostgreSqlAdapter {
             .map_err(database)?;
         let result = async {
             op.check()?;
-            let described = tx
+            let mut described = tx
                 .prepare(self.validated.source.sql())
                 .await
                 .map_err(database)?;
             op.check()?;
+            let native_parameter_types =
+                cursor_parameter_types(self.validated.common.watermark(), described.columns())?;
+            if described.params() != native_parameter_types {
+                // Other expressions can bias untyped inference (for example,
+                // COALESCE($1, 0) infers int4 for a bigint cursor). Only the
+                // description prepared with cursor-native types may be cached.
+                described = tx
+                    .prepare_typed(self.validated.source.sql(), &native_parameter_types)
+                    .await
+                    .map_err(database)?;
+                op.check()?;
+            }
             let cached = resolve_schema(
                 &mut self.schema,
                 &self.validated,

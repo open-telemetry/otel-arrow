@@ -467,8 +467,9 @@ one successor probe. It does not add null guards or change null ordering.
 Rows excluded by the authored SQL, including null keys filtered by comparisons,
 cannot be diagnosed. Snapshots preserve native ordering/limits and use bounded
 streaming with an overflow probe. Writes, additional statements, lock/isolation
-hints, and undeclared parameters are rejected in every mode. Snapshots have no
-cursor parameters. Literal text and
+hints (including `READCOMMITTED` and `SNAPSHOT`), and undeclared parameters are
+rejected in every mode. Snapshots have no cursor parameters. JSON-constructor
+separators such as `JSON_OBJECT('id': 1)` are not bind markers. Literal text and
 optimizer comments are preserved, and one trailing semicolon is accepted.
 
 Existing supported SQL and unchanged checkpoints need no migration. The
