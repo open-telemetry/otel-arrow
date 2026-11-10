@@ -15,16 +15,14 @@ use std::sync::Arc;
 
 use otel_arrow_contrib_data_engine_kql_parser::Parser;
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context::policy::ContextEntryDeclaration;
-use otel_arrow_dfe_config::context::transport_headers::{
-    TransportHeader, TransportHeaders, ValueKind,
-};
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_engine::pdata_context::{
     ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
     ContextEntryTarget, ContextMaterializationPlan, ContextNameMatching, Metadata, NodeBindings,
     ValueRead,
 };
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
@@ -32,12 +30,15 @@ use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
 use crate::parser::default_parser_options;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{Pipeline, PipelineOptions, SignalContext};
+use crate::pipeline::{Pipeline, PipelineOptions};
 
 /// create a simple logs batch
-fn create_logs_batch() -> OtapArrowRecords {
+fn create_logs_batch(attributes: Vec<KeyValue>) -> OtapArrowRecords {
     otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
-        LogRecord::build().event_name("hello.world").finish(),
+        LogRecord::build()
+            .event_name("hello.world")
+            .attributes(attributes)
+            .finish(),
     ])))
 }
 
@@ -104,11 +105,10 @@ async fn test_simple_filter_batches_having_transport_header() {
     let header_val = "bar";
     let mut pipeline_options = PipelineOptions::default();
     pipeline_options.node_bindings = Arc::new(node_bindings_for_transport_header(header_name));
-
     let mut metadata = Metadata::default();
     add_transport_header(&mut metadata, header_name, header_val);
 
-    let input_batch = create_logs_batch();
+    let input_batch = create_logs_batch(Default::default());
     let query = "signals | where has_transport_header(\"foo\")";
     let result = execute_pipeline(
         query,
@@ -127,13 +127,83 @@ async fn test_simple_filter_batches_having_transport_header() {
     assert!(result_empty.is_empty())
 }
 
+/// Scenario: a metadata access function is used as the predicate in the filter operator call to
+/// keep/discard batches based on presence of a metadata transport header, and then the predicate
+/// is inverted using "not".
+/// Guarantees: the predicate correctly filters the result batches
+#[tokio::test]
+async fn test_filter_batches_not_having_transport_header() {
+    let header_name = "foo";
+    let header_val = "bar";
+    let mut pipeline_options = PipelineOptions::default();
+    pipeline_options.node_bindings = Arc::new(node_bindings_for_transport_header(header_name));
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+
+    let input_batch = create_logs_batch(Default::default());
+    let query = "signals | where not(has_transport_header(\"foo\"))";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata,
+    )
+    .await;
+
+    // assert we kept all the rows:
+    assert!(result.is_empty());
+
+    // assert we return an empty batch (all rows filtered out) when the header isn't present
+    let result_empty =
+        execute_pipeline(query, pipeline_options, input_batch, Metadata::default()).await;
+    assert_eq!(result_empty.num_items(), 1);
+}
+
 /// Scenario: a complex predicate is evaluated combining invocation of metadata-oriented function
 /// and other logical expressions
 /// Guarantees: the predicate correctly filters the result batches
 #[tokio::test]
-#[ignore]
 async fn test_complex_filter_batches_by_metadata() {
-    todo!()
+    let header_name = "foo";
+    let header_val = "bar";
+    let mut pipeline_options = PipelineOptions::default();
+    pipeline_options.node_bindings = Arc::new(node_bindings_for_transport_header(header_name));
+    let query =
+        "signals | where attributes[\"attr.1\"] == \"val\" or has_transport_header(\"foo\")";
+
+    // this should match on the metadata
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_logs_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("no"))]),
+        metadata,
+    )
+    .await;
+    assert_eq!(result.num_items(), 1);
+
+    // this should match on the attribute, but not the header
+    let metadata = Metadata::default();
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_logs_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("val"))]),
+        metadata,
+    )
+    .await;
+    assert_eq!(result.num_items(), 1);
+
+    // this should not match because it has neither attr nor header
+    let metadata = Metadata::default();
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_logs_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("no"))]),
+        metadata,
+    )
+    .await;
+    assert!(result.is_empty())
 }
 
 /// Scenario: use the value returned by the metadata access function (has_transport_header) in the
