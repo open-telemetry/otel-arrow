@@ -98,8 +98,8 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
             PartitionByConfig::OplExpression(opl_expression) => {
                 // use default node bindings for validation. We don't have access to the configured
                 // pipeline context here, so we can't use the compiled node bindings. Using default
-                // is fine because purpose of the validation is currently just about syntax and
-                // checking that field references are valid
+                // is fine because the purpose of the validation is currently just to eagerly check
+                // that syntax field references & function names are are valid.
                 let node_bindings = NodeBindings::default();
 
                 let _ = try_create_partitioner(

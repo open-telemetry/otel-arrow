@@ -570,6 +570,8 @@ mod test {
 
     use super::*;
 
+    mod metadata;
+
     fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
         otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
             .expect("OTLP conversion")

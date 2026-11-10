@@ -94,6 +94,9 @@ impl ConfigNodeContextDeclaration for Config {
             error: format!("Could create context entry declarations from parsed query AST: {e}"),
         };
 
+        // below we are going to parse the program, then visit the parser result (e.g. the
+        // expression AST) using this visitor implementation to track which metadata
+        // accesses may occur when the queries evaluate on some batch
         let mut metadata_access_ast_visitor = MetadataAccessDeclarationVisitor::new();
 
         match &self.query {
