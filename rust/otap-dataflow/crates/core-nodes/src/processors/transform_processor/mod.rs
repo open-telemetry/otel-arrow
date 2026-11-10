@@ -2255,6 +2255,54 @@ mod test {
             .validate(|_ctx| async move {});
     }
 
+    /// Scenario: a KQL query filters batches based on whether a transport header is present
+    /// in the batch metadata
+    /// Guarantees: batches with the header pass through; batches without it are dropped
+    #[test]
+    fn test_filter_batches_by_transport_header_presence_kql() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor = try_create_with_kql_query(
+            r#"logs | where has_transport_header("foo")"#,
+            &runtime,
+        )
+        .expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                // batch with the transport header -- should pass through
+                let batch1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build().event_name("has_header").finish(),
+                ])));
+                let mut transport_headers = TransportHeaders::new();
+                transport_headers.push(TransportHeader::text(
+                    ContextEntryName::try_from("foo").unwrap(),
+                    "bar".to_string(),
+                ));
+                let mut metadata = Metadata::default();
+                metadata.set_transport_headers(transport_headers);
+                let context = Context::default().with_metadata(metadata);
+                let pdata1 = OtapPdata::new(context, batch1.into());
+
+                // batch without the transport header -- should be filtered out
+                let batch2 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build().event_name("no_header").finish(),
+                ])));
+                let pdata2 = OtapPdata::new_default(batch2.into());
+
+                ctx.process(Message::PData(pdata1.clone())).await.unwrap();
+                ctx.process(Message::PData(pdata2)).await.unwrap();
+
+                let out = ctx.drain_pdata().await;
+                assert_eq!(out.len(), 1, "only the batch with the header should pass");
+                assert_eq!(
+                    pdata1.payload_ref().otap_ref().unwrap(),
+                    out[0].payload_ref().otap_ref().unwrap()
+                );
+            })
+            .validate(|_ctx| async move {});
+    }
+
     #[test]
     fn test_fork_with_route_to() {
         let runtime = TestRuntime::<OtapPdata>::new();
