@@ -15,7 +15,7 @@ pub use codec::bench_support;
 pub use codec::full_sized_test_message_capacity;
 pub use codec::{
     MAX_BATCH_BYTES, MAX_BATCH_ITEMS, SyslogBatch, SyslogBatchBuilder, SyslogFramingError,
-    receipt_local_year, resolve_syslog,
+    receipt_local_year, resolve_syslog, validated_messages,
 };
 
 /// Maximum size of one syslog or CEF message in an encoded batch.

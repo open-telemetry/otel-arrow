@@ -482,6 +482,16 @@ fn validate_decode_limits(count: usize, bytes: usize) -> Result<(), SyslogFramin
     Ok(())
 }
 
+/// Validates the complete encoded batch and borrows its original wire messages.
+/// The bounded list prevents a malformed later frame from causing a partial send.
+pub fn validated_messages(bytes: &[u8]) -> Result<Vec<&[u8]>, SyslogFramingError> {
+    let (count, frames) = validated_frames(bytes)?;
+    validate_decode_limits(count, bytes.len())?;
+    frames
+        .map(|frame| frame.map(|frame| frame.message))
+        .collect()
+}
+
 // Both execution modes share parsing, error translation, and receipt context.
 // Returning the message length lets incremental decoding budget the same frame
 // without retaining parsed data or allocating another envelope.
@@ -1030,6 +1040,30 @@ mod tests {
             bytes.extend_from_slice(message);
         }
         bytes.freeze()
+    }
+
+    /// Scenario: A complete batch contains original messages in multiple receipt-year runs.
+    /// Guarantees: Validation returns the exact borrowed message bytes in order.
+    #[test]
+    fn validated_messages_preserve_wire_bytes() {
+        let mut builder = SyslogBatchBuilder::new();
+        builder.append_with_year(b"<13>first", 2025).unwrap();
+        builder.append_with_year(b"CEF:0|second", 2026).unwrap();
+        let bytes = builder.finish(42).unwrap().bytes;
+        let messages = validated_messages(&bytes).unwrap();
+        assert_eq!(
+            messages,
+            [b"<13>first".as_slice(), b"CEF:0|second".as_slice()]
+        );
+        assert_eq!(messages[0].as_ptr(), bytes[28..].as_ptr());
+    }
+
+    /// Scenario: A later frame is truncated after an otherwise valid first frame.
+    /// Guarantees: Validation rejects the entire batch before exposing any messages.
+    #[test]
+    fn validated_messages_reject_late_corruption() {
+        let bytes = batch(&[b"<13>first", b"<13>second"], 42);
+        assert!(validated_messages(&bytes[..bytes.len() - 1]).is_err());
     }
 
     /// Scenario: One timer-flushed input is undersized or exactly at either decode cap.
