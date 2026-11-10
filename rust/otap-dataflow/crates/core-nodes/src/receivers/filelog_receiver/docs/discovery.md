@@ -25,6 +25,12 @@ undiscovered. The worker can retry on a later pass; persistent causes need
 attention. Later comparisons of tracked files' parent directories can also
 invalidate absence conclusions from an otherwise complete pass.
 
+Within a `BindingBatch`, an expired reader handoff latches only that batch.
+The expiring check retains its binding-local `ProbeBusy` result when its parent
+context validates. Later checks perform no I/O and return `Coverage` with
+`context_valid: false`; they provide no negative binding evidence. Immediate
+unregistered contention does not latch, and a fresh batch can probe again.
+
 ## Using the scanner
 
 - Supply absolute directory prefixes, precompiled matchers, symlink policy, and

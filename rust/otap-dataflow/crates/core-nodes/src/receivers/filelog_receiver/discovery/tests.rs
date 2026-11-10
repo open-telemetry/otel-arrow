@@ -2840,3 +2840,70 @@ fn unregistered_pressure_preserves_later_candidates_and_roots() {
         assert!(budget.try_reserve().is_some());
     }
 }
+
+/// Scenario: A registered reader stalls the first binding check, then releases its priority.
+/// Guarantees: Later checks remain latched as coverage uncertainty with no negative evidence, while a fresh batch probes normally.
+#[test]
+fn binding_handoff_expiry_latches_only_current_batch() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    let path = dir.path().join("log");
+    fs::write(&path, b"data").unwrap();
+    let parent = FileLocator::from_metadata(&fs::metadata(dir.path()).unwrap());
+    let mut scanner = scanner(dir.path(), true);
+    let budget = Arc::new(ProbeBudget::default());
+    let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+    let held = reader.try_reserve().unwrap();
+    let started = Instant::now();
+    {
+        let mut batch = scanner
+            .binding_batch(&budget, || started.elapsed() >= Duration::from_secs(30))
+            .unwrap();
+        let first = batch.check(&path, Some(parent)).unwrap();
+        assert_eq!(first.observation.reason, Some(ScanReason::ProbeBusy));
+        assert_eq!(first.scope, BindingScope::Binding);
+        assert!(first.context_valid);
+        assert!(!budget.discovery_waiting());
+        drop(held);
+        drop(reader);
+        // Availability would make the real file succeed and the absent file report
+        // Missing if the latch did not bypass probing. Neither outcome is allowed.
+        for path in [&path, &dir.path().join("absent")] {
+            let skipped = batch.check(path, Some(parent)).unwrap();
+            assert_eq!(skipped.observation.reason, Some(ScanReason::ProbeBusy));
+            assert_eq!(skipped.scope, BindingScope::Coverage);
+            assert!(!skipped.context_valid);
+            assert!(skipped.parent.is_none());
+            assert!(skipped.observation.locator.is_none());
+            assert!(skipped.observation.fingerprint.is_empty());
+        }
+    }
+    let mut fresh = scanner.binding_batch(&budget, || false).unwrap();
+    let found = fresh.check(&path, Some(parent)).unwrap();
+    assert_eq!(found.observation.reason, None);
+    assert_eq!(found.observation.fingerprint, b"data");
+    assert!(found.context_valid);
+}
+
+/// Scenario: One binding collides with an unregistered admission that releases before the next check.
+/// Guarantees: Immediate ProbeBusy does not latch and later checks in the same batch can succeed.
+#[test]
+fn binding_immediate_contention_does_not_latch() {
+    let dir = fixture();
+    let path = dir.path().join("log");
+    fs::write(&path, b"data").unwrap();
+    let parent = FileLocator::from_metadata(&fs::metadata(dir.path()).unwrap());
+    let mut scanner = scanner(dir.path(), true);
+    let budget = ProbeBudget::default();
+    let held = budget.try_reserve().unwrap();
+    let mut batch = scanner.binding_batch(&budget, || false).unwrap();
+    let busy = batch.check(&path, Some(parent)).unwrap();
+    assert_eq!(busy.observation.reason, Some(ScanReason::ProbeBusy));
+    assert_eq!(busy.scope, BindingScope::Binding);
+    drop(held);
+    let found = batch.check(&path, Some(parent)).unwrap();
+    assert_eq!(found.observation.reason, None);
+    assert!(found.context_valid);
+}

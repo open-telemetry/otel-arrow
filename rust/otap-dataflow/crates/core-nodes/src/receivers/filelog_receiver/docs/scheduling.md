@@ -15,6 +15,11 @@ capacity for unfinished or rejected output, and receiver integration must remain
 disabled. Empty partial slots are released even when a reader halts; the lease
 and logical reader remain retained.
 
+Validated resident readers at EOF with no partial state check metadata before
+requesting a slot. Unchanged EOF re-parks without a content read or partial
+construction and does not refresh eviction age. Growth follows normal capacity
+admission; evicted readers still reopen and validate continuity.
+
 Idle partial flush is not wired: nonzero `framing.force_flush_period` is not
 serviced by this scheduler. Idle-flush deadlines and source revalidation,
 startup descriptor-budget checks, and admission gating during global descriptor

@@ -179,6 +179,8 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     sink_stopped: bool,
     rejected: Option<Output>,
     terminal: Option<Fault>,
+    #[cfg(test)]
+    partial_creations: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -384,6 +386,8 @@ impl<I: ReaderIo> Scheduler<I> {
             sink_stopped: false,
             rejected: None,
             terminal: None,
+            #[cfg(test)]
+            partial_creations: 0,
         })
     }
 
@@ -628,9 +632,53 @@ impl<I: ReaderIo> Scheduler<I> {
                 return Ok(Reason::Probe);
             }
         }
+        // Only an already validated resident with no pending framing state can
+        // observe unchanged EOF without reserving partial-state capacity.
+        let empty_eof = reader.check_size
+            && reader.handle.is_some()
+            && reader.validation.is_none()
+            && reader.partial.is_none()
+            && reader.resume == cp::FramingResume::Clean;
+        if empty_eof {
+            if turn.steps == self.limits.steps {
+                self.selecting = Some((id, None));
+                return Ok(Reason::Progress);
+            }
+            if cancel() {
+                return Ok(Reason::Cancelled);
+            }
+            // The serve-entry preflight precedes this source operation.
+            turn.steps += 1;
+            match self
+                .io
+                .metadata(reader.handle.as_ref().expect("resident"), cancel)
+            {
+                Ok((locator, size)) => {
+                    if locator != reader.evidence.locator {
+                        return Ok(Reason::Transition(Transition::Replaced));
+                    }
+                    if size < reader.window.end.max(reader.evidence.resume_end) {
+                        return Ok(Reason::Transition(Transition::Shrunk));
+                    }
+                    if size == reader.window.end {
+                        // Keep check_size armed and do not refresh last_service:
+                        // idle readers remain preferred eviction candidates.
+                        self.release_slot(id, reader);
+                        self.park_until(id, now, self.limits.eof_interval)?;
+                        reader.failures = 0;
+                        return Ok(Reason::Eof);
+                    }
+                    reader.check_size = false;
+                }
+                Err(error) => return self.access_failure(id, reader, error, now),
+            }
+        }
         if reader.partial.is_none() && !self.grants.contains(&id) {
             if self.slots == self.limits.partial_bytes / self.slot_bytes || !self.waiting.is_empty()
             {
+                // Capacity waiting can outlive the observed growth. Recheck the
+                // resident source when this reader eventually gets a slot.
+                reader.check_size |= empty_eof;
                 return Ok(Reason::Capacity);
             }
             let _ = self.grants.insert(id);
@@ -768,6 +816,10 @@ impl<I: ReaderIo> Scheduler<I> {
             }
         }
         if reader.partial.is_none() {
+            #[cfg(test)]
+            {
+                self.partial_creations += 1;
+            }
             reader.partial = Some(self.framing.create(
                 reader.window.end,
                 reader.initial,

@@ -39,6 +39,7 @@ struct FakeIo {
     opens: Rc<Cell<usize>>,
     peak: usize,
     reads: usize,
+    metadata_calls: usize,
     open_error: Option<i32>,
     read_error: Option<i32>,
     calls: Rc<RefCell<Vec<(usize, u64, usize)>>>,
@@ -73,6 +74,7 @@ impl ReaderIo for FakeIo {
         if cancel() {
             return Err(AccessFailure::Cancelled);
         }
+        self.metadata_calls += 1;
         let f = &self.files[h.id];
         Ok((f.locator, f.bytes.len() as u64))
     }
@@ -178,6 +180,7 @@ fn scheduler(
         opens: Rc::new(Cell::new(0)),
         peak: 0,
         reads: 0,
+        metadata_calls: 0,
         open_error: None,
         read_error: None,
         calls: Rc::new(RefCell::new(Vec::new())),
@@ -247,6 +250,22 @@ fn frames(s: &mut Scheduler<FakeIo>, sink: &mut Sink, count: usize, now: Instant
         );
     }
     panic!("wanted {count} frames, got {}", sink.frames.len());
+}
+fn park_at_eof(s: &mut Scheduler<FakeIo>, sink: &mut Sink, readers: usize, now: Instant) {
+    for _ in 0..100 {
+        if s.deadlines.len() == readers {
+            return;
+        }
+        let turn = tick(s, sink, now);
+        assert!(
+            matches!(
+                turn.reason,
+                Reason::Progress | Reason::Capacity | Reason::Eof
+            ),
+            "{turn:?}"
+        );
+    }
+    panic!("readers did not reach EOF");
 }
 fn body(output: &Output) -> &[u8] {
     let b = match &output.frame {
@@ -331,6 +350,7 @@ fn deadlines_survive_pause_without_spinning() {
     assert_eq!(s.io.reads, reads);
     assert_eq!(s.deadlines.len(), 1);
     assert_eq!(s.next_deadline(paused), None);
+    s.io.files[0].bytes.extend_from_slice(b"new\n");
     s.io.read_error = Some(11);
     assert!(matches!(
         tick(&mut s, &mut sink, deadline).reason,
@@ -344,6 +364,11 @@ fn deadlines_survive_pause_without_spinning() {
         Reason::Paused
     ));
     assert_eq!(s.deadlines.len(), 1);
+    assert!(matches!(
+        tick(&mut s, &mut sink, retry).reason,
+        Reason::Progress
+    ));
+    assert_eq!(body(&sink.frames[0]), b"new");
     assert!(matches!(tick(&mut s, &mut sink, retry).reason, Reason::Eof));
 }
 
@@ -1124,7 +1149,7 @@ fn resident_eof_reprobe_avoids_redundant_evidence_reads() {
         tick(&mut s, &mut sink, deadline).reason,
         Reason::Eof
     ));
-    assert_eq!(&s.io.calls.borrow()[count..], &[(0, 7, 32)]);
+    assert!(s.io.calls.borrow()[count..].is_empty());
     s.io.files[0].bytes.truncate(2);
     let deadline = s.next_deadline(permission()).unwrap();
     assert!(matches!(
@@ -1900,4 +1925,129 @@ fn halted_reader_releases_empty_slot_for_waiter() {
         assert_eq!(sink.frames[0].key, ReaderKey(1));
         assert_eq!(body(&sink.frames[0]), b"next");
     }
+}
+
+/// Scenario: An empty resident EOF reader wakes while another reader owns the only partial slot.
+/// Guarantees: Reprobe uses one metadata operation, no read or partial construction, no capacity wait, and leaves eviction age unchanged.
+#[test]
+fn idle_eof_bypasses_partial_capacity_and_preserves_eviction_age() {
+    let mut s = scheduler(
+        &[b"done\n", b"unfinished", b"next\n"],
+        32,
+        64,
+        1,
+        2,
+        FramingConfig::Line(line()),
+    );
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    park_at_eof(&mut s, &mut sink, 2, now);
+    assert_eq!(s.waiting.len(), 1);
+    let stamp = s.readers[0].as_ref().unwrap().last_service;
+    let reads = s.io.reads;
+    let metadata = s.io.metadata_calls;
+    let creations = s.partial_creations;
+    let deadline = s.next_deadline(permission()).unwrap();
+    let turn = tick(&mut s, &mut sink, deadline);
+    assert_eq!(turn.key, Some(ReaderKey(0)));
+    assert!(matches!(turn.reason, Reason::Eof));
+    assert_eq!(s.io.reads, reads);
+    assert_eq!(s.io.metadata_calls, metadata + 1);
+    assert_eq!(s.partial_creations, creations);
+    assert_eq!(s.slots, 1);
+    assert_eq!(s.waiting.iter().copied().collect::<Vec<_>>(), [2]);
+    assert_eq!(s.readers[0].as_ref().unwrap().last_service, stamp);
+    assert_eq!(s.resident.first().unwrap().1, 0);
+    // Finish the slot holder so the queued third reader can open a descriptor.
+    s.io.files[1].bytes.extend_from_slice(b"\n");
+    let next = deadline + s.limits.eof_interval;
+    frames(&mut s, &mut sink, 3, next);
+    assert!(s.readers[0].as_ref().unwrap().handle.is_none());
+    assert!(s.readers[1].as_ref().unwrap().handle.is_some());
+    assert!(s.readers[2].as_ref().unwrap().handle.is_some());
+}
+
+/// Scenario: A resident EOF deadline expires while sink preflight refuses work or cancellation is requested.
+/// Guarantees: Neither pause nor cancellation performs metadata or reads; later growth resumes normal framing.
+#[test]
+fn idle_eof_respects_preflight_and_cancellation_then_reads_growth() {
+    let mut s = scheduler(&[b"done\n"], 32, 64, 1, 1, FramingConfig::Line(line()));
+    let mut sink = Sink::default();
+    park_at_eof(&mut s, &mut sink, 1, Instant::now());
+    let deadline = s.next_deadline(permission()).unwrap();
+    let calls = (s.io.reads, s.io.metadata_calls, s.partial_creations);
+    sink.blocked = true;
+    assert!(matches!(
+        tick(&mut s, &mut sink, deadline).reason,
+        Reason::Paused
+    ));
+    assert_eq!(
+        (s.io.reads, s.io.metadata_calls, s.partial_creations),
+        calls
+    );
+    sink.blocked = false;
+    s.resume_sink();
+    assert!(matches!(
+        s.turn(deadline, permission(), &mut sink, Waker::noop(), || true)
+            .reason,
+        Reason::Cancelled
+    ));
+    assert_eq!(
+        (s.io.reads, s.io.metadata_calls, s.partial_creations),
+        calls
+    );
+    s.io.files[0].bytes.extend_from_slice(b"new\n");
+    frames(&mut s, &mut sink, 2, deadline);
+    assert_eq!(body(&sink.frames[1]), b"new");
+    assert_eq!(sink.frames[1].frame.range().start, 5);
+    assert!(s.io.reads > calls.0);
+}
+
+/// Scenario: A resident EOF reader sees shrink or replacement without acquiring partial capacity.
+/// Guarantees: The fast path reports the transition before source reads or new partial construction.
+#[test]
+fn idle_eof_reports_source_changes_without_allocating_partial() {
+    for change in [Transition::Shrunk, Transition::Replaced] {
+        let mut s = scheduler(&[b"done\n"], 32, 64, 1, 1, FramingConfig::Line(line()));
+        let mut sink = Sink::default();
+        park_at_eof(&mut s, &mut sink, 1, Instant::now());
+        let deadline = s.next_deadline(permission()).unwrap();
+        let calls = (s.io.reads, s.partial_creations);
+        if change == Transition::Shrunk {
+            s.io.files[0].bytes.clear();
+        } else {
+            s.io.files[0].locator.inode += 1;
+        }
+        assert!(
+            matches!(tick(&mut s, &mut sink, deadline).reason, Reason::Transition(actual) if actual == change)
+        );
+        assert_eq!((s.io.reads, s.partial_creations), calls);
+        assert_eq!(s.slots, 0);
+    }
+}
+
+/// Scenario: An EOF reader loses its resident handle before the next deadline.
+/// Guarantees: It reopens and checks continuity evidence instead of using the resident metadata-only path.
+#[test]
+fn idle_eof_evicted_reader_still_revalidates() {
+    let mut s = scheduler(
+        &[b"done\n", b"other\n"],
+        32,
+        64,
+        2,
+        1,
+        FramingConfig::Line(line()),
+    );
+    let mut sink = Sink::default();
+    let now = Instant::now();
+    park_at_eof(&mut s, &mut sink, 2, now);
+    assert!(s.readers[0].as_ref().unwrap().handle.is_none());
+    let reads = s.io.reads;
+    s.io.files[0].bytes[0] = b'X';
+    let deadline = s.next_deadline(permission()).unwrap();
+    assert!(matches!(
+        tick(&mut s, &mut sink, deadline).reason,
+        Reason::Transition(Transition::Changed)
+    ));
+    assert!(s.io.reads > reads);
 }
