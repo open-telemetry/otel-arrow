@@ -8038,7 +8038,10 @@ dependencies = [
 name = "otel-arrow-dfe-pdata-codec"
 version = "0.65.0"
 dependencies = [
+ "arrow",
  "bytes",
+ "chrono",
+ "futures",
  "linkme",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
@@ -8047,6 +8050,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
