@@ -461,8 +461,8 @@ release mode on an otherwise idle pinned CPU (replace `<cpu>`):
 
 ```sh
 cd rust/otap-dataflow
-cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency --no-run
-taskset -c <cpu> cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
+cargo test -p otel-arrow-dfe-pdata-codec --features syslog-cef --release --lib bounded_decode_scheduling_latency --no-run
+taskset -c <cpu> cargo test -p otel-arrow-dfe-pdata-codec --features syslog-cef --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
 ```
 
 The 50 ms assertion is a regression threshold for that controlled test, not a
