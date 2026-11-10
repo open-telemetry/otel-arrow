@@ -420,7 +420,6 @@ static METRICS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         Field::new(consts::UNIT, DataType::Utf8, true),
         Field::new(consts::AGGREGATION_TEMPORALITY, DataType::Int32, true),
         Field::new(consts::IS_MONOTONIC, DataType::Boolean, true),
-        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
     ])
 });
 
@@ -686,7 +685,38 @@ mod test {
     };
     use otel_arrow_dfe_pdata::schema::payloads;
     use otel_arrow_dfe_pdata::schema::schema::DataType as SpecDataType;
+    use otel_arrow_dfe_pdata::schema::schema::Schema as SpecSchema;
     use pretty_assertions::assert_eq;
+
+    const ALL_PAYLOAD_TYPES: [ArrowPayloadType; 27] = [
+        ArrowPayloadType::Logs,
+        ArrowPayloadType::UnivariateMetrics,
+        ArrowPayloadType::MultivariateMetrics,
+        ArrowPayloadType::SummaryDataPoints,
+        ArrowPayloadType::NumberDataPoints,
+        ArrowPayloadType::HistogramDataPoints,
+        ArrowPayloadType::ExpHistogramDataPoints,
+        ArrowPayloadType::NumberDpExemplars,
+        ArrowPayloadType::HistogramDpExemplars,
+        ArrowPayloadType::ExpHistogramDpExemplars,
+        ArrowPayloadType::Spans,
+        ArrowPayloadType::SpanLinks,
+        ArrowPayloadType::SpanEvents,
+        ArrowPayloadType::ResourceAttrs,
+        ArrowPayloadType::ScopeAttrs,
+        ArrowPayloadType::MetricAttrs,
+        ArrowPayloadType::SpanAttrs,
+        ArrowPayloadType::LogAttrs,
+        ArrowPayloadType::SpanLinkAttrs,
+        ArrowPayloadType::SpanEventAttrs,
+        ArrowPayloadType::NumberDpAttrs,
+        ArrowPayloadType::SummaryDpAttrs,
+        ArrowPayloadType::HistogramDpAttrs,
+        ArrowPayloadType::ExpHistogramDpAttrs,
+        ArrowPayloadType::HistogramDpExemplarAttrs,
+        ArrowPayloadType::NumberDpExemplarAttrs,
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+    ];
 
     #[test]
     fn test_coalesces_new_columns_with_empty_columns() {
@@ -1048,7 +1078,7 @@ mod test {
     /// Scenario: A batch omits optional OTAP columns that have no meaningful placeholder value,
     /// such as ids, flags, schema URLs, metric descriptions and units, and exemplar values.
     /// Guarantees: The transform fills each of these columns with NULL rather than a zero or
-    /// empty-string placeholder, using the column type defined by the OTAP spec.
+    /// empty-string placeholder.
     #[test]
     fn test_absent_optional_columns_are_null() {
         let cases = [
@@ -1087,26 +1117,6 @@ mod test {
             assert!(field.is_nullable(), "{payload_type:?}.{column_name}");
             let column = result.column_by_name(column_name).unwrap();
             assert_eq!(column.null_count(), 3, "{payload_type:?}.{column_name}");
-            match payloads::get(payload_type)
-                .get(column_name)
-                .unwrap()
-                .data_type
-            {
-                SpecDataType::Simple(value_type) | SpecDataType::Dictionary { value_type, .. } => {
-                    assert_eq!(
-                        column.data_type(),
-                        &value_type.to_arrow(),
-                        "{payload_type:?}.{column_name}"
-                    );
-                }
-                SpecDataType::Struct(_) => {
-                    assert!(
-                        matches!(column.data_type(), DataType::Struct(_)),
-                        "{payload_type:?}.{column_name}"
-                    );
-                }
-                SpecDataType::List(_) => unreachable!("no list columns are checked here"),
-            }
         }
     }
 
@@ -1183,39 +1193,60 @@ mod test {
         );
     }
 
+    /// Scenario: Every payload type's template schema is compared with the OTAP spec schema for
+    /// the same payload type from `otel_arrow_dfe_pdata::schema::payloads`.
+    /// Guarantees: An empty batch with the template schema passes `Schema::check_match`, so each
+    /// template column has a spec-compatible name and type. Every spec field, including nested
+    /// struct fields, is listed in the template, so spec columns are never dropped.
+    #[test]
+    fn test_template_schemas_match_otap_spec() {
+        fn assert_lists_all_spec_fields(
+            context: &str,
+            spec: &SpecSchema,
+            template_fields: &Fields,
+        ) {
+            for spec_field in spec.fields() {
+                let path = format!("{context}.{}", spec_field.name);
+                if path == "SummaryDataPoints.value" {
+                    // The spec schema lists a top-level list column named `value` for summary
+                    // data points, but no OTAP encoder or decoder produces or reads it. Summary
+                    // values are carried in the `quantile` list of structs.
+                    continue;
+                }
+                let Some((_, template_field)) = template_fields.find(spec_field.name) else {
+                    panic!("template schema is missing spec field {path}");
+                };
+                if let SpecDataType::Struct(nested_spec) = spec_field.data_type {
+                    let DataType::Struct(nested_fields) = template_field.data_type() else {
+                        panic!("template field {path} should be a struct");
+                    };
+                    assert_lists_all_spec_fields(&path, nested_spec, nested_fields);
+                }
+            }
+        }
+
+        for payload_type in ALL_PAYLOAD_TYPES {
+            if payload_type == ArrowPayloadType::MultivariateMetrics {
+                // the spec defines no schema for this payload type
+                continue;
+            }
+            let template = get_template_schema(payload_type).unwrap();
+            let spec = payloads::get(payload_type);
+            let context = format!("{payload_type:?}");
+
+            let empty = RecordBatch::new_empty(Arc::new(template.clone()));
+            if let Err(err) = spec.check_match(&empty) {
+                panic!("{context} template schema does not match the OTAP spec: {err}");
+            }
+            assert_lists_all_spec_fields(&context, spec, template.fields());
+        }
+    }
+
     #[test]
     fn test_generate_all_null_record_batch() {
         // this is just a smoke test to ensure that all of our null/empty column generating code
         // isn't missing any types that are actually used in one of the template schemas
-        for payload_type in [
-            ArrowPayloadType::Logs,
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::MultivariateMetrics,
-            ArrowPayloadType::SummaryDataPoints,
-            ArrowPayloadType::NumberDataPoints,
-            ArrowPayloadType::HistogramDataPoints,
-            ArrowPayloadType::ExpHistogramDataPoints,
-            ArrowPayloadType::NumberDpExemplars,
-            ArrowPayloadType::HistogramDpExemplars,
-            ArrowPayloadType::ExpHistogramDpExemplars,
-            ArrowPayloadType::Spans,
-            ArrowPayloadType::SpanLinks,
-            ArrowPayloadType::SpanEvents,
-            ArrowPayloadType::ResourceAttrs,
-            ArrowPayloadType::ScopeAttrs,
-            ArrowPayloadType::MetricAttrs,
-            ArrowPayloadType::SpanAttrs,
-            ArrowPayloadType::LogAttrs,
-            ArrowPayloadType::SpanLinkAttrs,
-            ArrowPayloadType::SpanEventAttrs,
-            ArrowPayloadType::NumberDpAttrs,
-            ArrowPayloadType::SummaryDpAttrs,
-            ArrowPayloadType::HistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::HistogramDpExemplarAttrs,
-            ArrowPayloadType::NumberDpExemplarAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-        ] {
+        for payload_type in ALL_PAYLOAD_TYPES {
             let input = RecordBatch::try_new_with_options(
                 Arc::new(Schema::empty()),
                 vec![],
