@@ -14,7 +14,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 use async_trait::async_trait;
-use expfmt::arrow::{ArrowDecoder, DecodeOptions, OtapMetricRecords};
+use expfmt::arrow::{ArrowDecoder, DecodeBudget, DecodeOptions, DecodeStep, OtapMetricRecords};
 use expfmt::format::{Format, FormatType, response_format};
 use linkme::distributed_slice;
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
@@ -620,6 +620,7 @@ struct TargetScraper {
     honor_timestamps: bool,
     max_data_points_per_batch: usize,
     max_body_bytes: usize,
+    decode_budget: DecodeBudget,
     start_timestamp_ns: i64,
     decoder: ArrowDecoder,
 }
@@ -648,6 +649,7 @@ impl TargetScraper {
             honor_timestamps: config.honor_timestamps,
             max_data_points_per_batch: config.max_data_points_per_batch,
             max_body_bytes: config.max_body_bytes,
+            decode_budget: DecodeBudget::default(),
             start_timestamp_ns,
             decoder: ArrowDecoder::new(),
         })
@@ -767,6 +769,37 @@ impl TargetScraper {
         }
 
         let scrape_timestamp_ms = current_timestamp_ms();
+        self.decode_body_cooperatively(
+            body.as_slice(),
+            &format,
+            target_url,
+            scrape_timestamp_ms,
+            ctrl_msg_recv,
+            effect_handler,
+            telemetry,
+            active_cancel,
+        )
+        .await
+    }
+
+    // NOTE: `expfmt::arrow::DecodeStream::step` performs pure in-memory parsing without threads,
+    // locks, or I/O. Driving it with `DecodeBudget` pauses ingestion at Layer 0 `Entry` boundaries
+    // (1,024 entries / 64 KiB / 1ms by default) and yields via `poll_with_control` so peer
+    // `LocalSet` tasks, timers, and `NodeControlMsg` events run promptly on large scrapes.
+    // Dropping `stream` on early control-plane exit reclaims parser scratch buffers into
+    // `self.decoder` via `Drop`.
+    #[allow(clippy::too_many_arguments)]
+    async fn decode_body_cooperatively(
+        &mut self,
+        body: &[u8],
+        format: &Format,
+        target_url: &Url,
+        scrape_timestamp_ms: i64,
+        ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        telemetry: &mut ReceiverTelemetry,
+        active_cancel: &ActiveScrapeCancel,
+    ) -> ControlFlow<Result<TerminalState, Error>, Result<(Vec<OtapPdata>, u64), ()>> {
         let chunk_limit = if self.max_data_points_per_batch == 0 {
             usize::MAX
         } else {
@@ -776,17 +809,62 @@ impl TargetScraper {
             .with_timestamp_ms(scrape_timestamp_ms)
             .with_max_data_points_per_batch(chunk_limit);
         let resource_transform = build_target_resource_transform(&self.job_name, target_url);
+        let honor_timestamps = self.honor_timestamps;
+        let start_timestamp_ns = self.start_timestamp_ns;
+        let base_budget = self.decode_budget;
+        let max_entries = base_budget.max_entries.max(1);
+        let max_bytes = base_budget.max_bytes.max(1);
+        let max_duration = base_budget.max_duration;
+
+        let mut stream = self.decoder.decode_stream(body, format, &decode_opts);
         let mut batches = Vec::new();
         let mut decoded_points = 0_u64;
+        let mut slice_start_pos = 0_usize;
+        let mut slice_entries = 0_usize;
+        let mut slice_started = StdInstant::now();
 
-        // TODO(bwplotka): Switch to cooperative incremental decoding so large payloads yield to
-        // the local runtime once https://github.com/prometheus/scrape.rs/issues/27 lands.
-        for chunk_res in self
-            .decoder
-            .decode_stream(body.as_slice(), &format, &decode_opts)
-        {
-            let records = match chunk_res {
-                Ok(records) => records,
+        loop {
+            let step_budget = if slice_entries == 0 && stream.pos() == slice_start_pos {
+                base_budget
+            } else {
+                let remaining_duration = if max_duration.is_zero() {
+                    std::time::Duration::ZERO
+                } else {
+                    // Keep non-zero duration budgets above zero so `DecodeStream::step` preserves
+                    // its 16-entry clock check cadence instead of switching to per-entry checks.
+                    max_duration
+                        .saturating_sub(slice_started.elapsed())
+                        .max(std::time::Duration::from_nanos(1))
+                };
+                DecodeBudget::new(
+                    max_entries.saturating_sub(slice_entries).max(1),
+                    max_bytes
+                        .saturating_sub(stream.pos().saturating_sub(slice_start_pos))
+                        .max(1),
+                    remaining_duration,
+                )
+            };
+
+            let records = match stream.step(step_budget) {
+                Ok(DecodeStep::Pending) => {
+                    if let ControlFlow::Break(exit) = poll_with_control(
+                        tokio::task::yield_now(),
+                        ctrl_msg_recv,
+                        effect_handler,
+                        telemetry,
+                        Some(active_cancel),
+                    )
+                    .await
+                    {
+                        return ControlFlow::Break(exit);
+                    }
+                    slice_start_pos = stream.pos();
+                    slice_entries = 0;
+                    slice_started = StdInstant::now();
+                    continue;
+                }
+                Ok(DecodeStep::Batch(records)) => records,
+                Ok(DecodeStep::Done) => break,
                 Err(err) => {
                     otel_warn!(
                         "prometheus_receiver.decode_error",
@@ -797,13 +875,15 @@ impl TargetScraper {
                     return ControlFlow::Continue(Err(()));
                 }
             };
-            decoded_points += records.num_data_points() as u64;
+            let batch_points = records.num_data_points();
+            decoded_points += batch_points as u64;
+            slice_entries = slice_entries.saturating_add(batch_points.max(1));
             if !records.is_empty() {
                 match records_to_otap_with_resource(
                     &records,
-                    self.honor_timestamps,
+                    honor_timestamps,
                     scrape_timestamp_ms,
-                    Some(self.start_timestamp_ns),
+                    Some(start_timestamp_ns),
                     Some(&resource_transform),
                 ) {
                     Ok(otap) => batches.push(OtapPdata::new(Context::default(), otap.into())),
@@ -817,6 +897,26 @@ impl TargetScraper {
                         return ControlFlow::Continue(Err(()));
                     }
                 }
+            }
+            if stream.pos() < body.len()
+                && (slice_entries >= max_entries
+                    || stream.pos().saturating_sub(slice_start_pos) >= max_bytes
+                    || slice_started.elapsed() >= max_duration)
+            {
+                if let ControlFlow::Break(exit) = poll_with_control(
+                    tokio::task::yield_now(),
+                    ctrl_msg_recv,
+                    effect_handler,
+                    telemetry,
+                    Some(active_cancel),
+                )
+                .await
+                {
+                    return ControlFlow::Break(exit);
+                }
+                slice_start_pos = stream.pos();
+                slice_entries = 0;
+                slice_started = StdInstant::now();
             }
         }
 
@@ -2115,5 +2215,352 @@ mod tests {
             vec!["http://127.0.0.1:9001/metrics"]
         );
         assert_eq!(dns_failures, 3);
+    }
+
+    /// Scenario: `TargetScraper::decode_body_cooperatively` decodes a small payload under
+    /// `DecodeBudget::default()` alongside larger single-batch and multi-chunk payloads bounded by
+    /// entry, byte, and zero-duration `DecodeBudget` limits.
+    /// Guarantees: small scrapes complete synchronously in one poll with zero yields, while
+    /// entry, byte, and zero-duration budgets yield cooperatively within tight poll bounds and
+    /// preserve exact batch and data-point counts.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cooperative_decode_fast_path_and_budgeted_yields() {
+        use std::task::{Context as TaskContext, Poll, Waker};
+
+        fn drive_polls<F: Future>(fut: F) -> (F::Output, usize) {
+            let mut fut = std::pin::pin!(fut);
+            let mut cx = TaskContext::from_waker(Waker::noop());
+            let mut pending_polls = 0_usize;
+            loop {
+                match fut.as_mut().poll(&mut cx) {
+                    Poll::Ready(out) => return (out, pending_polls),
+                    Poll::Pending => pending_polls += 1,
+                }
+            }
+        }
+
+        let config = Config {
+            targets: vec!["127.0.0.1:9001".to_owned()],
+            ..Config::default()
+        };
+        let target_url =
+            normalize_target_url("127.0.0.1:9001", &config.metrics_path).expect("target url");
+        let mut scraper =
+            TargetScraper::new(&config, test_node("prometheus_test")).expect("build scraper");
+        let mut telemetry = ReceiverTelemetry::default();
+        let pull_attempt = telemetry.pull.processing();
+        let active_cancel = ActiveScrapeCancel {
+            pull: pull_attempt.cancellation_handle(),
+            started: StdInstant::now(),
+        };
+        let TestReceiverHarness {
+            mut ctrl_chan,
+            ctrl_tx: _ctrl_tx,
+            effect_handler,
+            out_rx: _out_rx,
+            runtime_ctrl_rx: _runtime_ctrl_rx,
+        } = build_test_harness(8);
+
+        let small_payload = concat!(
+            "# TYPE fast_counter_total counter\n",
+            "fast_counter_total{id=\"0\"} 1\n",
+            "fast_counter_total{id=\"1\"} 2\n",
+            "fast_counter_total{id=\"2\"} 3\n",
+            "fast_counter_total{id=\"3\"} 4\n",
+        );
+        let mut twenty_series = String::from("# TYPE coop_counter_total counter\n");
+        for i in 0..20 {
+            twenty_series.push_str(&format!("coop_counter_total{{id=\"{i}\"}} {i}\n"));
+        }
+
+        for (
+            name,
+            payload,
+            max_dp_per_batch,
+            budget,
+            expected_yields,
+            expected_batches,
+            expected_points,
+        ) in [
+            (
+                "fast_path",
+                small_payload,
+                config.max_data_points_per_batch,
+                DecodeBudget::default(),
+                0..=0,
+                1,
+                4_u64,
+            ),
+            (
+                "intra_chunk_entries",
+                twenty_series.as_str(),
+                config.max_data_points_per_batch,
+                DecodeBudget::new(4, 64 * 1024, Duration::from_secs(3600)),
+                5..=5,
+                1,
+                20,
+            ),
+            (
+                "cross_chunk_entries",
+                twenty_series.as_str(),
+                2,
+                DecodeBudget::new(6, 64 * 1024, Duration::from_secs(3600)),
+                3..=4,
+                10,
+                20,
+            ),
+            (
+                "cross_chunk_bytes",
+                twenty_series.as_str(),
+                2,
+                DecodeBudget::new(usize::MAX, 128, Duration::from_secs(3600)),
+                3..=5,
+                10,
+                20,
+            ),
+            (
+                "zero_duration",
+                small_payload,
+                2,
+                DecodeBudget::new(usize::MAX, usize::MAX, Duration::ZERO),
+                4..=6,
+                2,
+                4,
+            ),
+        ] {
+            scraper.max_data_points_per_batch = max_dp_per_batch;
+            scraper.decode_budget = budget;
+            let (res, yields) = drive_polls(scraper.decode_body_cooperatively(
+                payload.as_bytes(),
+                &Format::TEXT,
+                &target_url,
+                1_700_000_005_000,
+                &mut ctrl_chan,
+                &effect_handler,
+                &mut telemetry,
+                &active_cancel,
+            ));
+            assert!(
+                expected_yields.contains(&yields),
+                "case={name}: expected yields in {expected_yields:?}, got {yields}"
+            );
+            let ControlFlow::Continue(Ok((mut batches, points))) = res else {
+                panic!("case={name}: expected successful cooperative decode");
+            };
+            assert_eq!(batches.len(), expected_batches, "case={name}");
+            assert_eq!(points, expected_points, "case={name}");
+            let total_items: usize = batches.iter_mut().map(OtapPdata::num_items).sum();
+            assert_eq!(total_items as u64, expected_points, "case={name}");
+        }
+        pull_attempt.success();
+    }
+
+    /// Scenario: `CollectTelemetry` and `DrainIngress` control messages arrive while
+    /// `decode_body_cooperatively` is suspended at a mid-chunk `DecodeStep::Pending` yield
+    /// boundary, followed by a multi-step scrape with a late syntax error and a subsequent valid
+    /// scrape on the same `TargetScraper`.
+    /// Guarantees: `CollectTelemetry` is serviced mid-decode without aborting progress,
+    /// `DrainIngress` cancels the in-flight scrape immediately (`ReceiverDrained` +
+    /// `scrapes_failed` + `ReceiverPullMetrics` failure snapshot) while reclaiming scratch buffers,
+    /// late syntax errors discard already-decoded chunks, and `ArrowDecoder` recovers cleanly.
+    #[test]
+    fn cooperative_decode_services_control_messages_and_recovers_after_cancellation_or_error() {
+        use std::task::{Context as TaskContext, Poll, Waker};
+
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let config = Config {
+                max_data_points_per_batch: 4,
+                targets: vec!["127.0.0.1:9001".to_owned()],
+                ..Config::default()
+            };
+            let target_url =
+                normalize_target_url("127.0.0.1:9001", &config.metrics_path).expect("target url");
+            let mut scraper =
+                TargetScraper::new(&config, test_node("prometheus_test")).expect("build scraper");
+            scraper.decode_budget = DecodeBudget::new(2, 64 * 1024, Duration::from_secs(3600));
+
+            let (pipeline, _registry) =
+                otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+                    otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+                        | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+                );
+            let mut telemetry = ReceiverTelemetry {
+                metrics: Some(PrometheusReceiverMetrics::register(&pipeline)),
+                pull: ReceiverPullMetrics::register(&pipeline),
+            };
+
+            let TestReceiverHarness {
+                mut ctrl_chan,
+                ctrl_tx,
+                effect_handler,
+                out_rx: _out_rx,
+                mut runtime_ctrl_rx,
+            } = build_test_harness(8);
+
+            let multi_step_payload = concat!(
+                "# TYPE cancel_metric_total counter\n",
+                "cancel_metric_total{id=\"0\"} 10\n",
+                "cancel_metric_total{id=\"1\"} 20\n",
+                "cancel_metric_total{id=\"2\"} 30\n",
+                "cancel_metric_total{id=\"3\"} 40\n",
+                "cancel_metric_total{id=\"4\"} 50\n",
+                "cancel_metric_total{id=\"5\"} 60\n",
+            );
+
+            // 1. Suspend at mid-chunk `DecodeStep::Pending`, service `CollectTelemetry`, then
+            // cancel via `DrainIngress` while uncommitted rows remain staged in `self.decoder`.
+            {
+                telemetry
+                    .metrics
+                    .as_mut()
+                    .expect("metrics")
+                    .scrapes_started
+                    .add(1);
+                let pull_attempt = telemetry.pull.processing();
+                let active_cancel = ActiveScrapeCancel {
+                    pull: pull_attempt.cancellation_handle(),
+                    started: StdInstant::now(),
+                };
+                let mut decode_fut = Box::pin(scraper.decode_body_cooperatively(
+                    multi_step_payload.as_bytes(),
+                    &Format::TEXT,
+                    &target_url,
+                    1_700_000_005_000,
+                    &mut ctrl_chan,
+                    &effect_handler,
+                    &mut telemetry,
+                    &active_cancel,
+                ));
+                let mut cx = TaskContext::from_waker(Waker::noop());
+                assert!(
+                    matches!(decode_fut.as_mut().poll(&mut cx), Poll::Pending),
+                    "first poll must yield at DecodeBudget boundary"
+                );
+
+                let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(4);
+                ctrl_tx
+                    .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+                    .expect("send CollectTelemetry during cooperative decode");
+                assert!(
+                    matches!(decode_fut.as_mut().poll(&mut cx), Poll::Pending),
+                    "CollectTelemetry must be serviced while keeping decode in flight"
+                );
+                assert!(
+                    snapshot_rx.try_recv().is_ok(),
+                    "CollectTelemetry must publish a metrics snapshot while decode is yielded"
+                );
+
+                ctrl_tx
+                    .send(NodeControlMsg::DrainIngress {
+                        deadline: StdInstant::now() + Duration::from_secs(1),
+                        reason: "drain mid-decode".to_owned(),
+                    })
+                    .expect("send DrainIngress during cooperative decode");
+                let ControlFlow::Break(Ok(terminal)) = decode_fut.await else {
+                    panic!("DrainIngress must break out of cooperative decode cleanly");
+                };
+                assert!(terminal.metrics().iter().any(|snapshot| {
+                    snapshot.descriptor().name == "receiver.pulled"
+                        && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                }));
+            }
+
+            let ctrl_event = tokio::time::timeout(Duration::from_secs(1), runtime_ctrl_rx.recv())
+                .await
+                .expect("runtime control message arrives")
+                .expect("runtime control channel open");
+            assert!(matches!(
+                ctrl_event,
+                RuntimeControlMsg::ReceiverDrained { .. }
+            ));
+            assert_eq!(
+                telemetry
+                    .metrics
+                    .as_ref()
+                    .expect("metrics")
+                    .scrapes_failed
+                    .get(),
+                1
+            );
+            assert!(scraper.decoder.retained_memory_bytes() > 0);
+            scraper.max_data_points_per_batch = 2;
+
+            // 2. Late syntax error after yielding across earlier chunks discards partial batches.
+            let late_err_payload = concat!(
+                "# TYPE partial_metric_total counter\n",
+                "partial_metric_total{id=\"0\"} 1\n",
+                "partial_metric_total{id=\"1\"} 2\n",
+                "partial_metric_total{id=\"2\"} 3\n",
+                "partial_metric_total{id=\"3\"} 4\n",
+                "corrupted_line ===\n",
+            );
+            {
+                let pull_attempt = telemetry.pull.processing();
+                let active_cancel = ActiveScrapeCancel {
+                    pull: pull_attempt.cancellation_handle(),
+                    started: StdInstant::now(),
+                };
+                let mut err_fut = Box::pin(scraper.decode_body_cooperatively(
+                    late_err_payload.as_bytes(),
+                    &Format::TEXT,
+                    &target_url,
+                    1_700_000_005_000,
+                    &mut ctrl_chan,
+                    &effect_handler,
+                    &mut telemetry,
+                    &active_cancel,
+                ));
+                let mut cx = TaskContext::from_waker(Waker::noop());
+                assert!(
+                    matches!(err_fut.as_mut().poll(&mut cx), Poll::Pending),
+                    "late-error payload must yield before reaching trailing syntax error"
+                );
+                let err_res = err_fut.await;
+                assert!(
+                    matches!(err_res, ControlFlow::Continue(Err(()))),
+                    "late syntax error must fail the entire scrape without returning partial chunks"
+                );
+            }
+
+            // 3. Reusable `ArrowDecoder` inside `scraper` remains clean for subsequent scrapes.
+            let pull_attempt = telemetry.pull.processing();
+            let active_cancel = ActiveScrapeCancel {
+                pull: pull_attempt.cancellation_handle(),
+                started: StdInstant::now(),
+            };
+            let recovery_res = scraper
+                .decode_body_cooperatively(
+                    multi_step_payload.as_bytes(),
+                    &Format::TEXT,
+                    &target_url,
+                    1_700_000_005_000,
+                    &mut ctrl_chan,
+                    &effect_handler,
+                    &mut telemetry,
+                    &active_cancel,
+                )
+                .await;
+            let ControlFlow::Continue(Ok((mut recovered_batches, recovered_points))) = recovery_res
+            else {
+                panic!("decoder must recover cleanly after mid-scrape cancellation and error");
+            };
+            pull_attempt.success();
+            assert_eq!(recovered_batches.len(), 3);
+            assert_eq!(recovered_points, 6);
+            let recovered_items: usize =
+                recovered_batches.iter_mut().map(OtapPdata::num_items).sum();
+            assert_eq!(recovered_items, 6);
+
+            let pull_snapshots = telemetry.pull.terminal_snapshots();
+            assert!(pull_snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.pulled"
+                    && snapshot.measurement_attribute_value("outcome") == Some("failure")
+            }));
+            assert!(pull_snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.pulled"
+                    && snapshot.measurement_attribute_value("outcome") == Some("success")
+            }));
+        }));
     }
 }
