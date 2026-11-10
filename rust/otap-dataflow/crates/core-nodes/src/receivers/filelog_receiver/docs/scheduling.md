@@ -1,5 +1,17 @@
 # Reader scheduling
 
+The scheduler decides which log file to read next and how much work it can do
+before giving another file a turn.
+
+For example, suppose one file receives logs continuously while another receives
+only a few lines. Both get reading turns. If the open-file limit is reached, the
+scheduler can close an eligible file, preserve its unfinished record and
+ownership, and check that it is safe to resume when reopened. Files with no new
+data wait for a later check instead of being read repeatedly.
+
+This module handles reading and resource limits. Batch construction, delivery,
+checkpoint updates, and rotation decisions belong to other components.
+
 The synchronous [scheduler](../scheduler/mod.rs) runs on the read/checkpoint
 worker. It consumes `ReaderSeed` values from the identity component and retains
 their leases independently of open file handles.
