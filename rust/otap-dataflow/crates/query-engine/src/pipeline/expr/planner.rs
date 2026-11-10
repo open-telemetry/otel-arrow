@@ -50,8 +50,6 @@ use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
 use crate::pipeline::functions::regex_match::RegexMatchFunc;
-#[cfg(feature = "sha1-hash")]
-use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
