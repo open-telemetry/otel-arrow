@@ -571,7 +571,7 @@ fn parse_rejects_invalid_value_specs() {
         (
             "range: { min: 0.5, max: 5 }",
             ScalarKind::Int,
-            format!("{ns}.range"),
+            format!("{ns}.range.min"),
             "integer bounds",
         ),
         (
@@ -1449,11 +1449,15 @@ fn lognormal_params_reproduce_moments() {
         (2048.0, 8192.0),
         (100.0, 1.0),
         (1e-3, 5e-3),
+        (1.0, 1e-9),
     ] {
         let (mu, sigma) = lognormal_params(mean_v, sd_v);
         let s2 = sigma * sigma;
         let mean = (mu + s2 / 2.0).exp();
-        let sd = ((s2.exp() - 1.0) * (2.0 * mu + s2).exp()).sqrt();
+        // Use exp_m1 so exp(s2) - 1 keeps precision for tiny s2; otherwise the
+        // reconstructed stddev for small variance ratios would itself round to
+        // zero and the assertion would spuriously fail.
+        let sd = (s2.exp_m1() * (2.0 * mu + s2).exp()).sqrt();
         assert!(
             rel_err(mean, mean_v) < 1e-12,
             "mean for ({mean_v}, {sd_v}): {mean}"
@@ -1463,6 +1467,55 @@ fn lognormal_params_reproduce_moments() {
             "stddev for ({mean_v}, {sd_v}): {sd}"
         );
     }
+}
+
+/// Scenario: A lognormal annotation requests a tiny but nonzero stddev
+/// (mean 1, stddev 1e-9) whose variance ratio, added to 1.0, rounds back to
+/// 1.0 under naive arithmetic.
+/// Guarantees: The underlying sigma stays strictly positive and sampling over
+/// the valid range does not collapse every draw to the mean, so small
+/// requested variances are preserved rather than silently dropped.
+#[test]
+fn lognormal_tiny_variance_is_preserved() {
+    let (_, sigma) = lognormal_params(1.0, 1e-9);
+    assert!(sigma > 0.0, "sigma collapsed to {sigma}");
+
+    let spec = parse_scalar(
+        "range: { min: 0, max: 2 }\n\
+         distribution: { type: lognormal, mean: 1, stddev: 1e-9 }",
+        ScalarKind::Double,
+    )
+    .expect("tiny-variance lognormal is valid");
+    let sampler = ValueSampler::new(&spec, false);
+    let mut r = rng();
+    let mut distinct = false;
+    for _ in 0..1_000 {
+        let x = sampler.sample_f64(&mut r);
+        assert!((0.0..=2.0).contains(&x), "out of range: {x}");
+        if (x - 1.0).abs() > 0.0 {
+            distinct = true;
+        }
+    }
+    assert!(distinct, "all draws collapsed to the mean");
+}
+
+/// Scenario: A lognormal annotation uses an extreme scale (mean and stddev
+/// both 1e200) where squaring mean and stddev independently would overflow to
+/// infinity and yield inf/inf == NaN.
+/// Guarantees: The spec compiles into a finite sigma and is accepted by range
+/// validation instead of being rejected with a spurious "~0 probability"
+/// error.
+#[test]
+fn lognormal_extreme_scale_is_accepted() {
+    let (mu, sigma) = lognormal_params(1e200, 1e200);
+    assert!(mu.is_finite() && sigma.is_finite(), "mu {mu} sigma {sigma}");
+
+    let _ = parse_scalar(
+        "range: { min: 0, max: 1e300 }\n\
+         distribution: { type: lognormal, mean: 1e200, stddev: 1e200 }",
+        ScalarKind::Double,
+    )
+    .expect("extreme-scale lognormal is valid");
 }
 
 // ===========================================================================
@@ -2838,7 +2891,7 @@ fn parse_rejects_counts_above_caps() {
             &yaml_map("observations: { range: { min: 1, max: 1000000000000000000 } }"),
             &InstrumentSpec::Histogram,
         ),
-        &format!("{ns}.observations.range"),
+        &format!("{ns}.observations.range.max"),
         "must be within",
     );
     expect_err(
@@ -2872,17 +2925,50 @@ fn parse_rejects_counts_above_caps() {
     .expect("lengths at the caps are valid");
 }
 
-/// Scenario: Int ranges are annotated with bounds beyond +/-2^53, including a
-/// zipf range spanning nearly the whole i64 domain.
-/// Guarantees: They are rejected at parse time, so int sampling never loses
-/// precision and zipf never computes an overflowing rank count; bounds at
-/// exactly +/-2^53 are accepted and compile into a sampler.
+/// Scenario: Int ranges are annotated with bounds beyond +/-(2^52 - 1): one
+/// past the limit (+/-2^52), 2^53 + 1 on each sign (which rounds to +/-2^53
+/// when converted to f64), a degenerate min == max == 2^53 + 1, and a zipf
+/// range spanning nearly the whole i64 domain.
+/// Guarantees: They are rejected at parse time -- validating the converted
+/// bound is sound because f64 rounding never moves an out-of-limit value back
+/// into range -- so int sampling never loses precision, never emits a value
+/// outside the configured range, and zipf never computes an overflowing rank
+/// count; bounds at exactly +/-(2^52 - 1) are accepted, compile into a
+/// sampler, and only ever yield values within the range.
 #[test]
 fn parse_rejects_int_ranges_beyond_safe_integers() {
     let ns = annotation::NAMESPACE;
+    // One past the limit (2^52) on each sign.
     expect_err(
-        parse_scalar("range: { min: 0, max: 9007199254740994 }", ScalarKind::Int),
-        &format!("{ns}.range"),
+        parse_scalar("range: { min: 0, max: 4503599627370496 }", ScalarKind::Int),
+        &format!("{ns}.range.max"),
+        "must be within",
+    );
+    expect_err(
+        parse_scalar("range: { min: -4503599627370496, max: 0 }", ScalarKind::Int),
+        &format!("{ns}.range.min"),
+        "must be within",
+    );
+    // 2^53 + 1 rounds to 2^53 as an f64; validation on the converted bound
+    // still rejects it because 2^53 is far above the limit.
+    expect_err(
+        parse_scalar("range: { min: 0, max: 9007199254740993 }", ScalarKind::Int),
+        &format!("{ns}.range.max"),
+        "must be within",
+    );
+    expect_err(
+        parse_scalar("range: { min: -9007199254740993, max: 0 }", ScalarKind::Int),
+        &format!("{ns}.range.min"),
+        "must be within",
+    );
+    // Degenerate range at 2^53 + 1: rejected rather than compiling and always
+    // emitting 2^53, which would be below the configured min.
+    expect_err(
+        parse_scalar(
+            "range: { min: 9007199254740993, max: 9007199254740993 }",
+            ScalarKind::Int,
+        ),
+        &format!("{ns}.range.min"),
         "must be within",
     );
     expect_err(
@@ -2891,20 +2977,24 @@ fn parse_rejects_int_ranges_beyond_safe_integers() {
              distribution: { type: zipf, exponent: 1.1 }",
             ScalarKind::Int,
         ),
-        &format!("{ns}.range"),
+        &format!("{ns}.range.min"),
         "must be within",
     );
+    // Bounds exactly at the limit compile; zipf over the widest accepted range
+    // must never produce a value outside [min, max].
+    let min = -4_503_599_627_370_495.0;
+    let max = 4_503_599_627_370_495.0;
     let spec = parse_scalar(
-        "range: { min: -9007199254740992, max: 9007199254740992 }\n\
+        "range: { min: -4503599627370495, max: 4503599627370495 }\n\
          distribution: { type: zipf, exponent: 1.1 }",
         ScalarKind::Int,
     )
-    .expect("bounds at 2^53 are valid");
+    .expect("bounds at 2^52 - 1 are valid");
     let sampler = ValueSampler::new(&spec, true);
     let mut r = rng();
     for _ in 0..100 {
         let x = sampler.sample_f64(&mut r);
-        assert!(x.abs() <= 9_007_199_254_740_992.0, "{x}");
+        assert!((min..=max).contains(&x), "{x}");
     }
 }
 

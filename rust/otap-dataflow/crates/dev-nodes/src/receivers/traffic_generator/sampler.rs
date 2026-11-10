@@ -215,9 +215,16 @@ enum Continuous {
 }
 
 /// Convert lognormal value moments to the underlying normal parameters.
+///
+/// `sigma2` is computed from the coefficient of variation `stddev / mean` via
+/// `ln_1p`, so a tiny-but-nonzero variance ratio is preserved instead of
+/// rounding to zero (which would collapse all draws to `mean`). Forming the
+/// ratio before squaring also avoids the overflow/underflow that squaring
+/// `mean` and `stddev` separately would cause at extreme scales.
 #[must_use]
 pub fn lognormal_params(mean: f64, stddev: f64) -> (f64, f64) {
-    let sigma2 = (1.0 + (stddev * stddev) / (mean * mean)).ln();
+    let cv = stddev / mean;
+    let sigma2 = (cv * cv).ln_1p();
     let mu = mean.ln() - sigma2 / 2.0;
     (mu, sigma2.sqrt())
 }
@@ -299,8 +306,9 @@ impl NumberSampler {
                 }
             }
             Distribution::Zipf { exponent } => {
-                // Int range bounds are validated to +/-2^53, so the rank
-                // count fits in u64 without overflow.
+                // Int range bounds are validated to +/-(2^52 - 1), so the rank
+                // count `width + 1` is exact in f64 and fits in u64 without
+                // overflow.
                 let n = zipf_rank_count(&range);
                 if n <= ZIPF_TABLE_CAP {
                     Continuous::ZipfTable {
@@ -389,7 +397,8 @@ impl NumberSampler {
                 return self.range.min + idx.min(cumulative.len() - 1) as f64;
             }
             Continuous::ZipfRejection { zipf } => {
-                return self.range.min + zipf.sample(rng) - 1.0;
+                return (self.range.min + zipf.sample(rng) - 1.0)
+                    .clamp(self.range.min, self.range.max);
             }
         };
         let x = if x.is_nan() { self.lo } else { x };

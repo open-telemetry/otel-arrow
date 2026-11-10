@@ -11,15 +11,20 @@
 //! - `startup/resolve_compile`: resolve the registry and compile it into the
 //!   internal model (annotations parsed, samplers built). For `upstream` this
 //!   includes the git clone, so it is reported separately from `vendored`.
-//! - `pregenerate`: build the full pre-generated payload set once (as the
-//!   `pre_generated` strategy does at startup), per signal type.
+//! - `pregenerate`: build the full pre-generated payload set once, exactly as
+//!   the `pre_generated` strategy does at startup. This uses the producer's own
+//!   shaping (a 1:1:1 logs/metrics/traces mix, `1024 * max_batch_size` signals
+//!   total, split into separately encoded `max_batch_size` batches) so the
+//!   benchmark measures the real retained-payload workload rather than a single
+//!   oversized batch.
 //! - `fresh`: generate and encode one batch of signals, per signal type (the
-//!   per-batch cost paid continuously by the `fresh` strategy).
+//!   per-batch cost paid continuously by the `fresh` strategy), through the same
+//!   `OtapPayload` encoder the receiver uses.
 //!
 //! Memory is reported out-of-band through a counting allocator that wraps
 //! jemalloc: per-run lines print bytes retained by the model, bytes allocated
 //! during resolve/compile, bytes per fresh batch, bytes retained by the
-//! pre-generated set, and encoded bytes per signal.
+//! pre-generated payload set, and its per-signal breakdown.
 //!
 //! Both `upstream` and `vendored` run by default. `upstream` requires network
 //! access to clone the registry; a clone failure is a hard error.
@@ -27,14 +32,15 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::{
     Config, TrafficConfig, default_registry_path, vendored_registry_path,
 };
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel;
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::{
-    semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::producer::{
+    SignalGenerator, WeaverGenerator, pregenerate_payloads,
 };
-use prost::Message;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use weaver_common::vdir::VirtualDirectoryPath;
 
 // Use jemalloc so its statistics can be read through tikv_jemalloc_ctl. The
@@ -135,13 +141,15 @@ impl Signal {
         }
     }
 
-    /// Generate `count` signals and return the encoded protobuf bytes.
-    fn generate_encoded(self, count: usize, model: &SemconvModel) -> Vec<u8> {
-        match self {
-            Signal::Logs => semconv_otlp_logs(count, model).encode_to_vec(),
-            Signal::Metrics => semconv_otlp_metrics(count, model).encode_to_vec(),
-            Signal::Traces => semconv_otlp_traces(count, model).encode_to_vec(),
-        }
+    /// Generate `count` signals as one encoded `OtapPayload`, through the same
+    /// `OtlpProtoMessage` -> `OtapPayload` path the receiver uses.
+    fn generate_encoded(self, count: usize, generator: &mut dyn SignalGenerator) -> OtapPayload {
+        let result = match self {
+            Signal::Logs => generator.generate_logs(count),
+            Signal::Metrics => generator.generate_metrics(count),
+            Signal::Traces => generator.generate_traces(count),
+        };
+        result.expect("signal generation and encoding succeed")
     }
 }
 
@@ -224,64 +232,108 @@ fn bench_fresh(c: &mut Criterion) {
     let _ = group.throughput(Throughput::Elements(FRESH_BATCH as u64));
 
     for registry in Registry::ALL {
-        let model = compile_model(registry);
+        let mut generator = WeaverGenerator::new(compile_model(registry));
         for signal in Signal::ALL {
             if MEMORY_REPORT {
                 let before = AllocSnapshot::now();
-                let encoded = black_box(signal.generate_encoded(FRESH_BATCH, &model));
+                let mut encoded = black_box(signal.generate_encoded(FRESH_BATCH, &mut generator));
                 let after = AllocSnapshot::now();
+                let bytes = encoded.num_bytes().unwrap_or(0);
                 println!(
                     "mem fresh/{}/{}: batch_net={} B encoded={} B encoded_per_signal={:.1} B",
                     signal.id(),
                     registry.id(),
                     after.net_bytes(before),
-                    encoded.len(),
-                    encoded.len() as f64 / FRESH_BATCH as f64,
+                    bytes,
+                    bytes as f64 / FRESH_BATCH as f64,
                 );
             }
 
             let id = BenchmarkId::new(signal.id(), registry.id());
-            let _ = group.bench_with_input(id, &(registry, signal), |b, &(_registry, signal)| {
-                b.iter(|| black_box(signal.generate_encoded(FRESH_BATCH, &model)));
+            let _ = group.bench_with_input(id, &registry, |b, _registry| {
+                b.iter(|| black_box(signal.generate_encoded(FRESH_BATCH, &mut generator)));
             });
         }
     }
     group.finish();
 }
 
-#[allow(clippy::print_stdout)]
+/// Build the full pre-generated payload set for `registry`, exactly as the
+/// `pre_generated` strategy does at startup: a 1:1:1 logs/metrics/traces mix of
+/// `FRESH_BATCH * 1024` signals, split into separately encoded `FRESH_BATCH`
+/// batches and retained as `OtapPayload`s.
+fn pregenerate_set(registry: Registry) -> Vec<OtapPayload> {
+    let mut generator = WeaverGenerator::new(compile_model(registry));
+    pregenerate_payloads(&mut generator, &traffic_config())
+        .unwrap_or_else(|e| panic!("pregenerate {} payloads: {e}", registry.id()))
+}
+
+/// Sum encoded bytes and batch counts per signal type for a payload set.
+fn report_pregenerate(registry: Registry, net: i64, payloads: &mut [OtapPayload]) {
+    let mut batches = [0usize; 3];
+    let mut bytes = [0usize; 3];
+    let mut signals = [0usize; 3];
+    for payload in payloads.iter_mut() {
+        let idx = match payload.signal_type() {
+            SignalType::Logs => 0,
+            SignalType::Metrics => 1,
+            SignalType::Traces => 2,
+        };
+        batches[idx] += 1;
+        bytes[idx] += payload.num_bytes().unwrap_or(0);
+        signals[idx] += payload.num_items();
+    }
+    let total_bytes: usize = bytes.iter().sum();
+    let total_batches: usize = batches.iter().sum();
+    #[allow(clippy::print_stdout)]
+    {
+        println!(
+            "mem pregenerate/{}: encoded_retained={total_bytes} B heap_net={net} B batches={total_batches}",
+            registry.id(),
+        );
+        for (idx, name) in ["logs", "metrics", "traces"].iter().enumerate() {
+            let per_signal = if signals[idx] == 0 {
+                0.0
+            } else {
+                bytes[idx] as f64 / signals[idx] as f64
+            };
+            println!(
+                "mem pregenerate/{}/{}: encoded={} B batches={} signals={} per_signal={:.1} B",
+                name,
+                registry.id(),
+                bytes[idx],
+                batches[idx],
+                signals[idx],
+                per_signal,
+            );
+        }
+    }
+}
+
 fn bench_pregenerate(c: &mut Criterion) {
     let mut group = c.benchmark_group("pregenerate");
     // The pre_generated strategy builds max_batch_size * 1024 signals up front
-    // when signals_per_second is None. Mirror that volume here.
+    // when signals_per_second is None. Mirror that volume and 1:1:1 mix here.
     let pregen_count = FRESH_BATCH * 1024;
     let _ = group.throughput(Throughput::Elements(pregen_count as u64));
     // One run already generates a million+ signals; keep the sample small.
     let _ = group.sample_size(10);
 
     for registry in Registry::ALL {
-        let model = compile_model(registry);
-        for signal in Signal::ALL {
-            if MEMORY_REPORT {
-                let before = AllocSnapshot::now();
-                let encoded = black_box(signal.generate_encoded(pregen_count, &model));
-                let after = AllocSnapshot::now();
-                println!(
-                    "mem pregenerate/{}/{}: encoded_retained={} B heap_net={} B signals={} per_signal={:.1} B",
-                    signal.id(),
-                    registry.id(),
-                    encoded.len(),
-                    after.net_bytes(before),
-                    pregen_count,
-                    encoded.len() as f64 / pregen_count as f64,
-                );
-            }
-
-            let id = BenchmarkId::new(signal.id(), registry.id());
-            let _ = group.bench_with_input(id, &(registry, signal), |b, &(_registry, signal)| {
-                b.iter(|| black_box(signal.generate_encoded(pregen_count, &model)));
-            });
+        if MEMORY_REPORT {
+            let before = AllocSnapshot::now();
+            let mut payloads = black_box(pregenerate_set(registry));
+            let after = AllocSnapshot::now();
+            report_pregenerate(registry, after.net_bytes(before), &mut payloads);
+            drop(payloads);
         }
+
+        let id = BenchmarkId::from_parameter(registry.id());
+        let _ = group.bench_with_input(id, &registry, |b, &registry| {
+            // Freeing the retained payload set is excluded from the timed
+            // region so the measurement reflects generation and encoding only.
+            b.iter_with_large_drop(|| black_box(pregenerate_set(registry)));
+        });
     }
     group.finish();
 }

@@ -269,7 +269,7 @@ of `weights`), keys used in the wrong context (`observations` or
 attribute type, invalid distribution parameters, unknown status, severity,
 and temporality names, bounds that are not strictly increasing, counts above
 their limits (`observations` 1000, array `length` 1024), int ranges beyond
-+/-2^53, and weights whose sum is not finite.
++/-(2^52 - 1), and weights whose sum is not finite.
 
 The `observations` limit bounds the sampling work per histogram point; the
 work per batch still scales with `max_batch_size` (up to

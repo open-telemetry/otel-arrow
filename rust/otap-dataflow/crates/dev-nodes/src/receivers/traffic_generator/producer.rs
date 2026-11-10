@@ -77,7 +77,7 @@ impl TrafficProducer {
                 shape: shape.clone(),
             },
             GenerationStrategy::PreGenerated => {
-                let payloads = create_fresh_payloads(&mut *generator, &shape)?;
+                let payloads = generate_payloads(&mut *generator, &shape)?;
                 ProductionStrategy::Replay { payloads }
             }
         };
@@ -242,6 +242,21 @@ impl<'a> ExactSizeIterator for TrafficRun<'a> {
     }
 }
 
+/// Build the full set of pre-generated payloads for a `pre_generated` run.
+///
+/// This is the exact sequence `from_config` uses to populate the replay
+/// strategy: derive the per-second [`TrafficShape`] from `cfg` (interleaving
+/// signal types by weight and splitting into `max_batch_size` batches), then
+/// generate and encode one payload per batch. Exposed so benchmarks can
+/// measure the real startup workload without duplicating the shape logic.
+pub fn pregenerate_payloads(
+    generator: &mut dyn SignalGenerator,
+    cfg: &TrafficConfig,
+) -> Result<Vec<OtapPayload>, GenerateError> {
+    let shape = create_shape(cfg);
+    generate_payloads(generator, &shape)
+}
+
 fn create_shape(cfg: &TrafficConfig) -> TrafficShape {
     let total_weight = cfg.log_weight + cfg.trace_weight + cfg.metric_weight;
     assert!(total_weight > 0);
@@ -356,7 +371,7 @@ fn signal_percent(signal_weight: u32, total_weight: u32) -> f32 {
     signal_weight as f32 / total_weight as f32
 }
 
-fn create_fresh_payloads(
+fn generate_payloads(
     generator: &mut dyn SignalGenerator,
     shape: &TrafficShape,
 ) -> Result<Vec<OtapPayload>, GenerateError> {
@@ -456,6 +471,17 @@ pub trait SignalGenerator {
 /// annotations or rebuilds samplers.
 pub struct WeaverGenerator {
     model: SemconvModel,
+}
+
+impl WeaverGenerator {
+    /// Build a generator backed by an already-compiled [`SemconvModel`].
+    ///
+    /// Exposed so benchmarks can drive signal generation directly without
+    /// constructing a full [`TrafficProducer`].
+    #[must_use]
+    pub fn new(model: SemconvModel) -> Self {
+        Self { model }
+    }
 }
 
 impl SignalGenerator for WeaverGenerator {
@@ -727,7 +753,7 @@ mod tests {
         let shape = create_shape(&cfg);
         let mut generator = synthetic_generator();
         let mut payloads =
-            create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
+            generate_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
 
         let mut strategy = ProductionStrategy::Replay {

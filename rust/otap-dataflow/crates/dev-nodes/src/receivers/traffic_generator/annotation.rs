@@ -269,10 +269,8 @@ pub const MAX_ARRAY_LENGTH: u64 = 1_024;
 
 /// Largest integer magnitude accepted for int `range` bounds.
 ///
-/// Continuous int specs are sampled as `f64`, which represents every integer
-/// exactly only up to 2^53. Discrete int `values` are emitted as-is and are
-/// not limited.
-pub const MAX_SAFE_INT: i64 = 1 << 53;
+/// Continuous int specs are sampled as `f64`.
+pub const MAX_SAFE_INT: i64 = (1 << 52) - 1;
 
 const VALUE_SPEC_KEYS: [&str; 4] = ["values", "weights", "range", "distribution"];
 const ARRAY_KEYS: [&str; 2] = ["length", "items"];
@@ -686,22 +684,7 @@ pub fn parse_value_spec(
                 format!("continuous form is not allowed for {}", kind.name()),
             ));
         }
-        let range = parse_range(map.get("range"), &format!("{path}.range"))?;
-        if kind == ScalarKind::Int {
-            if range.min.fract() != 0.0 || range.max.fract() != 0.0 {
-                return Err(AnnotationError::new(
-                    &format!("{path}.range"),
-                    "int ranges require integer bounds",
-                ));
-            }
-            let limit = MAX_SAFE_INT as f64;
-            if range.min < -limit || range.max > limit {
-                return Err(AnnotationError::new(
-                    &format!("{path}.range"),
-                    format!("int range bounds must be within +/-{MAX_SAFE_INT}"),
-                ));
-            }
-        }
+        let range = parse_range(map.get("range"), &format!("{path}.range"), kind)?;
         let distribution = match map.get("distribution") {
             None => Distribution::Uniform,
             Some(d) => parse_distribution(d, &format!("{path}.distribution"), kind)?,
@@ -743,7 +726,37 @@ fn parse_weights(value: &Value, path: &str, len: usize) -> AnnotationResult<Vec<
     Ok(out)
 }
 
-fn parse_range(value: Option<&Value>, path: &str) -> AnnotationResult<Range> {
+/// Parse and validate a single `range` bound.
+///
+/// For int specs the bound must be a whole number within +/-[`MAX_SAFE_INT`];
+/// both checks run on the converted `f64`, which is sound because values beyond
+/// the limit never round back into it (see [`MAX_SAFE_INT`]).
+fn range_bound(m: &Mapping, key: &str, path: &str, kind: ScalarKind) -> AnnotationResult<f64> {
+    let p = format!("{path}.{key}");
+    let v = number(
+        m.get(key)
+            .ok_or_else(|| AnnotationError::new(path, format!("missing `{key}`")))?,
+        &p,
+    )?;
+    if kind == ScalarKind::Int {
+        if v.fract() != 0.0 {
+            return Err(AnnotationError::new(
+                &p,
+                "int ranges require integer bounds",
+            ));
+        }
+        let limit = MAX_SAFE_INT as f64;
+        if !(-limit..=limit).contains(&v) {
+            return Err(AnnotationError::new(
+                &p,
+                format!("int range bounds must be within +/-{MAX_SAFE_INT}"),
+            ));
+        }
+    }
+    Ok(v)
+}
+
+fn parse_range(value: Option<&Value>, path: &str, kind: ScalarKind) -> AnnotationResult<Range> {
     let Some(Value::Object(m)) = value else {
         return Err(AnnotationError::new(
             path,
@@ -751,16 +764,8 @@ fn parse_range(value: Option<&Value>, path: &str) -> AnnotationResult<Range> {
         ));
     };
     check_keys(m, path, &RANGE_KEYS)?;
-    let min = number(
-        m.get("min")
-            .ok_or_else(|| AnnotationError::new(path, "missing `min`"))?,
-        &format!("{path}.min"),
-    )?;
-    let max = number(
-        m.get("max")
-            .ok_or_else(|| AnnotationError::new(path, "missing `max`"))?,
-        &format!("{path}.max"),
-    )?;
+    let min = range_bound(m, "min", path, kind)?;
+    let max = range_bound(m, "max", path, kind)?;
     if min > max {
         return Err(AnnotationError::new(
             path,
