@@ -131,7 +131,7 @@ fn visit_logical_expr<T: ExprAstVisitor>(
         }
         LogicalExpression::Contains(contains) => {
             visit_scalar_expr(contains.get_haystack(), functions, visitor)?;
-            visit_scalar_expr(contains.get_haystack(), functions, visitor)?;
+            visit_scalar_expr(contains.get_needle(), functions, visitor)?;
         }
         LogicalExpression::EqualTo(eq) => {
             visit_scalar_expr(eq.get_left(), functions, visitor)?;

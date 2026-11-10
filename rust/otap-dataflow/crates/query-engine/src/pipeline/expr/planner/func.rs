@@ -131,7 +131,12 @@ impl FunctionDefinition {
                 None,
             )),
             #[cfg(feature = "sha1-hash")]
-            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
+            SHA1_FUNC_NAME => Self::DataFusion(DataFusionFunctionDef::new(
+                sha1_hash(),
+                ExprLogicalType::Binary,
+                true,
+                None,
+            )),
             SHA512_FUNC_NAME => Self::DataFusion(DataFusionFunctionDef::new(
                 sha512(),
                 ExprLogicalType::Binary,

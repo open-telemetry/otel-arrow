@@ -2261,11 +2261,9 @@ mod test {
     #[test]
     fn test_filter_batches_by_transport_header_presence_kql() {
         let runtime = TestRuntime::<OtapPdata>::new();
-        let processor = try_create_with_kql_query(
-            r#"logs | where has_transport_header("foo")"#,
-            &runtime,
-        )
-        .expect("created processor");
+        let processor =
+            try_create_with_kql_query(r#"logs | where has_transport_header("foo")"#, &runtime)
+                .expect("created processor");
 
         runtime
             .set_processor(processor)

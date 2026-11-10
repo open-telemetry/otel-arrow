@@ -36,6 +36,9 @@ impl MetadataAccessDeclarationVisitor {
     /// Convert into a list of declared contexts entry accesses performed by the query
     #[must_use]
     pub fn into_context_declarations(self) -> Vec<ContextDeclaration> {
+        if self.entry_reads.is_empty() {
+            return Vec::new();
+        }
         vec![ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
                 entries: self.entry_reads.into_boxed_slice(),

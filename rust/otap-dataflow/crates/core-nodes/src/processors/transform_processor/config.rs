@@ -91,7 +91,9 @@ impl ConfigNodeContextDeclaration for Config {
             error: format!("Could not parse TransformProcessor query: {e:?}"),
         };
         let map_pipeline_err = |e| ConfigError::InvalidUserConfig {
-            error: format!("Could create context entry declarations from parsed query AST: {e}"),
+            error: format!(
+                "Could not create context entry declarations from parsed query AST: {e}"
+            ),
         };
 
         // below we are going to parse the program, then visit the parser result (e.g. the
