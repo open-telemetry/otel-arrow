@@ -12,6 +12,40 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.65.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `observability`: Migrate user_events receiver drop metrics to enum attributes ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Replace flat `dropped_{memory_pressure,no_subscription,pending_overflow,send_error}` with unified `receiver.user_events.drops.samples` counter keyed by `reason` attribute enum.
+
+### :rocket: New components :rocket:
+
+- `pipeline`: Add `urn:otel:extension:gcp_auth` extension providing `BearerTokenProvider` backed by the Google Cloud (GCE/GKE) compute metadata server. ([#4650](https://github.com/open-telemetry/otel-arrow/issues/4650))
+  Feature `gcp-auth`, URN `urn:otel:extension:gcp_auth`. Acquires and refreshes
+  OAuth 2.0 access tokens from `/computeMetadata/v1/instance/service-accounts/{service_account}/token`
+  with `Metadata-Flavor: Google` and exposes them via the `bearer_token_provider` capability.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4666](https://github.com/open-telemetry/otel-arrow/issues/4666))
+- `engine`: Live updates require unchanged context declarations and selected composite definitions for deployed pipelines. ([#4541](https://github.com/open-telemetry/otel-arrow/issues/4541))
+  This conservative restriction now also rejects declaration changes that compile to equivalent policies, such as capture header casing changes. Original-header-name retention checks remain unchanged.
+- `engine`: Adds the engine.telemetry.metric_unregister_grace_period setting ([#2731](https://github.com/open-telemetry/otel-arrow/issues/2731))
+  Adds the engine.telemetry.metric_unregister_grace_period setting which delays
+  unregistering metrics from the engine to give scrapers the opportunity to read
+  final values.
+
+- `pdata`: Configure codecs independently with optional pipeline bindings and reusable named configurations. ([#3452](https://github.com/open-telemetry/otel-arrow/issues/3452))
+  Omitted codecs use registered defaults. Bindings inherit by encoding and can select implementations and decode validation. Strict OTLP decoding adds CPU and memory cost; unchanged encoded forwarding does not decode.
+
+### :toolbox: Bug fixes :toolbox:
+
+- `pipeline`: The retry processor now returns a `cannot requeue` NACK to the upstream sender when its pending-retry queue is full, instead of routing the NACK back into itself. ([#3630](https://github.com/open-telemetry/otel-arrow/issues/3630))
+  These messages are counted in `processor.retry.messages.terminated` with the new `reason="scheduling_failure"` value.
+
+<!-- previous-version -->
+
 ## v0.64.0
 
 ### :bulb: Enhancements :bulb:
