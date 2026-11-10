@@ -20,7 +20,9 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otel_arrow_dfe_channel::error::RecvError;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+#[cfg(any(test, feature = "test-utils"))]
 use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
@@ -250,6 +252,7 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 
 impl<PData: Debug + 'static> TestPhase<PData> {
     /// Sets a capture policy on the receiver wrapper for transport header testing.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
         self.receiver = self
@@ -259,6 +262,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 
     /// Sets an authorized identity policy on the receiver wrapper for testing.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn with_authorized_identity_policy(
         mut self,

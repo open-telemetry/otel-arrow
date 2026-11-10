@@ -9,8 +9,8 @@ use sqlparser::{
     ast::{
         BinaryOperator, CastKind, DataType, ExactNumberInfo, Expr, Function, FunctionArg,
         FunctionArgExpr, FunctionArgumentList, FunctionArguments, GroupByExpr, Ident, ObjectName,
-        OrderBy, OrderByExpr, OrderByKind, OrderByOptions, Query, Select, SelectFlavor, SelectItem,
-        SetExpr, Statement, TableFactor, UnaryOperator, Value,
+        OrderBy, OrderByExpr, OrderByKind, OrderByOptions, OrderBySort, Query, Select,
+        SelectFlavor, SelectItem, SetExpr, Statement, TableFactor, UnaryOperator, Value,
     },
     dialect::MsSqlDialect,
     parser::Parser,
@@ -383,11 +383,11 @@ fn validate_keyset(
         || expressions.iter().zip(columns).any(|(order, column)| {
             let OrderByExpr {
                 expr,
-                options: OrderByOptions { asc, nulls_first },
+                options: OrderByOptions { sort, nulls_first },
                 with_fill,
             } = order;
             !matches!(expr, Expr::Identifier(id) if id.value == **column && validate_ident(id).is_ok())
-                || *asc == Some(false)
+                || !matches!(sort, None | Some(OrderBySort::Asc))
                 || nulls_first.is_some()
                 || with_fill.is_some()
         })
@@ -481,15 +481,14 @@ fn validate_snapshot(select: &Select, query: &Query) -> Result<(), SqlServerConf
         }
         for OrderByExpr {
             expr,
-            options:
-                OrderByOptions {
-                    asc: _,
-                    nulls_first,
-                },
+            options: OrderByOptions { sort, nulls_first },
             with_fill,
         } in expressions
         {
-            if nulls_first.is_some() || with_fill.is_some() {
+            if !matches!(sort, None | Some(OrderBySort::Asc | OrderBySort::Desc))
+                || nulls_first.is_some()
+                || with_fill.is_some()
+            {
                 return Err(unsupported());
             }
             validate_expr(expr, true, 0)?;
@@ -547,7 +546,6 @@ fn validate_expr(expr: &Expr, aggregates: bool, depth: usize) -> Result<(), SqlS
             kind: CastKind::Cast,
             expr,
             data_type: DataType::Decimal(ExactNumberInfo::PrecisionAndScale(precision, scale)),
-            array: false,
             format: None,
         } if (1..=38).contains(precision)
             && u64::try_from(*scale).is_ok_and(|scale| scale <= *precision) =>

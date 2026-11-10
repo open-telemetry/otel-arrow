@@ -236,7 +236,7 @@ jobs:
           if-no-files-found: ignore
 
   contrib_integration:
-    uses: ./.github/workflows/contrib-integration.yml
+    uses: $/.github/workflows/contrib-integration.yml
     with:
       base_sha: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       head_sha: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}

@@ -119,7 +119,7 @@ topic = []
 # Receivers.
 host-metrics = []
 journald = []
-syslog-cef = []
+syslog-cef = ["otel-arrow-dfe-pdata-codec/syslog-cef"]
 
 # Processors.
 durable-buffer = ["dep:otel-arrow-dfe-quiver"]
