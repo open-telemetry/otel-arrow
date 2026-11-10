@@ -57,8 +57,6 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReade
 use otel_arrow_dfe_config::tls::TlsServerConfig;
 use otel_arrow_dfe_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 
-#[cfg(feature = "bench")]
-pub use otel_arrow_dfe_pdata_codec::builtins::syslog::bench_support;
 pub use otel_arrow_dfe_pdata_codec::builtins::syslog::{arrow_records_encoder, parser};
 #[cfg(test)]
 mod codec_tests;

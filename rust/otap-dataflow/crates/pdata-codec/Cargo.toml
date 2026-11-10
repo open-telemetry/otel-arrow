@@ -32,7 +32,7 @@ otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]
 syslog-cef = ["dep:chrono"]
-bench = []
+bench = ["syslog-cef"]
 testing = []
 # Registers fixture codecs. Enable only from dev-dependencies, never runtime dependencies.
 test-codecs = ["testing"]
