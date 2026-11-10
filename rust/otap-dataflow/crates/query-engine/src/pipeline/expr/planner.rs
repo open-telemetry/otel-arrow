@@ -803,7 +803,7 @@ impl<'a> ExprPlanner<'a> {
 
         Ok(PlannedOp {
             expr: ScopedExpr::Eval {
-                scope: DataScope::StaticScalar,
+                scope: DataScope::Record(RecordScope::Signal),
                 eval: LeafEval::BatchEval(batch_eval),
             },
             expr_type: batch_eval_func_def.logical_type().clone(),
@@ -1933,8 +1933,10 @@ impl<'a> ExprPlanner<'a> {
                 LeafEval::BatchEval(_) => {
                     // TODO add support for expressions such as `is Log as String` which would
                     // produce "true" for log batches, and false otherwise
+                    //
+                    // See https://github.com/open-telemetry/otel-arrow/issues/4708
                     Err(Error::NotYetSupportedError {
-                        message: "casting result of batch predicate not yet supported".into(),
+                        message: "casting result of batch expr eval not yet supported".into(),
                     })
                 }
             }

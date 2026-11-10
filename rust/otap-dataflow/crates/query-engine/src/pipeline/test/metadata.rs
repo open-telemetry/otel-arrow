@@ -24,7 +24,7 @@ use otel_arrow_dfe_engine::pdata_context::{
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
-use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
+use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
@@ -103,8 +103,10 @@ async fn execute_pipeline(
 async fn test_simple_filter_batches_having_transport_header() {
     let header_name = "foo";
     let header_val = "bar";
-    let mut pipeline_options = PipelineOptions::default();
-    pipeline_options.node_bindings = Arc::new(node_bindings_for_transport_header(header_name));
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        ..Default::default()
+    };
     let mut metadata = Metadata::default();
     add_transport_header(&mut metadata, header_name, header_val);
 
@@ -135,8 +137,10 @@ async fn test_simple_filter_batches_having_transport_header() {
 async fn test_filter_batches_not_having_transport_header() {
     let header_name = "foo";
     let header_val = "bar";
-    let mut pipeline_options = PipelineOptions::default();
-    pipeline_options.node_bindings = Arc::new(node_bindings_for_transport_header(header_name));
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        ..Default::default()
+    };
     let mut metadata = Metadata::default();
     add_transport_header(&mut metadata, header_name, header_val);
 
@@ -166,8 +170,10 @@ async fn test_filter_batches_not_having_transport_header() {
 async fn test_complex_filter_batches_by_metadata() {
     let header_name = "foo";
     let header_val = "bar";
-    let mut pipeline_options = PipelineOptions::default();
-    pipeline_options.node_bindings = Arc::new(node_bindings_for_transport_header(header_name));
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        ..Default::default()
+    };
     let query =
         "signals | where attributes[\"attr.1\"] == \"val\" or has_transport_header(\"foo\")";
 
@@ -206,30 +212,90 @@ async fn test_complex_filter_batches_by_metadata() {
     assert!(result.is_empty())
 }
 
-/// Scenario: use the value returned by the metadata access function (has_transport_header) in the
-/// predicate in the if/else construct's condition to dynamically route batches based on transport
-/// header presence
-/// Guarantees: this type of expression correctly routes batches
-#[tokio::test]
-#[ignore]
-async fn test_conditionally_route_batches_by_transport_header_presence() {
-    todo!()
-}
-
 /// Scenario: Assign the value of the metadata access function (has_transport_header) invocation to
 /// an attribute
 /// Guarantees: this type of expression correctly assigns the attribute
 #[tokio::test]
-#[ignore]
 async fn test_simple_assign_transport_header_presence_as_property() {
-    todo!()
+    let header_name = "foo";
+    let header_val = "bar";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        ..Default::default()
+    };
+
+    // assert it assigns "true" when it has the header
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+    let result = execute_pipeline(
+        "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(attr, &KeyValue::new("has_header", AnyValue::new_bool(true)));
+
+    // assert it returns false when we don't have the heaer
+    let result = execute_pipeline(
+        "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        Metadata::default(),
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(
+        attr,
+        &KeyValue::new("has_header", AnyValue::new_bool(false))
+    );
 }
 
 /// Scenario: Assign the value of the metadata access function (has_transport_header) invocation to
 /// an attribute using some complex logic to transform the result
 /// Guarantees: this type of expression correctly assigns the attribute
+///
+/// TODO - once we support "cast" on batch eval, we should support this
+/// https://github.com/open-telemetry/otel-arrow/issues/4708
 #[tokio::test]
-#[ignore]
+#[ignore = "casting result of batch eval expr not yet supported"]
 async fn test_complex_assign_transport_header_presence_as_property() {
-    todo!()
+    let header_name = "foo";
+    let header_val = "bar";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        ..Default::default()
+    };
+
+    let query = "signals | 
+        set attributes[\"has_header\"] = upper_case(has_transport_header(\"foo\") as String)";
+
+    // assert it assigns "true" when it has the header
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(
+        attr,
+        &KeyValue::new("has_header", AnyValue::new_string("TRUE"))
+    );
 }
