@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::budget::DiscoveryUnavailable;
 use super::native_path::NativePath;
 use super::roots::ExclusionRoot;
 use super::*;
@@ -9,6 +10,7 @@ use rustix::fs::{AtFlags, CWD, Mode, OFlags, ResolveFlags, openat2, readlinkat_r
 use std::ffi::{CStr, OsStr};
 use std::fs::File;
 use std::io;
+use std::ops::ControlFlow;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 
@@ -161,6 +163,8 @@ pub(super) struct ProbeContext<'a, P> {
     pub policy_available: bool,
 }
 
+/// Returns Break only when a registered-reader handoff expires; observations
+/// retain the existing ProbeBusy reason for both timeout and immediate contention.
 pub(super) fn probe<P: MatchPolicy>(
     context: &ProbeContext<'_, P>,
     directory: &File,
@@ -171,7 +175,7 @@ pub(super) fn probe<P: MatchPolicy>(
     out: &mut Observation,
     scratch: &mut ProbeScratch,
     cancelled: &mut impl FnMut() -> bool,
-) {
+) -> ControlFlow<()> {
     probe_with_open(
         context,
         directory,
@@ -185,7 +189,7 @@ pub(super) fn probe<P: MatchPolicy>(
         |directory, name, symlinks, cancelled| {
             PinnedSource::open_at(directory, name, symlinks, None, cancelled)
         },
-    );
+    )
 }
 
 pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
@@ -199,23 +203,21 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
     scratch: &mut ProbeScratch,
     cancelled: &mut F,
     mut open: impl FnMut(&File, &CStr, SymlinkPolicy, &mut F) -> Result<PinnedSource, FileAccessError>,
-) {
+) -> ControlFlow<()> {
     if cancelled() {
         out.reason = Some(ScanReason::Cancelled);
-        return;
+        return ControlFlow::Continue(());
     }
     // Registered workers alternate; cancellation remains observable while
     // waiting for a reader to finish its bounded conversion.
-    let mut stopped = false;
-    let reservation = context.budget.reserve_discovery(&mut || {
-        stopped |= cancelled();
-        stopped
-    });
-    let Some(_reservation) = reservation else {
-        if stopped {
+    let _reservation = match context.budget.reserve_discovery(cancelled) {
+        Ok(reservation) => reservation,
+        Err(DiscoveryUnavailable::HandoffExpired) => return ControlFlow::Break(()),
+        Err(DiscoveryUnavailable::Busy) => return ControlFlow::Continue(()),
+        Err(DiscoveryUnavailable::Cancelled) => {
             out.reason = Some(ScanReason::Cancelled);
+            return ControlFlow::Continue(());
         }
-        return;
     };
     let mut prior = None;
     let mut first_size = 0;
@@ -239,7 +241,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                 {
                     out.reason = Some(ScanReason::Unstable);
                     out.locator = None;
-                    return;
+                    return ControlFlow::Continue(());
                 }
                 access_failure(out, error, false);
                 // Classification may have succeeded before the target changed.
@@ -259,19 +261,19 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                     out.reason = Some(ScanReason::Unstable);
                     out.locator = None;
                 }
-                return;
+                return ControlFlow::Continue(());
             }
         };
         let current = pin.locator();
         if prior.is_some_and(|previous| previous != current) {
             out.reason = Some(ScanReason::Unstable);
             out.locator = None;
-            return;
+            return ControlFlow::Continue(());
         }
         out.locator = Some(current);
         if !context.policy_available {
             out.reason = Some(ScanReason::Policy);
-            return;
+            return ControlFlow::Continue(());
         }
         match policy(
             &pin,
@@ -290,7 +292,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                     || scratch.first_target[..len] != scratch.target[..len]
                 {
                     out.reason = Some(ScanReason::Unstable);
-                    return;
+                    return ControlFlow::Continue(());
                 }
             }
             Ok((false, _)) => {
@@ -299,7 +301,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                 } else {
                     ScanReason::Unstable
                 });
-                return;
+                return ControlFlow::Continue(());
             }
             Err(error) => {
                 out.reason = Some(if error.raw_os_error() == Some(libc::ECANCELED) {
@@ -308,18 +310,18 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                     ScanReason::Policy
                 });
                 out.errno = error.raw_os_error();
-                return;
+                return ControlFlow::Continue(());
             }
         }
         if pass == 0 && request == (ProbeRequest::PresenceOnly { expected: current }) {
             out.reason = Some(ScanReason::PresenceOnly);
-            return;
+            return ControlFlow::Continue(());
         }
         let source = match pin.into_source(&mut *cancelled) {
             Ok(source) => source,
             Err(error) => {
                 access_failure(out, error, true);
-                return;
+                return ControlFlow::Continue(());
             }
         };
         let opened_size = source.opened_metadata().len();
@@ -337,14 +339,14 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
             Ok(len) => len,
             Err(error) => {
                 access_failure(out, error, true);
-                return;
+                return ControlFlow::Continue(());
             }
         };
         let metadata = match source.metadata(&mut *cancelled) {
             Ok(metadata) => metadata,
             Err(error) => {
                 access_failure(out, error, true);
-                return;
+                return ControlFlow::Continue(());
             }
         };
         let size = metadata.len();
@@ -357,7 +359,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
             || (len != 0 && size < context.config.limits.ignored_header_bytes + len as u64)
         {
             out.reason = Some(ScanReason::Unstable);
-            return;
+            return ControlFlow::Continue(());
         }
         // Source closes here before the next path-only pin is acquired.
         drop(source);
@@ -371,7 +373,7 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
                 || scratch.first[..first_len] != scratch.second[..first_len]
             {
                 out.reason = Some(ScanReason::Unstable);
-                return;
+                return ControlFlow::Continue(());
             }
             out.size = Some(size);
             out.modified = modified;
@@ -379,4 +381,5 @@ pub(super) fn probe_with_open<P: MatchPolicy, F: FnMut() -> bool>(
             out.reason = None;
         }
     }
+    ControlFlow::Continue(())
 }

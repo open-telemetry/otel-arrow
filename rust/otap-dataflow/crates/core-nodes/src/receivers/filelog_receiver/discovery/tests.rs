@@ -1305,7 +1305,7 @@ fn failed_second_pin_clears_candidate_evidence() {
             errno: None,
         };
         let mut calls = 0;
-        probe_with_open(
+        let _ = probe_with_open(
             &context,
             &parent,
             c"log",
@@ -2441,7 +2441,7 @@ fn second_probe_exclusion_is_unstable() {
             errno: None,
         };
         let mut opens = 0;
-        probe_with_open(
+        let _ = probe_with_open(
             &context,
             &File::open(watched.path()).unwrap(),
             c"alias.log",
@@ -2656,7 +2656,10 @@ fn fair_probe_wait_observes_cancellation() {
     let reader = budget.request_reader(Waker::noop().clone()).unwrap();
     let held = reader.try_reserve().unwrap();
     let result = budget.reserve_discovery(&mut || budget.discovery_waiting());
-    assert!(result.is_none());
+    assert!(matches!(
+        result,
+        Err(budget::DiscoveryUnavailable::Cancelled)
+    ));
     assert!(!budget.discovery_waiting());
     drop(held);
     drop(reader);
@@ -2702,9 +2705,9 @@ fn stalled_reader_handoff_returns_incomplete_pass() {
 }
 
 /// Scenario: Reader priority stalls the second candidate in a scan with several files and roots.
-/// Guarantees: The first busy probe ends incomplete coverage, delivers prior evidence, and leaves later candidates for a fresh pass.
+/// Guarantees: Handoff expiry ends incomplete coverage, delivers prior evidence, and leaves later candidates for a fresh pass.
 #[test]
-fn busy_probe_stops_pass_across_candidates_and_roots() {
+fn expired_handoff_stops_pass_across_candidates_and_roots() {
     use std::sync::Arc;
     use std::task::Waker;
     use std::time::{Duration, Instant};
@@ -2768,4 +2771,72 @@ fn busy_probe_stops_pass_across_candidates_and_roots() {
     assert!(end.complete);
     assert_eq!(observations.len(), 6);
     assert!(observations.iter().all(|o| o.1.is_none() && o.3 == b"data"));
+}
+
+/// Scenario: Each scan collides with an unregistered admission on its first candidate.
+/// Guarantees: Immediate ProbeBusy skips only that candidate; later files and roots are observed in every incomplete pass.
+#[test]
+fn unregistered_pressure_preserves_later_candidates_and_roots() {
+    let dir = fixture();
+    let roots: Vec<_> = ["a", "b"]
+        .iter()
+        .map(|name| dir.path().join(name))
+        .collect();
+    for root in &roots {
+        fs::create_dir(root).unwrap();
+        for name in ["one", "two", "three"] {
+            fs::write(root.join(name), b"data").unwrap();
+        }
+    }
+    let mut cfg = config(&roots[0]);
+    cfg.include_roots = roots.clone();
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let budget = ProbeBudget::default();
+    for generation in 1..=3 {
+        let mut held = Some(budget.try_reserve().unwrap());
+        let mut requests = 0;
+        let mut busy = 0;
+        let mut observed = [0; 2];
+        let end = scanner.scan_with_requests(
+            generation,
+            &budget,
+            |_| {
+                requests += 1;
+                if requests == 2 {
+                    drop(held.take());
+                }
+                ProbeRequest::Full
+            },
+            || false,
+            |batch| {
+                for observation in batch {
+                    if observation.reason == Some(ScanReason::ProbeBusy) {
+                        busy += 1;
+                    } else if observation.reason.is_none() {
+                        let index = roots
+                            .iter()
+                            .position(|root| observation.path.starts_with(root))
+                            .unwrap();
+                        observed[index] += 1;
+                        assert_eq!(observation.fingerprint, b"data");
+                    }
+                }
+                true
+            },
+        );
+        assert!(!end.complete);
+        assert!(!end.cancelled);
+        assert_eq!(requests, 6);
+        assert_eq!(busy, 1);
+        assert_eq!(observed, [2, 3]);
+        assert!(!budget.discovery_waiting());
+        assert!(budget.try_reserve().is_some());
+    }
 }

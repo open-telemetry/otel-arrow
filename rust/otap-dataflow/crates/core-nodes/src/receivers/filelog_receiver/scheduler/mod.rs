@@ -557,8 +557,9 @@ impl<I: ReaderIo> Scheduler<I> {
             self.clear_probe(Some(id));
         }
         // Resource parking or a halt must not hold an empty payload slot.
-        // Unfinished input and rejected output keep their reservation; releasing
-        // empty capacity does not release the lease or authorize retirement.
+        // Unfinished input keeps its reservation. Terminal faults (including
+        // rejected output) do not release slots. Releasing empty capacity does
+        // not release the lease or authorize retirement.
         if matches!(
             reason,
             Reason::Descriptors
@@ -569,10 +570,6 @@ impl<I: ReaderIo> Scheduler<I> {
                 | Reason::Framing(_)
                 | Reason::Source(_)
         ) && reader.partial.as_ref().is_none_or(|p| !p.unfinished())
-            && !self
-                .rejected
-                .as_ref()
-                .is_some_and(|output| output.key == reader.key && output.epoch == reader.epoch)
         {
             self.release_slot(id, &mut reader);
         }

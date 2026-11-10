@@ -145,8 +145,9 @@ impl<P: MatchPolicy> Scanner<P> {
     /// copying and check cancellation while blocked. No directory or source
     /// descriptor is held during delivery. Filesystem errors are not retried;
     /// registered reader contention waits for fair permit handoff with a 10 ms
-    /// cancellation-check timeout. Any ProbeBusy ends the pass as incomplete
-    /// after delivering collected observations, including unregistered pressure.
+    /// cancellation-check timeout. Handoff expiry ends the pass as incomplete
+    /// after delivering collected observations. Unregistered pressure skips only
+    /// the busy candidate, without waiting.
     /// Environmental backoff and scheduling belong to the worker.
     pub fn scan(
         &mut self,

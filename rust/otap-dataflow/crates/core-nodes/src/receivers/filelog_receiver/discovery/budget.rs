@@ -26,6 +26,14 @@ const READER: u8 = 2;
 const DISCOVERY: u8 = 4;
 const READER_TURN: u8 = 8;
 
+/// Distinguishes a skipped candidate from an expired registered-reader handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DiscoveryUnavailable {
+    Busy,
+    HandoffExpired,
+    Cancelled,
+}
+
 /// One conversion's two transient descriptors, shared by both workers.
 /// Registered demand alternates at release. Unregistered admission checks are
 /// opportunistic and cannot steal either worker's handoff. No I/O uses a lock.
@@ -133,13 +141,13 @@ impl ProbeBudget {
 
     /// Discovery-worker acquisition. A registered reader receives its bounded
     /// turn, then discovery owns the next release before another reader can win.
-    /// Waits at most 10 ms for notification, then reports Busy so discovery can
-    /// return incomplete coverage. Unregistered external pressure reports Busy
+    /// Waits at most 10 ms for notification, then reports HandoffExpired so discovery can
+    /// end the pass with incomplete coverage. Unregistered external pressure reports Busy
     /// immediately. Permit fairness within the wait is independent of time.
     pub(super) fn reserve_discovery(
         &self,
         cancelled: &mut impl FnMut() -> bool,
-    ) -> Option<ProbeReservation<'_>> {
+    ) -> Result<ProbeReservation<'_>, DiscoveryUnavailable> {
         let started = Instant::now();
         self.reserve_discovery_with_wait(cancelled, || {
             let remaining = DISCOVERY_HANDOFF_WAIT.saturating_sub(started.elapsed());
@@ -155,22 +163,22 @@ impl ProbeBudget {
         &self,
         cancelled: &mut impl FnMut() -> bool,
         mut wait: impl FnMut() -> bool,
-    ) -> Option<ProbeReservation<'_>> {
+    ) -> Result<ProbeReservation<'_>, DiscoveryUnavailable> {
         if cancelled() {
-            return None;
+            return Err(DiscoveryUnavailable::Cancelled);
         }
         let contended = match self.try_unregistered() {
-            Ok(permit) => return Some(permit),
+            Ok(permit) => return Ok(permit),
             Err(observed) => observed,
         };
         // Use the failed acquisition's state. A later load could miss a reader
         // releasing and immediately registering another request.
         if contended & READER == 0 {
-            return None;
+            return Err(DiscoveryUnavailable::Busy);
         }
         let wake = DISCOVERY_WAKE.with(Clone::clone);
         if !self.register(DISCOVERY, &wake) {
-            return None;
+            return Err(DiscoveryUnavailable::Busy);
         }
         // Guard cancellation/unwind; transfer its registration to the permit.
         struct Demand<'a>(&'a ProbeBudget, bool);
@@ -184,17 +192,17 @@ impl ProbeBudget {
         let mut demand = Demand(self, true);
         loop {
             if cancelled() {
-                return None;
+                return Err(DiscoveryUnavailable::Cancelled);
             }
             // AtomicWaker consumes a wake; refresh before checking availability.
             self.discovery_wake.register(&wake);
             if let Some(mut permit) = self.acquire(DISCOVERY) {
                 demand.1 = false;
                 permit.owns_request = true;
-                return Some(permit);
+                return Ok(permit);
             }
             if !wait() {
-                return None;
+                return Err(DiscoveryUnavailable::HandoffExpired);
             }
         }
     }
@@ -289,12 +297,27 @@ mod tests {
             waits += 1;
             waits < 3
         });
-        assert!(result.is_none());
+        assert!(matches!(result, Err(DiscoveryUnavailable::HandoffExpired)));
         assert_eq!(waits, 3);
         assert!(!budget.discovery_waiting());
         drop(held);
         assert!(reader.try_reserve().is_some());
         drop(reader);
+        assert!(budget.try_reserve().is_some());
+    }
+
+    /// Scenario: An unregistered admission holds the conversion allowance.
+    /// Guarantees: Discovery reports immediate contention without registering demand or invoking its wait function.
+    #[test]
+    fn unregistered_pressure_never_waits() {
+        let budget = ProbeBudget::default();
+        let held = budget.try_reserve().unwrap();
+        let result = budget.reserve_discovery_with_wait(&mut || false, || {
+            panic!("unregistered pressure must not wait")
+        });
+        assert!(matches!(result, Err(DiscoveryUnavailable::Busy)));
+        assert!(!budget.discovery_waiting());
+        drop(held);
         assert!(budget.try_reserve().is_some());
     }
 

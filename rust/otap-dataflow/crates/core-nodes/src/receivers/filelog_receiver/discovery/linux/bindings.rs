@@ -258,7 +258,8 @@ impl<P: MatchPolicy> Scanner<P> {
             );
         } else {
             self.batch.last_mut().reason = Some(ScanReason::ProbeBusy);
-            probe::probe(
+            // A binding check reports one candidate; it has no traversal to stop.
+            let _ = probe::probe(
                 &context,
                 &directory,
                 name,

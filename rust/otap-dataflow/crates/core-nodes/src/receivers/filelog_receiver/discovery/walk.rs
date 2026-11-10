@@ -56,7 +56,7 @@ enum WalkStep {
     Deliver,
     Finished,
     Failed,
-    ProbeBusy,
+    HandoffExpired,
 }
 
 impl Walker {
@@ -122,7 +122,7 @@ impl Walker {
         ) {
             WalkStep::Descend(child) => self.stack.push(child),
             WalkStep::Deliver => (),
-            WalkStep::ProbeBusy => return ControlFlow::Break(()),
+            WalkStep::HandoffExpired => return ControlFlow::Break(()),
             WalkStep::Finished | WalkStep::Failed => {
                 recycle_frame(&mut self.stack, &mut self.free_frames)
             }
@@ -253,7 +253,7 @@ impl Walker {
                 );
             } else {
                 batch.emit(path, ScanReason::ProbeBusy, None);
-                probe(
+                let progress = probe(
                     context,
                     &file,
                     name,
@@ -264,8 +264,8 @@ impl Walker {
                     scratch,
                     cancelled,
                 );
-                if batch.last_mut().reason == Some(ScanReason::ProbeBusy) {
-                    return WalkStep::ProbeBusy;
+                if progress.is_break() {
+                    return WalkStep::HandoffExpired;
                 }
                 if batch.last_mut().reason == Some(ScanReason::Cancelled) {
                     return WalkStep::Failed;
