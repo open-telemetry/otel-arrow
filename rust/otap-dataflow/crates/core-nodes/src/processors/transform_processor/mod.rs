@@ -670,7 +670,9 @@ mod test {
         local::message::LocalSender,
         message::Sender,
         node::NodeWithPDataSender,
+        pdata_context::Metadata,
         testing::{
+            install_test_context_bindings,
             processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
             test_node, test_nodes,
         },
@@ -699,6 +701,7 @@ mod test {
         TransportHeader, TransportHeaders, ValueKind,
     };
     use otel_arrow_dfe_otap::{
+        OTAP_PIPELINE_FACTORY,
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
     };
@@ -842,14 +845,31 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_context = controller_context.pipeline_context_with(
+        let mut pipeline_context = controller_context.pipeline_context_with(
             "group_id".into(),
             "pipeline_id".into(),
             0,
             1,
             0,
         );
-        let node_id = test_node("transform-processor");
+        let node_id = test_node("transform_processor");
+        let pipeline_config = serde_json::from_value(json!({
+            "nodes": { "transform_processor": &node_config }
+        }))
+        .unwrap();
+
+        install_test_context_bindings(
+            &mut pipeline_context,
+            &OTAP_PIPELINE_FACTORY,
+            pipeline_config,
+        )
+        .unwrap();
+        pipeline_context = pipeline_context.with_node_context(
+            "transform_processor".into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            Default::default(),
+        );
         create_transform_processor(
             pipeline_context,
             node_id,
@@ -2169,6 +2189,70 @@ mod test {
                 assert_logs_records_equal(result, info_log_record);
             })
             .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: an OPL program conditionally routes batches based on whether some transport
+    /// header is present in the batch metadata
+    /// Guarantees: pipeline is planned executed with the correct metadata and context entry
+    /// types such that the batches are correctly routed by determination of header presence
+    #[test]
+    fn test_route_conditionally_based_on_transport_header_presence() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"signals | if (has_transport_header("foo")) {
+            route_to "has_header"
+        } else {
+            route_to "no_header"
+        }
+        "#;
+
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let has_header_rx = set_pdata_sender("has_header", &mut processor);
+        let no_header_rx = set_pdata_sender("no_header", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                // create one batch that has the transport header
+                let batch1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build().event_name("batch1").finish(),
+                ])));
+
+                let mut transport_headers = TransportHeaders::new();
+                transport_headers.push(TransportHeader::text(
+                    ContextEntryName::try_from("foo").unwrap(),
+                    "bar".to_string(),
+                ));
+
+                let mut metadata = Metadata::default();
+                metadata.set_transport_headers(transport_headers);
+                let context = Context::default().with_metadata(metadata);
+                let pdata1 = OtapPdata::new(context, batch1.into());
+
+                // create another batch that doesn't have the transport header
+                let batch2 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build().event_name("batch2").finish(),
+                ])));
+                let pdata2 = OtapPdata::new_default(batch2.into());
+
+                ctx.process(Message::PData(pdata1.clone())).await.unwrap();
+                ctx.process(Message::PData(pdata2.clone())).await.unwrap();
+
+                let out = ctx.drain_pdata().await;
+                assert!(out.is_empty()); // everything routed
+
+                let has_header_batch = has_header_rx.try_recv().unwrap();
+                assert_eq!(
+                    pdata1.payload_ref().otap_ref().unwrap(),
+                    has_header_batch.payload_ref().otap_ref().unwrap()
+                );
+
+                let no_header_batch = no_header_rx.try_recv().unwrap();
+                assert_eq!(
+                    pdata2.payload_ref().otap_ref().unwrap(),
+                    no_header_batch.payload_ref().otap_ref().unwrap()
+                );
+            })
+            .validate(|_ctx| async move {});
     }
 
     #[test]
