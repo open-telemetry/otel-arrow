@@ -1,0 +1,79 @@
+groups:
+  - id: registry.v8js
+    type: attribute_group
+    brief: Describes V8 JS Engine Runtime related attributes.
+    display_name: V8 JS Attributes
+    attributes:
+      - id: v8js.gc.type
+        stability: development
+        brief: The type of garbage collection.
+        type:
+          members:
+            - id: major
+              value: 'major'
+              brief: 'Major (Mark Sweep Compact).'
+              stability: development
+            - id: minor
+              value: 'minor'
+              brief: 'Minor (Scavenge).'
+              stability: development
+            - id: incremental
+              value: 'incremental'
+              brief: 'Incremental (Incremental Marking).'
+              stability: development
+            - id: weakcb
+              value: 'weakcb'
+              brief: 'Weak Callbacks (Process Weak Callbacks).'
+              stability: development
+      - id: v8js.heap.space.name
+        stability: development
+        brief: The name of the space type of heap memory.
+        note: >
+          Value can be retrieved from value `space_name` of [`v8.getHeapSpaceStatistics()`](https://nodejs.org/api/v8.html#v8getheapspacestatistics)
+        type:
+          members:
+            - id: new_space
+              value: 'new_space'
+              brief: 'New memory space.'
+              stability: development
+            - id: old_space
+              value: 'old_space'
+              brief: 'Old memory space.'
+              stability: development
+            - id: code_space
+              value: 'code_space'
+              brief: 'Code memory space.'
+              stability: development
+            - id: map_space
+              value: 'map_space'
+              brief: 'Map memory space.'
+              stability: development
+            - id: large_object_space
+              value: 'large_object_space'
+              brief: 'Large object memory space.'
+              stability: development
+      - id: v8js.resource.type
+        stability: development
+        brief: The type of resource keeping the event loop active.
+        type:
+          members:
+            - id: immediate
+              value: 'Immediate'
+              brief: 'Active `setImmediate` callbacks.'
+              stability: development
+            - id: tcpserverwrap
+              value: 'TCPServerWrap'
+              brief: 'Active TCP Servers.'
+              stability: development
+            - id: tcpwrap
+              value: 'TCPWrap'
+              brief: 'Active TCP connections.'
+              stability: development
+            - id: timeout
+              value: 'Timeout'
+              brief: 'Active `setTimeout` or `setInterval` timers.'
+              stability: development
+            - id: ttywrap
+              value: 'TTYWrap'
+              brief: 'Active Terminal I/O (stdin/stdout).'
+              stability: development

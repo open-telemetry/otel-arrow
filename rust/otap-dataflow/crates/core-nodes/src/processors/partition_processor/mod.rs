@@ -16,19 +16,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error as ConfigError;
-use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::{context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
-use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
-    NodeContextDeclarations,
-};
 use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
+    NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
 use otel_arrow_dfe_engine::{
@@ -520,9 +520,10 @@ fn partition_value_to_transport_header(
 
 impl ConfigNodeContextDeclaration for Config {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Produces {
-            domain: ContextDomain::TransportHeader,
-            entry: self.partition_header_name.clone(),
+        std::iter::once(ContextDeclaration::Edits {
+            actions: Box::new([ContextAction::Add {
+                entry: self.partition_header_name.clone(),
+            }]),
         })
         .collect()
     }
@@ -534,7 +535,7 @@ mod test {
 
     use super::*;
 
-    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
+    use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
@@ -2074,7 +2075,7 @@ mod test {
     }
 
     /// Scenario: a partition processor has an output header.
-    /// Guarantees: its factory declares the output name in the transport-header domain.
+    /// Guarantees: its factory declares an edit adding the output name.
     #[test]
     fn partition_declaration_names_output() {
         let config = serde_json::json!({
@@ -2086,9 +2087,10 @@ mod test {
         assert_eq!(decls.len(), 1);
         assert_eq!(
             decls.iter().next().expect("one declaration"),
-            &ContextDeclaration::Produces {
-                domain: ContextDomain::TransportHeader,
-                entry: context_name("x-partition"),
+            &ContextDeclaration::Edits {
+                actions: Box::new([ContextAction::Add {
+                    entry: context_name("x-partition"),
+                }]),
             }
         );
     }

@@ -729,6 +729,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
@@ -763,6 +766,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
@@ -802,7 +808,15 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Requeue retained pdata onto this node later.
-    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+    ///
+    /// Returns a scheduler-local ID that accompanies the corresponding
+    /// [`crate::control::NodeControlMsg::ResumeData`]. Returns the original
+    /// pdata if scheduling is rejected.
+    pub fn requeue_later(
+        &self,
+        when: Instant,
+        data: Box<PData>,
+    ) -> Result<crate::control::LocalResumeId, PData> {
         self.core.requeue_later(when, data)
     }
 

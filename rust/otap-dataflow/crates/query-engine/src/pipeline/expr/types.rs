@@ -561,11 +561,12 @@ pub fn coerce_arithmetic(
 /// identifier of metric data point type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
+#[repr(u8)]
 pub enum MetricDataPointType {
-    NumberDataPoint,
-    HistogramDataPoint,
-    ExponentialHistogramDataPoint,
-    SummaryDataPoint,
+    NumberDataPoint = 0,
+    HistogramDataPoint = 1,
+    ExponentialHistogramDataPoint = 2,
+    SummaryDataPoint = 3,
 }
 
 impl MetricDataPointType {

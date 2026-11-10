@@ -1811,6 +1811,8 @@ mod tests {
         .expect("valid ClickHouse config");
         let config = Config::from_patch(patch);
         build_client(&config, "default")
+            .await
+            .expect("build bootstrap client")
             .query("DROP DATABASE IF EXISTS otap_e2e_raw_otlp_logs")
             .execute()
             .await
@@ -1831,6 +1833,8 @@ mod tests {
             .expect("insert raw OTLP logs batch");
 
         let summary = build_client(&config, &config.database)
+            .await
+            .expect("build query client")
             .query(
                 "SELECT count() AS row_count, CAST(any(ServiceName) AS String) AS service_name, \
                  any(Body) AS body FROM otap_e2e_raw_otlp_logs.otel_logs",

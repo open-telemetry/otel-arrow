@@ -122,6 +122,7 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
             pipeline_group_id: pipeline_ctx.pipeline_group_id(),
             pipeline_id: pipeline_ctx.pipeline_id(),
             policies: Policies::resolve(pipeline.policies()),
+            codecs: otel_arrow_dfe_config::codecs::CodecsConfig::resolve(pipeline.codecs()),
             pipeline,
             topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             role: ResolvedPipelineRole::Regular,
@@ -158,6 +159,34 @@ pub fn test_extension_effect_handler(
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
         None,
     )
+}
+
+/// Creates an effect handler with an observable readiness probe for extension tests.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler_with_readiness(
+    name: otel_arrow_dfe_config::ExtensionId,
+    timeout: std::time::Duration,
+) -> (
+    crate::extension::EffectHandler,
+    crate::extension::readiness::ReadinessProbe,
+) {
+    let (signaller, probe) = crate::extension::readiness::ReadinessSignaller::pair(timeout);
+    let (tx, _rx) = flume::bounded(1);
+    let effects = crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        Some(signaller),
+    );
+    (effects, probe)
+}
+
+/// Takes a factory-built extension's readiness probe for offline wiring tests.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn take_test_extension_readiness_probe(
+    wrapper: &mut crate::extension::ExtensionWrapper,
+) -> Option<crate::extension::readiness::ReadinessProbe> {
+    wrapper.take_readiness_probe()
 }
 
 /// Run an extension through the engine's spawn and readiness gates, then shut it down.

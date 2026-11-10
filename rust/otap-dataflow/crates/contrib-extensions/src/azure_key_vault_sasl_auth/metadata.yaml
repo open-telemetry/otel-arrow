@@ -1,0 +1,6 @@
+type: azure_key_vault_sasl_auth
+status:
+  class: extension
+  codeowners:
+    active:
+      - sochen0714

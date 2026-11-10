@@ -45,6 +45,7 @@ use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
+use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
 use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
@@ -70,9 +71,6 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
-use otel_arrow_dfe_engine::context_declaration::{
-    CompiledContextBindings, ContextRuntimeRequirements,
-};
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -87,6 +85,7 @@ use otel_arrow_dfe_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
 };
+use otel_arrow_dfe_engine::pdata_context::{CompiledContextBindings, ContextRuntimeRequirements};
 use otel_arrow_dfe_engine::processor::FlowMetricHook;
 use otel_arrow_dfe_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
@@ -1462,7 +1461,11 @@ impl<
             .transpose()?;
 
         let num_pipeline_groups = engine_config.groups.len();
-        let resolved_config = engine_config.resolve();
+        let resolved_config =
+            startup::resolve_and_validate_engine_components(&engine_config, self.pipeline_factory)
+                .map_err(|source| Error::PipelineRuntimeError {
+                    source: Box::new(std::io::Error::other(source.to_string())),
+                })?;
         let context = self
             .pipeline_factory
             .compile_initial_context(&resolved_config)
@@ -1482,7 +1485,9 @@ impl<
         // Create the shared telemetry registry first - it is used by both the
         // observed state store and the internal telemetry system, and by the
         // controller context below.
-        let telemetry_registry = TelemetryRegistryHandle::new();
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(
+            engine.telemetry.metric_unregister_grace_period,
+        );
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let controller_ctx = match state_directory {
             Some(root) => controller_ctx.with_state_directory(root),
@@ -2771,6 +2776,7 @@ impl<
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        codecs_config: ResolvedCodecsConfig,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
@@ -2831,6 +2837,7 @@ impl<
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
+                    codecs_config,
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,
@@ -4302,6 +4309,7 @@ groups: {{}}
                 },
                 ..Default::default()
             },
+            codecs: Default::default(),
             role: ResolvedPipelineRole::Regular,
         }
     }

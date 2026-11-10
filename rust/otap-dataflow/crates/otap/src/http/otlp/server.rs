@@ -1,0 +1,2499 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! OTLP HTTP receiver implementation.
+//!
+//! This module implements the OTLP/HTTP protocol endpoints:
+//! - `POST /v1/logs`
+//! - `POST /v1/metrics`
+//! - `POST /v1/traces`
+//!
+//! The receiver keeps request payloads in their serialized protobuf form and forwards them into
+//! the pipeline as `OtapPdata`, matching the OTLP/gRPC receiver's lazy-decoding strategy.
+
+use crate::bearer_authorization::{AuthorizationRejection, authorize_bearer};
+use crate::otlp::metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use crate::pdata::{Context, OtapPdata};
+use crate::receiver::ack::AckRegistry;
+use crate::socket_options;
+use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
+
+use bytes::Bytes;
+use http::{HeaderValue, Method, Request, Response, StatusCode};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
+use hyper::body::Body;
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
+use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
+use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
+use otel_arrow_dfe_engine::{
+    Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+};
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
+use parking_lot::Mutex;
+use prost::Message;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+use zstd::stream::read::Decoder as ZstdDecoder;
+
+use crate::tls_utils::build_tls_acceptor;
+
+use crate::http::settings::HttpServerSettings;
+use crate::receiver::ack::SlotGuard;
+
+use super::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH};
+
+fn content_type_is_protobuf(headers: &http::HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            let base = v.split(';').next().unwrap_or("").trim();
+            base.eq_ignore_ascii_case(PROTOBUF_CONTENT_TYPE)
+        })
+}
+
+fn response_bytes(signal: SignalType) -> Bytes {
+    fn encode<T: Message + Default>() -> Bytes {
+        let mut buf = Vec::with_capacity(T::default().encoded_len());
+        T::default().encode(&mut buf).expect("encode response");
+        Bytes::from(buf)
+    }
+
+    static LOGS: OnceLock<Bytes> = OnceLock::new();
+    static METRICS: OnceLock<Bytes> = OnceLock::new();
+    static TRACES: OnceLock<Bytes> = OnceLock::new();
+
+    match signal {
+        SignalType::Logs => LOGS
+            .get_or_init(encode::<ExportLogsServiceResponse>)
+            .clone(),
+        SignalType::Metrics => METRICS
+            .get_or_init(encode::<ExportMetricsServiceResponse>)
+            .clone(),
+        SignalType::Traces => TRACES
+            .get_or_init(encode::<ExportTraceServiceResponse>)
+            .clone(),
+    }
+}
+
+fn ok_response(signal: SignalType) -> Response<Full<Bytes>> {
+    let mut resp = Response::new(Full::new(response_bytes(signal)));
+    *resp.status_mut() = StatusCode::OK;
+    let headers = resp.headers_mut();
+    _ = headers.insert(
+        http::header::CONTENT_TYPE,
+        HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
+    );
+    resp
+}
+
+fn rpc_status_response(
+    status: StatusCode,
+    grpc_code: i32,
+    message: impl Into<String>,
+) -> Response<Full<Bytes>> {
+    let status_msg = RpcStatus {
+        code: grpc_code,
+        message: message.into(),
+        details: Vec::new(),
+    };
+
+    let mut buf = Vec::with_capacity(status_msg.encoded_len());
+    status_msg.encode(&mut buf).expect("encode RpcStatus");
+
+    let mut resp = Response::new(Full::new(Bytes::from(buf)));
+    *resp.status_mut() = status;
+    _ = resp.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
+    );
+    resp
+}
+
+fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
+    let mut resp = Response::new(Full::new(Bytes::new()));
+    *resp.status_mut() = status;
+    resp
+}
+
+fn limited_body_too_large() -> Response<Full<Bytes>> {
+    // Align with Go collector's OTLP/HTTP receiver behavior: 400 for oversized bodies.
+    rpc_status_response(StatusCode::BAD_REQUEST, 3, "request body too large")
+}
+
+fn unsupported_media_type() -> Response<Full<Bytes>> {
+    empty_response(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+}
+
+fn method_not_allowed() -> Response<Full<Bytes>> {
+    empty_response(StatusCode::METHOD_NOT_ALLOWED)
+}
+
+fn not_found() -> Response<Full<Bytes>> {
+    empty_response(StatusCode::NOT_FOUND)
+}
+
+fn service_unavailable() -> Response<Full<Bytes>> {
+    rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 14, "service unavailable")
+}
+
+fn unauthenticated() -> Response<Full<Bytes>> {
+    let rejection = AuthorizationRejection::Unauthenticated;
+    let mut response = rpc_status_response(StatusCode::UNAUTHORIZED, 16, rejection.message());
+    _ = response.headers_mut().insert(
+        http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer"),
+    );
+    response
+}
+
+fn permission_denied() -> Response<Full<Bytes>> {
+    let rejection = AuthorizationRejection::PermissionDenied;
+    rpc_status_response(StatusCode::FORBIDDEN, 7, rejection.message())
+}
+
+fn authorization_unavailable() -> Response<Full<Bytes>> {
+    let rejection = AuthorizationRejection::Unavailable;
+    rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 14, rejection.message())
+}
+
+fn authorization_rejection_response(rejection: AuthorizationRejection) -> Response<Full<Bytes>> {
+    match rejection {
+        AuthorizationRejection::Unauthenticated => unauthenticated(),
+        AuthorizationRejection::PermissionDenied => permission_denied(),
+        AuthorizationRejection::Unavailable => authorization_unavailable(),
+    }
+}
+
+fn resource_exhausted_with_retry_after(
+    message: &'static str,
+    retry_after_secs: u32,
+) -> Response<Full<Bytes>> {
+    let mut response = rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, message);
+    if let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
+        _ = response
+            .headers_mut()
+            .insert(http::header::RETRY_AFTER, retry_after);
+    }
+    response
+}
+
+fn memory_pressure_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
+    resource_exhausted_with_retry_after("memory pressure", retry_after_secs)
+}
+
+fn rate_limit_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
+    resource_exhausted_with_retry_after("rate limit", retry_after_secs)
+}
+
+fn rate_limit_saturated() -> Response<Full<Bytes>> {
+    rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, "rate limit")
+}
+
+fn rate_limit_burst_exceeded() -> Response<Full<Bytes>> {
+    rpc_status_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        8,
+        "request exceeds rate limit burst",
+    )
+}
+
+fn internal_error() -> Response<Full<Bytes>> {
+    rpc_status_response(StatusCode::INTERNAL_SERVER_ERROR, 13, "internal error")
+}
+
+fn map_path_to_signal(path: &str) -> Option<SignalType> {
+    match path {
+        LOGS_PATH => Some(SignalType::Logs),
+        METRICS_PATH => Some(SignalType::Metrics),
+        TRACES_PATH => Some(SignalType::Traces),
+        _ => None,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn decode_content_encoding(
+    accept_compressed_requests: bool,
+    headers: &http::HeaderMap,
+    body: Bytes,
+    max_len: usize,
+) -> Result<Bytes, DecodeContentError> {
+    let encoding = headers
+        .get(http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("identity")
+        .trim();
+
+    if encoding.eq_ignore_ascii_case("identity") || encoding.is_empty() {
+        return Ok(body);
+    }
+
+    if !accept_compressed_requests {
+        return Err(DecodeContentError::invalid_request(unsupported_media_type()));
+    }
+
+    // Decompress into a bounded buffer.
+    if encoding.eq_ignore_ascii_case("gzip") {
+        let mut decoder = flate2::read::GzDecoder::new(body.as_ref());
+        let decoded = read_to_end_limited(&mut decoder, max_len).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("decoded body too large") {
+                // Size limit exceeded
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "decompressed_size_exceeded",
+                    encoding = "gzip",
+                    max_len = max_len,
+                    error = err_msg.as_str()
+                );
+                DecodeContentError::payload_too_large(limited_body_too_large())
+            } else {
+                // Format/corruption error
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "invalid_encoding",
+                    encoding = "gzip",
+                    error = err_msg.as_str()
+                );
+                DecodeContentError::invalid_request(rpc_status_response(
+                    StatusCode::BAD_REQUEST,
+                    3,
+                    format!("gzip decode failed: {err_msg}"),
+                ))
+            }
+        })?;
+        Ok(Bytes::from(decoded))
+    } else if encoding.eq_ignore_ascii_case("deflate") {
+        let mut decoder = flate2::read::ZlibDecoder::new(body.as_ref());
+        let decoded = read_to_end_limited(&mut decoder, max_len).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("decoded body too large") {
+                // Size limit exceeded
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "decompressed_size_exceeded",
+                    encoding = "deflate",
+                    max_len = max_len,
+                    error = err_msg.as_str()
+                );
+                DecodeContentError::payload_too_large(limited_body_too_large())
+            } else {
+                // Format/corruption error
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "invalid_encoding",
+                    encoding = "deflate",
+                    error = err_msg.as_str()
+                );
+                DecodeContentError::invalid_request(rpc_status_response(
+                    StatusCode::BAD_REQUEST,
+                    3,
+                    format!("deflate decode failed: {err_msg}"),
+                ))
+            }
+        })?;
+        Ok(Bytes::from(decoded))
+    } else if encoding.eq_ignore_ascii_case("zstd") {
+        let mut decoder = ZstdDecoder::new(body.as_ref()).map_err(|e| {
+            let err_msg = e.to_string();
+            otel_arrow_dfe_telemetry::otel_debug!(
+                "otlp_http_receiver.request_rejected",
+                reason = "invalid_encoding",
+                encoding = "zstd",
+                error = err_msg.as_str()
+            );
+            DecodeContentError::invalid_request(rpc_status_response(
+                StatusCode::BAD_REQUEST,
+                3,
+                format!("zstd decode failed: {err_msg}"),
+            ))
+        })?;
+
+        let decoded = read_to_end_limited(&mut decoder, max_len).map_err(|e| {
+            let err_msg = e.to_string();
+            if err_msg.contains("decoded body too large") {
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "decompressed_size_exceeded",
+                    encoding = "zstd",
+                    max_len = max_len,
+                    error = err_msg.as_str()
+                );
+                DecodeContentError::payload_too_large(limited_body_too_large())
+            } else {
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "invalid_encoding",
+                    encoding = "zstd",
+                    error = err_msg.as_str()
+                );
+                DecodeContentError::invalid_request(rpc_status_response(
+                    StatusCode::BAD_REQUEST,
+                    3,
+                    format!("zstd decode failed: {err_msg}"),
+                ))
+            }
+        })?;
+
+        Ok(Bytes::from(decoded))
+    } else {
+        Err(DecodeContentError::invalid_request(unsupported_media_type()))
+    }
+}
+
+struct DecodeContentError {
+    error_type: ReceiverRejectionErrorType,
+    response: Response<Full<Bytes>>,
+}
+
+impl DecodeContentError {
+    fn invalid_request(response: Response<Full<Bytes>>) -> Self {
+        Self {
+            error_type: ReceiverRejectionErrorType::InvalidRequest,
+            response,
+        }
+    }
+
+    fn payload_too_large(response: Response<Full<Bytes>>) -> Self {
+        Self {
+            error_type: ReceiverRejectionErrorType::PayloadTooLarge,
+            response,
+        }
+    }
+}
+
+fn read_to_end_limited<R: std::io::Read>(
+    reader: &mut R,
+    max_len: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break; // EOF reached - success
+        }
+
+        // Check AFTER reading if we would exceed the limit.
+        // We allow reading past the limit into 'buf' to detect overflow,
+        // but we reject appending it to 'out'.
+        if out.len().saturating_add(n) > max_len {
+            return Err(std::io::Error::other("decoded body too large"));
+        }
+
+        out.extend_from_slice(&buf[..n]);
+    }
+    Ok(out)
+}
+
+#[derive(Clone)]
+struct HttpHandler {
+    effect_handler: EffectHandler<OtapPdata>,
+    ack_registry: AckRegistry,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    settings: HttpServerSettings,
+    admission_state: SharedReceiverAdmissionState,
+    rate_limiter: Option<SharedAdmissionGate>,
+    /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
+    /// receiver-wide backpressure tied to downstream capacity.
+    global_semaphore: Option<Arc<Semaphore>>,
+    /// Protocol-local semaphore enforcing HTTP's `max_concurrent_requests`.
+    local_semaphore: Arc<Semaphore>,
+    /// Peer address observed at TCP accept time for this connection, attached
+    /// to every `OtapPdata` produced from the connection so downstream
+    /// processors can read it via `OtapPdata::peer_addr()`.
+    peer_addr: SocketAddr,
+    authorizer: Option<Arc<dyn BearerTokenAuthorizer>>,
+}
+
+impl HttpHandler {
+    fn record_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.metrics
+            .lock()
+            .record_rejection(OtlpProtocol::Http, error_type);
+    }
+
+    async fn handle(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+        let Some(signal) = map_path_to_signal(req.uri().path()) else {
+            self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
+            return Ok(not_found());
+        };
+
+        if req.method() != Method::POST {
+            self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
+            return Ok(method_not_allowed());
+        }
+
+        if !content_type_is_protobuf(req.headers()) {
+            self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
+            return Ok(unsupported_media_type());
+        }
+
+        let timeout = self.settings.timeout;
+        let path = req.uri().path().to_string();
+        let path_for_fut = path.clone();
+
+        // Acquire permit with timeout for fair queuing across protocols.
+        // Uses the request timeout if configured, otherwise a short default to avoid
+        // indefinite queuing.
+        //
+        // Important: this is done inside the request future so the overall request timeout
+        // (if enabled) accounts for time spent waiting for a permit.
+        let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
+
+        let fut = async move {
+            if self.admission_state.should_shed_ingress() {
+                self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
+                return Err(memory_pressure_unavailable(
+                    self.admission_state.retry_after_secs(),
+                ));
+            }
+
+            if self
+                .rate_limiter
+                .as_ref()
+                .is_some_and(SharedAdmissionGate::refuse_if_instance_saturated)
+            {
+                self.record_rejection(ReceiverRejectionErrorType::RateLimit);
+                return Err(rate_limit_saturated());
+            }
+
+            // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
+            // HTTP are enabled: global (if any) first, then protocol-local.
+            let _global_permit = if let Some(global) = &self.global_semaphore {
+                let permit_result =
+                    tokio::time::timeout(permit_timeout, global.clone().acquire_owned()).await;
+                match permit_result {
+                    Ok(Ok(permit)) => Some(permit),
+                    Ok(Err(_)) => {
+                        // Semaphore closed (shouldn't happen)
+                        otel_arrow_dfe_telemetry::otel_error!(
+                            "otlp_http_receiver.semaphore_closed",
+                            kind = "global",
+                            path = path_for_fut.as_str()
+                        );
+                        self.record_rejection(ReceiverRejectionErrorType::Internal);
+                        return Err(internal_error());
+                    }
+                    Err(_) => {
+                        otel_arrow_dfe_telemetry::otel_warn!(
+                            "otlp_http_receiver.request_rejected",
+                            reason = "global_concurrency_limit_timeout",
+                            path = path_for_fut.as_str(),
+                            timeout_ms = permit_timeout.as_millis() as u64
+                        );
+                        self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
+                        return Err(service_unavailable());
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Re-check after potentially waiting for the global permit: pressure may have
+            // escalated while this request was queued.
+            if self.admission_state.should_shed_ingress() {
+                self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
+                return Err(memory_pressure_unavailable(
+                    self.admission_state.retry_after_secs(),
+                ));
+            }
+
+            let permit_result =
+                tokio::time::timeout(permit_timeout, self.local_semaphore.clone().acquire_owned())
+                    .await;
+
+            let _local_permit = match permit_result {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    // Semaphore closed (shouldn't happen)
+                    otel_arrow_dfe_telemetry::otel_error!(
+                        "otlp_http_receiver.semaphore_closed",
+                        kind = "local",
+                        path = path_for_fut.as_str()
+                    );
+                    self.record_rejection(ReceiverRejectionErrorType::Internal);
+                    return Err(internal_error());
+                }
+                Err(_) => {
+                    // Timeout waiting for permit
+                    otel_arrow_dfe_telemetry::otel_warn!(
+                        "otlp_http_receiver.request_rejected",
+                        reason = "concurrency_limit_timeout",
+                        path = path_for_fut.as_str(),
+                        max_concurrent = self.settings.max_concurrent_requests,
+                        timeout_ms = permit_timeout.as_millis() as u64
+                    );
+                    self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
+                    return Err(service_unavailable());
+                }
+            };
+
+            // Re-check after waiting for the local permit.
+            if self.admission_state.should_shed_ingress() {
+                self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
+                return Err(memory_pressure_unavailable(
+                    self.admission_state.retry_after_secs(),
+                ));
+            }
+
+            if self
+                .rate_limiter
+                .as_ref()
+                .is_some_and(SharedAdmissionGate::refuse_if_instance_saturated)
+            {
+                self.record_rejection(ReceiverRejectionErrorType::RateLimit);
+                return Err(rate_limit_saturated());
+            }
+
+            let authorized_identity = if let Some(authorizer) = &self.authorizer {
+                match authorize_bearer(authorizer.as_ref(), req.headers(), None).await {
+                    Ok(identity) => Some(identity),
+                    Err(rejection) => {
+                        self.record_rejection(rejection.error_type());
+                        return Err(authorization_rejection_response(rejection));
+                    }
+                }
+            } else {
+                None
+            };
+
+            let max_len = self.settings.max_request_body_size as usize;
+
+            let (parts, body) = req.into_parts();
+            let headers = parts.headers;
+
+            // Collect request body.
+            let size_hint = body.size_hint();
+            if let Some(upper) = size_hint.upper()
+                && (upper as usize) > max_len
+            {
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "body_too_large_hint",
+                    max_len = max_len,
+                    size_hint = upper,
+                    path = parts.uri.path().to_string()
+                );
+                self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
+                return Err(limited_body_too_large());
+            }
+
+            let collected = Limited::new(body, max_len).collect().await.map_err(|e| {
+                if e.downcast_ref::<LengthLimitError>().is_some() {
+                    otel_arrow_dfe_telemetry::otel_debug!(
+                        "otlp_http_receiver.request_rejected",
+                        reason = "body_too_large_collected",
+                        max_len = max_len,
+                        path = parts.uri.path().to_string()
+                    );
+                    self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
+                    return limited_body_too_large();
+                }
+
+                otel_arrow_dfe_telemetry::otel_warn!(
+                    "otlp_http_receiver.body_collection_failed",
+                    error = e.to_string()
+                );
+                self.record_rejection(ReceiverRejectionErrorType::Internal);
+                internal_error()
+            })?;
+            let body = collected.to_bytes();
+
+            let body = decode_content_encoding(
+                self.settings.accept_compressed_requests,
+                &headers,
+                body,
+                max_len,
+            )
+            .map_err(|error| {
+                self.record_rejection(error.error_type);
+                error.response
+            })?;
+            let payload_bytes = body.len();
+            if let Some(rate_limiter) = &self.rate_limiter {
+                match rate_limiter.admit(
+                    u64::try_from(payload_bytes).unwrap_or(u64::MAX),
+                    AdmissionContext::for_signal(signal),
+                ) {
+                    AdmissionDecision::Admit => {}
+                    AdmissionDecision::WouldThrottle => {}
+                    AdmissionDecision::Throttle { retry_after_secs } => {
+                        return Err(OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &self.metrics,
+                            signal,
+                            OtlpProtocol::Http,
+                            payload_bytes,
+                            rate_limit_unavailable(retry_after_secs),
+                        ));
+                    }
+                    AdmissionDecision::Oversized => {
+                        return Err(OtlpReceiverMetrics::record_rate_limit_refusal(
+                            &self.metrics,
+                            signal,
+                            OtlpProtocol::Http,
+                            payload_bytes,
+                            rate_limit_burst_exceeded(),
+                        ));
+                    }
+                }
+            }
+
+            let processing = self.metrics.lock().boundary.processing();
+            let completed = processing.run(|processing| {
+                processing.set_payload_size_with(|| body.len());
+
+                let context = if self.settings.wait_for_result {
+                    Context::with_capacity(1)
+                } else {
+                    Context::default()
+                };
+
+                // SAFETY: PipelineRuntimeServices validates the immutable global
+                // registry before starting receivers; the built-in OTLP codec
+                // is always registered and cannot disappear at runtime.
+                let payload = otel_arrow_dfe_pdata_codec::builtins::resolve_otlp()
+                    .expect("validated OTLP codec")
+                    .admit(signal, body)
+                    .map_err(|_| {
+                        self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
+                        processing.refused(signal, Box::new(unsupported_media_type()))
+                    })?;
+
+                let mut pdata = OtapPdata::new(context, payload.into());
+                pdata.set_peer_addr(self.peer_addr);
+
+                // Capture transport headers from HTTP headers when a capture policy is configured.
+                if let Some(policy) = self.effect_handler.capture_policy() {
+                    let mut transport_headers = TransportHeaders::new();
+                    _ = policy.capture_from_http_headers(&headers, &mut transport_headers);
+                    if !transport_headers.is_empty() {
+                        pdata.set_transport_headers(transport_headers);
+                    }
+                }
+                if let (Some(policy), Some(identity)) = (
+                    self.effect_handler.authorized_identity_policy(),
+                    authorized_identity.as_ref(),
+                ) {
+                    pdata.capture_authorized_identity(policy, identity);
+                }
+
+                let cancel_rx = if self.settings.wait_for_result {
+                    let state = match signal {
+                        SignalType::Logs => self.ack_registry.logs.clone(),
+                        SignalType::Metrics => self.ack_registry.metrics.clone(),
+                        SignalType::Traces => self.ack_registry.traces.clone(),
+                    };
+
+                    let Some(state) = state else {
+                        self.record_rejection(ReceiverRejectionErrorType::Internal);
+                        return Err(processing.failed(signal, Box::new(internal_error())));
+                    };
+
+                    let (key, rx) = match state.allocate_slot() {
+                        None => {
+                            self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
+                            return Err(processing.refused(signal, Box::new(service_unavailable())));
+                        }
+                        Some(pair) => pair,
+                    };
+
+                    // Register calldata in the context.
+                    self.effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        key.into(),
+                        &mut pdata,
+                    );
+
+                    Some((SlotGuard { key, state }, rx))
+                } else {
+                    None
+                };
+
+                Ok((signal, (pdata, cancel_rx)))
+            });
+            let (pdata, cancel_rx) = {
+                let mut metrics = self.metrics.lock();
+                let result = metrics
+                    .boundary
+                    .record(completed)
+                    .map_err(|response| *response)?;
+                metrics.record_request_admitted(signal, OtlpProtocol::Http);
+                result
+            };
+
+            if self
+                .effect_handler
+                .send_message_with_source_node(pdata)
+                .await
+                .is_err()
+            {
+                otel_arrow_dfe_telemetry::otel_warn!(
+                    "otlp_http_receiver.pipeline_send_failed",
+                    path = parts.uri.path().to_string(),
+                    signal = format!("{:?}", signal)
+                );
+                return Err(service_unavailable());
+            }
+
+            if let Some((_guard, rx)) = cancel_rx {
+                match rx.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(nack)) => {
+                        otel_arrow_dfe_telemetry::otel_debug!(
+                            "otlp_http_receiver.request_nacked",
+                            reason = nack.reason.as_str(),
+                            signal = format!("{:?}", signal)
+                        );
+                        // Include the nack reason in the response for parity with gRPC.
+                        // Permanent client rejections -> 400, other permanent failures -> 500,
+                        // transient failures -> 503.
+                        let class =
+                            crate::receiver::nack::classify_nack(nack.permanent, nack.cause);
+                        return Err(rpc_status_response(
+                            class.http_status(),
+                            class.grpc_code(),
+                            format!("Pipeline processing failed: {}", nack.reason),
+                        ));
+                    }
+                    Err(_) => {
+                        return Err(internal_error());
+                    }
+                }
+            }
+
+            Ok(ok_response(signal))
+        };
+
+        let result = if let Some(timeout_duration) = timeout {
+            match tokio::time::timeout(timeout_duration, fut).await {
+                Ok(inner) => inner,
+                Err(_) => {
+                    otel_arrow_dfe_telemetry::otel_warn!(
+                        "otlp_http_receiver.request_timeout",
+                        path = path.as_str(),
+                        timeout_ms = timeout_duration.as_millis() as u64,
+                        signal = format!("{:?}", signal)
+                    );
+                    Err(service_unavailable())
+                }
+            }
+        } else {
+            fut.await
+        };
+
+        Ok(result.unwrap_or_else(|resp| resp))
+    }
+}
+
+/// Starts the OTLP/HTTP server.
+///
+/// # Parameters
+///
+/// - `global_semaphore`: Optional semaphore shared across protocols (e.g., gRPC + HTTP)
+///   to apply a receiver-wide concurrency cap.
+///
+/// The HTTP server always enforces its own `settings.max_concurrent_requests` as a
+/// protocol-local limit.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve(
+    effect_handler: EffectHandler<OtapPdata>,
+    settings: HttpServerSettings,
+    ack_registry: AckRegistry,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    admission_state: SharedReceiverAdmissionState,
+    rate_limiter: Option<SharedAdmissionGate>,
+    global_semaphore: Option<Arc<Semaphore>>,
+    authorizer: Option<Arc<dyn BearerTokenAuthorizer>>,
+    shutdown: CancellationToken,
+) -> std::io::Result<()> {
+    let listener = effect_handler
+        .tcp_listener(settings.listening_addr)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    debug_assert!(
+        settings.max_concurrent_requests > 0,
+        "tune_max_concurrent_requests should have been called before serve()"
+    );
+
+    // Always enforce the HTTP-local concurrency limit. When both protocols are enabled,
+    // `global_semaphore` provides an additional receiver-wide cap.
+    let local_semaphore = Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)));
+
+    let tracker = TaskTracker::new();
+
+    let maybe_tls_acceptor = build_tls_acceptor(settings.tls.as_ref()).await?;
+    effect_handler.signal_ready();
+
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                break;
+            }
+            accept_result = listener.accept() => {
+                let (stream, peer_addr) = accept_result?;
+
+                // Apply socket options. If this fails for a single connection, log and skip
+                // that connection rather than terminating the entire server.
+                let stream = match socket_options::apply_socket_options(
+                    stream,
+                    settings.tcp_nodelay,
+                    settings.tcp_keepalive,
+                    settings.tcp_keepalive_interval,
+                    settings.tcp_keepalive_retries,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        otel_arrow_dfe_telemetry::otel_warn!(
+                            "otlp_http_receiver.socket_options_failed",
+                            peer = peer_addr.to_string(),
+                            error = e.to_string(),
+                            message = "Failed to apply socket options to connection, skipping"
+                        );
+                        continue; // Skip this connection, continue accepting others
+                    }
+                };
+
+                let handler = HttpHandler {
+                    effect_handler: effect_handler.clone(),
+                    ack_registry: ack_registry.clone(),
+                    metrics: metrics.clone(),
+                    settings: settings.clone(),
+                    admission_state: admission_state.clone(),
+                    rate_limiter: rate_limiter.clone(),
+                    global_semaphore: global_semaphore.clone(),
+                    local_semaphore: local_semaphore.clone(),
+                    peer_addr,
+                    authorizer: authorizer.clone(),
+                };
+
+                if let Some(acceptor) = maybe_tls_acceptor.clone() {
+                    let shutdown = shutdown.clone();
+                    drop(tracker.spawn(async move {
+                        let tls_stream = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        let io = TokioIo::new(tls_stream);
+                        let executor = hyper_util::rt::TokioExecutor::new();
+                        let conn = hyper_util::server::conn::auto::Builder::new(executor);
+                        let conn =
+                            conn.serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
+
+                        let mut conn = std::pin::pin!(conn);
+
+                        tokio::select! {
+                            res = &mut conn => {
+                                if let Err(err) = res {
+                                    otel_arrow_dfe_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
+                                }
+                            },
+                            _ = shutdown.cancelled() => {
+                                conn.as_mut().graceful_shutdown();
+                                let _ = conn.await;
+                            }
+                        }
+                    }));
+                    continue;
+                }
+
+                let shutdown = shutdown.clone();
+                drop(tracker.spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let conn = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
+
+                    let mut conn = std::pin::pin!(conn);
+
+                    tokio::select! {
+                        res = &mut conn => {
+                            if let Err(err) = res {
+                                otel_arrow_dfe_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
+                            }
+                        },
+                        _ = shutdown.cancelled() => {
+                            conn.as_mut().graceful_shutdown();
+                            let _ = conn.await;
+                        }
+                    }
+                }));
+            }
+        }
+    }
+
+    let _ = tracker.close();
+
+    // Bound shutdown latency to the configured request timeout (or the default) so shutdown
+    // cannot hang indefinitely on misbehaving clients.
+    let drain_timeout = settings.timeout.unwrap_or_else(|| {
+        // default_http_timeout is private; mirror its value (30s) to avoid code duplication.
+        Duration::from_secs(30)
+    });
+
+    if tokio::time::timeout(drain_timeout, tracker.wait())
+        .await
+        .is_err()
+    {
+        otel_arrow_dfe_telemetry::otel_warn!(
+            "otlp_http_receiver.shutdown_timeout",
+            timeout_ms = drain_timeout.as_millis() as u64,
+            message = "Timed out waiting for in-flight HTTP requests to drain"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::receiver::ack::AckSlot;
+
+    use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
+    use otel_arrow_dfe_engine::capability::auth::{
+        AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
+    };
+    use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
+    use otel_arrow_dfe_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct TestAuthorizer;
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for TestAuthorizer {
+        async fn authorize(
+            &self,
+            credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            Ok(match credential.expose_token() {
+                "allowed" => {
+                    AuthzDecision::allow(AuthorizedIdentity::new().with_subject("test-subject"))
+                }
+                "missing" => AuthzDecision::deny(DenyReason::MissingCredential),
+                "invalid" => AuthzDecision::deny(DenyReason::InvalidCredential),
+                _ => AuthzDecision::deny(DenyReason::NotPermitted),
+            })
+        }
+    }
+
+    struct CountingAuthorizer(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for CountingAuthorizer {
+        async fn authorize(
+            &self,
+            _credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            _ = self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(AuthzDecision::allow_anonymous())
+        }
+    }
+
+    /// An authorizer that cannot reach its backing identity service, so it
+    /// reaches no decision at all.
+    struct FailingAuthorizer;
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for FailingAuthorizer {
+        async fn authorize(
+            &self,
+            _credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            Err(
+                CapabilityErrorSource::<BearerTokenAuthorizerCapability>::new("test-ext".into())
+                    .error("token review backend unreachable"),
+            )
+        }
+    }
+
+    async fn authorize_request(
+        authorizer: &dyn BearerTokenAuthorizer,
+        headers: &http::HeaderMap,
+    ) -> Result<AuthorizedIdentity, AuthorizationRejection> {
+        authorize_bearer(authorizer, headers, None).await
+    }
+
+    /// Scenario: HTTP authorization receives missing, non-bearer, allowed,
+    /// invalid, and policy-denied credentials.
+    /// Guarantees: Requests are admitted only on allow; authentication failures
+    /// include a bearer challenge and policy failures return HTTP 403.
+    #[tokio::test]
+    async fn maps_authorization_outcomes() {
+        let authorizer = TestAuthorizer;
+        let mut headers = http::HeaderMap::new();
+
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("missing credential must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("non-bearer credential must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.remove(http::header::AUTHORIZATION);
+        _ = headers.append(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+        _ = headers.append(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("duplicate credentials must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_bytes(b"Bearer \xff").expect("valid opaque header value"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("non-UTF-8 credentials must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer missing"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("authorizer-reported missing credentials must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+        let identity = authorize_request(&authorizer, &headers)
+            .await
+            .expect("allowed credential must be admitted");
+        assert_eq!(identity.subject(), Some("test-subject"));
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer invalid"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("invalid credential must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer denied"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("policy-denied credential must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Scenario: HTTP authorization is attempted while the authorizer cannot
+    /// reach its backing identity service and returns an error rather than a
+    /// decision.
+    /// Guarantees: An undetermined authorization fails closed with HTTP 503
+    /// rather than admitting the request, and does not present a bearer
+    /// challenge that would invite the client to retry with a new credential.
+    #[tokio::test]
+    async fn undetermined_authorization_fails_closed() {
+        let authorizer = FailingAuthorizer;
+        let mut headers = http::HeaderMap::new();
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("an undetermined decision must not admit the request");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            !response
+                .headers()
+                .contains_key(http::header::WWW_AUTHENTICATE)
+        );
+    }
+
+    fn shared_rate_gate(
+        policy: otel_arrow_dfe_config::policy::RateLimiterPolicy,
+        admission: SharedReceiverAdmissionState,
+    ) -> SharedAdmissionGate {
+        AdmissionBinder::configured("test", policy)
+            .bind_shared(AdmissionDimension::Bytes, admission)
+            .expect("bind test admission")
+            .expect("configured test admission")
+    }
+
+    #[test]
+    fn maps_paths() {
+        assert_eq!(map_path_to_signal("/v1/logs"), Some(SignalType::Logs));
+        assert_eq!(map_path_to_signal("/v1/metrics"), Some(SignalType::Metrics));
+        assert_eq!(map_path_to_signal("/v1/traces"), Some(SignalType::Traces));
+        assert_eq!(map_path_to_signal("/nope"), None);
+    }
+
+    /// Scenario: A request carrying an invalid bearer token also carries a body
+    /// larger than `max_request_body_size`, served end to end through `serve`.
+    /// Guarantees: The request is rejected as unauthorized rather than oversized,
+    /// pinning the guarantee that the credential is checked before the body is
+    /// sized or read.
+    #[tokio::test]
+    async fn rejects_bad_credential_before_reading_oversized_body() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_authz_before_body"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        // Deliberately tiny, so the body below is unambiguously oversized.
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_request_body_size: 8,
+            max_concurrent_requests: 4,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(Some(AckSlot::new(0)), None, None),
+            metrics.clone(),
+            SharedReceiverAdmissionState::default(),
+            None,
+            None,
+            Some(Arc::new(TestAuthorizer)),
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let oversized = vec![0_u8; 4096];
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .header(AUTHORIZATION, "Bearer invalid")
+            .body(Full::new(Bytes::from(oversized)))
+            .unwrap();
+
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
+        assert!(msg_rx.try_recv().is_err());
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::Authentication
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+            // The body was never sized or read, so it cannot have been rejected for size.
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::PayloadTooLarge,
+                    )
+                    .requests
+                    .get(),
+                0
+            );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: A well-formed request arrives with no `Authorization` header at
+    /// all against a receiver that has an authorizer bound, served end to end
+    /// through `serve`.
+    /// Guarantees: The request is rejected with HTTP 401 and a bearer challenge
+    /// and never reaches the pipeline, so a bound authorizer cannot be bypassed
+    /// by simply omitting the credential.
+    #[tokio::test]
+    async fn rejects_missing_credential_end_to_end() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_authz_missing_credential"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 4,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(Some(AckSlot::new(0)), None, None),
+            metrics.clone(),
+            SharedReceiverAdmissionState::default(),
+            None,
+            None,
+            Some(Arc::new(TestAuthorizer)),
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs::default()],
+        }
+        .encode(&mut request_bytes)
+        .unwrap();
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
+        assert!(msg_rx.try_recv().is_err());
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::Authentication
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.accepted.get(), 0);
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn drains_inflight_requests_on_shutdown() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        // Minimal shared receiver plumbing.
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 4,
+            wait_for_result: true, // Use wait_for_result to hold the request open
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let ack_registry = AckRegistry::new(Some(AckSlot::new(4)), None, None);
+
+        let server = tokio::spawn(serve(
+            effect_handler.clone(),
+            settings.clone(),
+            ack_registry.clone(),
+            metrics,
+            SharedReceiverAdmissionState::default(),
+            None,
+            None,
+            None,
+            shutdown.clone(),
+        ));
+
+        // Wait for server to start.
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest::default()
+            .encode(&mut request_bytes)
+            .unwrap();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let response = tokio::spawn(async move {
+            let resp = sender.send_request(req).await.unwrap();
+            let status = resp.status();
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (status, body)
+        });
+
+        // Wait for message to reach pipeline
+        let received = tokio::time::timeout(Duration::from_secs(1), msg_rx.recv())
+            .await
+            .expect("message delivered")
+            .expect("channel open");
+
+        // Now initiate shutdown while request is waiting for ACK
+        shutdown.cancel();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !server.is_finished(),
+            "server should wait for in-flight request waiting for ACK"
+        );
+
+        // Send ACK back
+        if let Some((_, ack)) =
+            crate::testing::next_ack(otel_arrow_dfe_engine::control::AckMsg::new(received))
+        {
+            let _ = crate::receiver::ack::route_ack_response(&ack_registry, ack);
+        }
+
+        let (status, _) = response.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: A non-empty HTTP request cannot allocate its acknowledgement slot.
+    /// Guarantees: The request is rejected without incrementing the OTLP accepted counter.
+    #[tokio::test]
+    async fn rejected_http_request_is_not_accepted() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_admission_metrics"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(Some(AckSlot::new(0)), None, None),
+            metrics.clone(),
+            SharedReceiverAdmissionState::default(),
+            None,
+            None,
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs::default()],
+        }
+        .encode(&mut request_bytes)
+        .unwrap();
+        assert!(!request_bytes.is_empty());
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let status = sender.send_request(request).await.unwrap().status();
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(msg_rx.try_recv().is_err());
+        {
+            let metrics = metrics.lock();
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.accepted.get(), 0);
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::ConcurrencyLimit,
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: Memory pressure turns hard while an HTTP request waits for a shared permit.
+    /// Guarantees: The request is rejected as memory pressure without starting or reading a body.
+    #[tokio::test]
+    async fn queued_request_rechecks_process_memory_pressure_before_body_read() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::Semaphore;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let gate = Arc::new(Semaphore::new(1));
+        let held_permit = gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("initial semaphore permit");
+
+        let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_process_pressure"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            timeout: Some(Duration::from_secs(2)),
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state.clone(),
+            None,
+            Some(gate.clone()),
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest::default()
+            .encode(&mut request_bytes)
+            .unwrap();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let response = tokio::spawn(async move {
+            let resp = sender.send_request(req).await.unwrap();
+            (
+                resp.status(),
+                resp.headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned),
+            )
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        admission_state.apply(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged {
+                generation: 1,
+                level: MemoryPressureLevel::Hard,
+                retry_after_secs: 1,
+                usage_bytes: 0,
+            },
+        );
+        drop(held_permit);
+
+        let (status, retry_after) = tokio::time::timeout(Duration::from_secs(2), response)
+            .await
+            .expect("request completed")
+            .expect("request task succeeded");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after.as_deref(), Some("1"));
+
+        {
+            let metrics = metrics.lock();
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.accepted.get(), 0);
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: Memory pressure turns soft while an HTTP request waits for a shared permit.
+    /// Guarantees: Soft pressure admits the request and records its lifecycle without rejection.
+    #[tokio::test]
+    async fn soft_pressure_does_not_reject_after_waiting_for_permit() {
+        use http_body_util::Full;
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let local_semaphore = Arc::new(Semaphore::new(1));
+        let held_permit = local_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("permit");
+
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        let server = tokio::spawn(serve(
+            effect_handler.clone(),
+            settings.clone(),
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state.clone(),
+            None,
+            Some(local_semaphore),
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest::default()
+            .encode(&mut request_bytes)
+            .unwrap();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let response =
+            tokio::spawn(async move { sender.send_request(req).await.unwrap().status() });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        admission_state.apply(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged {
+                generation: 1,
+                level: MemoryPressureLevel::Soft,
+                retry_after_secs: 1,
+                usage_bytes: 0,
+            },
+        );
+        drop(held_permit);
+
+        let status = tokio::time::timeout(Duration::from_secs(2), response)
+            .await
+            .expect("request completed")
+            .expect("request task succeeded");
+        assert_eq!(status, StatusCode::OK);
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
+                    .requests
+                    .get(),
+                0
+            );
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.accepted.get(), 1);
+        }
+
+        let _ = msg_rx.recv().await.expect("request forwarded downstream");
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request exceeds the receiver-local rate bucket during soft pressure.
+    /// Guarantees: the weight-blind fast refusal returns 503 without Retry-After and
+    /// updates the rate-limit counters exactly once.
+    #[tokio::test]
+    async fn early_rate_limit_rejection_omits_http_retry_after() {
+        use http_body_util::Full;
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_config::policy::{
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
+        };
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_rate_limit"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 7,
+            usage_bytes: 0,
+        });
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement: RateLimitEnforcement::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
+            },
+            admission_state.clone(),
+        );
+        assert_eq!(
+            rate_limiter.admit(1, AdmissionContext::EMPTY),
+            AdmissionDecision::Admit
+        );
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state,
+            Some(rate_limiter),
+            None,
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from_static(&[0])))
+            .unwrap();
+
+        let resp = sender.send_request(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!resp.headers().contains_key(RETRY_AFTER));
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(OtlpProtocol::Http, ReceiverRejectionErrorType::RateLimit,)
+                    .requests
+                    .get(),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
+                    .requests
+                    .get(),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .requests_for(SignalType::Logs, OtlpProtocol::Http)
+                    .accepted
+                    .get(),
+                0
+            );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request exceeds the weighted rate-limit burst after body read.
+    /// Guarantees: the refusal records shared refused message and byte metrics.
+    #[tokio::test]
+    async fn weighted_rate_limit_rejection_records_http_boundary_metrics() {
+        use http_body_util::Full;
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_config::policy::{
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
+        };
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_rate_limit"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let (pipeline_ctx, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 7,
+            usage_bytes: 0,
+        });
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement: RateLimitEnforcement::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
+            },
+            admission_state.clone(),
+        );
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state,
+            Some(rate_limiter),
+            None,
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from_static(&[0, 0])))
+            .unwrap();
+
+        let resp = sender.send_request(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!resp.headers().contains_key(RETRY_AFTER));
+
+        {
+            let mut metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(OtlpProtocol::Http, ReceiverRejectionErrorType::RateLimit,)
+                    .requests
+                    .get(),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
+                    .requests
+                    .get(),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .requests_for(SignalType::Logs, OtlpProtocol::Http)
+                    .accepted
+                    .get(),
+                0
+            );
+            let snapshots = metrics.boundary.terminal_snapshots();
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.received"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "messages")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.received"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "payload.size")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 2)
+            }));
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request arrives while the rate bucket is exhausted and permits are busy.
+    /// Guarantees: rate fast-fail returns without Retry-After before waiting behind
+    /// concurrency semaphores or invoking the configured authorizer.
+    #[tokio::test]
+    async fn exhausted_rate_limit_rejects_before_concurrency_wait() {
+        use http_body_util::Full;
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST, RETRY_AFTER};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_config::policy::{
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
+        };
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_rate_limit_pre_wait"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 7,
+            usage_bytes: 0,
+        });
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement: RateLimitEnforcement::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
+            },
+            admission_state.clone(),
+        );
+        assert_eq!(
+            rate_limiter.admit(1, AdmissionContext::EMPTY),
+            AdmissionDecision::Admit,
+            "test setup should exhaust the one-unit bucket"
+        );
+
+        let global_semaphore = Arc::new(Semaphore::new(1));
+        let _held_permit = global_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("global permit should be held by the test");
+        let authorization_calls = Arc::new(AtomicUsize::new(0));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state,
+            Some(rate_limiter),
+            Some(global_semaphore),
+            Some(Arc::new(CountingAuthorizer(authorization_calls.clone()))),
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .header(AUTHORIZATION, "Bearer allowed")
+            .body(Full::new(Bytes::from_static(&[0])))
+            .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(500), sender.send_request(req))
+            .await
+            .expect("rate rejection should not wait for the held permit")
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!resp.headers().contains_key(RETRY_AFTER));
+        assert_eq!(authorization_calls.load(Ordering::Relaxed), 0);
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(OtlpProtocol::Http, ReceiverRejectionErrorType::RateLimit,)
+                    .requests
+                    .get(),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .requests_for(SignalType::Logs, OtlpProtocol::Http)
+                    .accepted
+                    .get(),
+                0
+            );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request is larger than the configured rate-limit burst.
+    /// Guarantees: the response is non-retryable and does not carry Retry-After.
+    #[test]
+    fn oversized_rate_limit_response_is_non_retryable() {
+        let response = rate_limit_burst_exceeded();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!response.headers().contains_key(http::header::RETRY_AFTER));
+    }
+
+    /// Scenario: HTTP rejects a request after its weighted recovery delay is known.
+    /// Guarantees: the authoritative refusal retains the exact Retry-After value.
+    #[test]
+    fn weighted_rate_limit_response_includes_retry_after() {
+        let response = rate_limit_unavailable(14);
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("14")
+        );
+    }
+}

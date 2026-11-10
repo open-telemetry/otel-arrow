@@ -25,6 +25,7 @@ mod diagnostics;
 mod genproto;
 mod publish_policy;
 mod structure_check;
+mod update_semconv;
 
 #[cfg(not(tarpaulin_include))]
 fn main() -> anyhow::Result<()> {
@@ -54,6 +55,7 @@ fn main() -> anyhow::Result<()> {
             }
             "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
             "crates-publish" => crates_publish::run(&args.collect::<Vec<_>>()),
+            "update-semconv" => update_semconv::run(&args.collect::<Vec<_>>()),
             "help" => {
                 ensure_no_extra_args("help", &args.collect::<Vec<_>>())?;
                 print_help()
@@ -81,6 +83,7 @@ Tasks:
   - compile-proto: Compile the protobufs files
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
   - crates-publish <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
+  - update-semconv [--version <vX.Y.Z>]: Refresh the vendored semantic conventions registry in vendor/semconv from upstream (requires git and network access). Defaults to re-syncing the tag recorded in vendor/semconv/VERSION.
 "
     );
     Ok(())

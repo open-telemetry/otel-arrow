@@ -65,6 +65,11 @@ Remove-Item -Recurse -Force .otap-state\postgresql -ErrorAction SilentlyContinue
 
 ## Configuration
 
+For startup-only Azure Key Vault credentials, see the
+[AKV Basic Auth provider](../../../../contrib-extensions/src/azure_key_vault_user_pass_auth/README.md)
+and [complete AKV pipeline](../../../../../configs/postgresql-akv-console.yaml).
+Bind it through `basic_auth_provider`; receiver TLS and checkpoint behavior are unchanged.
+
 | Field | Required? | Default / contract |
 | --- | --- | --- |
 | `source_id` | Yes | Stable name, 1-128 UTF-8 bytes without control characters. |
@@ -356,6 +361,42 @@ advances the acknowledged checkpoint.
 | Checkpoint or ownership | Corrupt/oversized state, checksum/version/source/fingerprint/revision mismatch, lease conflict, unavailable storage | Startup and reads fail closed. Write failures retry up to `max_consecutive_failures`, then terminate. The receiver never assumes a cursor position. | Repair or restore the exact checkpoint storage and ownership issue; do not delete or edit state without reviewing the replay position. |
 
 ## Development
+
+### Live integration CI
+
+The shared contrib workflow selects the advisory Ubuntu 24.04 job for receiver
+and shared dependency changes, following the Oracle and SQL Server patterns.
+On Linux with Docker Compose v2, Python, and Rust build prerequisites, run from the
+repository root:
+
+```sh
+python3 .github/scripts/run-contrib-integration-test.py --manifest rust/otap-dataflow/crates/contrib-nodes/src/receivers/postgresql_receiver/ci/integration-test.json
+```
+
+Harness checks run before provisioning the existing TLS fixture. The ignored
+`worker::live_tests` suite covers native integer/timestamp scalar and composite
+paging, exact values/microseconds, snapshot fit/overflow, factory emission,
+NACK replay, ACK/checkpoint/restart, native cancellation, idle reconnect,
+untrusted TLS rejection, and bounded shutdown. Ordinary loopback TLS tests remain
+independent. Certificate rotation and full `df_engine` process smoke tests are
+not part of this suite.
+
+Runs own a unique Compose project, private temporary credentials, and ephemeral
+loopback port; commands own a process group terminated before failure cleanup.
+Readiness requires the final TCP server, not its Unix-only initialization server.
+Manual fixture defaults are unchanged. Idle-disconnect coverage follows failed
+polling, retryable error, reconnect, revalidation, and polling. It currently waits
+through the receiver's conservative 30-second reconnect fence; shutdown during
+that fence reports unconfirmed cleanup, and a reconnect timeout may require another
+controller retry. Fixing that production behavior is separate.
+For an already provisioned fixture, set `OTEL_ARROW_POSTGRESQL_TEST_PORT` and
+`OTEL_ARROW_POSTGRESQL_TEST_CA_FILE`, then run from `rust/otap-dataflow`:
+
+```sh
+cargo test --locked -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib postgresql_receiver::worker::live_tests -- --ignored --nocapture --test-threads=1
+```
+
+### Unit and transport tests
 
 Run commands from `rust/otap-dataflow`.
 

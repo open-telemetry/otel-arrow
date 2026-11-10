@@ -3923,7 +3923,7 @@ mod tests {
 
         let mut headers = HashMap::new();
         let _ = headers.insert(HDR_AUTH.to_string(), HDR_AUTH_VAL.into());
-        let settings = otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings {
+        let settings = otel_arrow_dfe_otap::grpc::settings::GrpcClientSettings {
             headers,
             ..Default::default()
         };

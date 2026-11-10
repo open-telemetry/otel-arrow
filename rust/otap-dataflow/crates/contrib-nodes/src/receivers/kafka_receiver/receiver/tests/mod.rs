@@ -21,7 +21,7 @@ use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
 use crate::common::kafka::test::producer::{SendRecord, TestProducer};
 use crate::common::kafka::test::wait::poll_until;
 use crate::common::kafka::test::with_cluster;
-use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
+use otel_arrow_dfe_config::context::transport_policy::{CaptureDefaults, CaptureRule};
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::RuntimeControlMsg;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;

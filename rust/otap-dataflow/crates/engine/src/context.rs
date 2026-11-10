@@ -12,11 +12,11 @@ use crate::attributes::{
     PipelineAttributeSet, config_map_to_telemetry,
 };
 pub use crate::attributes::{NodeAttributeSet, NodeWithCustomAttributeSet};
-use crate::context_declaration::CompiledContextBindings;
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
+use crate::pdata_context::{CompiledContextBindings, NodeBindings};
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
@@ -149,6 +149,8 @@ pub struct PipelineContext {
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
     /// Compiled context bindings shared by this runtime's nodes.
     compiled_context_bindings: Arc<CompiledContextBindings>,
+    /// Selected immutable codec metadata for node construction, never mutable codec state.
+    codec_registry: Option<Arc<otel_arrow_dfe_pdata_codec::CodecRegistry>>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -370,6 +372,7 @@ impl PipelineContext {
             topic_set: None,
             listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
             compiled_context_bindings: Arc::new(CompiledContextBindings::empty()),
+            codec_registry: None,
         }
     }
 
@@ -485,6 +488,27 @@ impl PipelineContext {
         Arc::clone(&self.listener_group_snapshot)
     }
 
+    /// Supplies the pipeline-selected registry before constructing any nodes.
+    pub(crate) fn set_codec_registry(
+        &mut self,
+        registry: Arc<otel_arrow_dfe_pdata_codec::CodecRegistry>,
+    ) {
+        self.codec_registry = Some(registry);
+    }
+
+    /// Immutable codec selection for startup plans. Standalone contexts use distribution defaults.
+    pub fn codec_registry(
+        &self,
+    ) -> Result<
+        Arc<otel_arrow_dfe_pdata_codec::CodecRegistry>,
+        otel_arrow_dfe_pdata_codec::RegistryError,
+    > {
+        self.codec_registry.as_ref().map_or_else(
+            otel_arrow_dfe_pdata_codec::CodecRegistry::global,
+            |registry| Ok(Arc::clone(registry)),
+        )
+    }
+
     /// Sets this context's compiled bindings.
     pub fn set_compiled_context_bindings(&mut self, bindings: Arc<CompiledContextBindings>) {
         self.compiled_context_bindings = bindings;
@@ -494,6 +518,14 @@ impl PipelineContext {
     #[must_use]
     pub fn compiled_context_bindings(&self) -> &Arc<CompiledContextBindings> {
         &self.compiled_context_bindings
+    }
+
+    /// Returns the shared runtime context bindings for this context's current node.
+    #[must_use]
+    pub fn node_bindings(&self) -> Option<Arc<NodeBindings>> {
+        self.compiled_context_bindings
+            .node_bindings(&self.pipeline_key(), &self.node_id)
+            .cloned()
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.
@@ -844,6 +876,7 @@ impl PipelineContext {
             topic_set: self.topic_set.clone(),
             listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
             compiled_context_bindings: self.compiled_context_bindings.clone(),
+            codec_registry: self.codec_registry.clone(),
         }
     }
 }
@@ -1253,7 +1286,7 @@ mod tests {
     }
 
     /// Scenario: a node context is created from a pipeline context.
-    /// Guarantees: both contexts share the same compiled binding snapshot.
+    /// Guarantees: both contexts share the compiled binding snapshot and selected codec registry.
     #[test]
     fn pipeline_context_preserves_compiled_policy_across_node_context() {
         let resolved = otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec {
@@ -1269,6 +1302,9 @@ mod tests {
         let mut pipeline =
             controller.pipeline_context_with("group".into(), "pipeline".into(), 0, 1, 0);
         pipeline.set_compiled_context_bindings(Arc::clone(&bindings));
+        let registry =
+            Arc::new((*otel_arrow_dfe_pdata_codec::CodecRegistry::global().unwrap()).clone());
+        pipeline.set_codec_registry(Arc::clone(&registry));
 
         let node = pipeline.with_node_context(
             "node".into(),
@@ -1278,6 +1314,7 @@ mod tests {
         );
 
         assert!(Arc::ptr_eq(node.compiled_context_bindings(), &bindings));
+        assert!(Arc::ptr_eq(&node.codec_registry().unwrap(), &registry));
     }
 
     fn pipeline_ctx_with_custom_attrs(

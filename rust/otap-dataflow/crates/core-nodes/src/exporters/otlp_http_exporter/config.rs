@@ -3,10 +3,10 @@
 
 use std::num::NonZeroUsize;
 
-use otel_arrow_dfe_otap::otlp_exporter::default_max_in_flight;
+use otel_arrow_dfe_otap::otlp::exporter::default_max_in_flight;
 use serde::Deserialize;
 
-use otel_arrow_dfe_otap::otlp_http::client_settings::HttpClientSettings;
+use otel_arrow_dfe_otap::http::settings::HttpClientSettings;
 
 /// Configuration for OTLP HTTP Exporter
 #[derive(Debug, Deserialize)]

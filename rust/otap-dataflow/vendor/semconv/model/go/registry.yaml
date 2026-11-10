@@ -1,0 +1,64 @@
+groups:
+  - id: registry.go
+    type: attribute_group
+    display_name: Go Attributes
+    brief: >
+      This document defines Go related attributes.
+    attributes:
+      - id: go.memory.type
+        stability: development
+        type:
+          members:
+            - id: stack
+              value: 'stack'
+              brief: 'Memory allocated from the heap that is reserved for stack space, whether or not it is currently in-use.'
+              note: >
+                Computed from `/memory/classes/heap/stacks:bytes`.
+              stability: development
+            - id: other
+              value: 'other'
+              brief: 'Memory used by the Go runtime, excluding other categories of memory usage described in this enumeration.'
+              stability: development
+        brief: The type of memory.
+        examples: ["other", "stack"]
+
+      - id: go.memory.detailed_type
+        stability: development
+        type: string
+        brief: The detailed type of memory.
+        note: >
+          Value SHOULD match the specific memory class reported by the Go runtime under `/memory/classes/...`.
+          The list of possible values is subject to change with the Go version used.
+        examples: ["heap/objects", "heap/free"]
+
+      - id: go.cpu.state
+        stability: development
+        type:
+          members:
+            - id: user
+              value: 'user'
+              brief: 'CPU time spent running user Go code.'
+              stability: development
+            - id: gc
+              value: 'gc'
+              brief: 'CPU time spent performing garbage collection tasks.'
+              stability: development
+            - id: scavenge
+              value: 'scavenge'
+              brief: 'CPU time spent returning unused memory to the underlying platform.'
+              stability: development
+            - id: idle
+              value: 'idle'
+              brief: 'Available CPU time not spent executing any Go or Go runtime code.'
+              stability: development
+        brief: The state of the CPU.
+        examples: ["user", "gc"]
+
+      - id: go.cpu.detailed_state
+        stability: development
+        type: string
+        brief: The detailed state of the CPU.
+        note: >
+          Value SHOULD match the specific CPU class reported by the Go runtime under `/cpu/classes/...`.
+          The list of possible values is subject to change with the Go version used.
+        examples: ["gc/pause", "gc/mark/assist"]

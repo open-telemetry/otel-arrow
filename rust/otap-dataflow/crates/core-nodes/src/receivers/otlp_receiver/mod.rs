@@ -4,8 +4,8 @@
 //! # OTLP receiver architecture
 //!
 //! Once the TCP listener is bound the receiver builds three OTLP-specific gRPC servers (logs,
-//! metrics, traces). Each server is backed by the shared codecs in `otap_grpc::otlp::server`,
-//! producing lazily-decoded [`OtapPdata`](OtapPdata) that are pushed straight into
+//! metrics, traces). Each server is backed by the shared codecs in `grpc::otlp::server`,
+//! producing lazily-decoded [`OtapPdata`](otel_arrow_dfe_otap::pdata::OtapPdata) that are pushed straight into
 //! the pipeline. The `AckRegistry` aggregates the per-signal subscription maps that connect
 //! incoming requests with their ACK/NACK responses when `wait_for_result` is enabled.
 //!
@@ -23,8 +23,8 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
-use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::{
-    AuthorizationLayer, LogsServiceServer, MetricsServiceServer, OtlpServerSettings, RouteResponse,
+use otel_arrow_dfe_otap::grpc::otlp::server::{
+    AuthorizationLayer, LogsServiceServer, MetricsServiceServer, OtlpServerSettings,
     TraceServiceServer,
 };
 use otel_arrow_dfe_otap::pdata::OtapPdata;
@@ -47,13 +47,14 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver as shared;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::grpc;
+use otel_arrow_dfe_otap::grpc::settings::GrpcServerSettings;
+use otel_arrow_dfe_otap::http::settings::HttpServerSettings;
 use otel_arrow_dfe_otap::memory_pressure_layer::MemoryPressureLayer;
-use otel_arrow_dfe_otap::otap_grpc::common;
-use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
-use otel_arrow_dfe_otap::otap_grpc::server_settings::GrpcServerSettings;
-use otel_arrow_dfe_otap::otlp_http::HttpServerSettings;
-use otel_arrow_dfe_otap::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use otel_arrow_dfe_otap::otlp::metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use otel_arrow_dfe_otap::rate_limit_layer::RateLimitLayer;
+use otel_arrow_dfe_otap::receiver::ack;
+use otel_arrow_dfe_otap::receiver::ack::{AckRegistry, RouteResponse};
 use otel_arrow_dfe_otap::shared_concurrency::SharedConcurrencyLayer;
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use parking_lot::Mutex;
@@ -183,7 +184,7 @@ impl Protocols {
 ///
 /// Several optimisations keep the hot path inexpensive:
 /// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
-///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server_new::OtlpBytesCodec), allowing downstream stages
+///   `OtlpBytesCodec`, allowing downstream stages
 ///   to decode lazily.
 /// - `AckRegistry` maintains per-signal ACK subscription slots so `wait_for_result` lookups avoid
 ///   extra bookkeeping and route responses directly back to callers.
@@ -306,10 +307,13 @@ impl OTLPReceiver {
 
         // Tune per-protocol limits relative to downstream capacity.
         if let Some(grpc) = self.config.protocols.grpc.as_mut() {
-            common::tune_max_concurrent_requests(grpc, downstream_capacity);
+            grpc::settings::tune_max_concurrent_requests(grpc, downstream_capacity);
         }
         if let Some(http) = self.config.protocols.http.as_mut() {
-            otel_arrow_dfe_otap::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
+            otel_arrow_dfe_otap::http::settings::tune_max_concurrent_requests(
+                http,
+                downstream_capacity,
+            );
         }
     }
 
@@ -347,15 +351,9 @@ impl OTLPReceiver {
             0
         };
 
-        let logs_slot = wait_for_result_any.then(|| {
-            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
-        });
-        let metrics_slot = wait_for_result_any.then(|| {
-            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
-        });
-        let traces_slot = wait_for_result_any.then(|| {
-            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
-        });
+        let logs_slot = wait_for_result_any.then(|| ack::AckSlot::new(shared_ack_slot_capacity));
+        let metrics_slot = wait_for_result_any.then(|| ack::AckSlot::new(shared_ack_slot_capacity));
+        let traces_slot = wait_for_result_any.then(|| ack::AckSlot::new(shared_ack_slot_capacity));
 
         // Build gRPC service servers only if gRPC is enabled.
         let (logs_server, metrics_server, traces_server) = if let Some(settings) = grpc_settings {
@@ -393,7 +391,7 @@ impl OTLPReceiver {
 
     fn handle_ack(&mut self, registry: &AckRegistry, ack: AckMsg<OtapPdata>) {
         let signal = ack.accepted.signal_type();
-        let resp = common::route_ack_response(registry, ack);
+        let resp = ack::route_ack_response(registry, ack);
         let mut metrics = self.metrics.lock();
         match resp {
             RouteResponse::Sent => metrics.record_acknowledgement(signal, Outcome::Success),
@@ -406,7 +404,7 @@ impl OTLPReceiver {
 
     fn handle_nack(&mut self, registry: &AckRegistry, nack: NackMsg<OtapPdata>) {
         let signal = nack.refused.signal_type();
-        let resp = common::route_nack_response(registry, nack);
+        let resp = ack::route_nack_response(registry, nack);
         let mut metrics = self.metrics.lock();
         match resp {
             RouteResponse::Sent => metrics.record_acknowledgement(signal, Outcome::Refused),
@@ -521,7 +519,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .protocols
             .grpc
             .as_ref()
-            .map(|config| config.build_settings());
+            .map(OtlpServerSettings::from);
 
         let authorizer: Option<Arc<dyn BearerTokenAuthorizer>> =
             self.authorizer.take().map(Arc::from);
@@ -613,11 +611,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 .layer(limit_layer)
                 .option_layer(authorization_layer);
             // Apply the HTTP/2 `max_concurrent_streams` limit here rather than in
-            // `common::apply_server_tuning`. OTLP uses unary RPCs (one short-lived HTTP/2 stream
+            // `grpc::server::apply_server_tuning`. OTLP uses unary RPCs (one short-lived HTTP/2 stream
             // per request), so tracking the request limit is safe: the stream limit only throttles
             // in-flight exports transiently. Streaming protocols (OTAP) need a different policy and
             // apply their own limit.
-            let tuned = common::apply_server_tuning(Server::builder(), grpc_config);
+            let tuned = grpc::server::apply_server_tuning(Server::builder(), grpc_config);
             let fallback_streams =
                 grpc_config.max_concurrent_requests.min(u32::MAX as usize) as u32;
             let max_concurrent_streams = grpc_config
@@ -676,7 +674,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let http_shutdown = CancellationToken::new();
         let http_task: Option<HttpServerTask> =
             if let Some(http_config) = self.config.protocols.http.clone() {
-                Some(Box::pin(otel_arrow_dfe_otap::otlp_http::serve(
+                Some(Box::pin(otel_arrow_dfe_otap::http::otlp::server::serve(
                     effect_handler.clone(),
                     http_config,
                     ack_registry.clone(),
@@ -909,13 +907,13 @@ mod tests {
 
     use otel_arrow_dfe_channel::error::RecvError;
     use otel_arrow_dfe_config::{ContextEntryName, SignalType};
-    use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+    use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::policy::{
         MemoryLimiterMode, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
         RateLimitUnit, RateLimiterPolicy, TokenBucketPolicy,
     };
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     };
     use otel_arrow_dfe_engine::Interests;
@@ -941,8 +939,8 @@ mod tests {
         test_node,
     };
     use otel_arrow_dfe_otap::compression::CompressionMethod;
-    use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot;
-    use otel_arrow_dfe_otap::otlp_http::RpcStatus;
+    use otel_arrow_dfe_otap::receiver::ack::AckSlot;
+    use otel_arrow_dfe_otap::http::otlp::RpcStatus;
     use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
     use otel_arrow_dfe_pdata_codec::builtins::resolve_otlp;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;

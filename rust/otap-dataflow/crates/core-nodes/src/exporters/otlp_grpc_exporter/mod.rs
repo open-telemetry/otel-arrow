@@ -20,8 +20,8 @@ use futures::future::FutureExt;
 use http::{HeaderName, HeaderValue};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::ValueKind;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
@@ -34,12 +34,12 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
-use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
-use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
+use otel_arrow_dfe_otap::grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
-use otel_arrow_dfe_otap::otlp_exporter::{InFlightExports, default_max_in_flight};
+use otel_arrow_dfe_otap::grpc::settings::GrpcClientSettings;
+use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
+use otel_arrow_dfe_otap::otlp::exporter::{InFlightExports, default_max_in_flight};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -70,8 +70,7 @@ pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 /// Raises the shared auth warnings under this exporter's event namespace.
 const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
     validate_header_name: |name| {
-        otel_arrow_dfe_otap::otap_grpc::client_settings::validate_grpc_metadata_key(name.as_str())
-            .map(|_| ())
+        otel_arrow_dfe_otap::grpc::settings::validate_grpc_metadata_key(name.as_str()).map(|_| ())
     },
     on_invalid: |source, error| {
         otel_warn!("otlp.exporter.grpc.auth.invalid", source = %source, error = %error);
@@ -908,7 +907,7 @@ fn build_grpc_metadata(
 fn append_propagated_grpc_header(
     metadata: &mut MetadataMap,
     static_metadata: Option<&MetadataMap>,
-    header: otel_arrow_dfe_config::transport_headers_policy::PropagatedHeader<'_>,
+    header: otel_arrow_dfe_config::context::transport_policy::PropagatedHeader<'_>,
 ) {
     match header.value_kind {
         ValueKind::Text => {
@@ -1163,7 +1162,7 @@ mod tests {
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextPolicy, ContextScope,
     };
     use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -1171,17 +1170,17 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
 
-    use otel_arrow_dfe_config::transport_headers::{
+    use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
-    use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_policy::PropagationSelectorType;
+    use otel_arrow_dfe_config::context::transport_policy::{
         HeaderPropagationPolicy as HeaderPropagationConfig, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector,
     };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+    use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -1197,7 +1196,7 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node, test_pipeline_ctx_with_interests,
     };
-    use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
+    use otel_arrow_dfe_otap::grpc::otlp::typed::OTLPData;
     use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
