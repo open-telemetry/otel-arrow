@@ -60,18 +60,16 @@ pub trait MetadataFunction: BatchEval + Sized {
         node_context_bindings: &NodeBindings,
         query_location: Option<&QueryLocation>,
     ) -> Result<Option<ValueRead>> {
-        match node_context_bindings.value(entry_selector) {
-            Ok(r) => Ok(Some(r.clone())),
-            Err(ConfigError::InvalidUserConfig { .. }) => {
-                // No context entry will be preserved in metadata such that the passed entry
-                // selector has something to select
-                Ok(None)
-            }
-            Err(e) => Err(Error::InvalidPipelineError {
-                cause: format!("Error planning function '{}': {e}", Self::function_name()),
+        node_context_bindings
+            .value(entry_selector)
+            .map(|read| Some(read.clone()))
+            .map_err(|error: ConfigError| Error::InvalidPipelineError {
+                cause: format!(
+                    "Error planning function '{}': {error}",
+                    Self::function_name()
+                ),
                 query_location: query_location.cloned(),
-            }),
-        }
+            })
     }
 }
 
