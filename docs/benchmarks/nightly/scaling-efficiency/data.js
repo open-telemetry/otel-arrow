@@ -1,84 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794364119192,
+  "lastUpdate": 1794418560968,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Drew Relmas",
-            "username": "drewrelmas",
-            "email": "drewrelmas@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "ebc01cc6fb0c71b9830895fbdaffca89607699a5",
-          "message": "feat(engine): Add opt-in `size` metric to node produced/consumed (#3842)\n\n# Change summary\n\nClosing the loop on final piece to match the [Go Collector universal\ntelemetry RFC on auto-instrumented\nmetrics](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md#auto-instrumented-metrics)\n🥳\n\nAdds logical payload size to the engine-owned node outcome metrics:\n\n- `node.producer.produced.size{signal,outcome}`\n- `node.consumer.consumed.size{signal,outcome}`\n\nSize follows the existing item-count policy model. `runtime_metrics:\ndetailed` enables both measurements for every node. At `runtime_metrics:\nnormal`, nodes can independently opt in with:\n\n```yaml\npolicies:\n  telemetry:\n    size: true\n```\n\nThe forward path measures the payload once at each produced or consumed\nboundary and stores the value on the context frame. Ack/Nack unwinding\nrecords the stored size with the same signal and outcome as the\ncorresponding message metric.\n\nOTLP payloads report their encoded protobuf length. OTAP payloads report\nlogical Arrow bytes. Cached OTAP sizing avoids repeating the Arrow array\nand buffer walk when the payload is unchanged.\n\nThe `trafficgen-universal-produced-consumed-metrics.yaml` demo includes\nboth item and size policies and prints only produced/consumed node\nmetrics through its internal observability pipeline.\n\n### Sample config run\n\nThe `full` pipeline uses `runtime_metrics: detailed`. Its log sampler\nkeeps one third of log records while metrics and traces pass through\nunchanged:\n\n| Signal | Receiver produced | Sampler consumed | Sampler produced |\nNoop consumed |\n| --- | ---: | ---: | ---: | ---: |\n| Logs messages | 4 | 4 | 4 | 4 |\n| Logs items | 30 | 30 | 10 | 10 |\n| Logs size (By) | 7,472 | 7,472 | 6,448 | 6,448 |\n| Metrics messages | 2 | 2 | 2 | 2 |\n| Metrics items | 18 | 18 | 18 | 18 |\n| Metrics size (By) | 3,710 | 3,710 | 3,710 | 3,710 |\n| Traces messages | 2 | 2 | 2 | 2 |\n| Traces items | 12 | 12 | 12 | 12 |\n| Traces size (By) | 2,290 | 2,290 | 2,290 | 2,290 |\n\nDropping two thirds of the log records reduces logical size from `7,472\nBy` to `6,448 By` rather than by two thirds. OTAP is a columnar,\nrelational representation: resource, scope, attribute, and dictionary\nbuffers remain largely unchanged, while sampling removes primarily the\nper-record offsets and dictionary keys. The synthetic records also\nrepeat values that are stored once in dictionaries. Logical Arrow size\ntherefore describes the resulting representation, not an average record\nsize multiplied by the item count.\n\nThe `partial` pipeline uses `runtime_metrics: normal` and opts only the\nsampler into `item_counts` and `size`:\n\n| Node boundary | Messages (logs / metrics / traces) | Items (logs /\nmetrics / traces) | Size in By (logs / metrics / traces) |\n| --- | ---: | ---: | ---: |\n| Receiver produced | 4 / 2 / 2 | Not present | Not present |\n| Sampler consumed | 4 / 2 / 2 | 30 / 18 / 12 | 7,472 / 3,710 / 2,290 |\n| Sampler produced | 4 / 2 / 2 | 10 / 18 / 12 | 6,448 / 3,710 / 2,290 |\n| Noop consumed | 4 / 2 / 2 | Not present | Not present |\n\n## Related issue\n\n* Closes #2884\n\n## Validation\n\nLocal engine runs\n\n## User-facing changes\n\nYes. Users can enable node-level logical payload size metrics globally\nwith `runtime_metrics: detailed` or per node with\n`policies.telemetry.size: true`.",
-          "timestamp": "2026-08-24T22:34:55Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/ebc01cc6fb0c71b9830895fbdaffca89607699a5"
-        },
-        "date": 1787623779780,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 0.7598,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 0.9846,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 0.7802,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 0.841,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 0.8414,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          },
-          {
-            "name": "otap_scaling_efficiency_2_cores",
-            "value": 0.9762,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_4_cores",
-            "value": 0.9364,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_8_cores",
-            "value": 0.6911,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_avg",
-            "value": 0.8679,
-            "unit": "",
-            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -7598,6 +7522,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.9553,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "bala6396",
+            "username": "bala6396",
+            "email": "balamuruganm96@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9ad67d5e3f7aace758462740ef43878e2c832260",
+          "message": "chore(scraper): replace fs2 file locking (#4693)\n\n# Change summary\n\n- Replace the shared scraper's `fs2` checkpoint lock with\n`std::fs::File` locking.\n- Use the same standard-library locking API in the Filelog checkpoint\nstore.\n- Remove the unused `fs2` dependency and lockfile entry.\n\n## Related issue\n\n- Follow-up tracked in\nhttps://github.com/athomas9195/otel-arrow/issues/16\n- Addresses\nhttps://github.com/open-telemetry/otel-arrow/pull/4110#discussion_r4057427167\n\n## Validation\n\n- `cargo fmt --all --check`\n- `cargo check -p otel-arrow-dfe-scraper -p\notel-arrow-dfe-filelog-checkpoint`\n- `cargo test -p otel-arrow-dfe-scraper partition::tests`\n- `cargo test -p otel-arrow-dfe-filelog-checkpoint`\n- `cargo check -p otel-arrow-dfe-filelog-checkpoint --target\naarch64-unknown-linux-gnu`\n- `cargo clippy -p otel-arrow-dfe-scraper -p\notel-arrow-dfe-filelog-checkpoint --all-targets -- -D warnings`\n\nThe full local `cargo xtask check` reached workspace compilation but\ncould not complete because the Windows environment does not have OpenSSL\ndevelopment files. The affected targeted checks above pass.\n\n## User-facing changes\n\nNone.\n\nCo-authored-by: Balamurugan Murugesan <25451490+bala6396@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>\nCopilot-Session: 597026ae-7075-4ee1-9534-96b418a7f44c",
+          "timestamp": "2026-11-11T15:59:49Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9ad67d5e3f7aace758462740ef43878e2c832260"
+        },
+        "date": 1794418560045,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 1.2088,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 1.0282,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 1.1474,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 1.1334,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 1.1294,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 1.0989,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 1.0708,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.9471,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 1.039,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
