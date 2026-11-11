@@ -17,11 +17,6 @@ use super::super::identity::DeliveryGeneration;
 use crate::common::kafka::MessageFormat;
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::{
-    MAX_MESSAGE_SIZE as MAX_SYSLOG_MESSAGE_SIZE,
-    arrow_records_encoder::ArrowRecordsBuilder as SyslogArrowRecordsBuilder,
-    parser::parse as parse_syslog,
-};
 use otel_arrow_dfe_engine::control::{CallData, Context8u8};
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
@@ -30,6 +25,11 @@ use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::encode::record::logs::LogsRecordBatchBuilder;
 use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords, from_record_messages};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
+use otel_arrow_dfe_pdata_codec::builtins::syslog::{
+    MAX_MESSAGE_SIZE as MAX_SYSLOG_MESSAGE_SIZE,
+    arrow_records_encoder::ArrowRecordsBuilder as SyslogArrowRecordsBuilder,
+    parser::parse as parse_syslog,
+};
 use prost::Message;
 use rdkafka::message::BorrowedMessage;
 use smallvec::smallvec;
