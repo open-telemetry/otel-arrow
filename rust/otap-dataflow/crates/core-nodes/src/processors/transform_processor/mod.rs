@@ -866,7 +866,9 @@ mod test {
             &OTAP_PIPELINE_FACTORY,
             pipeline_config,
         )
-        .unwrap();
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
         pipeline_context = pipeline_context.with_node_context(
             "transform_processor".into(),
             node_config.r#type.clone(),
