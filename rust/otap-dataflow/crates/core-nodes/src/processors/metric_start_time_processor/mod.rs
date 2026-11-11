@@ -16,12 +16,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBuilder, Float64Array, Int32Array, Int64Array, ListArray,
-    ListBuilder, NullBufferBuilder, RecordBatch, StringArray, StructArray,
-    TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array, UInt64Builder,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, BooleanBuilder,
+    Int32Array, ListArray, NullBufferBuilder, PrimitiveArray, RecordBatch, StringArray,
+    StructArray, UInt8Array, UInt16Array, UInt64Array,
 };
+use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::filter_record_batch;
-use arrow::datatypes::{DataType, Field, Schema, UInt32Type};
+use arrow::datatypes::{
+    ArrowNativeType, DataType, Field, FieldRef, Float64Type, Int32Type, Int64Type, Schema,
+    SchemaRef, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+};
 use async_trait::async_trait;
 use hashbrown::HashMap;
 use hashbrown::hash_map::Entry;
@@ -54,7 +58,7 @@ use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otap::filter::{
     ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool, filter_otap_batch,
 };
-use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords};
+use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
@@ -67,33 +71,23 @@ mod state;
 use self::config::Config;
 use self::metrics::{MetricStartTimeMetrics, MetricStartTimeRegistrationAttributes};
 use self::state::{
-    AttrHasher, ExpBucketsState, ExpHistogramSeriesState, HistogramSeriesState, NumberSeriesState,
-    SubtractInitialCache, SummarySeriesState,
+    AttrHasher, CountSumState, ExpBucketsState, ExpHistogramState, HistogramState, NumberState,
+    ResourceSeriesMap, SeriesEntry, SeriesTable, SubtractInitialCache,
 };
 
 /// The URN for the metric start time processor.
 pub const METRIC_START_TIME_PROCESSOR_URN: &str = "urn:otel:processor:metric_start_time";
 
-/// OTAP `metric_type` values from `UnivariateMetrics`.
 const METRIC_TYPE_SUM: u8 = 2;
 const METRIC_TYPE_HISTOGRAM: u8 = 3;
 const METRIC_TYPE_EXP_HISTOGRAM: u8 = 4;
 const METRIC_TYPE_SUMMARY: u8 = 5;
 
-/// OTLP `AggregationTemporality::Cumulative` value in `UnivariateMetrics`.
 const TEMPORALITY_CUMULATIVE: i32 = 2;
-
-/// OTLP `DataPointFlags::FLAG_NO_RECORDED_VALUE` bitmask.
 const FLAG_NO_RECORDED_VALUE: u32 = 1;
-
-/// Start time offset subtracted from the current point's timestamp when a counter reset occurs
-/// (1 millisecond in nanoseconds), matching Go's `subtractinitial` implementation.
 const RESET_START_TIME_OFFSET_NS: i64 = 1_000_000;
-
-/// Upper bound for direct `u16` `metric_id` flat-vector lookup.
 const MAX_DENSE_METRIC_ID: usize = 65_536;
 
-/// Counters returned by a single batch adjustment pass.
 #[derive(Debug, Default, Clone, Copy)]
 struct BatchAdjustStats {
     dropped_initial: u64,
@@ -110,7 +104,6 @@ impl BatchAdjustStats {
     }
 }
 
-/// Per-metric metadata resolved from `UnivariateMetrics` for the active batch.
 #[derive(Debug, Clone, Copy)]
 struct EligibleMetricSlot {
     resource_hash: u128,
@@ -118,8 +111,6 @@ struct EligibleMetricSlot {
     metric_type: u8,
 }
 
-/// Reusable lookup table mapping `metric_id: u16` to its [`EligibleMetricSlot`] in the current
-/// `UnivariateMetrics` batch.
 #[derive(Debug, Default)]
 struct BatchMetricLookup {
     slots: Vec<Option<EligibleMetricSlot>>,
@@ -147,11 +138,6 @@ impl BatchMetricLookup {
     }
 
     #[inline]
-    fn any_eligible(&self) -> bool {
-        self.has_sum || self.has_summary || self.has_histogram || self.has_exp_histogram
-    }
-
-    #[inline]
     fn get(&self, metric_id: u16, expected_type: u8) -> Option<EligibleMetricSlot> {
         let slot = self.slots.get(metric_id as usize).copied().flatten()?;
         (slot.metric_type == expected_type).then_some(slot)
@@ -163,16 +149,157 @@ impl BatchMetricLookup {
     }
 }
 
-/// Stateful columnar adjustment engine for `subtract_initial_point`.
-///
-/// Separated into its own struct so [`MetricStartTimeProcessor::process_native`] can mutably
-/// borrow the engine inside the `effect_handler.timed(&self.compute_duration, ...)` closure.
+/// Stack-allocated replacement column list (at most 5 columns for `ExpHistogramDataPoints`),
+/// avoiding a per-table `Vec` heap allocation on every batch.
+#[derive(Default)]
+struct ReplList {
+    items: [Option<(&'static str, ArrayRef)>; 5],
+    len: usize,
+}
+
+impl ReplList {
+    #[inline]
+    fn push(&mut self, name: &'static str, col: ArrayRef) {
+        self.items[self.len] = Some((name, col));
+        self.len += 1;
+    }
+
+    #[inline]
+    fn find(&self, name: &str) -> Option<&ArrayRef> {
+        self.items[..self.len]
+            .iter()
+            .flatten()
+            .find_map(|(n, col)| (*n == name).then_some(col))
+    }
+}
+
+/// Caches the output [`SchemaRef`] per data point table so steady-state batches reuse the schema
+/// via `Arc::clone` with zero `Field`, `Schema`, or metadata map allocations.
+#[derive(Default)]
+struct OutputSchemaCache {
+    entries: [Option<(SchemaRef, SchemaRef)>; 4],
+}
+
+impl OutputSchemaCache {
+    fn rebuild_batch(
+        &mut self,
+        table_idx: usize,
+        rb: &RecordBatch,
+        keep_filter: Option<&BooleanArray>,
+        start_time_col: ArrayRef,
+        replacements: &ReplList,
+    ) -> Result<RecordBatch, PdataError> {
+        let old_schema = rb.schema_ref();
+        let out_schema = self.get_or_build(table_idx, old_schema, start_time_col.data_type());
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(out_schema.fields().len());
+        let mut has_start_time = false;
+
+        for (col_idx, field) in old_schema.fields().iter().enumerate() {
+            let name = field.name().as_str();
+            if name == consts::START_TIME_UNIX_NANO {
+                has_start_time = true;
+                columns.push(Arc::clone(&start_time_col));
+            } else if let Some(rep_col) = replacements.find(name) {
+                columns.push(Arc::clone(rep_col));
+            } else {
+                let col = rb.column(col_idx);
+                let out_col = match keep_filter {
+                    Some(filter) => arrow::compute::filter(col, filter)
+                        .map_err(|source| PdataError::ColumnLengthMismatch { source })?,
+                    None => Arc::clone(col),
+                };
+                columns.push(out_col);
+            }
+        }
+
+        if !has_start_time {
+            let insert_idx = old_schema
+                .fields()
+                .iter()
+                .position(|f| f.name().as_str() == consts::PARENT_ID)
+                .map_or(0, |idx| idx + 1);
+            columns.insert(insert_idx, start_time_col);
+        }
+
+        RecordBatch::try_new(out_schema, columns)
+            .map_err(|source| PdataError::ColumnLengthMismatch { source })
+    }
+
+    fn get_or_build(
+        &mut self,
+        table_idx: usize,
+        old_schema: &SchemaRef,
+        start_dt: &DataType,
+    ) -> SchemaRef {
+        if let Some((cached_in, cached_out)) = &self.entries[table_idx]
+            && Arc::ptr_eq(cached_in, old_schema)
+        {
+            return Arc::clone(cached_out);
+        }
+
+        let mut fields: Vec<FieldRef> = Vec::with_capacity(old_schema.fields().len() + 1);
+        let mut has_start = false;
+        for field in old_schema.fields() {
+            if field.name().as_str() == consts::START_TIME_UNIX_NANO {
+                has_start = true;
+                if field.is_nullable() && field.data_type() == start_dt {
+                    fields.push(Arc::clone(field));
+                } else {
+                    fields.push(Arc::new(
+                        field
+                            .as_ref()
+                            .clone()
+                            .with_data_type(start_dt.clone())
+                            .with_nullable(true),
+                    ));
+                }
+            } else {
+                fields.push(Arc::clone(field));
+            }
+        }
+
+        if !has_start {
+            let insert_idx = fields
+                .iter()
+                .position(|f| f.name().as_str() == consts::PARENT_ID)
+                .map_or(0, |idx| idx + 1);
+            fields.insert(
+                insert_idx,
+                Arc::new(Field::new(
+                    consts::START_TIME_UNIX_NANO,
+                    start_dt.clone(),
+                    true,
+                )),
+            );
+        }
+
+        let out_schema = if has_start
+            && fields
+                .iter()
+                .zip(old_schema.fields().iter())
+                .all(|(a, b)| Arc::ptr_eq(a, b))
+        {
+            Arc::clone(old_schema)
+        } else {
+            Arc::new(Schema::new_with_metadata(
+                fields,
+                old_schema.metadata().clone(),
+            ))
+        };
+
+        self.entries[table_idx] = Some((Arc::clone(old_schema), Arc::clone(&out_schema)));
+        out_schema
+    }
+}
+
 struct SubtractInitialEngine {
     cache: SubtractInitialCache,
     res_attr_hasher: AttrHasher,
     dp_attr_hasher: AttrHasher,
     metric_lookup: BatchMetricLookup,
     id_bitmap_pool: IdBitmapPool,
+    schema_cache: OutputSchemaCache,
+    utc_tz: Arc<str>,
 }
 
 /// Processor that adjusts `start_time_unix_nano` on cumulative metrics using the
@@ -240,6 +367,8 @@ impl MetricStartTimeProcessor {
                 dp_attr_hasher: AttrHasher::new(),
                 metric_lookup: BatchMetricLookup::default(),
                 id_bitmap_pool: IdBitmapPool::new(),
+                schema_cache: OutputSchemaCache::default(),
+                utc_tz: Arc::from("UTC"),
             },
             metrics,
             compute_duration,
@@ -256,50 +385,94 @@ impl MetricStartTimeProcessor {
     }
 }
 
+fn is_plain_field(f: &Field) -> bool {
+    f.metadata()
+        .get(consts::metadata::COLUMN_ENCODING)
+        .is_some_and(|enc| enc == consts::metadata::encodings::PLAIN)
+}
+
+fn all_ids_already_plain(records: &OtapArrowRecords) -> bool {
+    let col_plain =
+        |s: &Schema, n: &str| s.column_with_name(n).is_none_or(|(_, f)| is_plain_field(f));
+    let struct_id_plain = |s: &Schema, n: &str| {
+        let Some((_, col)) = s.column_with_name(n) else {
+            return true;
+        };
+        match col.data_type() {
+            DataType::Struct(fields) => fields
+                .find(consts::ID)
+                .is_none_or(|(_, f)| is_plain_field(f)),
+            _ => true,
+        }
+    };
+    Metrics::allowed_payload_types().iter().all(|&pt| {
+        records.get(pt).is_none_or(|rb| {
+            let s = rb.schema_ref();
+            col_plain(s, consts::ID)
+                && col_plain(s, consts::PARENT_ID)
+                && struct_id_plain(s, consts::RESOURCE)
+                && struct_id_plain(s, consts::SCOPE)
+        })
+    })
+}
+
+trait DpAdjuster {
+    const TABLE_IDX: usize;
+    const METRIC_TYPE: u8;
+    const DP_PAYLOAD: ArrowPayloadType;
+    const ATTRS_PAYLOAD: ArrowPayloadType;
+    const EXEMPLARS_PAYLOAD: Option<(ArrowPayloadType, ArrowPayloadType)>;
+
+    type State;
+    type Table<'a>;
+
+    fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError>;
+    fn series_table(res: &mut ResourceSeriesMap) -> &mut SeriesTable<Self::State>;
+    fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize);
+    fn append_passthrough(t: &mut Self::Table<'_>, row: usize);
+    fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State;
+    fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, state: &mut Self::State) -> bool;
+    fn finish_replacements(
+        t: Self::Table<'_>,
+        keep_filter: Option<&BooleanArray>,
+        out: &mut ReplList,
+    ) -> Result<(), PdataError>;
+}
+
+enum TableMutation {
+    Unchanged,
+    AllDropped,
+    Rebuilt {
+        batch: RecordBatch,
+        filtered_rows: bool,
+    },
+}
+
 impl SubtractInitialEngine {
-    /// Adjusts an OTAP metrics batch in place at the specified instant.
     fn process_metrics_batch(
         &mut self,
         records: &mut OtapArrowRecords,
         now: Instant,
     ) -> Result<BatchAdjustStats, PdataError> {
-        let Some(metrics_rb) = records.get(ArrowPayloadType::UnivariateMetrics) else {
-            self.cache.maybe_gc(now);
-            return Ok(BatchAdjustStats::default());
-        };
-        if metrics_rb.num_rows() == 0 {
-            self.cache.maybe_gc(now);
-            return Ok(BatchAdjustStats::default());
-        }
-
-        // Index eligible cumulative metrics in UnivariateMetrics.
-        self.populate_metric_lookup(records)?;
-        if !self.metric_lookup.any_eligible() {
+        if !self.scan_and_index_metrics(records)? {
             self.cache.maybe_gc(now);
             return Ok(BatchAdjustStats::default());
         }
 
         let mut stats = BatchAdjustStats::default();
-
         if self.metric_lookup.has_sum {
-            let s = self.adjust_number_data_points(records)?;
-            stats.merge(s);
+            stats.merge(self.adjust_dp_table::<NumberAdjuster>(records)?);
         }
         if self.metric_lookup.has_summary {
-            let s = self.adjust_summary_data_points(records)?;
-            stats.merge(s);
+            stats.merge(self.adjust_dp_table::<SummaryAdjuster>(records)?);
         }
         if self.metric_lookup.has_histogram {
-            let s = self.adjust_histogram_data_points(records)?;
-            stats.merge(s);
+            stats.merge(self.adjust_dp_table::<HistogramAdjuster>(records)?);
         }
         if self.metric_lookup.has_exp_histogram {
-            let s = self.adjust_exp_histogram_data_points(records)?;
-            stats.merge(s);
+            stats.merge(self.adjust_dp_table::<ExpHistogramAdjuster>(records)?);
         }
 
-        // If any initial data points were dropped, prune UnivariateMetrics rows whose data points
-        // were all dropped so empty metric shells are not emitted downstream.
         if stats.dropped_initial > 0 {
             self.prune_empty_metrics(records)?;
         }
@@ -308,38 +481,62 @@ impl SubtractInitialEngine {
         Ok(stats)
     }
 
-    fn populate_metric_lookup(&mut self, records: &OtapArrowRecords) -> Result<(), PdataError> {
+    /// Scans `UnivariateMetrics` for eligible cumulative metrics before touching ID encodings;
+    /// returns `Ok(false)` immediately if none are present.
+    fn scan_and_index_metrics(
+        &mut self,
+        records: &mut OtapArrowRecords,
+    ) -> Result<bool, PdataError> {
         self.metric_lookup.clear();
-        let Some(metrics_rb) = records.get(ArrowPayloadType::UnivariateMetrics) else {
-            return Ok(());
+        let num_rows = match records.get(ArrowPayloadType::UnivariateMetrics) {
+            Some(rb) if rb.num_rows() > 0 => {
+                let type_arr = get_required_array(rb, consts::METRIC_TYPE)?;
+                let m_types = type_arr
+                    .as_any()
+                    .downcast_ref::<UInt8Array>()
+                    .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
+                        name: consts::METRIC_TYPE.into(),
+                        actual: type_arr.data_type().clone(),
+                        expect: DataType::UInt8,
+                    })?;
+                let temp = rb
+                    .column_by_name(consts::AGGREGATION_TEMPORALITY)
+                    .map(MaybeDictArrayAccessor::<Int32Array>::try_new)
+                    .transpose()?;
+
+                self.metric_lookup.eligible_row_flags.reserve(rb.num_rows());
+                let mut any = false;
+                for row in 0..rb.num_rows() {
+                    let ok = m_types.nulls().is_none_or(|n| n.is_valid(row))
+                        && match m_types.value(row) {
+                            METRIC_TYPE_SUMMARY => true,
+                            METRIC_TYPE_SUM | METRIC_TYPE_HISTOGRAM | METRIC_TYPE_EXP_HISTOGRAM => {
+                                temp.as_ref()
+                                    .and_then(|t| t.value_at(row))
+                                    .is_some_and(|t| t == TEMPORALITY_CUMULATIVE)
+                            }
+                            _ => false,
+                        };
+                    self.metric_lookup.eligible_row_flags.push(ok);
+                    any |= ok;
+                }
+                if !any {
+                    return Ok(false);
+                }
+                rb.num_rows()
+            }
+            _ => return Ok(false),
         };
-        let num_rows = metrics_rb.num_rows();
 
-        let id_arr = get_required_array(metrics_rb, consts::ID)?;
-        let ids = id_arr
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                name: consts::ID.into(),
-                actual: id_arr.data_type().clone(),
-                expect: DataType::UInt16,
-            })?;
+        if !all_ids_already_plain(records) {
+            records.decode_transport_optimized_ids()?;
+        }
 
-        let type_arr = get_required_array(metrics_rb, consts::METRIC_TYPE)?;
-        let metric_types = type_arr
-            .as_any()
-            .downcast_ref::<UInt8Array>()
-            .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                name: consts::METRIC_TYPE.into(),
-                actual: type_arr.data_type().clone(),
-                expect: DataType::UInt8,
-            })?;
-
-        let temporality = metrics_rb
-            .column_by_name(consts::AGGREGATION_TEMPORALITY)
-            .map(MaybeDictArrayAccessor::<Int32Array>::try_new)
-            .transpose()?;
-
+        let metrics_rb = records
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .expect("checked above");
+        let ids = PrimCol::from_required::<UInt16Type>(metrics_rb, consts::ID)?;
+        let m_types = PrimCol::from_required::<UInt8Type>(metrics_rb, consts::METRIC_TYPE)?;
         let res_struct = metrics_rb
             .column_by_name(consts::RESOURCE)
             .and_then(|c| c.as_any().downcast_ref::<StructArray>());
@@ -347,37 +544,19 @@ impl SubtractInitialEngine {
             .and_then(|s| s.column_by_name(consts::ID))
             .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
 
-        let mut resource_hashes_populated = false;
-        self.metric_lookup.eligible_row_flags.reserve(num_rows);
+        self.res_attr_hasher
+            .populate::<UInt16Type>(records.get(ArrowPayloadType::ResourceAttrs))?;
 
         for row in 0..num_rows {
-            if !ids.is_valid(row) || !metric_types.is_valid(row) {
-                self.metric_lookup.eligible_row_flags.push(false);
+            if !self.metric_lookup.eligible_row_flags[row] {
                 continue;
             }
-            let m_type = metric_types.value(row);
-            let is_eligible = match m_type {
-                METRIC_TYPE_SUMMARY => true,
-                METRIC_TYPE_SUM | METRIC_TYPE_HISTOGRAM | METRIC_TYPE_EXP_HISTOGRAM => temporality
-                    .as_ref()
-                    .and_then(|t| t.value_at(row))
-                    .is_some_and(|t| t == TEMPORALITY_CUMULATIVE),
-                _ => false,
+            let Some(metric_id) = ids.get(row) else {
+                self.metric_lookup.eligible_row_flags[row] = false;
+                continue;
             };
-
-            self.metric_lookup.eligible_row_flags.push(is_eligible);
-            if !is_eligible {
-                continue;
-            }
-
-            if !resource_hashes_populated {
-                self.res_attr_hasher
-                    .populate_u16(records.get(ArrowPayloadType::ResourceAttrs))?;
-                resource_hashes_populated = true;
-            }
-
-            let res_valid = res_struct.is_none_or(|s| s.is_valid(row));
-            let resource_hash = if res_valid
+            let m_type = m_types.values[row];
+            let resource_hash = if res_struct.is_none_or(|s| s.is_valid(row))
                 && let Some(r_ids) = res_ids
                 && r_ids.is_valid(row)
             {
@@ -386,11 +565,11 @@ impl SubtractInitialEngine {
                 0
             };
 
-            let metric_id = ids.value(row);
             let idx = metric_id as usize;
             if idx < MAX_DENSE_METRIC_ID {
                 if idx >= self.metric_lookup.slots.len() {
-                    self.metric_lookup.slots.resize(idx + 1, None);
+                    let next_len = (idx + 1).next_power_of_two().min(MAX_DENSE_METRIC_ID);
+                    self.metric_lookup.slots.resize(next_len, None);
                 }
                 self.metric_lookup.slots[idx] = Some(EligibleMetricSlot {
                     resource_hash,
@@ -408,1006 +587,191 @@ impl SubtractInitialEngine {
                 _ => {}
             }
         }
-
-        Ok(())
+        Ok(true)
     }
 
-    fn adjust_number_data_points(
+    fn adjust_dp_table<A: DpAdjuster>(
         &mut self,
         records: &mut OtapArrowRecords,
     ) -> Result<BatchAdjustStats, PdataError> {
-        let Some(dp_rb) = records.get(ArrowPayloadType::NumberDataPoints) else {
-            return Ok(BatchAdjustStats::default());
-        };
-        let num_rows = dp_rb.num_rows();
-        if num_rows == 0 {
-            return Ok(BatchAdjustStats::default());
-        }
-
-        let metrics_rb = records
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .expect("UnivariateMetrics checked by caller");
-        let metric_names = MaybeDictArrayAccessor::<StringArray>::try_new(get_required_array(
-            metrics_rb,
-            consts::NAME,
-        )?)?;
-
-        self.dp_attr_hasher
-            .populate_u32(records.get(ArrowPayloadType::NumberDpAttrs))?;
-
-        let common = CommonDpColumns::try_new(dp_rb)?;
-        let ints = dp_rb
-            .column_by_name(consts::INT_VALUE)
-            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
-        let doubles = dp_rb
-            .column_by_name(consts::DOUBLE_VALUE)
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>());
-
-        let mut new_start_times: Vec<Option<i64>> = Vec::with_capacity(num_rows);
-        let mut new_ints: Vec<Option<i64>> =
-            Vec::with_capacity(if ints.is_some() { num_rows } else { 0 });
-        let mut new_doubles: Vec<Option<f64>> =
-            Vec::with_capacity(if doubles.is_some() { num_rows } else { 0 });
-        let mut keep_flags: Vec<bool> = Vec::with_capacity(num_rows);
-        let mut kept_count = 0usize;
         let mut stats = BatchAdjustStats::default();
 
-        let mut active_parent_id: Option<u16> = None;
-        let mut active_map: Option<&mut HashMap<u128, NumberSeriesState>> = None;
-
-        for row in 0..num_rows {
-            let parent_id = common.parent_id_at(row);
-            if active_parent_id != Some(parent_id) {
-                active_parent_id = Some(parent_id);
-                active_map = self
-                    .metric_lookup
-                    .get(parent_id, METRIC_TYPE_SUM)
-                    .map(|slot| {
-                        let name = metric_names.str_at(slot.metric_row).unwrap_or("");
-                        self.cache.number_series_mut(slot.resource_hash, name)
-                    });
-            }
-
-            let orig_start_opt = common.start_time_at(row);
-            let time_ns = common.time_at(row);
-            let cur_int_opt = ints.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_double_opt = doubles.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-
-            let Some(series_map) = active_map.as_deref_mut() else {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if ints.is_some() {
-                    new_ints.push(cur_int_opt);
-                }
-                if doubles.is_some() {
-                    new_doubles.push(cur_double_opt);
-                }
-                continue;
+        let mutation = {
+            let Some(dp_rb) = records.get(A::DP_PAYLOAD) else {
+                return Ok(stats);
             };
-
-            let orig_start_ns = orig_start_opt.unwrap_or(0);
-            if orig_start_ns != 0 && orig_start_ns != time_ns {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if ints.is_some() {
-                    new_ints.push(cur_int_opt);
-                }
-                if doubles.is_some() {
-                    new_doubles.push(cur_double_opt);
-                }
-                continue;
+            let num_rows = dp_rb.num_rows();
+            if num_rows == 0 {
+                return Ok(stats);
             }
 
-            let dp_attr_hash = common
-                .id_at(row)
-                .map_or(0, |id| self.dp_attr_hasher.get(id));
-            let cur_int = cur_int_opt.unwrap_or(0);
-            let cur_double = cur_double_opt.unwrap_or(0.0);
+            let metrics_rb = records
+                .get(ArrowPayloadType::UnivariateMetrics)
+                .expect("checked by caller");
+            let metric_names = MaybeDictArrayAccessor::<StringArray>::try_new(get_required_array(
+                metrics_rb,
+                consts::NAME,
+            )?)?;
 
-            match series_map.entry(dp_attr_hash) {
-                Entry::Vacant(vacant) => {
-                    let _ = vacant.insert(NumberSeriesState {
-                        mark: true,
-                        start_time_ns: time_ns,
-                        ref_double: cur_double,
-                        ref_int: cur_int,
-                        prev_double: cur_double,
-                        prev_int: cur_int,
+            let common = CommonDpColumns::try_new(dp_rb)?;
+            let mut table = A::try_table(dp_rb)?;
+
+            struct ActiveState {
+                start_times: StartTimeBuilder,
+                keep_flags: Option<BooleanBufferBuilder>,
+                kept_count: usize,
+            }
+
+            let mut active: Option<ActiveState> = None;
+            let mut active_parent_id: Option<Option<u16>> = None;
+            let mut active_map: Option<&mut HashMap<u128, SeriesEntry<A::State>>> = None;
+
+            for row in 0..num_rows {
+                let orig_start_opt = common.start_times.and_then(|c| c.get(row));
+                let time_ns = common.times.and_then(|c| c.get(row)).unwrap_or(0);
+                let orig_start_ns = orig_start_opt.unwrap_or(0);
+
+                let is_preset = orig_start_ns != 0 && orig_start_ns != time_ns;
+                if !is_preset {
+                    let parent_id_opt = common.parent_ids.get(row);
+                    if active_parent_id != Some(parent_id_opt) {
+                        active_parent_id = Some(parent_id_opt);
+                        active_map = parent_id_opt
+                            .and_then(|pid| self.metric_lookup.get(pid, A::METRIC_TYPE))
+                            .map(|slot| {
+                                let name = metric_names.str_at(slot.metric_row).unwrap_or("");
+                                A::series_table(self.cache.resource_mut(slot.resource_hash))
+                                    .series_mut(name)
+                            });
+                    }
+                }
+
+                if is_preset || active_map.is_none() {
+                    if let Some(act) = active.as_mut() {
+                        if let Some(kf) = act.keep_flags.as_mut() {
+                            kf.append(true);
+                        }
+                        act.kept_count += 1;
+                        act.start_times.push_opt(orig_start_opt);
+                        A::append_passthrough(&mut table, row);
+                    }
+                    continue;
+                }
+
+                if active.is_none() {
+                    self.dp_attr_hasher
+                        .populate::<UInt32Type>(records.get(A::ATTRS_PAYLOAD))?;
+                    let mut st = StartTimeBuilder::with_capacity(num_rows);
+                    for prev in 0..row {
+                        st.push_opt(common.start_times.and_then(|c| c.get(prev)));
+                    }
+                    A::init_outputs(&mut table, num_rows, row);
+                    active = Some(ActiveState {
+                        start_times: st,
+                        keep_flags: None,
+                        kept_count: row,
                     });
-                    keep_flags.push(false);
-                    stats.dropped_initial += 1;
                 }
-                Entry::Occupied(mut occupied) => {
-                    let state = occupied.get_mut();
-                    state.mark = true;
-                    keep_flags.push(true);
-                    kept_count += 1;
-                    stats.adjusted_points += 1;
 
-                    if common.is_no_recorded_value(row) {
-                        new_start_times.push(Some(state.start_time_ns));
-                        if ints.is_some() {
-                            new_ints.push(cur_int_opt);
-                        }
-                        if doubles.is_some() {
-                            new_doubles.push(cur_double_opt);
-                        }
-                        continue;
+                let act = active.as_mut().expect("initialized above");
+                let series_map = active_map.as_deref_mut().expect("checked above");
+                let dp_attr_hash = common
+                    .ids
+                    .and_then(|c| c.get(row))
+                    .map_or(0, |id| self.dp_attr_hasher.get(id));
+
+                match series_map.entry(dp_attr_hash) {
+                    Entry::Vacant(vacant) => {
+                        let _ = vacant.insert(SeriesEntry {
+                            mark: true,
+                            start_time_ns: time_ns,
+                            data: A::seed_initial(&table, row),
+                        });
+                        let kf = act.keep_flags.get_or_insert_with(|| {
+                            let mut kb = BooleanBufferBuilder::new(num_rows);
+                            kb.append_n(row, true);
+                            kb
+                        });
+                        kf.append(false);
+                        stats.dropped_initial += 1;
                     }
+                    Entry::Occupied(mut occupied) => {
+                        let entry = occupied.get_mut();
+                        entry.mark = true;
+                        if let Some(kf) = act.keep_flags.as_mut() {
+                            kf.append(true);
+                        }
+                        act.kept_count += 1;
+                        stats.adjusted_points += 1;
 
-                    if cur_double < state.prev_double || cur_int < state.prev_int {
-                        let reset_start = time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
-                        state.start_time_ns = reset_start;
-                        state.ref_double = 0.0;
-                        state.ref_int = 0;
-                        state.prev_double = cur_double;
-                        state.prev_int = cur_int;
-                        stats.resets_detected += 1;
-
-                        new_start_times.push(Some(reset_start));
-                        if ints.is_some() {
-                            new_ints.push(cur_int_opt);
+                        if common.is_no_recorded_value(row) {
+                            A::append_passthrough(&mut table, row);
+                        } else if A::adjust_occupied(&mut table, row, &mut entry.data) {
+                            entry.start_time_ns =
+                                time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
+                            stats.resets_detected += 1;
                         }
-                        if doubles.is_some() {
-                            new_doubles.push(cur_double_opt);
-                        }
-                    } else {
-                        state.prev_double = cur_double;
-                        state.prev_int = cur_int;
-                        new_start_times.push(Some(state.start_time_ns));
-                        if ints.is_some() {
-                            new_ints.push(cur_int_opt.map(|v| v.wrapping_sub(state.ref_int)));
-                        }
-                        if doubles.is_some() {
-                            new_doubles.push(cur_double_opt.map(|v| v - state.ref_double));
-                        }
+                        act.start_times.push_val(entry.start_time_ns);
                     }
                 }
             }
-        }
 
-        if kept_count == 0 {
-            let _ = records.remove(ArrowPayloadType::NumberDataPoints);
-            let _ = records.remove(ArrowPayloadType::NumberDpAttrs);
-            let _ = records.remove(ArrowPayloadType::NumberDpExemplars);
-            let _ = records.remove(ArrowPayloadType::NumberDpExemplarAttrs);
-            return Ok(stats);
-        }
+            match active {
+                None => TableMutation::Unchanged,
+                Some(act) if act.kept_count == 0 => TableMutation::AllDropped,
+                Some(act) => {
+                    let keep_filter = act.keep_flags.map(|mut kf| BooleanArray::from(kf.finish()));
+                    let start_col: ArrayRef = Arc::new(
+                        act.start_times
+                            .finish()
+                            .with_timezone_opt(Some(Arc::clone(&self.utc_tz))),
+                    );
+                    let mut replacements = ReplList::default();
+                    A::finish_replacements(table, keep_filter.as_ref(), &mut replacements)?;
+                    let batch = self.schema_cache.rebuild_batch(
+                        A::TABLE_IDX,
+                        dp_rb,
+                        keep_filter.as_ref(),
+                        start_col,
+                        &replacements,
+                    )?;
+                    TableMutation::Rebuilt {
+                        batch,
+                        filtered_rows: keep_filter.is_some(),
+                    }
+                }
+            }
+        };
 
-        let keep_filter = (kept_count < num_rows).then(|| BooleanArray::from(keep_flags));
-        let start_col: ArrayRef =
-            Arc::new(TimestampNanosecondArray::from(new_start_times).with_timezone_utc());
-        let mut replacements: Vec<(&str, ArrayRef)> = Vec::with_capacity(2);
-        if ints.is_some() {
-            replacements.push((consts::INT_VALUE, Arc::new(Int64Array::from(new_ints))));
-        }
-        if doubles.is_some() {
-            replacements.push((
-                consts::DOUBLE_VALUE,
-                Arc::new(Float64Array::from(new_doubles)),
-            ));
-        }
-
-        let new_rb =
-            rebuild_data_point_batch(dp_rb, keep_filter.as_ref(), start_col, &replacements)?;
-        records.set(ArrowPayloadType::NumberDataPoints, new_rb)?;
-
-        if kept_count < num_rows {
-            self.filter_dp_children(
-                records,
-                ArrowPayloadType::NumberDataPoints,
-                ArrowPayloadType::NumberDpAttrs,
-                Some((
-                    ArrowPayloadType::NumberDpExemplars,
-                    ArrowPayloadType::NumberDpExemplarAttrs,
-                )),
-            )?;
+        match mutation {
+            TableMutation::Unchanged => {}
+            TableMutation::AllDropped => {
+                let _ = records.remove(A::DP_PAYLOAD);
+                let _ = records.remove(A::ATTRS_PAYLOAD);
+                if let Some((ex_pt, ex_attrs_pt)) = A::EXEMPLARS_PAYLOAD {
+                    let _ = records.remove(ex_pt);
+                    let _ = records.remove(ex_attrs_pt);
+                }
+            }
+            TableMutation::Rebuilt {
+                batch,
+                filtered_rows,
+            } => {
+                records.set(A::DP_PAYLOAD, batch)?;
+                if filtered_rows {
+                    self.filter_dp_children(
+                        records,
+                        A::DP_PAYLOAD,
+                        A::ATTRS_PAYLOAD,
+                        A::EXEMPLARS_PAYLOAD,
+                    )?;
+                }
+            }
         }
 
         Ok(stats)
     }
 
-    fn adjust_summary_data_points(
-        &mut self,
-        records: &mut OtapArrowRecords,
-    ) -> Result<BatchAdjustStats, PdataError> {
-        let Some(dp_rb) = records.get(ArrowPayloadType::SummaryDataPoints) else {
-            return Ok(BatchAdjustStats::default());
-        };
-        let num_rows = dp_rb.num_rows();
-        if num_rows == 0 {
-            return Ok(BatchAdjustStats::default());
-        }
-
-        let metrics_rb = records
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .expect("UnivariateMetrics checked by caller");
-        let metric_names = MaybeDictArrayAccessor::<StringArray>::try_new(get_required_array(
-            metrics_rb,
-            consts::NAME,
-        )?)?;
-
-        self.dp_attr_hasher
-            .populate_u32(records.get(ArrowPayloadType::SummaryDpAttrs))?;
-
-        let common = CommonDpColumns::try_new(dp_rb)?;
-        let counts = dp_rb
-            .column_by_name(consts::COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt64Array>());
-        let sums = dp_rb
-            .column_by_name(consts::SUM)
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>());
-
-        let mut new_start_times: Vec<Option<i64>> = Vec::with_capacity(num_rows);
-        let mut new_counts: Vec<Option<u64>> =
-            Vec::with_capacity(if counts.is_some() { num_rows } else { 0 });
-        let mut new_sums: Vec<Option<f64>> =
-            Vec::with_capacity(if sums.is_some() { num_rows } else { 0 });
-        let mut keep_flags: Vec<bool> = Vec::with_capacity(num_rows);
-        let mut kept_count = 0usize;
-        let mut stats = BatchAdjustStats::default();
-
-        let mut active_parent_id: Option<u16> = None;
-        let mut active_map: Option<&mut HashMap<u128, SummarySeriesState>> = None;
-
-        for row in 0..num_rows {
-            let parent_id = common.parent_id_at(row);
-            if active_parent_id != Some(parent_id) {
-                active_parent_id = Some(parent_id);
-                active_map = self
-                    .metric_lookup
-                    .get(parent_id, METRIC_TYPE_SUMMARY)
-                    .map(|slot| {
-                        let name = metric_names.str_at(slot.metric_row).unwrap_or("");
-                        self.cache.summary_series_mut(slot.resource_hash, name)
-                    });
-            }
-
-            let orig_start_opt = common.start_time_at(row);
-            let time_ns = common.time_at(row);
-            let cur_count_opt = counts.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_sum_opt = sums.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-
-            let Some(series_map) = active_map.as_deref_mut() else {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if counts.is_some() {
-                    new_counts.push(cur_count_opt);
-                }
-                if sums.is_some() {
-                    new_sums.push(cur_sum_opt);
-                }
-                continue;
-            };
-
-            let orig_start_ns = orig_start_opt.unwrap_or(0);
-            if orig_start_ns != 0 && orig_start_ns != time_ns {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if counts.is_some() {
-                    new_counts.push(cur_count_opt);
-                }
-                if sums.is_some() {
-                    new_sums.push(cur_sum_opt);
-                }
-                continue;
-            }
-
-            let dp_attr_hash = common
-                .id_at(row)
-                .map_or(0, |id| self.dp_attr_hasher.get(id));
-            let cur_count = cur_count_opt.unwrap_or(0);
-            let cur_sum = cur_sum_opt.unwrap_or(0.0);
-
-            match series_map.entry(dp_attr_hash) {
-                Entry::Vacant(vacant) => {
-                    let _ = vacant.insert(SummarySeriesState {
-                        mark: true,
-                        start_time_ns: time_ns,
-                        ref_count: cur_count,
-                        ref_sum: cur_sum,
-                        prev_count: cur_count,
-                        prev_sum: cur_sum,
-                    });
-                    keep_flags.push(false);
-                    stats.dropped_initial += 1;
-                }
-                Entry::Occupied(mut occupied) => {
-                    let state = occupied.get_mut();
-                    state.mark = true;
-                    keep_flags.push(true);
-                    kept_count += 1;
-                    stats.adjusted_points += 1;
-
-                    if common.is_no_recorded_value(row) {
-                        new_start_times.push(Some(state.start_time_ns));
-                        if counts.is_some() {
-                            new_counts.push(cur_count_opt);
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt);
-                        }
-                        continue;
-                    }
-
-                    if cur_count < state.prev_count || cur_sum < state.prev_sum {
-                        let reset_start = time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
-                        state.start_time_ns = reset_start;
-                        state.ref_count = 0;
-                        state.ref_sum = 0.0;
-                        state.prev_count = cur_count;
-                        state.prev_sum = cur_sum;
-                        stats.resets_detected += 1;
-
-                        new_start_times.push(Some(reset_start));
-                        if counts.is_some() {
-                            new_counts.push(cur_count_opt);
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt);
-                        }
-                    } else {
-                        state.prev_count = cur_count;
-                        state.prev_sum = cur_sum;
-                        new_start_times.push(Some(state.start_time_ns));
-                        if counts.is_some() {
-                            new_counts
-                                .push(cur_count_opt.map(|v| v.saturating_sub(state.ref_count)));
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt.map(|v| v - state.ref_sum));
-                        }
-                    }
-                }
-            }
-        }
-
-        if kept_count == 0 {
-            let _ = records.remove(ArrowPayloadType::SummaryDataPoints);
-            let _ = records.remove(ArrowPayloadType::SummaryDpAttrs);
-            return Ok(stats);
-        }
-
-        let keep_filter = (kept_count < num_rows).then(|| BooleanArray::from(keep_flags));
-        let start_col: ArrayRef =
-            Arc::new(TimestampNanosecondArray::from(new_start_times).with_timezone_utc());
-        let mut replacements: Vec<(&str, ArrayRef)> = Vec::with_capacity(2);
-        if counts.is_some() {
-            replacements.push((consts::COUNT, Arc::new(UInt64Array::from(new_counts))));
-        }
-        if sums.is_some() {
-            replacements.push((consts::SUM, Arc::new(Float64Array::from(new_sums))));
-        }
-
-        let new_rb =
-            rebuild_data_point_batch(dp_rb, keep_filter.as_ref(), start_col, &replacements)?;
-        records.set(ArrowPayloadType::SummaryDataPoints, new_rb)?;
-
-        if kept_count < num_rows {
-            self.filter_dp_children(
-                records,
-                ArrowPayloadType::SummaryDataPoints,
-                ArrowPayloadType::SummaryDpAttrs,
-                None,
-            )?;
-        }
-
-        Ok(stats)
-    }
-
-    fn adjust_histogram_data_points(
-        &mut self,
-        records: &mut OtapArrowRecords,
-    ) -> Result<BatchAdjustStats, PdataError> {
-        let Some(dp_rb) = records.get(ArrowPayloadType::HistogramDataPoints) else {
-            return Ok(BatchAdjustStats::default());
-        };
-        let num_rows = dp_rb.num_rows();
-        if num_rows == 0 {
-            return Ok(BatchAdjustStats::default());
-        }
-
-        let metrics_rb = records
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .expect("UnivariateMetrics checked by caller");
-        let metric_names = MaybeDictArrayAccessor::<StringArray>::try_new(get_required_array(
-            metrics_rb,
-            consts::NAME,
-        )?)?;
-
-        self.dp_attr_hasher
-            .populate_u32(records.get(ArrowPayloadType::HistogramDpAttrs))?;
-
-        let common = CommonDpColumns::try_new(dp_rb)?;
-        let counts = dp_rb
-            .column_by_name(consts::COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt64Array>());
-        let sums = dp_rb
-            .column_by_name(consts::SUM)
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>());
-        let buckets_col = dp_rb
-            .column_by_name(consts::HISTOGRAM_BUCKET_COUNTS)
-            .map(U64ListSliceAccessor::try_new)
-            .transpose()?;
-        let bounds_col = dp_rb
-            .column_by_name(consts::HISTOGRAM_EXPLICIT_BOUNDS)
-            .map(F64ListSliceAccessor::try_new)
-            .transpose()?;
-
-        let mut new_start_times: Vec<Option<i64>> = Vec::with_capacity(num_rows);
-        let mut new_counts: Vec<Option<u64>> =
-            Vec::with_capacity(if counts.is_some() { num_rows } else { 0 });
-        let mut new_sums: Vec<Option<f64>> =
-            Vec::with_capacity(if sums.is_some() { num_rows } else { 0 });
-        let mut new_buckets = ListBuilder::with_capacity(UInt64Builder::new(), num_rows);
-        let has_buckets_col = buckets_col.is_some();
-
-        let mut keep_flags: Vec<bool> = Vec::with_capacity(num_rows);
-        let mut kept_count = 0usize;
-        let mut stats = BatchAdjustStats::default();
-
-        let mut active_parent_id: Option<u16> = None;
-        let mut active_map: Option<&mut HashMap<u128, HistogramSeriesState>> = None;
-
-        for row in 0..num_rows {
-            let parent_id = common.parent_id_at(row);
-            if active_parent_id != Some(parent_id) {
-                active_parent_id = Some(parent_id);
-                active_map = self
-                    .metric_lookup
-                    .get(parent_id, METRIC_TYPE_HISTOGRAM)
-                    .map(|slot| {
-                        let name = metric_names.str_at(slot.metric_row).unwrap_or("");
-                        self.cache.histogram_series_mut(slot.resource_hash, name)
-                    });
-            }
-
-            let orig_start_opt = common.start_time_at(row);
-            let time_ns = common.time_at(row);
-            let cur_count_opt = counts.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_sum_opt = sums.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_buckets_opt = buckets_col.as_ref().and_then(|c| c.slice_at(row));
-            let cur_bounds = bounds_col
-                .as_ref()
-                .and_then(|c| c.slice_at(row))
-                .unwrap_or(&[]);
-
-            let Some(series_map) = active_map.as_deref_mut() else {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if counts.is_some() {
-                    new_counts.push(cur_count_opt);
-                }
-                if sums.is_some() {
-                    new_sums.push(cur_sum_opt);
-                }
-                if has_buckets_col {
-                    append_opt_u64_slice(&mut new_buckets, cur_buckets_opt);
-                }
-                continue;
-            };
-
-            let orig_start_ns = orig_start_opt.unwrap_or(0);
-            if orig_start_ns != 0 && orig_start_ns != time_ns {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if counts.is_some() {
-                    new_counts.push(cur_count_opt);
-                }
-                if sums.is_some() {
-                    new_sums.push(cur_sum_opt);
-                }
-                if has_buckets_col {
-                    append_opt_u64_slice(&mut new_buckets, cur_buckets_opt);
-                }
-                continue;
-            }
-
-            let dp_attr_hash = common
-                .id_at(row)
-                .map_or(0, |id| self.dp_attr_hasher.get(id));
-            let cur_count = cur_count_opt.unwrap_or(0);
-            let cur_sum = cur_sum_opt.unwrap_or(0.0);
-            let cur_buckets = cur_buckets_opt.unwrap_or(&[]);
-
-            match series_map.entry(dp_attr_hash) {
-                Entry::Vacant(vacant) => {
-                    let _ = vacant.insert(HistogramSeriesState {
-                        mark: true,
-                        start_time_ns: time_ns,
-                        ref_count: cur_count,
-                        ref_sum: cur_sum,
-                        prev_count: cur_count,
-                        prev_sum: cur_sum,
-                        explicit_bounds_bits: cur_bounds.iter().map(|b| b.to_bits()).collect(),
-                        ref_buckets: cur_buckets.to_vec(),
-                        prev_buckets: cur_buckets.to_vec(),
-                    });
-                    keep_flags.push(false);
-                    stats.dropped_initial += 1;
-                }
-                Entry::Occupied(mut occupied) => {
-                    let state = occupied.get_mut();
-                    state.mark = true;
-                    keep_flags.push(true);
-                    kept_count += 1;
-                    stats.adjusted_points += 1;
-
-                    if common.is_no_recorded_value(row) {
-                        new_start_times.push(Some(state.start_time_ns));
-                        if counts.is_some() {
-                            new_counts.push(cur_count_opt);
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt);
-                        }
-                        if has_buckets_col {
-                            append_opt_u64_slice(&mut new_buckets, cur_buckets_opt);
-                        }
-                        continue;
-                    }
-
-                    let is_reset = cur_count < state.prev_count
-                        || cur_sum < state.prev_sum
-                        || !bounds_eq_bits(cur_bounds, &state.explicit_bounds_bits)
-                        || cur_buckets.len() != state.prev_buckets.len()
-                        || cur_buckets
-                            .iter()
-                            .zip(state.prev_buckets.iter())
-                            .any(|(&cur_b, &prev_b)| cur_b < prev_b);
-
-                    if is_reset {
-                        let reset_start = time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
-                        state.start_time_ns = reset_start;
-                        state.ref_count = 0;
-                        state.ref_sum = 0.0;
-                        state.prev_count = cur_count;
-                        state.prev_sum = cur_sum;
-                        state.explicit_bounds_bits.clear();
-                        state
-                            .explicit_bounds_bits
-                            .extend(cur_bounds.iter().map(|b| b.to_bits()));
-                        state.ref_buckets.clear();
-                        state.ref_buckets.resize(cur_buckets.len(), 0);
-                        state.prev_buckets.clear();
-                        state.prev_buckets.extend_from_slice(cur_buckets);
-                        stats.resets_detected += 1;
-
-                        new_start_times.push(Some(reset_start));
-                        if counts.is_some() {
-                            new_counts.push(cur_count_opt);
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt);
-                        }
-                        if has_buckets_col {
-                            append_opt_u64_slice(&mut new_buckets, cur_buckets_opt);
-                        }
-                    } else {
-                        state.prev_count = cur_count;
-                        state.prev_sum = cur_sum;
-                        state.prev_buckets.clear();
-                        state.prev_buckets.extend_from_slice(cur_buckets);
-
-                        new_start_times.push(Some(state.start_time_ns));
-                        if counts.is_some() {
-                            new_counts
-                                .push(cur_count_opt.map(|v| v.saturating_sub(state.ref_count)));
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt.map(|v| v - state.ref_sum));
-                        }
-                        if has_buckets_col {
-                            match cur_buckets_opt {
-                                Some(slice) => {
-                                    for (&cur_b, &ref_b) in
-                                        slice.iter().zip(state.ref_buckets.iter())
-                                    {
-                                        new_buckets
-                                            .values()
-                                            .append_value(cur_b.saturating_sub(ref_b));
-                                    }
-                                    new_buckets.append(true);
-                                }
-                                None => new_buckets.append(false),
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if kept_count == 0 {
-            let _ = records.remove(ArrowPayloadType::HistogramDataPoints);
-            let _ = records.remove(ArrowPayloadType::HistogramDpAttrs);
-            let _ = records.remove(ArrowPayloadType::HistogramDpExemplars);
-            let _ = records.remove(ArrowPayloadType::HistogramDpExemplarAttrs);
-            return Ok(stats);
-        }
-
-        let keep_filter = (kept_count < num_rows).then(|| BooleanArray::from(keep_flags));
-        let start_col: ArrayRef =
-            Arc::new(TimestampNanosecondArray::from(new_start_times).with_timezone_utc());
-        let mut replacements: Vec<(&str, ArrayRef)> = Vec::with_capacity(3);
-        if counts.is_some() {
-            replacements.push((consts::COUNT, Arc::new(UInt64Array::from(new_counts))));
-        }
-        if sums.is_some() {
-            replacements.push((consts::SUM, Arc::new(Float64Array::from(new_sums))));
-        }
-        if has_buckets_col {
-            replacements.push((
-                consts::HISTOGRAM_BUCKET_COUNTS,
-                Arc::new(new_buckets.finish()),
-            ));
-        }
-
-        let new_rb =
-            rebuild_data_point_batch(dp_rb, keep_filter.as_ref(), start_col, &replacements)?;
-        records.set(ArrowPayloadType::HistogramDataPoints, new_rb)?;
-
-        if kept_count < num_rows {
-            self.filter_dp_children(
-                records,
-                ArrowPayloadType::HistogramDataPoints,
-                ArrowPayloadType::HistogramDpAttrs,
-                Some((
-                    ArrowPayloadType::HistogramDpExemplars,
-                    ArrowPayloadType::HistogramDpExemplarAttrs,
-                )),
-            )?;
-        }
-
-        Ok(stats)
-    }
-
-    fn adjust_exp_histogram_data_points(
-        &mut self,
-        records: &mut OtapArrowRecords,
-    ) -> Result<BatchAdjustStats, PdataError> {
-        let Some(dp_rb) = records.get(ArrowPayloadType::ExpHistogramDataPoints) else {
-            return Ok(BatchAdjustStats::default());
-        };
-        let num_rows = dp_rb.num_rows();
-        if num_rows == 0 {
-            return Ok(BatchAdjustStats::default());
-        }
-
-        let metrics_rb = records
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .expect("UnivariateMetrics checked by caller");
-        let metric_names = MaybeDictArrayAccessor::<StringArray>::try_new(get_required_array(
-            metrics_rb,
-            consts::NAME,
-        )?)?;
-
-        self.dp_attr_hasher
-            .populate_u32(records.get(ArrowPayloadType::ExpHistogramDpAttrs))?;
-
-        let common = CommonDpColumns::try_new(dp_rb)?;
-        let counts = dp_rb
-            .column_by_name(consts::COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt64Array>());
-        let sums = dp_rb
-            .column_by_name(consts::SUM)
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>());
-        let zero_counts = dp_rb
-            .column_by_name(consts::EXP_HISTOGRAM_ZERO_COUNT)
-            .and_then(|c| c.as_any().downcast_ref::<UInt64Array>());
-        let scales = dp_rb
-            .column_by_name(consts::EXP_HISTOGRAM_SCALE)
-            .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-        let pos_acc = dp_rb
-            .column_by_name(consts::EXP_HISTOGRAM_POSITIVE)
-            .map(|c| ExpBucketsColumnAccessor::try_new(c, consts::EXP_HISTOGRAM_POSITIVE))
-            .transpose()?;
-        let neg_acc = dp_rb
-            .column_by_name(consts::EXP_HISTOGRAM_NEGATIVE)
-            .map(|c| ExpBucketsColumnAccessor::try_new(c, consts::EXP_HISTOGRAM_NEGATIVE))
-            .transpose()?;
-
-        let mut new_start_times: Vec<Option<i64>> = Vec::with_capacity(num_rows);
-        let mut new_counts: Vec<Option<u64>> =
-            Vec::with_capacity(if counts.is_some() { num_rows } else { 0 });
-        let mut new_sums: Vec<Option<f64>> =
-            Vec::with_capacity(if sums.is_some() { num_rows } else { 0 });
-        let mut new_zero_counts: Vec<Option<u64>> =
-            Vec::with_capacity(if zero_counts.is_some() { num_rows } else { 0 });
-        let mut pos_builder = pos_acc.as_ref().map(|a| a.new_builder(num_rows));
-        let mut neg_builder = neg_acc.as_ref().map(|a| a.new_builder(num_rows));
-
-        let mut keep_flags: Vec<bool> = Vec::with_capacity(num_rows);
-        let mut kept_count = 0usize;
-        let mut stats = BatchAdjustStats::default();
-
-        let mut active_parent_id: Option<u16> = None;
-        let mut active_map: Option<&mut HashMap<u128, ExpHistogramSeriesState>> = None;
-
-        for row in 0..num_rows {
-            let parent_id = common.parent_id_at(row);
-            if active_parent_id != Some(parent_id) {
-                active_parent_id = Some(parent_id);
-                active_map = self
-                    .metric_lookup
-                    .get(parent_id, METRIC_TYPE_EXP_HISTOGRAM)
-                    .map(|slot| {
-                        let name = metric_names.str_at(slot.metric_row).unwrap_or("");
-                        self.cache
-                            .exp_histogram_series_mut(slot.resource_hash, name)
-                    });
-            }
-
-            let orig_start_opt = common.start_time_at(row);
-            let time_ns = common.time_at(row);
-            let cur_count_opt = counts.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_sum_opt = sums.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_zero_opt = zero_counts.and_then(|c| c.is_valid(row).then(|| c.value(row)));
-            let cur_scale = scales
-                .and_then(|c| c.is_valid(row).then(|| c.value(row)))
-                .unwrap_or(0);
-            let cur_pos = pos_acc.as_ref().map(|a| a.row_at(row)).unwrap_or_default();
-            let cur_neg = neg_acc.as_ref().map(|a| a.row_at(row)).unwrap_or_default();
-
-            let Some(series_map) = active_map.as_deref_mut() else {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if counts.is_some() {
-                    new_counts.push(cur_count_opt);
-                }
-                if sums.is_some() {
-                    new_sums.push(cur_sum_opt);
-                }
-                if zero_counts.is_some() {
-                    new_zero_counts.push(cur_zero_opt);
-                }
-                if let Some(b) = pos_builder.as_mut() {
-                    b.append_unadjusted(cur_pos);
-                }
-                if let Some(b) = neg_builder.as_mut() {
-                    b.append_unadjusted(cur_neg);
-                }
-                continue;
-            };
-
-            let orig_start_ns = orig_start_opt.unwrap_or(0);
-            if orig_start_ns != 0 && orig_start_ns != time_ns {
-                keep_flags.push(true);
-                kept_count += 1;
-                new_start_times.push(orig_start_opt);
-                if counts.is_some() {
-                    new_counts.push(cur_count_opt);
-                }
-                if sums.is_some() {
-                    new_sums.push(cur_sum_opt);
-                }
-                if zero_counts.is_some() {
-                    new_zero_counts.push(cur_zero_opt);
-                }
-                if let Some(b) = pos_builder.as_mut() {
-                    b.append_unadjusted(cur_pos);
-                }
-                if let Some(b) = neg_builder.as_mut() {
-                    b.append_unadjusted(cur_neg);
-                }
-                continue;
-            }
-
-            let dp_attr_hash = common
-                .id_at(row)
-                .map_or(0, |id| self.dp_attr_hasher.get(id));
-            let cur_count = cur_count_opt.unwrap_or(0);
-            let cur_sum = cur_sum_opt.unwrap_or(0.0);
-            let cur_zero = cur_zero_opt.unwrap_or(0);
-            let pos_counts = cur_pos.counts.unwrap_or(&[]);
-            let neg_counts = cur_neg.counts.unwrap_or(&[]);
-
-            match series_map.entry(dp_attr_hash) {
-                Entry::Vacant(vacant) => {
-                    let _ = vacant.insert(ExpHistogramSeriesState {
-                        mark: true,
-                        start_time_ns: time_ns,
-                        scale: cur_scale,
-                        ref_count: cur_count,
-                        ref_sum: cur_sum,
-                        ref_zero_count: cur_zero,
-                        prev_count: cur_count,
-                        prev_sum: cur_sum,
-                        prev_zero_count: cur_zero,
-                        ref_positive: ExpBucketsState {
-                            offset: cur_pos.offset,
-                            counts: pos_counts.to_vec(),
-                        },
-                        prev_positive: ExpBucketsState {
-                            offset: cur_pos.offset,
-                            counts: pos_counts.to_vec(),
-                        },
-                        ref_negative: ExpBucketsState {
-                            offset: cur_neg.offset,
-                            counts: neg_counts.to_vec(),
-                        },
-                        prev_negative: ExpBucketsState {
-                            offset: cur_neg.offset,
-                            counts: neg_counts.to_vec(),
-                        },
-                    });
-                    keep_flags.push(false);
-                    stats.dropped_initial += 1;
-                }
-                Entry::Occupied(mut occupied) => {
-                    let state = occupied.get_mut();
-                    state.mark = true;
-                    keep_flags.push(true);
-                    kept_count += 1;
-                    stats.adjusted_points += 1;
-
-                    if common.is_no_recorded_value(row) {
-                        new_start_times.push(Some(state.start_time_ns));
-                        if counts.is_some() {
-                            new_counts.push(cur_count_opt);
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt);
-                        }
-                        if zero_counts.is_some() {
-                            new_zero_counts.push(cur_zero_opt);
-                        }
-                        if let Some(b) = pos_builder.as_mut() {
-                            b.append_unadjusted(cur_pos);
-                        }
-                        if let Some(b) = neg_builder.as_mut() {
-                            b.append_unadjusted(cur_neg);
-                        }
-                        continue;
-                    }
-
-                    let is_reset = cur_count < state.prev_count
-                        || cur_sum < state.prev_sum
-                        || cur_zero < state.prev_zero_count
-                        || cur_scale != state.scale
-                        || exp_buckets_decreased(cur_pos.offset, pos_counts, &state.prev_positive)
-                        || exp_buckets_decreased(cur_neg.offset, neg_counts, &state.prev_negative);
-
-                    if is_reset {
-                        let reset_start = time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
-                        state.start_time_ns = reset_start;
-                        state.scale = cur_scale;
-                        state.ref_count = 0;
-                        state.ref_sum = 0.0;
-                        state.ref_zero_count = 0;
-                        state.prev_count = cur_count;
-                        state.prev_sum = cur_sum;
-                        state.prev_zero_count = cur_zero;
-
-                        state.ref_positive.offset = cur_pos.offset;
-                        state.ref_positive.counts.clear();
-                        state.ref_positive.counts.resize(pos_counts.len(), 0);
-                        state.prev_positive.offset = cur_pos.offset;
-                        state.prev_positive.counts.clear();
-                        state.prev_positive.counts.extend_from_slice(pos_counts);
-
-                        state.ref_negative.offset = cur_neg.offset;
-                        state.ref_negative.counts.clear();
-                        state.ref_negative.counts.resize(neg_counts.len(), 0);
-                        state.prev_negative.offset = cur_neg.offset;
-                        state.prev_negative.counts.clear();
-                        state.prev_negative.counts.extend_from_slice(neg_counts);
-                        stats.resets_detected += 1;
-
-                        new_start_times.push(Some(reset_start));
-                        if counts.is_some() {
-                            new_counts.push(cur_count_opt);
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt);
-                        }
-                        if zero_counts.is_some() {
-                            new_zero_counts.push(cur_zero_opt);
-                        }
-                        if let Some(b) = pos_builder.as_mut() {
-                            b.append_unadjusted(cur_pos);
-                        }
-                        if let Some(b) = neg_builder.as_mut() {
-                            b.append_unadjusted(cur_neg);
-                        }
-                    } else {
-                        state.prev_count = cur_count;
-                        state.prev_sum = cur_sum;
-                        state.prev_zero_count = cur_zero;
-                        state.prev_positive.offset = cur_pos.offset;
-                        state.prev_positive.counts.clear();
-                        state.prev_positive.counts.extend_from_slice(pos_counts);
-                        state.prev_negative.offset = cur_neg.offset;
-                        state.prev_negative.counts.clear();
-                        state.prev_negative.counts.extend_from_slice(neg_counts);
-
-                        new_start_times.push(Some(state.start_time_ns));
-                        if counts.is_some() {
-                            new_counts
-                                .push(cur_count_opt.map(|v| v.saturating_sub(state.ref_count)));
-                        }
-                        if sums.is_some() {
-                            new_sums.push(cur_sum_opt.map(|v| v - state.ref_sum));
-                        }
-                        if zero_counts.is_some() {
-                            new_zero_counts
-                                .push(cur_zero_opt.map(|v| v.saturating_sub(state.ref_zero_count)));
-                        }
-                        if let Some(b) = pos_builder.as_mut() {
-                            b.append_subtracted(cur_pos, &state.ref_positive);
-                        }
-                        if let Some(b) = neg_builder.as_mut() {
-                            b.append_subtracted(cur_neg, &state.ref_negative);
-                        }
-                    }
-                }
-            }
-        }
-
-        if kept_count == 0 {
-            let _ = records.remove(ArrowPayloadType::ExpHistogramDataPoints);
-            let _ = records.remove(ArrowPayloadType::ExpHistogramDpAttrs);
-            let _ = records.remove(ArrowPayloadType::ExpHistogramDpExemplars);
-            let _ = records.remove(ArrowPayloadType::ExpHistogramDpExemplarAttrs);
-            return Ok(stats);
-        }
-
-        let keep_filter = (kept_count < num_rows).then(|| BooleanArray::from(keep_flags));
-        let start_col: ArrayRef =
-            Arc::new(TimestampNanosecondArray::from(new_start_times).with_timezone_utc());
-        let mut replacements: Vec<(&str, ArrayRef)> = Vec::with_capacity(5);
-        if counts.is_some() {
-            replacements.push((consts::COUNT, Arc::new(UInt64Array::from(new_counts))));
-        }
-        if sums.is_some() {
-            replacements.push((consts::SUM, Arc::new(Float64Array::from(new_sums))));
-        }
-        if zero_counts.is_some() {
-            replacements.push((
-                consts::EXP_HISTOGRAM_ZERO_COUNT,
-                Arc::new(UInt64Array::from(new_zero_counts)),
-            ));
-        }
-        if let (Some(acc), Some(builder)) = (pos_acc.as_ref(), pos_builder) {
-            replacements.push((
-                consts::EXP_HISTOGRAM_POSITIVE,
-                acc.finish_column(builder, keep_filter.as_ref())?,
-            ));
-        }
-        if let (Some(acc), Some(builder)) = (neg_acc.as_ref(), neg_builder) {
-            replacements.push((
-                consts::EXP_HISTOGRAM_NEGATIVE,
-                acc.finish_column(builder, keep_filter.as_ref())?,
-            ));
-        }
-
-        let new_rb =
-            rebuild_data_point_batch(dp_rb, keep_filter.as_ref(), start_col, &replacements)?;
-        records.set(ArrowPayloadType::ExpHistogramDataPoints, new_rb)?;
-
-        if kept_count < num_rows {
-            self.filter_dp_children(
-                records,
-                ArrowPayloadType::ExpHistogramDataPoints,
-                ArrowPayloadType::ExpHistogramDpAttrs,
-                Some((
-                    ArrowPayloadType::ExpHistogramDpExemplars,
-                    ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-                )),
-            )?;
-        }
-
-        Ok(stats)
-    }
-
-    /// Filters data point child tables (`*DpAttrs`, `*DpExemplars`, `*DpExemplarAttrs`) when initial
-    /// points are dropped from `parent_pt`.
     fn filter_dp_children(
         &mut self,
         records: &mut OtapArrowRecords,
@@ -1416,8 +780,8 @@ impl SubtractInitialEngine {
         exemplars_pts: Option<(ArrowPayloadType, ArrowPayloadType)>,
     ) -> Result<(), PdataError> {
         let has_attrs = records.get(attrs_pt).is_some();
-        let has_exemplars = exemplars_pts.is_some_and(|(ex_pt, _)| records.get(ex_pt).is_some());
-        if !has_attrs && !has_exemplars {
+        let has_ex = exemplars_pts.is_some_and(|(ex_pt, _)| records.get(ex_pt).is_some());
+        if !has_attrs && !has_ex {
             if let Some((_, ex_attrs_pt)) = exemplars_pts {
                 let _ = records.remove(ex_attrs_pt);
             }
@@ -1427,14 +791,8 @@ impl SubtractInitialEngine {
         let mut id_bitmap = self.id_bitmap_pool.acquire();
         let res = (|| -> Result<(), PdataError> {
             let Some(parent_rb) = records.get(parent_pt) else {
-                let _ = records.remove(attrs_pt);
-                if let Some((ex_pt, ex_attrs_pt)) = exemplars_pts {
-                    let _ = records.remove(ex_pt);
-                    let _ = records.remove(ex_attrs_pt);
-                }
                 return Ok(());
             };
-
             let Some(id_col) = UInt32Type::get_id_col_from_parent(parent_rb, attrs_pt)? else {
                 let _ = records.remove(attrs_pt);
                 if let Some((ex_pt, ex_attrs_pt)) = exemplars_pts {
@@ -1444,7 +802,6 @@ impl SubtractInitialEngine {
                 return Ok(());
             };
             id_bitmap.populate(id_col.iter().flatten());
-
             filter_single_child_table(records, attrs_pt, &id_bitmap)?;
 
             if let Some((ex_pt, ex_attrs_pt)) = exemplars_pts {
@@ -1467,8 +824,6 @@ impl SubtractInitialEngine {
         res
     }
 
-    /// Removes any eligible `UnivariateMetrics` rows that no longer have any surviving data points
-    /// after initial points were dropped.
     fn prune_empty_metrics(&mut self, records: &mut OtapArrowRecords) -> Result<(), PdataError> {
         let Some(metrics_rb) = records.get(ArrowPayloadType::UnivariateMetrics) else {
             return Ok(());
@@ -1486,33 +841,25 @@ impl SubtractInitialEngine {
             ArrowPayloadType::ExpHistogramDataPoints,
         ] {
             if let Some(dp_rb) = records.get(dp_pt)
-                && let Some(parent_col) = dp_rb.column_by_name(consts::PARENT_ID)
-                && let Some(parent_ids) = parent_col.as_any().downcast_ref::<UInt16Array>()
+                && let Some(p_col) =
+                    PrimCol::<u16>::from_opt::<UInt16Type>(dp_rb, consts::PARENT_ID)
             {
-                for row in 0..parent_ids.len() {
-                    if parent_ids.is_valid(row) {
-                        surviving_ids.insert(u32::from(parent_ids.value(row)));
+                for row in 0..dp_rb.num_rows() {
+                    if let Some(pid) = p_col.get(row) {
+                        surviving_ids.insert(u32::from(pid));
                     }
                 }
             }
         }
 
-        let id_arr = get_required_array(metrics_rb, consts::ID)?;
-        let metric_ids = id_arr
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                name: consts::ID.into(),
-                actual: id_arr.data_type().clone(),
-                expect: DataType::UInt16,
-            })?;
-
+        let metric_ids = PrimCol::from_required::<UInt16Type>(metrics_rb, consts::ID)?;
         let mut selection_builder = BooleanBuilder::with_capacity(num_metrics);
         let mut kept_metrics = 0usize;
         for row in 0..num_metrics {
             let keep = !self.metric_lookup.is_eligible_row(row)
-                || (metric_ids.is_valid(row)
-                    && surviving_ids.contains(u32::from(metric_ids.value(row))));
+                || metric_ids
+                    .get(row)
+                    .is_some_and(|id| surviving_ids.contains(u32::from(id)));
             if keep {
                 kept_metrics += 1;
             }
@@ -1526,7 +873,6 @@ impl SubtractInitialEngine {
             let selection = selection_builder.finish();
             *records = filter_otap_batch(&selection, records, &mut self.id_bitmap_pool)?;
         }
-
         Ok(())
     }
 }
@@ -1557,167 +903,813 @@ fn filter_single_child_table(
     Ok(())
 }
 
-/// Common columns shared across all four OTAP data point tables.
-struct CommonDpColumns<'a> {
-    parent_ids: &'a UInt16Array,
-    ids: Option<&'a UInt32Array>,
-    start_times: Option<&'a TimestampNanosecondArray>,
-    times: Option<&'a TimestampNanosecondArray>,
-    flags: Option<&'a UInt32Array>,
+fn filter_nulls(
+    orig: Option<&NullBuffer>,
+    keep_filter: Option<&BooleanArray>,
+) -> Option<NullBuffer> {
+    let orig = orig?;
+    match keep_filter {
+        None => Some(orig.clone()),
+        Some(filter) => {
+            let mut nb = NullBufferBuilder::new(filter.true_count());
+            for row in 0..filter.len() {
+                if filter.value(row) {
+                    nb.append(orig.is_valid(row));
+                }
+            }
+            nb.finish()
+        }
+    }
 }
 
-impl<'a> CommonDpColumns<'a> {
-    fn try_new(rb: &'a RecordBatch) -> Result<Self, PdataError> {
-        let parent_arr = get_required_array(rb, consts::PARENT_ID)?;
-        let parent_ids = parent_arr
+#[derive(Clone, Copy)]
+struct PrimCol<'a, T> {
+    values: &'a [T],
+    nulls: Option<&'a NullBuffer>,
+}
+
+impl<'a, T: ArrowNativeType> PrimCol<'a, T> {
+    #[inline]
+    fn from_opt<A: ArrowPrimitiveType<Native = T>>(
+        rb: &'a RecordBatch,
+        name: &str,
+    ) -> Option<Self> {
+        let arr = rb
+            .column_by_name(name)?
             .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                name: consts::PARENT_ID.into(),
-                actual: parent_arr.data_type().clone(),
-                expect: DataType::UInt16,
-            })?;
-
-        let ids = rb
-            .column_by_name(consts::ID)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-        let start_times = rb
-            .column_by_name(consts::START_TIME_UNIX_NANO)
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
-        let times = rb
-            .column_by_name(consts::TIME_UNIX_NANO)
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
-        let flags = rb
-            .column_by_name(consts::FLAGS)
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-
-        Ok(Self {
-            parent_ids,
-            ids,
-            start_times,
-            times,
-            flags,
+            .downcast_ref::<PrimitiveArray<A>>()?;
+        Some(Self {
+            values: arr.values().as_ref(),
+            nulls: arr.nulls(),
         })
     }
 
     #[inline]
-    fn parent_id_at(&self, row: usize) -> u16 {
-        self.parent_ids.value(row)
+    fn from_required<A: ArrowPrimitiveType<Native = T>>(
+        rb: &'a RecordBatch,
+        name: &'static str,
+    ) -> Result<Self, PdataError> {
+        let col = get_required_array(rb, name)?;
+        let arr = col
+            .as_any()
+            .downcast_ref::<PrimitiveArray<A>>()
+            .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
+                name: name.into(),
+                actual: col.data_type().clone(),
+                expect: A::DATA_TYPE,
+            })?;
+        Ok(Self {
+            values: arr.values().as_ref(),
+            nulls: arr.nulls(),
+        })
     }
 
     #[inline]
-    fn id_at(&self, row: usize) -> Option<u32> {
-        self.ids.and_then(|c| c.is_valid(row).then(|| c.value(row)))
+    fn get(&self, row: usize) -> Option<T> {
+        if self.nulls.is_some_and(|n| n.is_null(row)) {
+            None
+        } else {
+            Some(self.values[row])
+        }
     }
 
     #[inline]
-    fn start_time_at(&self, row: usize) -> Option<i64> {
-        self.start_times
-            .and_then(|c| c.is_valid(row).then(|| c.value(row)))
+    fn val_or_default(&self, row: usize) -> T {
+        self.get(row).unwrap_or_default()
+    }
+}
+
+/// Builder for `start_time_unix_nano` (where nullability can differ from the input column).
+struct StartTimeBuilder {
+    values: Vec<i64>,
+    nulls: Option<NullBufferBuilder>,
+}
+
+impl StartTimeBuilder {
+    #[inline]
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(cap),
+            nulls: None,
+        }
     }
 
     #[inline]
-    fn time_at(&self, row: usize) -> i64 {
-        self.times
-            .and_then(|c| c.is_valid(row).then(|| c.value(row)))
-            .unwrap_or(0)
+    fn push_val(&mut self, val: i64) {
+        if let Some(nb) = self.nulls.as_mut() {
+            nb.append_non_null();
+        }
+        self.values.push(val);
+    }
+
+    #[inline]
+    fn push_opt(&mut self, opt: Option<i64>) {
+        match opt {
+            Some(v) => self.push_val(v),
+            None => {
+                let cur_len = self.values.len();
+                let cap = self.values.capacity();
+                let nb = self.nulls.get_or_insert_with(|| {
+                    let mut b = NullBufferBuilder::new(cap);
+                    b.append_n_non_nulls(cur_len);
+                    b
+                });
+                nb.append_null();
+                self.values.push(0);
+            }
+        }
+    }
+
+    #[inline]
+    fn finish(self) -> PrimitiveArray<TimestampNanosecondType> {
+        let nulls = self.nulls.and_then(|mut nb| nb.finish());
+        PrimitiveArray::new(ScalarBuffer::from(self.values), nulls)
+    }
+}
+
+/// Combined optional primitive column reader and lazy output buffer.
+///
+/// Allocates nothing until `init_output` is called on the first adjusted row, bulk-copies any
+/// leading passthrough slice, and reuses `orig.nulls().cloned()` in steady state.
+struct OptValCol<'a, A: ArrowPrimitiveType> {
+    name: &'static str,
+    src: Option<PrimCol<'a, A::Native>>,
+    out: Vec<A::Native>,
+}
+
+impl<'a, A: ArrowPrimitiveType> OptValCol<'a, A> {
+    #[inline]
+    fn from_rb(rb: &'a RecordBatch, name: &'static str) -> Self {
+        Self {
+            name,
+            src: PrimCol::from_opt::<A>(rb, name),
+            out: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn init(&mut self, num_rows: usize, prefix_rows: usize) {
+        if let Some(c) = self.src {
+            self.out.reserve_exact(num_rows);
+            self.out.extend_from_slice(&c.values[..prefix_rows]);
+        }
+    }
+
+    #[inline]
+    fn read(&self, row: usize) -> A::Native {
+        self.src
+            .map_or_else(Default::default, |c| c.val_or_default(row))
+    }
+
+    #[inline]
+    fn push_passthrough(&mut self, row: usize) {
+        if let Some(c) = self.src {
+            self.out.push(c.values[row]);
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, val: A::Native) {
+        if self.src.is_some() {
+            self.out.push(val);
+        }
+    }
+
+    #[inline]
+    fn finish(self, keep_filter: Option<&BooleanArray>, repl: &mut ReplList) {
+        if let Some(c) = self.src {
+            let arr = PrimitiveArray::<A>::new(
+                ScalarBuffer::from(self.out),
+                filter_nulls(c.nulls, keep_filter),
+            );
+            repl.push(self.name, Arc::new(arr));
+        }
+    }
+}
+
+struct CommonDpColumns<'a> {
+    parent_ids: PrimCol<'a, u16>,
+    ids: Option<PrimCol<'a, u32>>,
+    start_times: Option<PrimCol<'a, i64>>,
+    times: Option<PrimCol<'a, i64>>,
+    flags: Option<PrimCol<'a, u32>>,
+}
+
+impl<'a> CommonDpColumns<'a> {
+    fn try_new(rb: &'a RecordBatch) -> Result<Self, PdataError> {
+        Ok(Self {
+            parent_ids: PrimCol::from_required::<UInt16Type>(rb, consts::PARENT_ID)?,
+            ids: PrimCol::from_opt::<UInt32Type>(rb, consts::ID),
+            start_times: PrimCol::from_opt::<TimestampNanosecondType>(
+                rb,
+                consts::START_TIME_UNIX_NANO,
+            ),
+            times: PrimCol::from_opt::<TimestampNanosecondType>(rb, consts::TIME_UNIX_NANO),
+            flags: PrimCol::from_opt::<UInt32Type>(rb, consts::FLAGS),
+        })
     }
 
     #[inline]
     fn is_no_recorded_value(&self, row: usize) -> bool {
         self.flags
-            .and_then(|c| c.is_valid(row).then(|| c.value(row)))
+            .and_then(|c| c.get(row))
             .is_some_and(|f| (f & FLAG_NO_RECORDED_VALUE) != 0)
     }
 }
 
-/// Zero-allocation slice accessor for `List<UInt64>` columns (`bucket_counts`).
-struct U64ListSliceAccessor<'a> {
+#[derive(Clone, Copy)]
+struct ListSliceAccessor<'a, T: ArrowPrimitiveType> {
     list: &'a ListArray,
-    values: &'a [u64],
+    item_field: &'a FieldRef,
+    values: &'a [T::Native],
 }
 
-impl<'a> U64ListSliceAccessor<'a> {
+impl<'a, T: ArrowPrimitiveType> ListSliceAccessor<'a, T> {
     fn try_new(col: &'a ArrayRef) -> Result<Self, PdataError> {
         let list = col.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
             PdataError::InvalidListArray {
-                expect_oneof: vec![DataType::UInt64],
+                expect_oneof: vec![T::DATA_TYPE],
                 actual: col.data_type().clone(),
             }
         })?;
-        let u64_arr = list
+        let DataType::List(item_field) = list.data_type() else {
+            return Err(PdataError::InvalidListArray {
+                expect_oneof: vec![T::DATA_TYPE],
+                actual: col.data_type().clone(),
+            });
+        };
+        let prim = list
             .values()
             .as_any()
-            .downcast_ref::<UInt64Array>()
+            .downcast_ref::<PrimitiveArray<T>>()
             .ok_or_else(|| PdataError::InvalidListArray {
-                expect_oneof: vec![DataType::UInt64],
+                expect_oneof: vec![T::DATA_TYPE],
                 actual: list.values().data_type().clone(),
             })?;
         Ok(Self {
             list,
-            values: u64_arr.values(),
+            item_field,
+            values: prim.values().as_ref(),
         })
+    }
+
+    #[inline]
+    fn slice_at(&self, row: usize) -> Option<&'a [T::Native]> {
+        if self.list.nulls().is_some_and(|n| n.is_null(row)) {
+            return None;
+        }
+        let offsets = self.list.value_offsets();
+        Some(&self.values[offsets[row] as usize..offsets[row + 1] as usize])
+    }
+}
+
+/// Combined optional `List<UInt64>` column reader and lazy pre-sized output builder.
+struct OptU64ListCol<'a> {
+    src: Option<ListSliceAccessor<'a, UInt64Type>>,
+    offsets: Vec<i32>,
+    values: Vec<u64>,
+}
+
+impl<'a> OptU64ListCol<'a> {
+    fn try_from_opt(col: Option<&'a ArrayRef>) -> Result<Self, PdataError> {
+        Ok(Self {
+            src: col
+                .map(ListSliceAccessor::<UInt64Type>::try_new)
+                .transpose()?,
+            offsets: Vec::new(),
+            values: Vec::new(),
+        })
+    }
+
+    fn init(&mut self, num_rows: usize, prefix_rows: usize) {
+        let Some(acc) = self.src.as_ref() else {
+            return;
+        };
+        let in_off = acc.list.value_offsets();
+        let base = in_off[0];
+        let total_vals = (in_off[num_rows] - base).max(0) as usize;
+        self.offsets.reserve_exact(num_rows + 1);
+        for &o in &in_off[..=prefix_rows] {
+            self.offsets.push(o - base);
+        }
+        self.values.reserve_exact(total_vals);
+        self.values
+            .extend_from_slice(&acc.values[base as usize..in_off[prefix_rows] as usize]);
     }
 
     #[inline]
     fn slice_at(&self, row: usize) -> Option<&'a [u64]> {
-        if !self.list.is_valid(row) {
-            return None;
-        }
-        let offsets = self.list.value_offsets();
-        let start = offsets[row] as usize;
-        let end = offsets[row + 1] as usize;
-        Some(&self.values[start..end])
-    }
-}
-
-/// Zero-allocation slice accessor for `List<Float64>` columns (`explicit_bounds`).
-struct F64ListSliceAccessor<'a> {
-    list: &'a ListArray,
-    values: &'a [f64],
-}
-
-impl<'a> F64ListSliceAccessor<'a> {
-    fn try_new(col: &'a ArrayRef) -> Result<Self, PdataError> {
-        let list = col.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-            PdataError::InvalidListArray {
-                expect_oneof: vec![DataType::Float64],
-                actual: col.data_type().clone(),
-            }
-        })?;
-        let f64_arr = list
-            .values()
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .ok_or_else(|| PdataError::InvalidListArray {
-                expect_oneof: vec![DataType::Float64],
-                actual: list.values().data_type().clone(),
-            })?;
-        Ok(Self {
-            list,
-            values: f64_arr.values(),
-        })
+        self.src.as_ref().and_then(|a| a.slice_at(row))
     }
 
     #[inline]
-    fn slice_at(&self, row: usize) -> Option<&'a [f64]> {
-        if !self.list.is_valid(row) {
-            return None;
+    fn push_passthrough(&mut self, row: usize) {
+        if let Some(acc) = self.src.as_ref() {
+            if let Some(s) = acc.slice_at(row) {
+                self.values.extend_from_slice(s);
+            }
+            self.offsets.push(self.values.len() as i32);
         }
-        let offsets = self.list.value_offsets();
-        let start = offsets[row] as usize;
-        let end = offsets[row + 1] as usize;
-        Some(&self.values[start..end])
+    }
+
+    #[inline]
+    fn push_raw(&mut self, opt_slice: Option<&[u64]>) {
+        if self.src.is_some() {
+            if let Some(s) = opt_slice {
+                self.values.extend_from_slice(s);
+            }
+            self.offsets.push(self.values.len() as i32);
+        }
+    }
+
+    #[inline]
+    fn push_subtracted(&mut self, opt_slice: Option<&[u64]>, ref_buckets: &[u64]) {
+        if self.src.is_some() {
+            if let Some(s) = opt_slice {
+                for (&cur_b, &ref_b) in s.iter().zip(ref_buckets.iter()) {
+                    self.values.push(cur_b.saturating_sub(ref_b));
+                }
+            }
+            self.offsets.push(self.values.len() as i32);
+        }
+    }
+
+    fn finish_list(self, keep_filter: Option<&BooleanArray>) -> Option<ArrayRef> {
+        let acc = self.src?;
+        let values_arr = Arc::new(UInt64Array::new(ScalarBuffer::from(self.values), None));
+        Some(Arc::new(ListArray::new(
+            Arc::clone(acc.item_field),
+            OffsetBuffer::new(ScalarBuffer::from(self.offsets)),
+            values_arr,
+            filter_nulls(acc.list.nulls(), keep_filter),
+        )))
+    }
+}
+
+/// Shared `count` + `sum` column pair for `Summary`, `Histogram`, and `ExponentialHistogram`.
+struct CountSumCols<'a> {
+    counts: OptValCol<'a, UInt64Type>,
+    sums: OptValCol<'a, Float64Type>,
+}
+
+impl<'a> CountSumCols<'a> {
+    fn from_rb(rb: &'a RecordBatch) -> Self {
+        Self {
+            counts: OptValCol::from_rb(rb, consts::COUNT),
+            sums: OptValCol::from_rb(rb, consts::SUM),
+        }
+    }
+
+    #[inline]
+    fn init(&mut self, num_rows: usize, prefix_rows: usize) {
+        self.counts.init(num_rows, prefix_rows);
+        self.sums.init(num_rows, prefix_rows);
+    }
+
+    #[inline]
+    fn read(&self, row: usize) -> (u64, f64) {
+        (self.counts.read(row), self.sums.read(row))
+    }
+
+    #[inline]
+    fn push_passthrough(&mut self, row: usize) {
+        self.counts.push_passthrough(row);
+        self.sums.push_passthrough(row);
+    }
+
+    #[inline]
+    fn push_raw(&mut self, count: u64, sum: f64) {
+        self.counts.push(count);
+        self.sums.push(sum);
+    }
+
+    #[inline]
+    fn push_sub(&mut self, count: u64, sum: f64, cs: &CountSumState) {
+        self.counts.push(count.saturating_sub(cs.ref_count));
+        self.sums.push(sum - cs.ref_sum);
+    }
+
+    #[inline]
+    fn finish(self, keep_filter: Option<&BooleanArray>, out: &mut ReplList) {
+        self.counts.finish(keep_filter, out);
+        self.sums.finish(keep_filter, out);
+    }
+}
+
+// --- 1. NumberDataPoints (`Sum`) ---
+
+struct NumberAdjuster;
+struct NumberTable<'a> {
+    ints: OptValCol<'a, Int64Type>,
+    doubles: OptValCol<'a, Float64Type>,
+}
+
+impl DpAdjuster for NumberAdjuster {
+    const TABLE_IDX: usize = 0;
+    const METRIC_TYPE: u8 = METRIC_TYPE_SUM;
+    const DP_PAYLOAD: ArrowPayloadType = ArrowPayloadType::NumberDataPoints;
+    const ATTRS_PAYLOAD: ArrowPayloadType = ArrowPayloadType::NumberDpAttrs;
+    const EXEMPLARS_PAYLOAD: Option<(ArrowPayloadType, ArrowPayloadType)> = Some((
+        ArrowPayloadType::NumberDpExemplars,
+        ArrowPayloadType::NumberDpExemplarAttrs,
+    ));
+    type State = NumberState;
+    type Table<'a> = NumberTable<'a>;
+
+    fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError> {
+        Ok(NumberTable {
+            ints: OptValCol::from_rb(rb, consts::INT_VALUE),
+            doubles: OptValCol::from_rb(rb, consts::DOUBLE_VALUE),
+        })
+    }
+
+    fn series_table(res: &mut ResourceSeriesMap) -> &mut SeriesTable<Self::State> {
+        &mut res.numbers
+    }
+
+    fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
+        t.ints.init(num_rows, prefix_rows);
+        t.doubles.init(num_rows, prefix_rows);
+    }
+
+    #[inline]
+    fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
+        t.ints.push_passthrough(row);
+        t.doubles.push_passthrough(row);
+    }
+
+    #[inline]
+    fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
+        let (ci, cd) = (t.ints.read(row), t.doubles.read(row));
+        NumberState {
+            ref_double: cd,
+            ref_int: ci,
+            prev_double: cd,
+            prev_int: ci,
+        }
+    }
+
+    #[inline]
+    fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
+        let (ci, cd) = (t.ints.read(row), t.doubles.read(row));
+        let reset = cd < s.prev_double || ci < s.prev_int;
+        if reset {
+            s.ref_double = 0.0;
+            s.ref_int = 0;
+            t.ints.push(ci);
+            t.doubles.push(cd);
+        } else {
+            t.ints.push(ci.wrapping_sub(s.ref_int));
+            t.doubles.push(cd - s.ref_double);
+        }
+        s.prev_double = cd;
+        s.prev_int = ci;
+        reset
+    }
+
+    fn finish_replacements(
+        t: Self::Table<'_>,
+        keep_filter: Option<&BooleanArray>,
+        out: &mut ReplList,
+    ) -> Result<(), PdataError> {
+        t.ints.finish(keep_filter, out);
+        t.doubles.finish(keep_filter, out);
+        Ok(())
+    }
+}
+
+// --- 2. SummaryDataPoints (`Summary`) ---
+
+struct SummaryAdjuster;
+
+impl DpAdjuster for SummaryAdjuster {
+    const TABLE_IDX: usize = 1;
+    const METRIC_TYPE: u8 = METRIC_TYPE_SUMMARY;
+    const DP_PAYLOAD: ArrowPayloadType = ArrowPayloadType::SummaryDataPoints;
+    const ATTRS_PAYLOAD: ArrowPayloadType = ArrowPayloadType::SummaryDpAttrs;
+    const EXEMPLARS_PAYLOAD: Option<(ArrowPayloadType, ArrowPayloadType)> = None;
+    type State = CountSumState;
+    type Table<'a> = CountSumCols<'a>;
+
+    fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError> {
+        Ok(CountSumCols::from_rb(rb))
+    }
+
+    fn series_table(res: &mut ResourceSeriesMap) -> &mut SeriesTable<Self::State> {
+        &mut res.summaries
+    }
+
+    fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
+        t.init(num_rows, prefix_rows);
+    }
+
+    #[inline]
+    fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
+        t.push_passthrough(row);
+    }
+
+    #[inline]
+    fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
+        let (c, s) = t.read(row);
+        CountSumState::new(c, s)
+    }
+
+    #[inline]
+    fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
+        let (cur_c, cur_s) = t.read(row);
+        let reset = s.decreased(cur_c, cur_s);
+        if reset {
+            s.reset(cur_c, cur_s);
+            t.push_raw(cur_c, cur_s);
+        } else {
+            s.advance(cur_c, cur_s);
+            t.push_sub(cur_c, cur_s, s);
+        }
+        reset
+    }
+
+    fn finish_replacements(
+        t: Self::Table<'_>,
+        keep_filter: Option<&BooleanArray>,
+        out: &mut ReplList,
+    ) -> Result<(), PdataError> {
+        t.finish(keep_filter, out);
+        Ok(())
+    }
+}
+
+// --- 3. HistogramDataPoints (`Histogram`) ---
+
+struct HistogramAdjuster;
+struct HistogramTable<'a> {
+    cs: CountSumCols<'a>,
+    buckets: OptU64ListCol<'a>,
+    bounds: Option<ListSliceAccessor<'a, Float64Type>>,
+}
+
+impl DpAdjuster for HistogramAdjuster {
+    const TABLE_IDX: usize = 2;
+    const METRIC_TYPE: u8 = METRIC_TYPE_HISTOGRAM;
+    const DP_PAYLOAD: ArrowPayloadType = ArrowPayloadType::HistogramDataPoints;
+    const ATTRS_PAYLOAD: ArrowPayloadType = ArrowPayloadType::HistogramDpAttrs;
+    const EXEMPLARS_PAYLOAD: Option<(ArrowPayloadType, ArrowPayloadType)> = Some((
+        ArrowPayloadType::HistogramDpExemplars,
+        ArrowPayloadType::HistogramDpExemplarAttrs,
+    ));
+    type State = HistogramState;
+    type Table<'a> = HistogramTable<'a>;
+
+    fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError> {
+        Ok(HistogramTable {
+            cs: CountSumCols::from_rb(rb),
+            buckets: OptU64ListCol::try_from_opt(
+                rb.column_by_name(consts::HISTOGRAM_BUCKET_COUNTS),
+            )?,
+            bounds: rb
+                .column_by_name(consts::HISTOGRAM_EXPLICIT_BOUNDS)
+                .map(ListSliceAccessor::<Float64Type>::try_new)
+                .transpose()?,
+        })
+    }
+
+    fn series_table(res: &mut ResourceSeriesMap) -> &mut SeriesTable<Self::State> {
+        &mut res.histograms
+    }
+
+    fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
+        t.cs.init(num_rows, prefix_rows);
+        t.buckets.init(num_rows, prefix_rows);
+    }
+
+    #[inline]
+    fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
+        t.cs.push_passthrough(row);
+        t.buckets.push_passthrough(row);
+    }
+
+    #[inline]
+    fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
+        let (c, s) = t.cs.read(row);
+        let cur_b = t.buckets.slice_at(row).unwrap_or(&[]);
+        let cur_bounds = t
+            .bounds
+            .as_ref()
+            .and_then(|a| a.slice_at(row))
+            .unwrap_or(&[]);
+        HistogramState {
+            cs: CountSumState::new(c, s),
+            explicit_bounds_bits: cur_bounds.iter().map(|v| v.to_bits()).collect(),
+            ref_buckets: cur_b.to_vec(),
+            prev_buckets: cur_b.to_vec(),
+        }
+    }
+
+    #[inline]
+    fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
+        let (cur_c, cur_s) = t.cs.read(row);
+        let cur_b_opt = t.buckets.slice_at(row);
+        let cur_b = cur_b_opt.unwrap_or(&[]);
+        let cur_bounds = t
+            .bounds
+            .as_ref()
+            .and_then(|a| a.slice_at(row))
+            .unwrap_or(&[]);
+
+        let reset = s.cs.decreased(cur_c, cur_s)
+            || !bounds_eq_bits(cur_bounds, &s.explicit_bounds_bits)
+            || cur_b.len() != s.prev_buckets.len()
+            || cur_b.iter().zip(&s.prev_buckets).any(|(&cb, &pb)| cb < pb);
+
+        if reset {
+            s.cs.reset(cur_c, cur_s);
+            s.explicit_bounds_bits.clear();
+            s.explicit_bounds_bits
+                .extend(cur_bounds.iter().map(|v| v.to_bits()));
+            s.ref_buckets.clear();
+            s.ref_buckets.resize(cur_b.len(), 0);
+            t.cs.push_raw(cur_c, cur_s);
+            t.buckets.push_raw(cur_b_opt);
+        } else {
+            s.cs.advance(cur_c, cur_s);
+            t.cs.push_sub(cur_c, cur_s, &s.cs);
+            t.buckets.push_subtracted(cur_b_opt, &s.ref_buckets);
+        }
+        s.prev_buckets.clear();
+        s.prev_buckets.extend_from_slice(cur_b);
+        reset
+    }
+
+    fn finish_replacements(
+        t: Self::Table<'_>,
+        keep_filter: Option<&BooleanArray>,
+        out: &mut ReplList,
+    ) -> Result<(), PdataError> {
+        t.cs.finish(keep_filter, out);
+        if let Some(arr) = t.buckets.finish_list(keep_filter) {
+            out.push(consts::HISTOGRAM_BUCKET_COUNTS, arr);
+        }
+        Ok(())
+    }
+}
+
+// --- 4. ExpHistogramDataPoints (`ExponentialHistogram`) ---
+
+struct ExpHistogramAdjuster;
+struct ExpHistogramTable<'a> {
+    cs: CountSumCols<'a>,
+    zero_counts: OptValCol<'a, UInt64Type>,
+    scales: Option<PrimCol<'a, i32>>,
+    pos: Option<ExpBucketsCol<'a>>,
+    neg: Option<ExpBucketsCol<'a>>,
+}
+
+impl DpAdjuster for ExpHistogramAdjuster {
+    const TABLE_IDX: usize = 3;
+    const METRIC_TYPE: u8 = METRIC_TYPE_EXP_HISTOGRAM;
+    const DP_PAYLOAD: ArrowPayloadType = ArrowPayloadType::ExpHistogramDataPoints;
+    const ATTRS_PAYLOAD: ArrowPayloadType = ArrowPayloadType::ExpHistogramDpAttrs;
+    const EXEMPLARS_PAYLOAD: Option<(ArrowPayloadType, ArrowPayloadType)> = Some((
+        ArrowPayloadType::ExpHistogramDpExemplars,
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+    ));
+    type State = ExpHistogramState;
+    type Table<'a> = ExpHistogramTable<'a>;
+
+    fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError> {
+        Ok(ExpHistogramTable {
+            cs: CountSumCols::from_rb(rb),
+            zero_counts: OptValCol::from_rb(rb, consts::EXP_HISTOGRAM_ZERO_COUNT),
+            scales: PrimCol::from_opt::<Int32Type>(rb, consts::EXP_HISTOGRAM_SCALE),
+            pos: ExpBucketsCol::try_from_rb(rb, consts::EXP_HISTOGRAM_POSITIVE)?,
+            neg: ExpBucketsCol::try_from_rb(rb, consts::EXP_HISTOGRAM_NEGATIVE)?,
+        })
+    }
+
+    fn series_table(res: &mut ResourceSeriesMap) -> &mut SeriesTable<Self::State> {
+        &mut res.exp_histograms
+    }
+
+    fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
+        t.cs.init(num_rows, prefix_rows);
+        t.zero_counts.init(num_rows, prefix_rows);
+        if let Some(p) = t.pos.as_mut() {
+            p.buckets.init(num_rows, prefix_rows);
+        }
+        if let Some(n) = t.neg.as_mut() {
+            n.buckets.init(num_rows, prefix_rows);
+        }
+    }
+
+    #[inline]
+    fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
+        t.cs.push_passthrough(row);
+        t.zero_counts.push_passthrough(row);
+        if let Some(p) = t.pos.as_mut() {
+            p.buckets.push_passthrough(row);
+        }
+        if let Some(n) = t.neg.as_mut() {
+            n.buckets.push_passthrough(row);
+        }
+    }
+
+    #[inline]
+    fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
+        let (c, s) = t.cs.read(row);
+        let zc = t.zero_counts.read(row);
+        let scale = t.scales.map_or(0, |sc| sc.val_or_default(row));
+        let (po, pc) = t
+            .pos
+            .as_ref()
+            .map_or((0, &[][..]), |a| a.read_or_empty(row));
+        let (no, nc) = t
+            .neg
+            .as_ref()
+            .map_or((0, &[][..]), |a| a.read_or_empty(row));
+        ExpHistogramState {
+            scale,
+            cs: CountSumState::new(c, s),
+            ref_zero_count: zc,
+            prev_zero_count: zc,
+            ref_positive: ExpBucketsState::new(po, pc),
+            prev_positive: ExpBucketsState::new(po, pc),
+            ref_negative: ExpBucketsState::new(no, nc),
+            prev_negative: ExpBucketsState::new(no, nc),
+        }
+    }
+
+    #[inline]
+    fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
+        let (cur_c, cur_s) = t.cs.read(row);
+        let cur_z = t.zero_counts.read(row);
+        let cur_scale = t.scales.map_or(0, |sc| sc.val_or_default(row));
+        let (po, p_opt) = t.pos.as_ref().map_or((0, None), |a| a.row_at(row));
+        let (no, n_opt) = t.neg.as_ref().map_or((0, None), |a| a.row_at(row));
+        let (pc, nc) = (p_opt.unwrap_or(&[]), n_opt.unwrap_or(&[]));
+
+        let reset = s.cs.decreased(cur_c, cur_s)
+            || cur_z < s.prev_zero_count
+            || cur_scale != s.scale
+            || exp_buckets_decreased(po, pc, &s.prev_positive)
+            || exp_buckets_decreased(no, nc, &s.prev_negative);
+
+        if reset {
+            s.scale = cur_scale;
+            s.cs.reset(cur_c, cur_s);
+            s.ref_zero_count = 0;
+            s.ref_positive.reset_zero(po, pc.len());
+            s.ref_negative.reset_zero(no, nc.len());
+            t.cs.push_raw(cur_c, cur_s);
+            t.zero_counts.push(cur_z);
+            if let Some(p) = t.pos.as_mut() {
+                p.buckets.push_raw(p_opt);
+            }
+            if let Some(n) = t.neg.as_mut() {
+                n.buckets.push_raw(n_opt);
+            }
+        } else {
+            s.cs.advance(cur_c, cur_s);
+            t.cs.push_sub(cur_c, cur_s, &s.cs);
+            t.zero_counts.push(cur_z.saturating_sub(s.ref_zero_count));
+            if let Some(p) = t.pos.as_mut() {
+                p.push_exp_sub(po, p_opt, &s.ref_positive);
+            }
+            if let Some(n) = t.neg.as_mut() {
+                n.push_exp_sub(no, n_opt, &s.ref_negative);
+            }
+        }
+        s.prev_zero_count = cur_z;
+        s.prev_positive.update(po, pc);
+        s.prev_negative.update(no, nc);
+        reset
+    }
+
+    fn finish_replacements(
+        t: Self::Table<'_>,
+        keep_filter: Option<&BooleanArray>,
+        out: &mut ReplList,
+    ) -> Result<(), PdataError> {
+        t.cs.finish(keep_filter, out);
+        t.zero_counts.finish(keep_filter, out);
+        if let Some(p) = t.pos {
+            out.push(consts::EXP_HISTOGRAM_POSITIVE, p.finish(keep_filter)?);
+        }
+        if let Some(n) = t.neg {
+            out.push(consts::EXP_HISTOGRAM_NEGATIVE, n.finish(keep_filter)?);
+        }
+        Ok(())
     }
 }
 
 #[inline]
 fn bounds_eq_bits(bounds: &[f64], expected_bits: &[u64]) -> bool {
-    bounds.len() == expected_bits.len()
-        && bounds
-            .iter()
-            .zip(expected_bits.iter())
-            .all(|(b, &bits)| b.to_bits() == bits)
+    if bounds.len() != expected_bits.len() {
+        return false;
+    }
+    let mut diff = 0u64;
+    for (&b, &bits) in bounds.iter().zip(expected_bits.iter()) {
+        diff |= b.to_bits() ^ bits;
+    }
+    diff == 0
 }
 
 #[inline]
@@ -1737,96 +1729,81 @@ fn exp_buckets_decreased(cur_offset: i32, cur_counts: &[u64], prev: &ExpBucketsS
     false
 }
 
-#[inline]
-fn append_opt_u64_slice(builder: &mut ListBuilder<UInt64Builder>, opt_slice: Option<&[u64]>) {
-    match opt_slice {
-        Some(slice) => {
-            builder.values().append_slice(slice);
-            builder.append(true);
-        }
-        None => builder.append(false),
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct ExpBucketsRow<'a> {
-    struct_valid: bool,
-    offset: i32,
-    counts: Option<&'a [u64]>,
-}
-
-/// Accessor for the `positive` or `negative` `StructArray` column on `ExpHistogramDataPoints`.
-struct ExpBucketsColumnAccessor<'a> {
+struct ExpBucketsCol<'a> {
     struct_arr: &'a StructArray,
-    offsets: Option<&'a Int32Array>,
-    bucket_counts: Option<U64ListSliceAccessor<'a>>,
+    offsets: Option<PrimCol<'a, i32>>,
+    buckets: OptU64ListCol<'a>,
 }
 
-impl<'a> ExpBucketsColumnAccessor<'a> {
-    fn try_new(col: &'a ArrayRef, col_name: &str) -> Result<Self, PdataError> {
+impl<'a> ExpBucketsCol<'a> {
+    fn try_from_rb(rb: &'a RecordBatch, name: &str) -> Result<Option<Self>, PdataError> {
+        let Some(col) = rb.column_by_name(name) else {
+            return Ok(None);
+        };
         let struct_arr = col.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
             PdataError::ColumnDataTypeMismatch {
-                name: col_name.into(),
+                name: name.into(),
                 actual: col.data_type().clone(),
                 expect: DataType::Struct(arrow::datatypes::Fields::empty()),
             }
         })?;
         let offsets = struct_arr
             .column_by_name(consts::EXP_HISTOGRAM_OFFSET)
-            .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-        let bucket_counts = struct_arr
-            .column_by_name(consts::EXP_HISTOGRAM_BUCKET_COUNTS)
-            .map(U64ListSliceAccessor::try_new)
-            .transpose()?;
-        Ok(Self {
+            .and_then(|c| c.as_any().downcast_ref::<Int32Array>())
+            .map(|arr| PrimCol {
+                values: arr.values().as_ref(),
+                nulls: arr.nulls(),
+            });
+        let buckets = OptU64ListCol::try_from_opt(
+            struct_arr.column_by_name(consts::EXP_HISTOGRAM_BUCKET_COUNTS),
+        )?;
+        Ok(Some(Self {
             struct_arr,
             offsets,
-            bucket_counts,
-        })
+            buckets,
+        }))
     }
 
     #[inline]
-    fn row_at(&self, row: usize) -> ExpBucketsRow<'a> {
-        if !self.struct_arr.is_valid(row) {
-            return ExpBucketsRow {
-                struct_valid: false,
-                offset: 0,
-                counts: None,
-            };
+    fn row_at(&self, row: usize) -> (i32, Option<&'a [u64]>) {
+        if self.struct_arr.nulls().is_some_and(|n| n.is_null(row)) {
+            return (0, None);
         }
-        let offset = self
-            .offsets
-            .and_then(|c| c.is_valid(row).then(|| c.value(row)))
-            .unwrap_or(0);
-        let counts = self.bucket_counts.as_ref().and_then(|c| c.slice_at(row));
-        ExpBucketsRow {
-            struct_valid: true,
-            offset,
-            counts,
-        }
+        (
+            self.offsets.map_or(0, |c| c.val_or_default(row)),
+            self.buckets.slice_at(row),
+        )
     }
 
-    fn new_builder(&self, capacity: usize) -> ExpBucketsColumnBuilder {
-        ExpBucketsColumnBuilder {
-            has_bucket_counts: self.bucket_counts.is_some(),
-            has_struct_nulls: self.struct_arr.nulls().is_some(),
-            bucket_counts: ListBuilder::with_capacity(UInt64Builder::new(), capacity),
-            struct_nulls: NullBufferBuilder::new(capacity),
-        }
+    #[inline]
+    fn read_or_empty(&self, row: usize) -> (i32, &'a [u64]) {
+        let (off, opt) = self.row_at(row);
+        (off, opt.unwrap_or(&[]))
     }
 
-    fn finish_column(
-        &self,
-        mut builder: ExpBucketsColumnBuilder,
-        keep_filter: Option<&BooleanArray>,
-    ) -> Result<ArrayRef, PdataError> {
-        let new_buckets_col: Option<ArrayRef> = builder
-            .has_bucket_counts
-            .then(|| Arc::new(builder.bucket_counts.finish()) as ArrayRef);
+    #[inline]
+    fn push_exp_sub(&mut self, cur_off: i32, cur_opt: Option<&[u64]>, ref_s: &ExpBucketsState) {
+        if self.buckets.src.is_none() {
+            return;
+        }
+        if let Some(cur_counts) = cur_opt {
+            let offset_diff = (cur_off as isize) - (ref_s.offset as isize);
+            for (i, &cur_val) in cur_counts.iter().enumerate() {
+                let ref_idx = (i as isize) + offset_diff;
+                let adjusted = if ref_idx >= 0 && (ref_idx as usize) < ref_s.counts.len() {
+                    cur_val.saturating_sub(ref_s.counts[ref_idx as usize])
+                } else {
+                    cur_val
+                };
+                self.buckets.values.push(adjusted);
+            }
+        }
+        self.buckets.offsets.push(self.buckets.values.len() as i32);
+    }
 
-        let mut fields = Vec::with_capacity(self.struct_arr.fields().len());
+    fn finish(self, keep_filter: Option<&BooleanArray>) -> Result<ArrayRef, PdataError> {
+        let new_buckets = self.buckets.finish_list(keep_filter);
         let mut columns = Vec::with_capacity(self.struct_arr.columns().len());
-
         for (field, col) in self
             .struct_arr
             .fields()
@@ -1834,162 +1811,23 @@ impl<'a> ExpBucketsColumnAccessor<'a> {
             .zip(self.struct_arr.columns())
         {
             if field.name().as_str() == consts::EXP_HISTOGRAM_BUCKET_COUNTS
-                && let Some(new_col) = new_buckets_col.as_ref()
+                && let Some(new_col) = new_buckets.as_ref()
             {
-                fields.push(Arc::new(
-                    field
-                        .as_ref()
-                        .clone()
-                        .with_data_type(new_col.data_type().clone()),
-                ));
                 columns.push(Arc::clone(new_col));
             } else {
-                fields.push(Arc::clone(field));
-                let filtered_col = match keep_filter {
+                let filtered = match keep_filter {
                     Some(filter) => arrow::compute::filter(col, filter)
                         .map_err(|source| PdataError::ColumnLengthMismatch { source })?,
                     None => Arc::clone(col),
                 };
-                columns.push(filtered_col);
+                columns.push(filtered);
             }
         }
-
-        let nulls = if keep_filter.is_some() {
-            builder.struct_nulls.finish()
-        } else {
-            self.struct_arr.nulls().cloned()
-        };
-
-        let struct_arr = StructArray::try_new(fields.into(), columns, nulls)
+        let nulls = filter_nulls(self.struct_arr.nulls(), keep_filter);
+        let struct_arr = StructArray::try_new(self.struct_arr.fields().clone(), columns, nulls)
             .map_err(|source| PdataError::ColumnLengthMismatch { source })?;
         Ok(Arc::new(struct_arr))
     }
-}
-
-struct ExpBucketsColumnBuilder {
-    has_bucket_counts: bool,
-    has_struct_nulls: bool,
-    bucket_counts: ListBuilder<UInt64Builder>,
-    struct_nulls: NullBufferBuilder,
-}
-
-impl ExpBucketsColumnBuilder {
-    #[inline]
-    fn append_unadjusted(&mut self, row: ExpBucketsRow<'_>) {
-        if self.has_struct_nulls {
-            self.struct_nulls.append(row.struct_valid);
-        }
-        if self.has_bucket_counts {
-            if row.struct_valid {
-                append_opt_u64_slice(&mut self.bucket_counts, row.counts);
-            } else {
-                self.bucket_counts.append(false);
-            }
-        }
-    }
-
-    #[inline]
-    fn append_subtracted(&mut self, row: ExpBucketsRow<'_>, reference: &ExpBucketsState) {
-        if self.has_struct_nulls {
-            self.struct_nulls.append(row.struct_valid);
-        }
-        if !self.has_bucket_counts {
-            return;
-        }
-        if !row.struct_valid {
-            self.bucket_counts.append(false);
-            return;
-        }
-        let Some(cur_counts) = row.counts else {
-            self.bucket_counts.append(false);
-            return;
-        };
-
-        let offset_diff = (row.offset as isize) - (reference.offset as isize);
-        let ref_counts = &reference.counts;
-        for (i, &cur_val) in cur_counts.iter().enumerate() {
-            let ref_idx = (i as isize) + offset_diff;
-            let adjusted = if ref_idx >= 0 && (ref_idx as usize) < ref_counts.len() {
-                cur_val.saturating_sub(ref_counts[ref_idx as usize])
-            } else {
-                cur_val
-            };
-            self.bucket_counts.values().append_value(adjusted);
-        }
-        self.bucket_counts.append(true);
-    }
-}
-
-/// Rebuilds a data point [`RecordBatch`] by replacing `start_time_unix_nano` (or inserting it right
-/// after `parent_id` if absent) and replacing adjusted value columns, while either sharing
-/// unchanged columns via `Arc::clone` (when `keep_filter` is `None`) or filtering them by
-/// `keep_filter`.
-fn rebuild_data_point_batch(
-    rb: &RecordBatch,
-    keep_filter: Option<&BooleanArray>,
-    start_time_col: ArrayRef,
-    replacements: &[(&str, ArrayRef)],
-) -> Result<RecordBatch, PdataError> {
-    let old_schema = rb.schema();
-    let num_cols = old_schema.fields().len() + 1;
-    let mut fields: Vec<Arc<Field>> = Vec::with_capacity(num_cols);
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(num_cols);
-    let mut has_start_time = false;
-
-    for (col_idx, field) in old_schema.fields().iter().enumerate() {
-        let name = field.name().as_str();
-        if name == consts::START_TIME_UNIX_NANO {
-            has_start_time = true;
-            fields.push(Arc::new(
-                field
-                    .as_ref()
-                    .clone()
-                    .with_data_type(start_time_col.data_type().clone())
-                    .with_nullable(true),
-            ));
-            columns.push(Arc::clone(&start_time_col));
-        } else if let Some((_, rep_col)) = replacements.iter().find(|(n, _)| *n == name) {
-            fields.push(Arc::new(
-                field
-                    .as_ref()
-                    .clone()
-                    .with_data_type(rep_col.data_type().clone()),
-            ));
-            columns.push(Arc::clone(rep_col));
-        } else {
-            fields.push(Arc::clone(field));
-            let col = rb.column(col_idx);
-            let out_col = match keep_filter {
-                Some(filter) => arrow::compute::filter(col, filter)
-                    .map_err(|source| PdataError::ColumnLengthMismatch { source })?,
-                None => Arc::clone(col),
-            };
-            columns.push(out_col);
-        }
-    }
-
-    if !has_start_time {
-        let insert_idx = fields
-            .iter()
-            .position(|f| f.name().as_str() == consts::PARENT_ID)
-            .map_or(0, |idx| idx + 1);
-        fields.insert(
-            insert_idx,
-            Arc::new(Field::new(
-                consts::START_TIME_UNIX_NANO,
-                start_time_col.data_type().clone(),
-                true,
-            )),
-        );
-        columns.insert(insert_idx, start_time_col);
-    }
-
-    let new_schema = Arc::new(Schema::new_with_metadata(
-        fields,
-        old_schema.metadata().clone(),
-    ));
-    RecordBatch::try_new(new_schema, columns)
-        .map_err(|source| PdataError::ColumnLengthMismatch { source })
 }
 
 #[async_trait(?Send)]
@@ -2042,7 +1880,6 @@ impl NativePdataProcessor for MetricStartTimeProcessor {
         }
 
         let (context, mut arrow_records) = arrow_pdata.into_parts();
-        arrow_records.decode_transport_optimized_ids()?;
 
         let stats = effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
             self.engine
@@ -2088,7 +1925,7 @@ mod tests {
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
-        AnyValue, InstrumentationScope, KeyValue, KeyValueList,
+        AnyValue, InstrumentationScope, KeyValue,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
@@ -2125,6 +1962,129 @@ mod tests {
         KeyValue::new(k, AnyValue::new_string(v))
     }
 
+    fn metrics_batch(res_attrs: Vec<KeyValue>, metrics: Vec<Metric>) -> MetricsData {
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().attributes(res_attrs).finish(),
+            vec![ScopeMetrics::new(InstrumentationScope::default(), metrics)],
+        )])
+    }
+
+    fn sum_metric(name: &str, temp: AggregationTemporality, pts: Vec<NumberDataPoint>) -> Metric {
+        Metric::build()
+            .name(name)
+            .data_sum(Sum::new(temp, true, pts))
+            .finish()
+    }
+
+    fn summary_metric(name: &str, pts: Vec<SummaryDataPoint>) -> Metric {
+        Metric::build()
+            .name(name)
+            .data_summary(Summary::new(pts))
+            .finish()
+    }
+
+    fn hist_metric(
+        name: &str,
+        temp: AggregationTemporality,
+        pts: Vec<HistogramDataPoint>,
+    ) -> Metric {
+        Metric::build()
+            .name(name)
+            .data_histogram(Histogram::new(temp, pts))
+            .finish()
+    }
+
+    fn exp_hist_metric(
+        name: &str,
+        temp: AggregationTemporality,
+        pts: Vec<ExponentialHistogramDataPoint>,
+    ) -> Metric {
+        Metric::build()
+            .name(name)
+            .data_exponential_histogram(ExponentialHistogram::new(temp, pts))
+            .finish()
+    }
+
+    fn num_dp(start: u64, ts: u64, attrs: Vec<KeyValue>, val: i64) -> NumberDataPoint {
+        let mut b = NumberDataPoint::build()
+            .time_unix_nano(ts)
+            .attributes(attrs)
+            .value_int(val);
+        if start != 0 {
+            b = b.start_time_unix_nano(start);
+        }
+        b.finish()
+    }
+
+    fn summary_dp(
+        start: u64,
+        ts: u64,
+        attrs: Vec<KeyValue>,
+        c: u64,
+        s: f64,
+        q: Vec<ValueAtQuantile>,
+    ) -> SummaryDataPoint {
+        let mut b = SummaryDataPoint::build()
+            .time_unix_nano(ts)
+            .attributes(attrs)
+            .count(c)
+            .sum(s)
+            .quantile_values(q);
+        if start != 0 {
+            b = b.start_time_unix_nano(start);
+        }
+        b.finish()
+    }
+
+    fn hist_dp(
+        start: u64,
+        ts: u64,
+        attrs: Vec<KeyValue>,
+        c: u64,
+        s: f64,
+        bounds: Vec<f64>,
+        buckets: Vec<u64>,
+    ) -> HistogramDataPoint {
+        let mut b = HistogramDataPoint::build()
+            .time_unix_nano(ts)
+            .attributes(attrs)
+            .count(c)
+            .sum(s)
+            .explicit_bounds(bounds)
+            .bucket_counts(buckets);
+        if start != 0 {
+            b = b.start_time_unix_nano(start);
+        }
+        b.finish()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exp_hist_dp(
+        start: u64,
+        ts: u64,
+        attrs: Vec<KeyValue>,
+        scale: i32,
+        c: u64,
+        s: f64,
+        z: u64,
+        pos: Buckets,
+        neg: Buckets,
+    ) -> ExponentialHistogramDataPoint {
+        let mut b = ExponentialHistogramDataPoint::build()
+            .time_unix_nano(ts)
+            .attributes(attrs)
+            .scale(scale)
+            .count(c)
+            .sum(s)
+            .zero_count(z)
+            .positive(pos)
+            .negative(neg);
+        if start != 0 {
+            b = b.start_time_unix_nano(start);
+        }
+        b.finish()
+    }
+
     fn run_batch(
         proc: &mut MetricStartTimeProcessor,
         input: MetricsData,
@@ -2144,132 +2104,60 @@ mod tests {
         (Some(out), stats)
     }
 
+    fn assert_metrics_eq(actual: Option<MetricsData>, expected: MetricsData) {
+        assert_equivalent(
+            &[OtlpProtoMessage::Metrics(actual.unwrap())],
+            &[OtlpProtoMessage::Metrics(expected)],
+        );
+    }
+
     /// Scenario: Cumulative Sum series observed across initial scrape, monotonic increase, and counter reset.
     /// Guarantees: Initial points are cached and dropped, subsequent points subtract the initial baseline with start_time from the initial point, and resets set start_time to time - 1ms with a zeroed baseline.
     #[test]
     fn test_cumulative_sum_subtract_initial_and_reset() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-
-        let make_sum_batch = |ts: u64, val_a: f64, val_b: f64| {
-            MetricsData::new(vec![ResourceMetrics::new(
-                Resource::build()
-                    .attributes(vec![kv_str("service.name", "checkout")])
-                    .finish(),
-                vec![ScopeMetrics::new(
-                    InstrumentationScope::build().name("scope").finish(),
-                    vec![
-                        Metric::build()
-                            .name("http_requests_total")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Cumulative,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(ts)
-                                        .attributes(vec![kv_str("method", "GET")])
-                                        .value_double(val_a)
-                                        .finish(),
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(ts)
-                                        .attributes(vec![kv_str("method", "POST")])
-                                        .value_double(val_b)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
+        let res = || vec![kv_str("service.name", "checkout")];
+        let dp_f64 = |start: u64, ts: u64, m: &str, v: f64| {
+            let mut b = NumberDataPoint::build()
+                .time_unix_nano(ts)
+                .attributes(vec![kv_str("method", m)])
+                .value_double(v);
+            if start != 0 {
+                b = b.start_time_unix_nano(start);
+            }
+            b.finish()
+        };
+        let make_sum = |s_get: u64, s_post: u64, ts: u64, a: f64, b: f64| {
+            metrics_batch(
+                res(),
+                vec![sum_metric(
+                    "http_requests_total",
+                    AggregationTemporality::Cumulative,
+                    vec![dp_f64(s_get, ts, "GET", a), dp_f64(s_post, ts, "POST", b)],
                 )],
-            )])
+            )
         };
 
-        // 1. Initial scrape: both points are cached as reference values and dropped.
-        let (out1, stats1) = run_batch(&mut proc, make_sum_batch(10_000_000, 100.0, 50.0), t0);
+        let (out1, s1) = run_batch(&mut proc, make_sum(0, 0, 10_000_000, 100.0, 50.0), t0);
         assert!(out1.is_none());
-        assert_eq!(stats1.dropped_initial, 2);
-        assert_eq!(stats1.adjusted_points, 0);
+        assert_eq!((s1.dropped_initial, s1.adjusted_points), (2, 0));
 
-        // 2. Second scrape: values have initial reference subtracted and start_time = 10_000_000.
-        let (out2, stats2) = run_batch(&mut proc, make_sum_batch(20_000_000, 135.0, 55.0), t0);
-        assert_eq!(stats2.dropped_initial, 0);
-        assert_eq!(stats2.adjusted_points, 2);
-        assert_eq!(stats2.resets_detected, 0);
-
-        let expected2 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build()
-                .attributes(vec![kv_str("service.name", "checkout")])
-                .finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().name("scope").finish(),
-                vec![
-                    Metric::build()
-                        .name("http_requests_total")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("method", "GET")])
-                                    .value_double(35.0)
-                                    .finish(),
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("method", "POST")])
-                                    .value_double(5.0)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out2.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected2)],
+        let (out2, s2) = run_batch(&mut proc, make_sum(0, 0, 20_000_000, 135.0, 55.0), t0);
+        assert_eq!(
+            (s2.dropped_initial, s2.adjusted_points, s2.resets_detected),
+            (0, 2, 0)
+        );
+        assert_metrics_eq(
+            out2,
+            make_sum(10_000_000, 10_000_000, 20_000_000, 35.0, 5.0),
         );
 
-        // 3. Third scrape: GET resets from 135 -> 12, POST continues 55 -> 70.
-        let (out3, stats3) = run_batch(&mut proc, make_sum_batch(30_000_000, 12.0, 70.0), t0);
-        assert_eq!(stats3.resets_detected, 1);
-        assert_eq!(stats3.adjusted_points, 2);
-
-        let expected3 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build()
-                .attributes(vec![kv_str("service.name", "checkout")])
-                .finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().name("scope").finish(),
-                vec![
-                    Metric::build()
-                        .name("http_requests_total")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(29_000_000u64)
-                                    .time_unix_nano(30_000_000u64)
-                                    .attributes(vec![kv_str("method", "GET")])
-                                    .value_double(12.0)
-                                    .finish(),
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(30_000_000u64)
-                                    .attributes(vec![kv_str("method", "POST")])
-                                    .value_double(20.0)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out3.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected3)],
+        let (out3, s3) = run_batch(&mut proc, make_sum(0, 0, 30_000_000, 12.0, 70.0), t0);
+        assert_eq!((s3.resets_detected, s3.adjusted_points), (1, 2));
+        assert_metrics_eq(
+            out3,
+            make_sum(29_000_000, 10_000_000, 30_000_000, 12.0, 20.0),
         );
     }
 
@@ -2280,173 +2168,93 @@ mod tests {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
 
-        // Scrape 1: a Gauge, a Delta Sum, a Cumulative Sum with existing start_time, and a
-        // Cumulative Sum without start_time. Only the last one should be dropped as initial.
-        let batch1 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("cpu_gauge")
-                        .data_gauge(Gauge::new(vec![
-                            NumberDataPoint::build()
-                                .time_unix_nano(10_000_000u64)
-                                .value_int(42)
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("delta_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Delta,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .value_int(7)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("already_adjusted_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(5_000_000u64)
-                                    .time_unix_nano(10_000_000u64)
-                                    .value_int(99)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("unadjusted_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .value_int(100)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-
-        let (out1, stats1) = run_batch(&mut proc, batch1, t0);
-        assert_eq!(stats1.dropped_initial, 1);
-        assert_eq!(stats1.adjusted_points, 0);
-        let out1 = out1.unwrap();
-        assert_eq!(out1.resource_metrics[0].scope_metrics[0].metrics.len(), 3);
-
-        // Scrape 2 for unadjusted_counter with FLAG_NO_RECORDED_VALUE (staleness marker):
-        // start_time_unix_nano is set to 10_000_000, value is untouched, and reference state is preserved.
-        let stale_batch = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("unadjusted_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .flags(DataPointFlags::NoRecordedValueMask as u32)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        let (out2, stats2) = run_batch(&mut proc, stale_batch, t0);
-        assert_eq!(stats2.adjusted_points, 1);
-        assert_eq!(stats2.resets_detected, 0);
-        let expected_stale = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("unadjusted_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(20_000_000u64)
-                                    .flags(DataPointFlags::NoRecordedValueMask as u32)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out2.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected_stale)],
+        let batch1 = metrics_batch(
+            vec![],
+            vec![
+                Metric::build()
+                    .name("cpu_gauge")
+                    .data_gauge(Gauge::new(vec![num_dp(0, 10_000_000, vec![], 42)]))
+                    .finish(),
+                sum_metric(
+                    "delta_counter",
+                    AggregationTemporality::Delta,
+                    vec![num_dp(0, 10_000_000, vec![], 7)],
+                ),
+                sum_metric(
+                    "already_adjusted_counter",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(5_000_000, 10_000_000, vec![], 99)],
+                ),
+                sum_metric(
+                    "unadjusted_counter",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, 10_000_000, vec![], 100)],
+                ),
+            ],
+        );
+        let (out1, s1) = run_batch(&mut proc, batch1, t0);
+        assert_eq!((s1.dropped_initial, s1.adjusted_points), (1, 0));
+        assert_eq!(
+            out1.unwrap().resource_metrics[0].scope_metrics[0]
+                .metrics
+                .len(),
+            3
         );
 
-        // Scrape 3 for unadjusted_counter with value 125 -> 125 - 100 = 25 (still subtracted against 100!).
-        let resume_batch = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("unadjusted_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(30_000_000u64)
-                                    .value_int(125)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
+        let preset_only = metrics_batch(
+            vec![],
+            vec![sum_metric(
+                "already_adjusted_counter",
+                AggregationTemporality::Cumulative,
+                vec![num_dp(5_000_000, 15_000_000, vec![], 110)],
             )],
-        )]);
-        let (out3, _) = run_batch(&mut proc, resume_batch, t0);
-        let expected_resume = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("unadjusted_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(30_000_000u64)
-                                    .value_int(25)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out3.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected_resume)],
+        );
+        let (out_p, s_p) = run_batch(&mut proc, preset_only.clone(), t0);
+        assert_eq!((s_p.dropped_initial, s_p.adjusted_points), (0, 0));
+        assert_metrics_eq(out_p, preset_only);
+
+        let stale_dp = |start: u64| {
+            let mut b = NumberDataPoint::build()
+                .time_unix_nano(20_000_000u64)
+                .flags(DataPointFlags::NoRecordedValueMask as u32);
+            if start != 0 {
+                b = b.start_time_unix_nano(start);
+            }
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "unadjusted_counter",
+                    AggregationTemporality::Cumulative,
+                    vec![b.finish()],
+                )],
+            )
+        };
+        let (out2, s2) = run_batch(&mut proc, stale_dp(0), t0);
+        assert_eq!((s2.adjusted_points, s2.resets_detected), (1, 0));
+        assert_metrics_eq(out2, stale_dp(10_000_000));
+
+        let (out3, _) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "unadjusted_counter",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, 30_000_000, vec![], 125)],
+                )],
+            ),
+            t0,
+        );
+        assert_metrics_eq(
+            out3,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "unadjusted_counter",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(10_000_000, 30_000_000, vec![], 25)],
+                )],
+            ),
         );
     }
 
@@ -2456,282 +2264,80 @@ mod tests {
     fn test_summary_histogram_and_exp_histogram_adjustment() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
+        let q = || vec![ValueAtQuantile::new(0.99, 0.42)];
 
-        let make_complex_batch = |ts: u64,
-                                  s_count: u64,
-                                  s_sum: f64,
-                                  h_count: u64,
-                                  h_sum: f64,
-                                  h_buckets: Vec<u64>,
-                                  eh_count: u64,
-                                  eh_sum: f64,
-                                  eh_zero: u64,
-                                  eh_pos_offset: i32,
-                                  eh_pos_buckets: Vec<u64>| {
-            MetricsData::new(vec![ResourceMetrics::new(
-                Resource::default(),
-                vec![ScopeMetrics::new(
-                    InstrumentationScope::default(),
-                    vec![
-                        Metric::build()
-                            .name("rpc_summary")
-                            .data_summary(Summary::new(vec![
-                                SummaryDataPoint::build()
-                                    .time_unix_nano(ts)
-                                    .count(s_count)
-                                    .sum(s_sum)
-                                    .quantile_values(vec![ValueAtQuantile::new(0.99, 0.42)])
-                                    .finish(),
-                            ]))
-                            .finish(),
-                        Metric::build()
-                            .name("rpc_hist")
-                            .data_histogram(Histogram::new(
-                                AggregationTemporality::Cumulative,
-                                vec![
-                                    HistogramDataPoint::build()
-                                        .time_unix_nano(ts)
-                                        .count(h_count)
-                                        .sum(h_sum)
-                                        .explicit_bounds(vec![1.0, 5.0])
-                                        .bucket_counts(h_buckets)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                        Metric::build()
-                            .name("rpc_exp_hist")
-                            .data_exponential_histogram(ExponentialHistogram::new(
-                                AggregationTemporality::Cumulative,
-                                vec![
-                                    ExponentialHistogramDataPoint::build()
-                                        .time_unix_nano(ts)
-                                        .scale(2)
-                                        .count(eh_count)
-                                        .sum(eh_sum)
-                                        .zero_count(eh_zero)
-                                        .positive(Buckets::new(eh_pos_offset, eh_pos_buckets))
-                                        .negative(Buckets::new(0, vec![]))
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
-                )],
-            )])
+        let make = |st: u64,
+                    ts: u64,
+                    (sc, ss): (u64, f64),
+                    (hc, hs, hb): (u64, f64, Vec<u64>),
+                    (ec, es, ez, eo, eb): (u64, f64, u64, i32, Vec<u64>)| {
+            metrics_batch(
+                vec![],
+                vec![
+                    summary_metric("rpc_summary", vec![summary_dp(st, ts, vec![], sc, ss, q())]),
+                    hist_metric(
+                        "rpc_hist",
+                        AggregationTemporality::Cumulative,
+                        vec![hist_dp(st, ts, vec![], hc, hs, vec![1.0, 5.0], hb)],
+                    ),
+                    exp_hist_metric(
+                        "rpc_exp_hist",
+                        AggregationTemporality::Cumulative,
+                        vec![exp_hist_dp(
+                            st,
+                            ts,
+                            vec![],
+                            2,
+                            ec,
+                            es,
+                            ez,
+                            Buckets::new(eo, eb),
+                            Buckets::new(0, vec![]),
+                        )],
+                    ),
+                ],
+            )
         };
 
-        // 1. Initial scrape: all 3 points dropped.
-        let (out1, stats1) = run_batch(
+        let (out1, s1) = run_batch(
             &mut proc,
-            make_complex_batch(
+            make(
+                0,
                 10_000_000,
-                10,
-                100.0,
-                10,
-                50.0,
-                vec![2, 5, 3],
-                10,
-                50.0,
-                2,
-                1,
-                vec![3, 5],
+                (10, 100.0),
+                (10, 50.0, vec![2, 5, 3]),
+                (10, 50.0, 2, 1, vec![3, 5]),
             ),
             t0,
         );
         assert!(out1.is_none());
-        assert_eq!(stats1.dropped_initial, 3);
+        assert_eq!(s1.dropped_initial, 3);
 
-        // 2. Second scrape (with ExpHistogram positive bucket offset shifted from 1 -> 0):
-        // At offset 0, bucket 0 has ref_idx = 0 + (0 - 1) = -1 (unadjusted = 4),
-        // bucket 1 has ref_idx = 1 - 1 = 0 (subtract ref[0]=3 -> 7 - 3 = 4),
-        // bucket 2 has ref_idx = 2 - 1 = 1 (subtract ref[1]=5 -> 5 - 5 = 0).
-        let (out2, stats2) = run_batch(
+        let (out2, s2) = run_batch(
             &mut proc,
-            make_complex_batch(
-                20_000_000,
-                15,
-                160.0,
-                16,
-                80.0,
-                vec![4, 8, 4],
-                18,
-                90.0,
-                3,
+            make(
                 0,
-                vec![4, 7, 5],
+                20_000_000,
+                (15, 160.0),
+                (16, 80.0, vec![4, 8, 4]),
+                (18, 90.0, 3, 0, vec![4, 7, 5]),
             ),
             t0,
         );
-        assert_eq!(stats2.dropped_initial, 0);
-        assert_eq!(stats2.adjusted_points, 3);
-        assert_eq!(stats2.resets_detected, 0);
-
-        let expected2 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("rpc_summary")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .start_time_unix_nano(10_000_000u64)
-                                .time_unix_nano(20_000_000u64)
-                                .count(5u64)
-                                .sum(60.0)
-                                .quantile_values(vec![ValueAtQuantile::new(0.99, 0.42)])
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("rpc_hist")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(20_000_000u64)
-                                    .count(6u64)
-                                    .sum(30.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![2, 3, 1])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("rpc_exp_hist")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(20_000_000u64)
-                                    .scale(2)
-                                    .count(8u64)
-                                    .sum(40.0)
-                                    .zero_count(1u64)
-                                    .positive(Buckets::new(0, vec![4, 4, 0]))
-                                    .negative(Buckets::new(0, vec![]))
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out2.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected2)],
+        assert_eq!(
+            (s2.dropped_initial, s2.adjusted_points, s2.resets_detected),
+            (0, 3, 0)
         );
-    }
-
-    /// Scenario: Two resources observed initially, then only one resource remains active across two mark-and-sweep GC intervals.
-    /// Guarantees: Inactive resources and series are evicted after two GC cycles while active series retain their cached baseline.
-    #[test]
-    fn test_mark_and_sweep_gc_evicts_stale_series_and_resources() {
-        let gc_interval = Duration::from_secs(60);
-        let mut proc = test_processor(gc_interval);
-        let t0 = Instant::now();
-
-        let make_resource_batch = |res_name: &str, ts: u64, val: i64| {
-            MetricsData::new(vec![ResourceMetrics::new(
-                Resource::build()
-                    .attributes(vec![kv_str("service.name", res_name)])
-                    .finish(),
-                vec![ScopeMetrics::new(
-                    InstrumentationScope::default(),
-                    vec![
-                        Metric::build()
-                            .name("requests_total")
-                            .data_sum(Sum::new(
-                                AggregationTemporality::Cumulative,
-                                true,
-                                vec![
-                                    NumberDataPoint::build()
-                                        .time_unix_nano(ts)
-                                        .value_int(val)
-                                        .finish(),
-                                ],
-                            ))
-                            .finish(),
-                    ],
-                )],
-            )])
-        };
-
-        // At t0: see resource A and resource B (both dropped as initial, marks set to true).
-        let (out_a1, _) = run_batch(&mut proc, make_resource_batch("svc-a", 10_000_000, 10), t0);
-        let (out_b1, _) = run_batch(&mut proc, make_resource_batch("svc-b", 10_000_000, 20), t0);
-        assert!(out_a1.is_none());
-        assert!(out_b1.is_none());
-        assert_eq!(proc.engine.cache.resource_count(), 2);
-
-        // At t0 + 61s: first GC sweep clears marks from t0 (keeping svc-a and svc-b for one cycle).
-        let t1 = t0 + Duration::from_secs(61);
-        let (out_a2, _) = run_batch(&mut proc, make_resource_batch("svc-a", 20_000_000, 15), t1);
-        assert!(out_a2.is_some());
-        assert_eq!(proc.engine.cache.resource_count(), 2);
-
-        // Touch svc-a again before next GC so svc-a is marked while svc-b remains unmarked.
-        let t2 = t1 + Duration::from_secs(30);
-        let (out_a3, _) = run_batch(&mut proc, make_resource_batch("svc-a", 30_000_000, 25), t2);
-        assert!(out_a3.is_some());
-
-        // At t1 + 61s: second GC sweep evicts unmarked svc-b while retaining svc-a.
-        let t3 = t1 + Duration::from_secs(61);
-        let (out_a4, _) = run_batch(&mut proc, make_resource_batch("svc-a", 40_000_000, 30), t3);
-        assert!(out_a4.is_some());
-        assert_eq!(proc.engine.cache.resource_count(), 1);
-
-        // If svc-b reappears now, its first point is treated as a fresh initial point and dropped.
-        let (out_b_fresh, stats_b_fresh) =
-            run_batch(&mut proc, make_resource_batch("svc-b", 50_000_000, 100), t3);
-        assert!(out_b_fresh.is_none());
-        assert_eq!(stats_b_fresh.dropped_initial, 1);
-
-        // Also verify per-series sweep within an active resource: introduce method=POST under svc-a at t3,
-        // then only touch the unattributed series across two GC intervals so method=POST is swept.
-        let svc_a_with_post = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build()
-                .attributes(vec![kv_str("service.name", "svc-a")])
-                .finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("requests_total")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(50_000_000u64)
-                                    .attributes(vec![kv_str("method", "POST")])
-                                    .value_int(50)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        let (out_post1, stats_post1) = run_batch(&mut proc, svc_a_with_post.clone(), t3);
-        assert!(out_post1.is_none());
-        assert_eq!(stats_post1.dropped_initial, 1);
-
-        let t4 = t3 + Duration::from_secs(61);
-        let _ = run_batch(&mut proc, make_resource_batch("svc-a", 60_000_000, 35), t4);
-        let t5 = t4 + Duration::from_secs(30);
-        let _ = run_batch(&mut proc, make_resource_batch("svc-a", 70_000_000, 40), t5);
-        let t6 = t4 + Duration::from_secs(61);
-        let _ = run_batch(&mut proc, make_resource_batch("svc-a", 80_000_000, 45), t6);
-
-        // Now method=POST under svc-a was swept while the unattributed series under svc-a stayed active.
-        let (out_post_reseeded, stats_post_reseeded) = run_batch(&mut proc, svc_a_with_post, t6);
-        assert!(out_post_reseeded.is_none());
-        assert_eq!(stats_post_reseeded.dropped_initial, 1);
+        assert_metrics_eq(
+            out2,
+            make(
+                10_000_000,
+                20_000_000,
+                (5, 60.0),
+                (6, 30.0, vec![2, 3, 1]),
+                (8, 40.0, 1, 0, vec![4, 4, 0]),
+            ),
+        );
     }
 
     /// Scenario: Summary, Histogram, and ExponentialHistogram series with passthrough rows, staleness flags, resets, and post-reset scrapes.
@@ -2740,354 +2346,231 @@ mod tests {
     fn test_summary_histogram_and_exp_histogram_resets_staleness_and_passthrough() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
+        let tr = || vec![kv_str("s", "tracked")];
+        let pr = || vec![kv_str("s", "preset")];
 
-        // Scrape 1: mix of unadjusted cumulative points (dropped as initial) and passthrough points
-        // (Delta or already-populated start_time_unix_nano) in the same tables so partial-table
-        // filtering (0 < kept_count < num_rows) runs for Summary, Histogram, and ExpHistogram.
-        let scrape1 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("summary_m")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .time_unix_nano(10_000_000u64)
-                                .attributes(vec![kv_str("s", "tracked")])
-                                .count(10u64)
-                                .sum(100.0)
-                                .finish(),
-                            SummaryDataPoint::build()
-                                .start_time_unix_nano(1_000_000u64)
-                                .time_unix_nano(10_000_000u64)
-                                .attributes(vec![kv_str("s", "preset")])
-                                .count(5u64)
-                                .sum(50.0)
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("hist_cum")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .count(10u64)
-                                    .sum(50.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![2, 5, 3])
-                                    .finish(),
-                                HistogramDataPoint::build()
-                                    .start_time_unix_nano(1_000_000u64)
-                                    .time_unix_nano(10_000_000u64)
-                                    .attributes(vec![kv_str("s", "preset")])
-                                    .count(4u64)
-                                    .sum(20.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![1, 2, 1])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("hist_delta")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Delta,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .count(3u64)
-                                    .sum(15.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![1, 1, 1])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("eh_cum")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .scale(2)
-                                    .count(10u64)
-                                    .sum(50.0)
-                                    .zero_count(2u64)
-                                    .positive(Buckets::new(1, vec![3, 5]))
-                                    .negative(Buckets::new(0, vec![1]))
-                                    .finish(),
-                                ExponentialHistogramDataPoint::build()
-                                    .start_time_unix_nano(1_000_000u64)
-                                    .time_unix_nano(10_000_000u64)
-                                    .attributes(vec![kv_str("s", "preset")])
-                                    .scale(2)
-                                    .count(4u64)
-                                    .sum(20.0)
-                                    .zero_count(1u64)
-                                    .positive(Buckets::new(0, vec![3]))
-                                    .negative(Buckets::new(0, vec![]))
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("eh_delta")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Delta,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .scale(1)
-                                    .count(2u64)
-                                    .sum(10.0)
-                                    .zero_count(0u64)
-                                    .positive(Buckets::new(0, vec![2]))
-                                    .negative(Buckets::new(0, vec![]))
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-
-        let (out1, stats1) = run_batch(&mut proc, scrape1, t0);
+        let scrape1 = metrics_batch(
+            vec![],
+            vec![
+                summary_metric(
+                    "summary_m",
+                    vec![
+                        summary_dp(1_000_000, 10_000_000, pr(), 5, 50.0, vec![]),
+                        summary_dp(0, 10_000_000, tr(), 10, 100.0, vec![]),
+                    ],
+                ),
+                hist_metric(
+                    "hist_delta",
+                    AggregationTemporality::Delta,
+                    vec![hist_dp(
+                        0,
+                        10_000_000,
+                        vec![],
+                        3,
+                        15.0,
+                        vec![1.0, 5.0],
+                        vec![1, 1, 1],
+                    )],
+                ),
+                hist_metric(
+                    "hist_cum",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        hist_dp(
+                            1_000_000,
+                            10_000_000,
+                            pr(),
+                            4,
+                            20.0,
+                            vec![1.0, 5.0],
+                            vec![1, 2, 1],
+                        ),
+                        hist_dp(0, 10_000_000, tr(), 10, 50.0, vec![1.0, 5.0], vec![2, 5, 3]),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_delta",
+                    AggregationTemporality::Delta,
+                    vec![exp_hist_dp(
+                        0,
+                        10_000_000,
+                        vec![],
+                        1,
+                        2,
+                        10.0,
+                        0,
+                        Buckets::new(0, vec![2]),
+                        Buckets::new(0, vec![]),
+                    )],
+                ),
+                exp_hist_metric(
+                    "eh_cum",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        exp_hist_dp(
+                            1_000_000,
+                            10_000_000,
+                            pr(),
+                            2,
+                            4,
+                            20.0,
+                            1,
+                            Buckets::new(0, vec![3]),
+                            Buckets::new(0, vec![]),
+                        ),
+                        exp_hist_dp(
+                            0,
+                            10_000_000,
+                            tr(),
+                            2,
+                            10,
+                            50.0,
+                            2,
+                            Buckets::new(1, vec![3, 5]),
+                            Buckets::new(0, vec![1]),
+                        ),
+                    ],
+                ),
+            ],
+        );
+        let (out1, s1) = run_batch(&mut proc, scrape1, t0);
         assert!(out1.is_some());
-        assert_eq!(stats1.dropped_initial, 3);
-        assert_eq!(stats1.adjusted_points, 0);
+        assert_eq!((s1.dropped_initial, s1.adjusted_points), (3, 0));
 
-        // Scrape 2: FLAG_NO_RECORDED_VALUE on tracked Summary, Histogram, and ExpHistogram.
-        let scrape2_stale = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("summary_m")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .time_unix_nano(20_000_000u64)
-                                .attributes(vec![kv_str("s", "tracked")])
-                                .flags(DataPointFlags::NoRecordedValueMask as u32)
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("hist_cum")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .flags(DataPointFlags::NoRecordedValueMask as u32)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("eh_cum")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .flags(DataPointFlags::NoRecordedValueMask as u32)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        let (out2, stats2) = run_batch(&mut proc, scrape2_stale, t0);
+        let stale = DataPointFlags::NoRecordedValueMask as u32;
+        let scrape2 = metrics_batch(
+            vec![],
+            vec![
+                summary_metric(
+                    "summary_m",
+                    vec![
+                        SummaryDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(tr())
+                            .flags(stale)
+                            .finish(),
+                    ],
+                ),
+                hist_metric(
+                    "hist_cum",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        HistogramDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(tr())
+                            .flags(stale)
+                            .finish(),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_cum",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(tr())
+                            .flags(stale)
+                            .finish(),
+                    ],
+                ),
+            ],
+        );
+        let (out2, s2) = run_batch(&mut proc, scrape2, t0);
         assert!(out2.is_some());
-        assert_eq!(stats2.adjusted_points, 3);
-        assert_eq!(stats2.resets_detected, 0);
+        assert_eq!((s2.adjusted_points, s2.resets_detected), (3, 0));
 
-        // Scrape 3: resets on all 3 tracked series (count decrease on Summary, bucket decrease on
-        // Histogram, and offset shift that drops logical bucket 1 on ExpHistogram).
-        let scrape3_reset = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
+        let tracked = |st: u64,
+                       ts: u64,
+                       sc: u64,
+                       ss: f64,
+                       hc: u64,
+                       hs: f64,
+                       hb: Vec<u64>,
+                       ec: u64,
+                       es: f64,
+                       ez: u64,
+                       eb: Vec<u64>| {
+            metrics_batch(
+                vec![],
                 vec![
-                    Metric::build()
-                        .name("summary_m")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .time_unix_nano(30_000_000u64)
-                                .attributes(vec![kv_str("s", "tracked")])
-                                .count(4u64)
-                                .sum(40.0)
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("hist_cum")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .time_unix_nano(30_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .count(12u64)
-                                    .sum(60.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![1, 6, 5])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("eh_cum")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .time_unix_nano(30_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .scale(2)
-                                    .count(12u64)
-                                    .sum(60.0)
-                                    .zero_count(3u64)
-                                    .positive(Buckets::new(2, vec![4, 5]))
-                                    .negative(Buckets::new(0, vec![1]))
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
+                    summary_metric("summary_m", vec![summary_dp(st, ts, tr(), sc, ss, vec![])]),
+                    hist_metric(
+                        "hist_cum",
+                        AggregationTemporality::Cumulative,
+                        vec![hist_dp(st, ts, tr(), hc, hs, vec![1.0, 5.0], hb)],
+                    ),
+                    exp_hist_metric(
+                        "eh_cum",
+                        AggregationTemporality::Cumulative,
+                        vec![exp_hist_dp(
+                            st,
+                            ts,
+                            tr(),
+                            2,
+                            ec,
+                            es,
+                            ez,
+                            Buckets::new(2, eb),
+                            Buckets::new(0, vec![1]),
+                        )],
+                    ),
                 ],
-            )],
-        )]);
-        let (out3, stats3) = run_batch(&mut proc, scrape3_reset, t0);
+            )
+        };
+
+        let (out3, s3) = run_batch(
+            &mut proc,
+            tracked(
+                0,
+                30_000_000,
+                4,
+                40.0,
+                12,
+                60.0,
+                vec![1, 6, 5],
+                12,
+                60.0,
+                3,
+                vec![4, 5],
+            ),
+            t0,
+        );
         assert!(out3.is_some());
-        assert_eq!(stats3.adjusted_points, 3);
-        assert_eq!(stats3.resets_detected, 3);
+        assert_eq!((s3.adjusted_points, s3.resets_detected), (3, 3));
 
-        // Scrape 4: post-reset increase uses reset_start (29_000_000) and zero reference baseline.
-        let scrape4_post_reset = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("summary_m")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .time_unix_nano(40_000_000u64)
-                                .attributes(vec![kv_str("s", "tracked")])
-                                .count(7u64)
-                                .sum(70.0)
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("hist_cum")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .time_unix_nano(40_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .count(15u64)
-                                    .sum(75.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![2, 7, 6])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("eh_cum")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .time_unix_nano(40_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .scale(2)
-                                    .count(14u64)
-                                    .sum(70.0)
-                                    .zero_count(4u64)
-                                    .positive(Buckets::new(2, vec![5, 6]))
-                                    .negative(Buckets::new(0, vec![1]))
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        let (out4, stats4) = run_batch(&mut proc, scrape4_post_reset, t0);
-        assert_eq!(stats4.resets_detected, 0);
-        assert_eq!(stats4.adjusted_points, 3);
-        let expected4 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("summary_m")
-                        .data_summary(Summary::new(vec![
-                            SummaryDataPoint::build()
-                                .start_time_unix_nano(29_000_000u64)
-                                .time_unix_nano(40_000_000u64)
-                                .attributes(vec![kv_str("s", "tracked")])
-                                .count(7u64)
-                                .sum(70.0)
-                                .finish(),
-                        ]))
-                        .finish(),
-                    Metric::build()
-                        .name("hist_cum")
-                        .data_histogram(Histogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                HistogramDataPoint::build()
-                                    .start_time_unix_nano(29_000_000u64)
-                                    .time_unix_nano(40_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .count(15u64)
-                                    .sum(75.0)
-                                    .explicit_bounds(vec![1.0, 5.0])
-                                    .bucket_counts(vec![2, 7, 6])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                    Metric::build()
-                        .name("eh_cum")
-                        .data_exponential_histogram(ExponentialHistogram::new(
-                            AggregationTemporality::Cumulative,
-                            vec![
-                                ExponentialHistogramDataPoint::build()
-                                    .start_time_unix_nano(29_000_000u64)
-                                    .time_unix_nano(40_000_000u64)
-                                    .attributes(vec![kv_str("s", "tracked")])
-                                    .scale(2)
-                                    .count(14u64)
-                                    .sum(70.0)
-                                    .zero_count(4u64)
-                                    .positive(Buckets::new(2, vec![5, 6]))
-                                    .negative(Buckets::new(0, vec![1]))
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out4.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected4)],
+        let (out4, s4) = run_batch(
+            &mut proc,
+            tracked(
+                0,
+                40_000_000,
+                7,
+                70.0,
+                15,
+                75.0,
+                vec![2, 7, 6],
+                14,
+                70.0,
+                4,
+                vec![5, 6],
+            ),
+            t0,
+        );
+        assert_eq!((s4.adjusted_points, s4.resets_detected), (3, 0));
+        assert_metrics_eq(
+            out4,
+            tracked(
+                29_000_000,
+                40_000_000,
+                7,
+                70.0,
+                15,
+                75.0,
+                vec![2, 7, 6],
+                14,
+                70.0,
+                4,
+                vec![5, 6],
+            ),
         );
     }
 
@@ -3098,122 +2581,81 @@ mod tests {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
 
-        // Scrape 1: seed series A.
-        let batch1 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("work_total")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .attributes(vec![kv_str("series", "A")])
-                                    .value_int(10)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        let (out1, _) = run_batch(&mut proc, batch1, t0);
+        let (out1, _) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "work_total",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, 10_000_000, vec![kv_str("series", "A")], 10)],
+                )],
+            ),
+            t0,
+        );
         assert!(out1.is_none());
 
-        // Scrape 2: series A (adjusted, kept) + series B (initial, dropped), both carrying attributes and exemplars.
-        let batch2 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
+        let ex = |tag: &str, v: i64| {
+            vec![
+                Exemplar::build()
+                    .time_unix_nano(20_000_000u64)
+                    .value_int(v)
+                    .filtered_attributes(vec![kv_str("trace", tag)])
+                    .finish(),
+            ]
+        };
+        let batch2 = metrics_batch(
+            vec![],
+            vec![sum_metric(
+                "work_total",
+                AggregationTemporality::Cumulative,
                 vec![
-                    Metric::build()
-                        .name("work_total")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("series", "A")])
-                                    .value_int(25)
-                                    .exemplars(vec![
-                                        Exemplar::build()
-                                            .time_unix_nano(20_000_000u64)
-                                            .value_int(15)
-                                            .filtered_attributes(vec![kv_str("trace", "keep")])
-                                            .finish(),
-                                    ])
-                                    .finish(),
-                                NumberDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("series", "B")])
-                                    .value_int(100)
-                                    .exemplars(vec![
-                                        Exemplar::build()
-                                            .time_unix_nano(20_000_000u64)
-                                            .value_int(100)
-                                            .filtered_attributes(vec![kv_str("trace", "drop")])
-                                            .finish(),
-                                    ])
-                                    .finish(),
-                            ],
-                        ))
+                    NumberDataPoint::build()
+                        .time_unix_nano(20_000_000u64)
+                        .attributes(vec![kv_str("series", "A")])
+                        .value_int(25)
+                        .exemplars(ex("keep", 15))
+                        .finish(),
+                    NumberDataPoint::build()
+                        .time_unix_nano(20_000_000u64)
+                        .attributes(vec![kv_str("series", "B")])
+                        .value_int(100)
+                        .exemplars(ex("drop", 100))
                         .finish(),
                 ],
             )],
-        )]);
-        let (out2, stats2) = run_batch(&mut proc, batch2, t0);
-        assert_eq!(stats2.dropped_initial, 1);
-        assert_eq!(stats2.adjusted_points, 1);
-
-        let expected2 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::default(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("work_total")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .start_time_unix_nano(10_000_000u64)
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![kv_str("series", "A")])
-                                    .value_int(15)
-                                    .exemplars(vec![
-                                        Exemplar::build()
-                                            .time_unix_nano(20_000_000u64)
-                                            .value_int(15)
-                                            .filtered_attributes(vec![kv_str("trace", "keep")])
-                                            .finish(),
-                                    ])
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        assert_equivalent(
-            &[OtlpProtoMessage::Metrics(out2.unwrap())],
-            &[OtlpProtoMessage::Metrics(expected2)],
+        );
+        let (out2, s2) = run_batch(&mut proc, batch2, t0);
+        assert_eq!((s2.dropped_initial, s2.adjusted_points), (1, 1));
+        assert_metrics_eq(
+            out2,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "work_total",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        NumberDataPoint::build()
+                            .start_time_unix_nano(10_000_000u64)
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(vec![kv_str("series", "A")])
+                            .value_int(15)
+                            .exemplars(ex("keep", 15))
+                            .finish(),
+                    ],
+                )],
+            ),
         );
     }
 
-    /// Scenario: Hashing multi-type attributes (str, int, double, bool, bytes, map, slice) across reordered batches and default-zero values.
-    /// Guarantees: AttrHasher produces identical 128-bit multiset hashes regardless of attribute row order or omitted default-zero value columns, while distinguishing distinct bytes/map values.
+    /// Scenario: Hashing multi-type attributes (str, int, double, bool, bytes, map, slice) across reordered batches, default-zero values, and transport-optimized IDs.
+    /// Guarantees: AttrHasher produces identical 128-bit multiset hashes regardless of attribute row order, omitted default-zero columns, or transport-optimized ID encodings.
     #[test]
-    fn test_attr_hasher_order_independence_all_value_types_and_defaults() {
+    fn test_attr_hasher_order_independence_all_value_types_and_transport_ids() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
 
-        let attrs_order_1 = vec![
+        let attrs1 = vec![
             kv_str("k_str", "v"),
             KeyValue::new("k_int_zero", AnyValue::new_int(0)),
             KeyValue::new("k_double_zero", AnyValue::new_double(0.0)),
@@ -3222,97 +2664,128 @@ mod tests {
             KeyValue::new("k_map", AnyValue::new_kvlist(vec![kv_str("nested", "m1")])),
             KeyValue::new("k_slice", AnyValue::new_array(vec![AnyValue::new_int(7)])),
         ];
-        let mut attrs_order_2 = attrs_order_1.clone();
-        attrs_order_2.reverse();
+        let mut attrs2 = attrs1.clone();
+        attrs2.reverse();
 
-        // Batch 1 has only default 0 / 0.0 int and double values (so int/double columns are omitted
-        // by AdaptiveArrayBuilder).
-        let batch1 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().attributes(attrs_order_1).finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
-                vec![
-                    Metric::build()
-                        .name("typed_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(10_000_000u64)
-                                    .attributes(attrs_order_2.clone())
-                                    .value_int(50)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
-                ],
-            )],
-        )]);
-        let (out1, stats1) = run_batch(&mut proc, batch1, t0);
+        let (out1, s1) = run_batch(
+            &mut proc,
+            metrics_batch(
+                attrs1,
+                vec![sum_metric(
+                    "typed_counter",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, 10_000_000, attrs2.clone(), 50)],
+                )],
+            ),
+            t0,
+        );
         assert!(out1.is_none());
-        assert_eq!(stats1.dropped_initial, 1);
+        assert_eq!(s1.dropped_initial, 1);
 
-        // Batch 2 reverses attribute order AND includes a second point with non-zero int/double
-        // attributes (forcing int and double columns to be materialized in the RecordBatch).
-        // Also includes a third point whose k_bytes differs ("xyz" vs "abc") to verify Bytes
-        // values do not collide.
-        let mut attrs_diff_bytes = attrs_order_2.clone();
+        let mut attrs_diff_bytes = attrs2.clone();
         for kv in &mut attrs_diff_bytes {
             if kv.key == "k_bytes" {
                 kv.value = Some(AnyValue::new_bytes(b"xyz".to_vec()));
             }
         }
-        let _ = KeyValueList::default();
 
-        let batch2 = MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().attributes(attrs_order_2.clone()).finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::default(),
+        let batch2 = metrics_batch(
+            attrs2.clone(),
+            vec![sum_metric(
+                "typed_counter",
+                AggregationTemporality::Cumulative,
                 vec![
-                    Metric::build()
-                        .name("typed_counter")
-                        .data_sum(Sum::new(
-                            AggregationTemporality::Cumulative,
-                            true,
-                            vec![
-                                NumberDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(attrs_order_2)
-                                    .value_int(80)
-                                    .finish(),
-                                NumberDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(vec![
-                                        KeyValue::new("k_int_nonzero", AnyValue::new_int(42)),
-                                        KeyValue::new(
-                                            "k_double_nonzero",
-                                            AnyValue::new_double(3.5),
-                                        ),
-                                    ])
-                                    .value_int(10)
-                                    .finish(),
-                                NumberDataPoint::build()
-                                    .time_unix_nano(20_000_000u64)
-                                    .attributes(attrs_diff_bytes)
-                                    .value_int(10)
-                                    .finish(),
-                            ],
-                        ))
-                        .finish(),
+                    num_dp(0, 20_000_000, attrs2, 80),
+                    num_dp(
+                        0,
+                        20_000_000,
+                        vec![
+                            KeyValue::new("k_int_nonzero", AnyValue::new_int(42)),
+                            KeyValue::new("k_double_nonzero", AnyValue::new_double(3.5)),
+                        ],
+                        10,
+                    ),
+                    num_dp(0, 20_000_000, attrs_diff_bytes, 10),
                 ],
             )],
-        )]);
-        let (out2, stats2) = run_batch(&mut proc, batch2, t0);
-        assert!(out2.is_some());
-        // The first point matches the series seeded in batch1 (80 - 50 = 30), while the 2 new
-        // series (non-zero int/double and distinct bytes) are dropped as initial points.
-        assert_eq!(stats2.adjusted_points, 1);
-        assert_eq!(stats2.dropped_initial, 2);
+        );
+
+        let mut wire_records = otlp_to_otap(&OtlpProtoMessage::Metrics(batch2));
+        wire_records.encode_transport_optimized().unwrap();
+        assert!(!all_ids_already_plain(&wire_records));
+
+        let s2 = proc
+            .engine
+            .process_metrics_batch(&mut wire_records, t0)
+            .unwrap();
+        assert_eq!((s2.adjusted_points, s2.dropped_initial), (1, 2));
     }
 
-    /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial and follow-up metric batches.
-    /// Guarantees: Fully dropped initial batches are completed without downstream emission, and subsequent adjusted batches are forwarded downstream.
+    /// Scenario: Two resources and multiple series observed initially, then only one series remains active across two mark-and-sweep GC intervals.
+    /// Guarantees: Inactive resources and inactive per-metric series under active resources are evicted after two GC cycles while active series retain their baseline.
+    #[test]
+    fn test_mark_and_sweep_gc_evicts_stale_series_and_resources() {
+        let mut proc = test_processor(Duration::from_secs(60));
+        let t0 = Instant::now();
+        let make_res = |svc: &str, ts: u64, attrs: Vec<KeyValue>, val: i64| {
+            metrics_batch(
+                vec![kv_str("service.name", svc)],
+                vec![sum_metric(
+                    "requests_total",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, ts, attrs, val)],
+                )],
+            )
+        };
+
+        let _ = run_batch(&mut proc, make_res("svc-a", 10_000_000, vec![], 10), t0);
+        let _ = run_batch(&mut proc, make_res("svc-b", 10_000_000, vec![], 20), t0);
+        assert_eq!(proc.engine.cache.resource_count(), 2);
+
+        let t1 = t0 + Duration::from_secs(61);
+        assert!(
+            run_batch(&mut proc, make_res("svc-a", 20_000_000, vec![], 15), t1)
+                .0
+                .is_some()
+        );
+        assert_eq!(proc.engine.cache.resource_count(), 2);
+
+        let _ = run_batch(
+            &mut proc,
+            make_res("svc-a", 30_000_000, vec![], 25),
+            t1 + Duration::from_secs(30),
+        );
+        let t3 = t1 + Duration::from_secs(61);
+        let _ = run_batch(&mut proc, make_res("svc-a", 40_000_000, vec![], 30), t3);
+        assert_eq!(proc.engine.cache.resource_count(), 1);
+
+        let (out_b, sb) = run_batch(&mut proc, make_res("svc-b", 50_000_000, vec![], 100), t3);
+        assert!(out_b.is_none());
+        assert_eq!(sb.dropped_initial, 1);
+
+        let post = vec![kv_str("method", "POST")];
+        let _ = run_batch(
+            &mut proc,
+            make_res("svc-a", 50_000_000, post.clone(), 50),
+            t3,
+        );
+        let t4 = t3 + Duration::from_secs(61);
+        let _ = run_batch(&mut proc, make_res("svc-a", 60_000_000, vec![], 35), t4);
+        let _ = run_batch(
+            &mut proc,
+            make_res("svc-a", 70_000_000, vec![], 40),
+            t4 + Duration::from_secs(30),
+        );
+        let t6 = t4 + Duration::from_secs(61);
+        let _ = run_batch(&mut proc, make_res("svc-a", 80_000_000, vec![], 45), t6);
+
+        let (out_post, sp) = run_batch(&mut proc, make_res("svc-a", 90_000_000, post, 99), t6);
+        assert!(out_post.is_none());
+        assert_eq!(sp.dropped_initial, 1);
+    }
+
+    /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial, follow-up, non-metric, and telemetry-collection messages.
+    /// Guarantees: Fully dropped initial batches emit nothing downstream, subsequent adjusted batches and non-metric signals are forwarded, and CollectTelemetry succeeds.
     #[test]
     fn test_pipeline_runtime_drops_initial_and_emits_subsequent_batch() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -3322,10 +2795,7 @@ mod tests {
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let user_cfg = Arc::new(NodeUserConfig::with_user_config(
             METRIC_START_TIME_PROCESSOR_URN.into(),
-            json!({
-                "strategy": "subtract_initial_point",
-                "gc_interval": "10m"
-            }),
+            json!({ "strategy": "subtract_initial_point", "gc_interval": "10m" }),
         ));
         let processor = create_metric_start_time_processor(
             pipeline_ctx,
@@ -3339,45 +2809,27 @@ mod tests {
             .set_processor(processor)
             .run_test(move |mut ctx| async move {
                 let make_pdata = |ts: u64, val: i64| {
-                    let md = MetricsData::new(vec![ResourceMetrics::new(
-                        Resource::default(),
-                        vec![ScopeMetrics::new(
-                            InstrumentationScope::default(),
-                            vec![
-                                Metric::build()
-                                    .name("counter_total")
-                                    .data_sum(Sum::new(
-                                        AggregationTemporality::Cumulative,
-                                        true,
-                                        vec![
-                                            NumberDataPoint::build()
-                                                .time_unix_nano(ts)
-                                                .value_int(val)
-                                                .finish(),
-                                        ],
-                                    ))
-                                    .finish(),
-                            ],
+                    let md = metrics_batch(
+                        vec![],
+                        vec![sum_metric(
+                            "counter_total",
+                            AggregationTemporality::Cumulative,
+                            vec![num_dp(0, ts, vec![], val)],
                         )],
-                    )]);
+                    );
                     OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Metrics(md)).into())
                 };
 
-                // Initial batch: all points dropped, so no output batch is emitted downstream.
                 ctx.process(Message::PData(make_pdata(10_000_000, 40)))
                     .await
                     .unwrap();
-                let emitted1 = ctx.drain_pdata().await;
-                assert!(emitted1.is_empty());
+                assert!(ctx.drain_pdata().await.is_empty());
 
-                // Second batch: emitted with start_time = 10_000_000 and value = 55 - 40 = 15.
                 ctx.process(Message::PData(make_pdata(20_000_000, 55)))
                     .await
                     .unwrap();
-                let emitted2 = ctx.drain_pdata().await;
-                assert_eq!(emitted2.len(), 1);
+                assert_eq!(ctx.drain_pdata().await.len(), 1);
 
-                // Non-metrics signal (Logs) passes through unchanged.
                 let logs = LogsData::new(vec![ResourceLogs::new(
                     Resource::default(),
                     vec![ScopeLogs::new(
@@ -3392,7 +2844,6 @@ mod tests {
                 assert_eq!(emitted_logs.len(), 1);
                 assert_eq!(emitted_logs[0].signal_type(), SignalType::Logs);
 
-                // CollectTelemetry control message succeeds.
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
                 }))
