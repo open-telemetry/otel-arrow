@@ -43,6 +43,8 @@ tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
+mysql_async = { workspace = true, optional = true }
+mysql_common = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
 tokio-postgres-rustls = { workspace = true, optional = true }
@@ -154,6 +156,21 @@ kafka = [
 ]
 
 # Receivers.
+# MySQL is explicitly opt-in. This feature currently enables dependencies only.
+mysql = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:mysql_async",
+    "dep:mysql_common",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:sqlparser",
+    "sqlparser/visitor",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:blake3",
+    "dep:humantime-serde",
+    "serde_json/raw_value",
+]
 # PostgreSQL is explicitly opt-in.
 postgresql = [
     "dep:otel-arrow-dfe-scraper",

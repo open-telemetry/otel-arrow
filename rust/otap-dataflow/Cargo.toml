@@ -147,6 +147,10 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
+# Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.
+mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
+# Match the driver's mysql_common version range for shared codec error types.
+mysql_common = { version = "0.37.1", default-features = false }
 jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
 tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
@@ -366,6 +370,10 @@ contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
 kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 
 # Contrib receivers.
+mysql = [
+    "otel-arrow-dfe-contrib-nodes/mysql",
+    "flat-file-user-pass-auth",
+]
 postgresql = [
     "otel-arrow-dfe-contrib-nodes/postgresql",
     "flat-file-user-pass-auth",
