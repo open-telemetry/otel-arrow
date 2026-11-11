@@ -38,7 +38,7 @@ For example:
 
 ```js
 signals |
-if ( 
+if (
     has_transport_header("x-my-header")
     // predicate involves other non-metadata fields
     and resource.attributes["x"] == Y /* and|or|not ... */
@@ -51,7 +51,7 @@ if (
     coalesce(
         regexp_capture(
           authorized_identity_claim_value("sub"),
-          "^sub:([0-9]+).*", 
+          "^sub:([0-9]+).*",
           1
         ),
         ""
@@ -70,7 +70,7 @@ if (resource.attributes["network.peer.address"] == null and metadata_has_peer_ad
     set resource.attributes["network.peer.address"] = peer_addr_from_metadata() |
     // extract port
     set resource.attributes["network.peer.port"] = coalesce(regexp_capture(
-        peer_addr_from_metadata, 
+        peer_addr_from_metadata,
         ".*:([0-9]+).*",
         1
     ), "0") as Integer
@@ -134,7 +134,7 @@ policies:
         # is different than the "original name"
         type: transport_header
         name: "albert-header"
-      
+
       - # entry referencing an authorized identity claim "sub"
         type: authorized_identity
         name: "sub"
@@ -697,7 +697,7 @@ For example, perhaps we could have a "`context`" field that is a map, which
 could be indexed by special keys containing both a domain and a name.
 
 ```rs
-context["context_entry:entry_name"] 
+context["context_entry:entry_name"]
 
 context["transport_headers:header_name"]
 
@@ -758,14 +758,14 @@ reference batch metadata.
   # Key specifies the attribute to act upon.
 - key: <key>
   action: {insert, update, upsert}
-  # FromContext specifies the context value to use to populate the attribute value. 
+  # FromContext specifies the context value to use to populate the attribute value.
   # If the key is prefixed with `metadata.`, the values are searched
   # in the receiver's transport protocol additional information like gRPC Metadata or HTTP Headers
   # (be sure to set `include_metadata: true` on the receiver).
   # If the key is prefixed with `auth.`, the values are searched
   # in the authentication information set by the server authenticator.
   # Refer to the server authenticator's documentation part of your pipeline for more information about which attributes are available.
-  # If the key is `client.address`, the value will be set to the client address. 
+  # If the key is `client.address`, the value will be set to the client address.
   # If the key doesn't exist, no action is performed.
   # If the key has multiple values the values will be joined with `;` separator.
   from_context: <other key>
