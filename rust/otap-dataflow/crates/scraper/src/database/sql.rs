@@ -26,6 +26,9 @@ use std::{
 const MAX_TOKENS: usize = 4096;
 const MAX_NESTING: usize = 128;
 
+#[path = "sql_pagination.rs"]
+mod pagination;
+
 /// One validated authored query, with native parameter names and a bounded fetch plan.
 ///
 /// Edits use token spans rather than AST rendering so literal escaping and
@@ -707,6 +710,13 @@ impl Visitor for OracleRownumFilter {
     }
 }
 
+fn has_rownum_filter(select: &Select) -> bool {
+    let mut rownum = OracleRownumFilter { query_depth: 0 };
+    [&select.selection, &select.having, &select.qualify]
+        .into_iter()
+        .any(|predicate| predicate.visit(&mut rownum).is_break())
+}
+
 fn compile_keyset(
     sql: &str,
     tokens: &[TokenWithSpan],
@@ -723,13 +733,8 @@ fn compile_keyset(
     if query.limit_clause.is_some() || query.fetch.is_some() || select.top.is_some() {
         return Err(SourceQueryError::Pagination);
     }
-    if system == DatabaseSystem::Oracle {
-        let mut rownum = OracleRownumFilter { query_depth: 0 };
-        for predicate in [&select.selection, &select.having, &select.qualify] {
-            if predicate.visit(&mut rownum).is_break() {
-                return Err(SourceQueryError::Pagination);
-            }
-        }
+    if system == DatabaseSystem::Oracle && has_rownum_filter(select) {
+        return Err(SourceQueryError::Pagination);
     }
     let keys = names
         .iter()
@@ -740,6 +745,7 @@ fn compile_keyset(
         .enumerate()
         .map(|(i, _)| native_bind(system, roles, i))
         .collect::<Vec<_>>();
+    pagination::validate(query, &binds, system)?;
     let mut found = Vec::new();
     guards(
         select.selection.as_ref().ok_or(SourceQueryError::Keyset)?,
@@ -903,7 +909,7 @@ pub enum SourceQueryError {
     Keyset,
     /// Paging conflicts with bounded fetching.
     #[error(
-        "incremental query.statement must not contain a top-level TOP, LIMIT, OFFSET, FETCH, or Oracle ROWNUM filter; the receiver supplies the page bound"
+        "incremental query.statement must not contain TOP, LIMIT, OFFSET, FETCH, or Oracle ROWNUM filters in the final query or cursor-dependent nested scopes; the receiver supplies the page bound"
     )]
     Pagination,
     /// Missing or incompatible ascending order.

@@ -465,9 +465,11 @@ Keep cursor parameters and ascending final order in `query.statement`. The
 standard strict keyset must constrain every returned incremental row; combine
 business filters through `AND`, never a bypassing `OR`. Conflicting order and
 top-level incremental row limits are rejected, including `ROWNUM` predicates in
-the final query block. Oracle applies those filters before sorting, which can
-advance a checkpoint past rows that were never returned. Independent source
-subqueries and snapshot queries retain their native limits. Writes, extra
+the final query block and cursor-dependent nested scopes. Oracle applies those
+filters before sorting, which can advance a checkpoint past rows that were never
+returned. Dependence is tracked through derived inputs, CTE chains, and correlated
+outer sources. Cursor-independent source subqueries and snapshot queries retain
+their native limits. Writes, extra
 statements, locks, and undeclared parameters are rejected in every mode.
 
 The returned incremental result must have a stable, non-null, unique cursor per

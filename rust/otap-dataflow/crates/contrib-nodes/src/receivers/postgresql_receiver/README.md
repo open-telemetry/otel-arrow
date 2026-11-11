@@ -324,6 +324,11 @@ named binds. The alternative `(e.ts, e.id) > (:last_timestamp, :last_id)` keyset
 remains supported. Keep the final ascending order. The receiver adds a bounded
 `LIMIT` and checks a successor cursor; it does not invent the checkpoint
 predicate. Top-level conflicting order or limits are rejected.
+Nested `LIMIT`, `OFFSET`, or `FETCH` is also rejected when its query depends on a
+cursor parameter, including through derived inputs, CTE chains, or correlated
+outer sources. Cursor-independent sources retain their limits. With the pinned
+parser, use `SELECT ... FROM ...` instead of unqualified `TABLE ...` shorthand
+in incremental queries; see the [shared pagination rules](../../../../scraper/README.md#sql-validation).
 
 Array slices retain native PostgreSQL syntax, including omitted and expression
 bounds such as `tags[1:2]`, `tags[:upper_bound]`, and `tags[lower_bound:]`.

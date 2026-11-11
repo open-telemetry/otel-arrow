@@ -463,7 +463,10 @@ fail explicitly, including at a deferred-row boundary.
 
 Incremental `TOP`/offset/fetch and incompatible final ordering are rejected;
 the receiver retains the authored guard/order and inserts a bound `TOP` with
-one successor probe. It does not add null guards or change null ordering.
+one successor probe. Nested pagination is also rejected when its source depends
+on cursor parameters, including through CTE chains, derived inputs, or correlated
+`APPLY` sources. Cursor-independent inner limits remain supported.
+It does not add null guards or change null ordering.
 Rows excluded by the authored SQL, including null keys filtered by comparisons,
 cannot be diagnosed. Snapshots preserve native ordering/limits and use bounded
 streaming with an overflow probe. Writes, additional statements, lock/isolation

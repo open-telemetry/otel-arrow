@@ -429,8 +429,23 @@ PostgreSQL/SQL Server JSON-constructor separators, such as
 Top-level incremental `TOP`, `LIMIT`, `OFFSET`, and `FETCH` are rejected because
 the receiver supplies bounded fetching. Oracle `ROWNUM` predicates in the final
 incremental query are also rejected: they can discard rows before cursor sorting
-and skip data. Native ordering/limits inside independent source subqueries keep
-their meaning.
+and skip data. The same restriction applies to nested query scopes when they
+depend on a cursor parameter, directly or through derived inputs and CTE chains.
+For example, an inner `WHERE id > :last_id` combined with `LIMIT`, `TOP`, or
+`ROWNUM` can omit lower IDs before the final sort; an outer guard cannot recover
+those rows. Remove that inner pagination and let the receiver bound the page.
+
+The compiler respects CTE scopes, shadowing, and recursive dependencies.
+Correlated scopes, including `LATERAL` and `APPLY`, conservatively inherit cursor
+dependence from their outer input sources. Static limited sources should be
+separate cursor-independent CTEs or non-lateral derived tables. Identifier
+resolution is conservative where database collation rules are unknown.
+Native ordering/limits inside cursor-independent source queries keep their meaning.
+
+With the pinned parser, unqualified `TABLE events ...` shorthand can hide the
+following clause and is rejected in incremental queries. Use
+`SELECT ... FROM events ...` instead; schema-qualified independent
+`TABLE public.events ...` remains supported.
 
 Snapshots execute the native source unchanged. They may use their own ordering,
 limits, duplicate rows, and nullable values, but the complete requested result

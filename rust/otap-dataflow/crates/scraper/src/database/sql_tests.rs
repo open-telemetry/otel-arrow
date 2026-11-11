@@ -743,6 +743,317 @@ fn oracle_rownum_filter_scope_preserves_native_sources() {
     );
 }
 
+/// Scenario: A derived source filters on the checkpoint before applying its own pagination.
+/// Guarantees: Nested TOP, LIMIT, OFFSET, FETCH, and Oracle ROWNUM cannot silently discard eligible cursor rows.
+#[test]
+fn nested_pagination_rejects_direct_cursor_dependencies() {
+    for (system, bind, inner) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            ":last_id",
+            "SELECT id FROM events WHERE id > :last_id LIMIT 2",
+        ),
+        (
+            DatabaseSystem::PostgreSQL,
+            "$1",
+            "SELECT id FROM events WHERE id > $1 OFFSET 1",
+        ),
+        (
+            DatabaseSystem::PostgreSQL,
+            ":last_id",
+            "SELECT id FROM events WHERE id > :last_id FETCH FIRST 2 ROWS ONLY",
+        ),
+        (
+            DatabaseSystem::PostgreSQL,
+            ":last_id",
+            "SELECT id FROM events LIMIT :last_id",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "@last_id",
+            "SELECT TOP (2) id FROM events WHERE id > @last_id",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "@last_id",
+            "SELECT TOP (@last_id) id FROM events",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "@last_id",
+            "SELECT id FROM events WHERE id > @last_id ORDER BY id OFFSET 1 ROWS FETCH NEXT 2 ROWS ONLY",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_id",
+            "SELECT id FROM events WHERE id > :last_id AND ROWNUM <= 2",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_id",
+            "SELECT id FROM events WHERE ROWNUM <= :last_id",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_id",
+            "SELECT id FROM events WHERE id > :last_id OFFSET 1 ROWS",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_id",
+            "SELECT id FROM events WHERE id > :last_id FETCH FIRST 2 ROWS ONLY",
+        ),
+    ] {
+        let sql = format!("SELECT e.id FROM ({inner}) e WHERE e.id > {bind} ORDER BY e.id");
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "int64"), system).unwrap_err(),
+            SourceQueryError::Pagination,
+            "{system:?}: {sql}"
+        );
+    }
+}
+
+/// Scenario: A limited CTE reads a chain of sources whose eligibility depends on the checkpoint.
+/// Guarantees: Cursor dependence follows CTE references even when the limited block has no direct bind.
+#[test]
+fn nested_pagination_rejects_transitive_cte_dependencies() {
+    for (system, bind, cut) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            ":last_id",
+            "SELECT id FROM forwarded LIMIT 2",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "@last_id",
+            "SELECT TOP (2) id FROM forwarded",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_id",
+            "SELECT id FROM forwarded WHERE ROWNUM <= 2",
+        ),
+    ] {
+        let sql = format!(
+            "WITH eligible AS (SELECT id FROM events WHERE id > {bind}), forwarded AS (SELECT id FROM eligible), cut AS ({cut}) SELECT e.id FROM cut e WHERE e.id > {bind} ORDER BY e.id"
+        );
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "int64"), system).unwrap_err(),
+            SourceQueryError::Pagination,
+            "{system:?}: {sql}"
+        );
+    }
+}
+
+/// Scenario: A limited source is independent of the outer keyset, or a cursor-dependent source is not paginated.
+/// Guarantees: Static source limits, ordinary CTE filtering, and snapshots retain their authored behavior.
+#[test]
+fn nested_pagination_preserves_independent_sources() {
+    for (system, bind, inner) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            ":last_id",
+            "SELECT id FROM events LIMIT 2",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "@last_id",
+            "SELECT TOP (2) id FROM events",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_id",
+            "SELECT id FROM events WHERE ROWNUM <= 2",
+        ),
+    ] {
+        for source in [
+            format!("({inner})"),
+            format!("(SELECT id FROM events WHERE id > {bind})"),
+        ] {
+            let sql = format!("SELECT e.id FROM {source} e WHERE e.id > {bind} ORDER BY e.id");
+            let compiled = SourceQuery::compile(&query(&sql, "int64"), system).unwrap();
+            let expected = match system {
+                DatabaseSystem::PostgreSQL => sql.replace(bind, "$1"),
+                DatabaseSystem::SqlServer => sql.replace(bind, "@P1"),
+                DatabaseSystem::Oracle => sql.clone(),
+            };
+            assert_eq!(compiled.sql(), expected);
+        }
+        let sql = format!(
+            "WITH fixed_rows AS ({inner}) SELECT e.id FROM fixed_rows e WHERE e.id > {bind} ORDER BY e.id"
+        );
+        assert!(
+            SourceQuery::compile(&query(&sql, "int64"), system).is_ok(),
+            "{sql}"
+        );
+        let snapshot = format!("SELECT e.id FROM ({inner}) e ORDER BY e.id");
+        assert_eq!(execution(&snapshot, "snapshot", system), snapshot);
+    }
+}
+
+/// Scenario: CTE scopes shadow outer names, use quoted names, or explicitly address a base table.
+/// Guarantees: Dependence follows the visible CTE rather than unrelated or hidden definitions.
+#[test]
+fn nested_pagination_resolves_cte_scope_and_names() {
+    for sql in [
+        "WITH chosen AS (SELECT id FROM events WHERE id > :last_id) SELECT e.id FROM (WITH chosen AS (SELECT id FROM static_events) SELECT id FROM chosen LIMIT 2) e WHERE e.id > :last_id ORDER BY e.id",
+        "WITH chosen AS (SELECT id FROM events WHERE id > :last_id), cut AS (SELECT id FROM public.chosen LIMIT 2) SELECT e.id FROM cut e WHERE e.id > :last_id ORDER BY e.id",
+        "WITH unused AS (SELECT id FROM events WHERE id > :last_id LIMIT 2) SELECT e.id FROM (SELECT id FROM static_events LIMIT 2) e WHERE e.id > :last_id ORDER BY e.id",
+        "WITH RECURSIVE chosen(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM chosen WHERE id < 10), cut AS (SELECT id FROM chosen LIMIT 2) SELECT e.id FROM cut e WHERE e.id > :last_id ORDER BY e.id",
+    ] {
+        assert!(
+            SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::PostgreSQL).is_ok(),
+            "{sql}"
+        );
+    }
+    for sql in [
+        "WITH \"Chosen\" AS (SELECT id FROM events WHERE id > :last_id), cut AS (SELECT id FROM \"Chosen\" LIMIT 2) SELECT e.id FROM cut e WHERE e.id > :last_id ORDER BY e.id",
+        "WITH chosen AS (SELECT id FROM events WHERE id > :last_id) SELECT e.id FROM (WITH chosen AS (SELECT id FROM chosen LIMIT 2) SELECT id FROM chosen) e WHERE e.id > :last_id ORDER BY e.id",
+        "WITH RECURSIVE chosen(id) AS (SELECT id FROM events WHERE id > :last_id UNION ALL SELECT id + 1 FROM chosen WHERE id < 10), cut AS (SELECT id FROM chosen LIMIT 2) SELECT e.id FROM cut e WHERE e.id > :last_id ORDER BY e.id",
+        "WITH RECURSIVE cut AS (SELECT id FROM chosen LIMIT 2), chosen AS (SELECT id FROM events WHERE id > :last_id) SELECT e.id FROM cut e WHERE e.id > :last_id ORDER BY e.id",
+    ] {
+        assert_eq!(
+            SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::PostgreSQL).unwrap_err(),
+            SourceQueryError::Pagination,
+            "{sql}"
+        );
+    }
+    let sql = "WITH Eligible AS (SELECT id FROM events WHERE id > @last_id), cut AS (SELECT TOP (2) id FROM eligible) SELECT e.id FROM cut e WHERE e.id > @last_id ORDER BY e.id";
+    assert_eq!(
+        SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::SqlServer).unwrap_err(),
+        SourceQueryError::Pagination
+    );
+}
+
+/// Scenario: UNION branches independently combine a static limited source and a cursor-dependent unlimited source.
+/// Guarantees: Dependency analysis does not move a branch-local TOP onto its sibling.
+#[test]
+fn nested_pagination_preserves_independent_set_branches() {
+    let sql = "SELECT e.id FROM (SELECT TOP (2) id FROM static_events UNION ALL SELECT id FROM events WHERE id > @last_id) e WHERE e.id > @last_id ORDER BY e.id";
+    assert_eq!(
+        SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::SqlServer)
+            .unwrap()
+            .sql(),
+        sql.replace("@last_id", "@P1")
+    );
+}
+
+/// Scenario: Only one composite cursor role affects a limited CTE.
+/// Guarantees: Dependency analysis checks every configured role, not just scalar IDs or the tie-breaker.
+#[test]
+fn nested_pagination_rejects_composite_cursor_dependencies() {
+    for (system, timestamp, id, limited) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            ":last_ts",
+            ":last_id",
+            "SELECT ts, id FROM eligible LIMIT 2",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "@last_ts",
+            "@last_id",
+            "SELECT TOP (2) ts, id FROM eligible",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            ":last_ts",
+            ":last_id",
+            "SELECT ts, id FROM eligible WHERE ROWNUM <= 2",
+        ),
+    ] {
+        let sql = format!(
+            "WITH eligible AS (SELECT ts, id FROM events WHERE ts > {timestamp}), cut AS ({limited}) SELECT e.ts, e.id FROM cut e WHERE e.ts > {timestamp} OR (e.ts = {timestamp} AND e.id > {id}) ORDER BY e.ts, e.id"
+        );
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "composite"), system).unwrap_err(),
+            SourceQueryError::Pagination,
+            "{system:?}: {sql}"
+        );
+    }
+}
+
+/// Scenario: sqlparser 0.63 drops tokens following an unqualified TABLE command.
+/// Guarantees: Hidden limits/binds cannot bypass incremental validation; schema-qualified independent TABLE remains supported.
+#[test]
+fn nested_pagination_rejects_unrepresentable_table_commands() {
+    for inner in ["TABLE events LIMIT 2", "TABLE events LIMIT $1"] {
+        let sql = format!("SELECT e.id FROM ({inner}) e WHERE e.id > $1 ORDER BY e.id");
+        assert_eq!(
+            SourceQuery::compile(&query(&sql, "int64"), DatabaseSystem::PostgreSQL).unwrap_err(),
+            SourceQueryError::Composition,
+            "{sql}"
+        );
+    }
+    let sql = "SELECT e.id FROM (TABLE public.events LIMIT 2) e WHERE e.id > $1 ORDER BY e.id";
+    assert_eq!(
+        SourceQuery::compile(&query(sql, "int64"), DatabaseSystem::PostgreSQL)
+            .unwrap()
+            .sql(),
+        sql
+    );
+}
+
+/// Scenario: A paginated correlated query reads a checkpoint value exposed by an outer source.
+/// Guarantees: Renaming a cursor bind through a CTE or derived row cannot hide pagination dependence.
+#[test]
+fn nested_pagination_rejects_cursor_dependent_correlations() {
+    for (system, sql) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            "WITH checkpoint AS (SELECT :last_id AS mark) SELECT e.id FROM checkpoint c CROSS JOIN LATERAL (SELECT id FROM events WHERE id > c.mark LIMIT 2) e WHERE e.id > :last_id ORDER BY e.id",
+        ),
+        (
+            DatabaseSystem::PostgreSQL,
+            "SELECT e.id FROM (SELECT :last_id AS mark) c CROSS JOIN LATERAL (SELECT id FROM events WHERE id > mark LIMIT 2) e WHERE e.id > :last_id ORDER BY e.id",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "WITH checkpoint AS (SELECT @last_id AS mark) SELECT e.id FROM checkpoint c CROSS APPLY (SELECT TOP (2) id FROM events WHERE id > c.mark) e WHERE e.id > @last_id ORDER BY e.id",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            "WITH checkpoint AS (SELECT :last_id AS mark FROM dual) SELECT e.id FROM checkpoint c CROSS APPLY (SELECT id FROM events WHERE id > c.mark AND ROWNUM <= 2) e WHERE e.id > :last_id ORDER BY e.id",
+        ),
+    ] {
+        assert_eq!(
+            SourceQuery::compile(&query(sql, "int64"), system)
+                .map(|source| source.sql().to_owned()),
+            Err(SourceQueryError::Pagination),
+            "{system:?}: {sql}"
+        );
+    }
+}
+
+/// Scenario: Correlated sources are cursor-independent, or an independent derived table cannot see outer rows.
+/// Guarantees: The outer keyset alone does not make every nested limit cursor-dependent.
+#[test]
+fn nested_pagination_preserves_cursor_independent_correlations() {
+    for (system, sql) in [
+        (
+            DatabaseSystem::PostgreSQL,
+            "SELECT e.id FROM customers c CROSS JOIN LATERAL (SELECT id FROM events WHERE customer_id = c.id LIMIT 2) e WHERE e.id > :last_id ORDER BY e.id",
+        ),
+        (
+            DatabaseSystem::SqlServer,
+            "SELECT e.id FROM customers c CROSS APPLY (SELECT TOP (2) id FROM events WHERE customer_id = c.id) e WHERE e.id > @last_id ORDER BY e.id",
+        ),
+        (
+            DatabaseSystem::Oracle,
+            "SELECT e.id FROM customers c CROSS APPLY (SELECT id FROM events WHERE customer_id = c.id AND ROWNUM <= 2) e WHERE e.id > :last_id ORDER BY e.id",
+        ),
+        (
+            DatabaseSystem::PostgreSQL,
+            "WITH checkpoint AS (SELECT :last_id AS mark) SELECT e.id FROM checkpoint c CROSS JOIN (SELECT id FROM events LIMIT 2) e WHERE e.id > :last_id ORDER BY e.id",
+        ),
+    ] {
+        assert!(
+            SourceQuery::compile(&query(sql, "int64"), system).is_ok(),
+            "{system:?}: {sql}"
+        );
+    }
+}
+
 /// Scenario: SQL Server READCOMMITTED or SNAPSHOT table hints override receiver-owned isolation.
 /// Guarantees: Both hints are rejected in snapshot, scalar, composite, and nested-source queries.
 #[test]
