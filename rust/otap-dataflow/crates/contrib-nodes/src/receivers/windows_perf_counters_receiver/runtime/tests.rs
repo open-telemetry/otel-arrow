@@ -3,14 +3,15 @@
 
 use super::super::test_utils::spawn_children;
 use super::*;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
 /// Scenario: For each counter failure kind (add, read, collect, recreate), counter 0 fails in three
 /// reports while counter 1, which maps the same path, succeeds; then counter 0 succeeds while
 /// counter 1 fails.
 /// Guarantees: Each failure opens an episode for its configured counter, which warns only when it
 /// opens; another counter's success, even on the same path, does not end it; the counter's own
-/// success does; and one counter's open episode does not suppress another's warning. Every collect
-/// report counts a scrape and a scrape failure, also while the episode suppresses the warning.
+/// success does; and one counter's open episode does not suppress another's warning. Counter-add
+/// failures count every occurrence, even while the episode suppresses the warning.
 #[test]
 fn counter_failures_warn_once_per_counter_episode() {
     type Record = fn(&mut Report, usize);
@@ -19,7 +20,7 @@ fn counter_failures_warn_once_per_counter_episode() {
             |report, counter| report.add_failures.push((counter, 1)),
             |report, counter| report.added.push(counter),
             |episodes| episodes.add,
-            0,
+            4,
         ),
         (
             |report, counter| report.read_failures.push((counter, 1)),
@@ -31,7 +32,7 @@ fn counter_failures_warn_once_per_counter_episode() {
             |report, counter| report.collect_failures.push((counter, 1)),
             |report, counter| report.collected.push(counter),
             |episodes| episodes.collect,
-            4,
+            0,
         ),
         (
             |report, counter| report.recreate_failures.push((counter, 1)),
@@ -40,7 +41,7 @@ fn counter_failures_warn_once_per_counter_episode() {
             0,
         ),
     ];
-    for (fail, succeed, open, scrapes) in kinds {
+    for (fail, succeed, open, add_failures) in kinds {
         let mut h = harness();
         let shared = h.receiver.config.counters[1].path.clone();
         h.receiver.config.counters[0].path = shared;
@@ -51,17 +52,15 @@ fn counter_failures_warn_once_per_counter_episode() {
             report
         };
         for _ in 0..3 {
-            h.receiver.apply(&report(0, 1), None);
+            h.receiver.apply(&report(0, 1));
             let counters = &h.receiver.diagnostics.counters;
             assert!(open(&counters[0]) && !open(&counters[1]));
         }
-        h.receiver.apply(&report(1, 0), None);
+        h.receiver.apply(&report(1, 0));
         let counters = &h.receiver.diagnostics.counters;
         assert!(!open(&counters[0]), "own success ends the episode");
         assert!(open(&counters[1]), "another counter opens its own episode");
-        let metrics = &h.receiver.metrics;
-        assert_eq!(metrics.scrapes.get(), scrapes);
-        assert_eq!(metrics.scrape_failures.get(), scrapes);
+        assert_eq!(h.receiver.metrics.counter_add_failures.get(), add_failures);
     }
 }
 
@@ -132,14 +131,18 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    let (_, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+    harness_with_reporter(metrics_reporter)
+}
+
+fn harness_with_reporter(metrics_reporter: MetricsReporter) -> Harness {
     use otel_arrow_dfe_channel::mpsc::Channel;
     use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
     use otel_arrow_dfe_engine::message::{Receiver, Sender};
     use otel_arrow_dfe_engine::testing::{
-        test_node, test_pipeline_ctx, test_pipeline_runtime_services,
+        test_node, test_pipeline_ctx_with_interests, test_pipeline_runtime_services,
     };
-    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let config = Config::from_json(&serde_json::json!({
         "collection_interval": "10s",
@@ -150,18 +153,21 @@ fn harness() -> Harness {
         ]
     }))
     .unwrap();
-    let (pipeline, _registry) = test_pipeline_ctx();
+    let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+        otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+            | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+    );
     let receiver = WindowsPerfCountersReceiver {
         diagnostics: Diagnostics::new(config.counters.len()),
         config,
         node: "windows-perf-counters".to_owned(),
         metrics: WindowsPerfCountersMetrics::register(&pipeline),
+        boundary: ReceiverPullMetrics::register(&pipeline),
     };
     let (output_tx, output) = Channel::new(4);
     let mut outputs = std::collections::HashMap::new();
     let _ = outputs.insert("".into(), Sender::Local(LocalSender::mpsc(output_tx)));
     let (runtime_tx, _) = runtime_ctrl_msg_channel(4);
-    let (_, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
     let effect_handler = local::EffectHandler::new(
         test_node("windows-perf-counters"),
         outputs,
@@ -178,6 +184,347 @@ fn harness() -> Harness {
         effect_handler,
         output,
     }
+}
+
+fn assert_pull_metrics(
+    boundary: &mut ReceiverPullMetrics,
+    successes: u64,
+    failures: u64,
+    seconds: f64,
+) {
+    assert_pull_snapshots(boundary.terminal_snapshots(), successes, failures, seconds);
+}
+
+fn assert_pull_snapshots(
+    snapshots: Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot>,
+    successes: u64,
+    failures: u64,
+    seconds: f64,
+) {
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+
+    let mut outcomes = std::collections::BTreeMap::new();
+    let mut durations = Vec::new();
+    for snapshot in snapshots {
+        match (snapshot.descriptor().name, &snapshot.get_metrics()[0]) {
+            ("receiver.pulled", MetricValue::U64(value)) => {
+                let outcome = snapshot.measurement_attribute_value("outcome").unwrap();
+                assert!(outcomes.insert(outcome.to_owned(), *value).is_none());
+            }
+            ("receiver.processing", MetricValue::Distribution(value)) => {
+                durations.push(value.summary());
+            }
+            other => panic!("unexpected shared metric: {other:?}"),
+        }
+    }
+    assert_eq!(outcomes.remove("success").unwrap_or(0), successes);
+    assert_eq!(outcomes.remove("failure").unwrap_or(0), failures);
+    assert!(outcomes.is_empty());
+    if successes + failures == 0 {
+        assert!(durations.is_empty());
+    } else {
+        assert_eq!(
+            durations,
+            [(successes + failures, seconds, seconds, seconds)]
+        );
+    }
+}
+
+/// Scenario: Scheduled reports contain points, valid empty data, partial data, recovery,
+/// failed query recreation, or only add/collect/read errors; downstream is closed.
+/// Guarantees: Usable partial and empty results succeed, wholly failed source work fails,
+/// downstream drops cannot change the exactly-once outcome or its duration, and counter-add
+/// failures and dropped batches remain separate diagnostics.
+#[tokio::test(start_paused = true)]
+async fn pulled_report_outcomes_end_before_handoff() {
+    let point = super::super::pdh::Point {
+        counter: 0,
+        instance: None,
+        value: 1.0,
+        time_unix_nano: 2,
+        start_time_unix_nano: 1,
+    };
+    for (report, success) in [
+        (
+            Report {
+                points: vec![point],
+                collected: vec![0],
+                ..Report::default()
+            },
+            true,
+        ),
+        (
+            Report {
+                collected: vec![0],
+                ..Report::default()
+            },
+            true,
+        ),
+        (
+            Report {
+                collected: vec![0, 1],
+                read_failures: vec![(1, 1)],
+                ..Report::default()
+            },
+            true,
+        ),
+        (
+            Report {
+                collected: vec![0],
+                add_failures: vec![(1, 1)],
+                ..Report::default()
+            },
+            true,
+        ),
+        (
+            Report {
+                added: vec![0],
+                ..Report::default()
+            },
+            true,
+        ),
+        (
+            Report {
+                collected: vec![0],
+                recreate_failures: vec![(0, 1)],
+                ..Report::default()
+            },
+            true,
+        ),
+        (
+            Report {
+                add_failures: vec![(0, 1)],
+                ..Report::default()
+            },
+            false,
+        ),
+        (
+            Report {
+                collect_failures: vec![(0, 1)],
+                ..Report::default()
+            },
+            false,
+        ),
+        (
+            Report {
+                collected: vec![0],
+                read_failures: vec![(0, 1)],
+                ..Report::default()
+            },
+            false,
+        ),
+    ] {
+        let mut h = harness();
+        let add_failures = report.add_failures.len() as u64;
+        let dropped = u64::from(!report.points.is_empty());
+        drop(h.output);
+        let scrapes = ScriptedScrapes::default();
+        let (start, started) = oneshot::channel();
+        start.send(Report::default()).unwrap();
+        {
+            let collect = h
+                .receiver
+                .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+            tokio::pin!(collect);
+            assert!(futures::poll!(&mut collect).is_pending());
+            tokio::time::advance(Duration::from_secs(2)).await;
+            scrapes.0.borrow_mut()[0]
+                .1
+                .take()
+                .unwrap()
+                .send(report)
+                .unwrap();
+            assert!(futures::poll!(&mut collect).is_pending());
+        }
+        assert_eq!(h.receiver.metrics.counter_add_failures.get(), add_failures);
+        assert_eq!(h.receiver.metrics.batches_dropped.get(), dropped);
+        assert_pull_metrics(
+            &mut h.receiver.boundary,
+            u64::from(success),
+            u64::from(!success),
+            2.0,
+        );
+    }
+}
+
+/// Scenario: An accepted scrape is abandoned by drain, shutdown, or dropping collection.
+/// Guarantees: Cancellation counts one failure before cleanup, excludes cleanup time,
+/// and discards the late native report without dispatching another scrape.
+#[tokio::test(start_paused = true)]
+async fn pulled_cancellation_ends_before_worker_cleanup() {
+    for mode in 0..3 {
+        let mut h = harness();
+        let scrapes = ScriptedScrapes::default();
+        let (start, started) = oneshot::channel();
+        start.send(Report::default()).unwrap();
+        {
+            let collect = h
+                .receiver
+                .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+            tokio::pin!(collect);
+            assert!(futures::poll!(&mut collect).is_pending());
+            tokio::time::advance(Duration::from_secs(3)).await;
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let reason = "test cancellation".to_owned();
+            if mode < 2 {
+                h.control_tx
+                    .send(if mode == 0 {
+                        NodeControlMsg::DrainIngress { deadline, reason }
+                    } else {
+                        NodeControlMsg::Shutdown { deadline, reason }
+                    })
+                    .unwrap();
+                assert!(
+                    matches!(futures::poll!(&mut collect), std::task::Poll::Ready(Ok((_, drained))) if drained == (mode == 0))
+                );
+            }
+        }
+        tokio::time::advance(Duration::from_secs(100)).await;
+        assert!(
+            scrapes.0.borrow_mut()[0]
+                .1
+                .take()
+                .unwrap()
+                .send(Report::default())
+                .is_err()
+        );
+        assert_eq!(scrapes.0.borrow().len(), 1);
+        assert_pull_metrics(&mut h.receiver.boundary, 0, 1, 3.0);
+        assert!(h.output.try_recv().is_err());
+    }
+}
+
+/// Scenario: The worker disappears during startup or an accepted scrape; after a simulated
+/// cleanup delay, finalization encounters an available or closed metrics channel.
+/// Guarantees: Fatal finalization hands off diagnostics and the accepted attempt's failure
+/// and duration exactly once, excludes startup and cleanup time, and preserves the worker
+/// error even when the metrics handoff fails.
+#[tokio::test(start_paused = true)]
+async fn pulled_worker_loss_hands_off_terminal_metrics() {
+    for accepted in [false, true] {
+        for reporter_available in [true, false] {
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(8);
+            let reports = reporter_available.then_some(reports);
+            let mut h = harness_with_reporter(reporter);
+            let scrapes = ScriptedScrapes::default();
+            let (start, started) = oneshot::channel();
+            let result = {
+                let collect =
+                    h.receiver
+                        .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+                tokio::pin!(collect);
+                assert!(futures::poll!(&mut collect).is_pending());
+                if accepted {
+                    start.send(Report::default()).unwrap();
+                    assert!(futures::poll!(&mut collect).is_pending());
+                    tokio::time::advance(Duration::from_secs(2)).await;
+                    drop(scrapes.0.borrow_mut()[0].1.take());
+                } else {
+                    drop(start);
+                }
+                match futures::poll!(&mut collect) {
+                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Pending => panic!("worker loss must end collection"),
+                }
+            };
+            tokio::time::advance(Duration::from_secs(100)).await;
+            let deadline = tokio::time::Instant::now().into_std() + WORKER_SHUTDOWN_MAX_WAIT;
+            let result = h.receiver.finish(result, deadline, &h.effect_handler).await;
+            assert!(matches!(
+                result,
+                Err(Error::ReceiverError {
+                    kind: ReceiverErrorKind::Other,
+                    error,
+                    ..
+                }) if error == "PDH worker stopped"
+            ));
+            if let Some(reports) = reports {
+                let (diagnostics, pulled): (Vec<_>, Vec<_>) =
+                    reports.try_iter().partition(|snapshot| {
+                        snapshot.descriptor().name == "receiver.windows_perf_counters"
+                    });
+                assert_eq!(diagnostics.len(), 1);
+                assert_pull_snapshots(pulled, 0, u64::from(accepted), 2.0);
+            }
+        }
+    }
+}
+
+/// Scenario: A scrape passes its warning timeout, skips a scheduler tick, then completes.
+/// Guarantees: Warning expiry and overrun do not terminate or create attempts; periodic
+/// reporting leaves the attempt active, then emits its late success exactly once.
+#[tokio::test(start_paused = true)]
+async fn pulled_warning_timeout_and_overrun_do_not_count_attempts() {
+    let mut h = harness();
+    h.receiver.config.timeout = Some(Duration::from_secs(3));
+    let scrapes = ScriptedScrapes::default();
+    let (start, started) = oneshot::channel();
+    start.send(Report::default()).unwrap();
+    let (reports, metrics_reporter) = MetricsReporter::create_new_and_receiver(8);
+    let completed: Vec<_>;
+    {
+        let collect = h
+            .receiver
+            .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+        tokio::pin!(collect);
+        assert!(futures::poll!(&mut collect).is_pending());
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert!(futures::poll!(&mut collect).is_pending());
+        h.control_tx
+            .send(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: metrics_reporter.clone(),
+            })
+            .unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+        let reported: Vec<_> = reports.drain().collect();
+        assert_eq!(reported.len(), 1, "only diagnostics before completion");
+        assert_eq!(
+            reported[0].descriptor().name,
+            "receiver.windows_perf_counters"
+        );
+        tokio::time::advance(Duration::from_secs(8)).await;
+        assert!(futures::poll!(&mut collect).is_pending());
+        scrapes.0.borrow_mut()[0]
+            .1
+            .take()
+            .unwrap()
+            .send(Report {
+                collected: vec![0],
+                ..Report::default()
+            })
+            .unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+        assert_eq!(scrapes.0.borrow().len(), 1);
+        h.control_tx
+            .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+            .unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+        completed = reports.drain().collect();
+    }
+    let diagnostics = completed
+        .iter()
+        .find(|snapshot| snapshot.descriptor().name == "receiver.windows_perf_counters")
+        .unwrap();
+    let overruns = diagnostics
+        .descriptor()
+        .metrics
+        .iter()
+        .position(|metric| metric.name == "scrape.overruns")
+        .unwrap();
+    assert_eq!(
+        diagnostics.get_metrics()[overruns],
+        otel_arrow_dfe_telemetry::metrics::MetricValue::U64(1)
+    );
+    assert_pull_snapshots(
+        completed
+            .into_iter()
+            .filter(|snapshot| snapshot.descriptor().name != "receiver.windows_perf_counters")
+            .collect(),
+        1,
+        0,
+        12.0,
+    );
+    assert_pull_metrics(&mut h.receiver.boundary, 0, 0, 0.0);
 }
 
 /// Scenario: Under paused time, one scheduler's start never completes and it receives Shutdown;
@@ -254,10 +601,10 @@ async fn due_tick_is_handled_before_report() {
 
 /// Scenario: A scrape reports collection failures for counters 1 and 2 while counter 0 collects and
 /// publishes a point.
-/// Guarantees: The scrape counts one scrapes and one scrape.failures, however many counters fail,
-/// and the healthy point is still published.
+/// Guarantees: The usable partial result records one success, no failure, and publishes the
+/// healthy point while retaining the failing counters' diagnostic episodes.
 #[tokio::test(start_paused = true)]
-async fn failed_scrape_still_publishes_healthy_points() {
+async fn partial_scrape_records_success_and_publishes_healthy_points() {
     let mut h = harness();
     let scrapes = ScriptedScrapes::default();
     let (start, started) = oneshot::channel();
@@ -278,15 +625,16 @@ async fn failed_scrape_still_publishes_healthy_points() {
                     time_unix_nano: 2,
                     start_time_unix_nano: 1,
                 }],
-                collect_failures: vec![(1, 0xC000_0BB9), (2, 0xC000_0BB9)],
                 collected: vec![0],
+                collect_failures: vec![(1, 0xC000_0BB9), (2, 0xC000_0BB9)],
                 ..Report::default()
             })
             .unwrap();
         assert!(futures::poll!(&mut collect).is_pending());
     }
-    assert_eq!(h.receiver.metrics.scrape_failures.get(), 1);
-    assert_eq!(h.receiver.metrics.scrapes.get(), 1);
+    assert!(h.receiver.diagnostics.counters[1].collect);
+    assert!(h.receiver.diagnostics.counters[2].collect);
+    assert_pull_metrics(&mut h.receiver.boundary, 1, 0, 0.0);
     assert!(h.output.try_recv().is_ok(), "healthy point published");
 }
 
@@ -337,15 +685,19 @@ async fn timeout_expiry_opens_overrun_until_on_time_completion() {
     assert_eq!(h.receiver.metrics.scrape_overruns.get(), 0);
 }
 
-/// Scenario: The start report carries a query that could not be opened or primed.
-/// Guarantees: Startup counts one scrape.failures and no scrapes.
+/// Scenario: Before the first scheduled scrape, startup reports query and counter-add failures.
+/// Guarantees: Startup emits counter diagnostics but no attempt or duration; cancelling the
+/// scheduler before acceptance does not create an attempt either.
 #[tokio::test(start_paused = true)]
-async fn startup_failure_counts_scrape_failure() {
+async fn startup_failure_reports_diagnostics_without_attempt() {
     let mut h = harness();
+    h.receiver.config.initial_delay = Duration::from_secs(30);
     let (start, started) = oneshot::channel();
     start
         .send(Report {
             collect_failures: vec![(0, 0xC000_0BB9)],
+            add_failures: vec![(1, 0xC000_0BB9)],
+            active_counters: 2,
             ..Report::default()
         })
         .unwrap();
@@ -356,9 +708,38 @@ async fn startup_failure_counts_scrape_failure() {
             .collect(&scrapes, started, &mut h.control, &h.effect_handler);
         tokio::pin!(collect);
         assert!(futures::poll!(&mut collect).is_pending());
+        let (reports, metrics_reporter) = MetricsReporter::create_new_and_receiver(8);
+        h.control_tx
+            .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+            .unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+        let reported: Vec<_> = reports.drain().collect();
+        assert_eq!(reported.len(), 1, "startup only reports source diagnostics");
+        assert_eq!(
+            reported[0].descriptor().name,
+            "receiver.windows_perf_counters"
+        );
+        let failures = reported[0]
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|metric| metric.name == "counter.add.failures")
+            .unwrap();
+        assert_eq!(reported[0].get_metrics()[failures].to_u64_lossy(), 1);
     }
-    assert_eq!(h.receiver.metrics.scrape_failures.get(), 1);
-    assert_eq!(h.receiver.metrics.scrapes.get(), 0);
+    assert!(
+        scrapes.0.borrow().is_empty(),
+        "nothing accepted before the first tick"
+    );
+    assert!(h.receiver.diagnostics.counters[0].collect);
+    assert!(h.receiver.diagnostics.counters[1].add);
+    assert_eq!(
+        h.receiver.metrics.counter_add_failures.get(),
+        0,
+        "reported once"
+    );
+    assert_eq!(h.receiver.metrics.active_counters.get(), 2);
+    assert_pull_metrics(&mut h.receiver.boundary, 0, 0, 0.0);
 }
 
 /// Scenario: Batches are sent until the downstream channel is full, one is drained, then the
