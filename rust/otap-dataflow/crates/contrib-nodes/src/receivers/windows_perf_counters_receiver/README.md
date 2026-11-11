@@ -787,13 +787,23 @@ Self-metrics and events use *scrape* for a collection.
 
 ### Metric Sets
 
-#### `receiver.windows_perf_counters.scrapes`
+#### `receiver.pulled`
 
 <!-- markdownlint-disable MD013 -->
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.windows_perf_counters.scrapes.collections` | `{scrape}` | `outcome` | Collections in which at least one counter query collected successfully (`success`) or failed to collect (`failure`), plus startup query-open or priming failures (`failure`). A partially successful collection increments both outcomes, so their sum is not the total number of collections. |
+| `receiver.pulled.attempts` | `{attempt}` | `outcome` | Accepted collection attempts reaching a terminal local outcome (`success`, `failure`). Exactly one outcome is recorded per collection attempt. |
+
+<!-- markdownlint-enable MD013 -->
+
+#### `receiver.processing`
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.processing.duration` | `s` | | Time from requesting a collection to receiving its results. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -814,7 +824,6 @@ Self-metrics and events use *scrape* for a collection.
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `receiver.windows_perf_counters.scrape.overruns` | `{tick}` | | Collections skipped because the previous collection was still running. |
-| `receiver.windows_perf_counters.scrape.duration` | `s` | | Time from requesting a collection to receiving its results. |
 | `receiver.windows_perf_counters.counter.add.failures` | `{failure}` | | Failures to add a counter, including retries. |
 | `receiver.windows_perf_counters.active.counters` | `{counter}` | | Counters currently added, whether or not they produce values. |
 

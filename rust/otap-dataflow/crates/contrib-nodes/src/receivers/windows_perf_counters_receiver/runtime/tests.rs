@@ -3,11 +3,10 @@
 
 use super::super::metrics::{
     WindowsPerfCountersDropAttributes, WindowsPerfCountersDropReason,
-    WindowsPerfCountersScrapeAttributes,
 };
 use super::super::test_utils::spawn_children;
 use super::*;
-use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 
 /// Scenario: For each counter failure kind (add, read, collect, recreate), counter 0 fails in three
 /// reports while counter 1, which maps the same path, succeeds; then counter 0 succeeds while
@@ -67,23 +66,23 @@ fn counter_failures_warn_once_per_counter_episode() {
         let metrics = &mut h.receiver.metrics;
         assert_eq!(
             metrics
-                .scrapes
-                .get(WindowsPerfCountersScrapeAttributes {
-                    outcome: Outcome::Success,
+                .pulled
+                .get(OutcomeAttributes {
+                    outcome: Outcome::Failure,
                 })
-                .collections
+                .attempts
                 .get(),
             scrapes
         );
         assert_eq!(
             metrics
-                .scrapes
-                .get(WindowsPerfCountersScrapeAttributes {
-                    outcome: Outcome::Failure,
+                .pulled
+                .get(OutcomeAttributes {
+                    outcome: Outcome::Success,
                 })
-                .collections
+                .attempts
                 .get(),
-            scrapes
+            0
         );
     }
 }
@@ -277,7 +276,7 @@ async fn due_tick_is_handled_before_report() {
 
 /// Scenario: A scrape reports collection failures for counters 1 and 2 while counter 0 collects and
 /// publishes a point.
-/// Guarantees: The scrape counts one scrapes and one scrape.failures, however many counters fail,
+/// Guarantees: The scrape counts one collection failure and zero successes when any counter fails,
 /// and the healthy point is still published.
 #[tokio::test(start_paused = true)]
 async fn failed_scrape_still_publishes_healthy_points() {
@@ -311,24 +310,24 @@ async fn failed_scrape_still_publishes_healthy_points() {
     assert_eq!(
         h.receiver
             .metrics
-            .scrapes
-            .get(WindowsPerfCountersScrapeAttributes {
+            .pulled
+            .get(OutcomeAttributes {
                 outcome: Outcome::Failure,
             })
-            .collections
+            .attempts
             .get(),
         1
     );
     assert_eq!(
         h.receiver
             .metrics
-            .scrapes
-            .get(WindowsPerfCountersScrapeAttributes {
+            .pulled
+            .get(OutcomeAttributes {
                 outcome: Outcome::Success,
             })
-            .collections
+            .attempts
             .get(),
-        1
+        0
     );
     assert!(h.output.try_recv().is_ok(), "healthy point published");
 }
@@ -381,7 +380,7 @@ async fn timeout_expiry_opens_overrun_until_on_time_completion() {
 }
 
 /// Scenario: The start report carries a query that could not be opened or primed.
-/// Guarantees: Startup counts one scrape.failures and no scrapes.
+/// Guarantees: Startup counts one failure attempt and zero successes.
 #[tokio::test(start_paused = true)]
 async fn startup_failure_counts_scrape_failure() {
     let mut h = harness();
@@ -403,22 +402,22 @@ async fn startup_failure_counts_scrape_failure() {
     assert_eq!(
         h.receiver
             .metrics
-            .scrapes
-            .get(WindowsPerfCountersScrapeAttributes {
+            .pulled
+            .get(OutcomeAttributes {
                 outcome: Outcome::Failure,
             })
-            .collections
+            .attempts
             .get(),
         1
     );
     assert_eq!(
         h.receiver
             .metrics
-            .scrapes
-            .get(WindowsPerfCountersScrapeAttributes {
+            .pulled
+            .get(OutcomeAttributes {
                 outcome: Outcome::Success,
             })
-            .collections
+            .attempts
             .get(),
         0
     );

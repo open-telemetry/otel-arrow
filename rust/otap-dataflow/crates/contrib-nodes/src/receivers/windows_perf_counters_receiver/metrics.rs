@@ -4,34 +4,16 @@
 //! Self-metrics for the Windows performance-counter receiver.
 
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_otap::metrics::{ReceiverProcessingMetricSet, ReceiverPulledMetrics};
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, HistogramNormal};
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry::metrics::{
     MeasurementMetricSet, MetricSet, MetricSetHandler, MetricSetSnapshot,
 };
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-
-/// Attributes for performance counter scrape metrics.
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-pub(super) struct WindowsPerfCountersScrapeAttributes {
-    /// Terminal outcome of the recorded collection attempt.
-    pub(super) outcome: Outcome,
-}
-
-/// Collections partitioned by outcome.
-#[metric_set(
-    name = "receiver.windows_perf_counters.scrapes",
-    measurement_attributes = WindowsPerfCountersScrapeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub(super) struct WindowsPerfCountersScrapeMetrics {
-    /// Number of collections reaching the specified outcome.
-    #[metric(unit = "{scrape}")]
-    pub(super) collections: Counter<u64>,
-}
+use std::time::Duration;
 
 /// Reason a performance counter batch was dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -67,9 +49,6 @@ pub(super) struct WindowsPerfCountersOperationalMetrics {
     /// Ticks skipped because the previous scrape was still running.
     #[metric(unit = "{tick}")]
     pub(super) scrape_overruns: Counter<u64>,
-    /// Time from scrape request to report.
-    #[metric(unit = "s")]
-    pub(super) scrape_duration: HistogramNormal,
     /// Failed counter adds, including retries.
     #[metric(unit = "{failure}")]
     pub(super) counter_add_failures: Counter<u64>,
@@ -80,12 +59,14 @@ pub(super) struct WindowsPerfCountersOperationalMetrics {
 
 /// Combined metrics collection for the Windows performance-counter receiver.
 pub(super) struct WindowsPerfCountersMetrics {
-    /// Collections partitioned by outcome.
-    pub(super) scrapes: MeasurementMetricSet<WindowsPerfCountersScrapeMetrics>,
+    /// Accepted collection attempts partitioned by outcome.
+    pub(super) pulled: MeasurementMetricSet<ReceiverPulledMetrics>,
     /// Drops partitioned by reason.
     pub(super) drops: MeasurementMetricSet<WindowsPerfCountersDropMetrics>,
-    /// Operational gauges, overruns, and duration.
+    /// Operational gauges and overruns.
     pub(super) operational: MetricSet<WindowsPerfCountersOperationalMetrics>,
+    /// Receiver-local processing duration.
+    pub(super) processing: ReceiverProcessingMetricSet,
 }
 
 impl WindowsPerfCountersMetrics {
@@ -93,17 +74,21 @@ impl WindowsPerfCountersMetrics {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            scrapes: WindowsPerfCountersScrapeMetrics::register(pipeline_ctx),
+            pulled: ReceiverPulledMetrics::register(pipeline_ctx),
             drops: WindowsPerfCountersDropMetrics::register(pipeline_ctx),
             operational: WindowsPerfCountersOperationalMetrics::register(pipeline_ctx),
+            processing: ReceiverProcessingMetricSet::register(
+                pipeline_ctx,
+                pipeline_ctx.node_duration_distribution(),
+            ),
         }
     }
 
-    /// Records a collection reaching a terminal outcome.
-    pub(super) fn record_scrape(&mut self, outcome: Outcome) {
-        self.scrapes
-            .with(WindowsPerfCountersScrapeAttributes { outcome })
-            .collections
+    /// Records an accepted collection attempt reaching a terminal outcome.
+    pub(super) fn record_pulled(&mut self, outcome: Outcome) {
+        self.pulled
+            .with(OutcomeAttributes { outcome })
+            .attempts
             .inc();
     }
 
@@ -115,10 +100,16 @@ impl WindowsPerfCountersMetrics {
             .inc();
     }
 
+    /// Records receiver processing duration for a collection attempt.
+    pub(super) fn record_duration(&mut self, duration: Duration) {
+        self.processing.record(duration);
+    }
+
     /// Snapshots all metric sets and returns their descriptors.
     pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.scrapes.terminal_snapshots();
+        let mut snapshots = self.pulled.terminal_snapshots();
         snapshots.extend(self.drops.terminal_snapshots());
+        snapshots.extend(self.processing.terminal_snapshots());
         if self.operational.needs_flush() {
             snapshots.extend(self.operational.terminal_snapshots());
         }
@@ -127,8 +118,9 @@ impl WindowsPerfCountersMetrics {
 
     /// Reports touched metric buckets to the given reporter.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
-        reporter.report_measurement(&mut self.scrapes)?;
+        reporter.report_measurement(&mut self.pulled)?;
         reporter.report_measurement(&mut self.drops)?;
+        self.processing.report(reporter)?;
         reporter.report(&mut self.operational)?;
         Ok(())
     }
@@ -147,34 +139,34 @@ mod tests {
         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
     }
 
-    /// Scenario: Scrape metrics record successful and failed collections.
-    /// Guarantees: Scrapes are partitioned by outcome attribute without bucket collisions.
+    /// Scenario: Pulled metrics record successful and failed collections.
+    /// Guarantees: Collection attempts are partitioned by outcome attribute without bucket collisions.
     #[test]
-    fn scrape_metrics_are_partitioned_by_outcome() {
+    fn pulled_metrics_are_partitioned_by_outcome() {
         let pipeline_ctx = test_pipeline_context();
         let mut metrics = WindowsPerfCountersMetrics::register(&pipeline_ctx);
 
-        metrics.record_scrape(Outcome::Success);
-        metrics.record_scrape(Outcome::Success);
-        metrics.record_scrape(Outcome::Failure);
+        metrics.record_pulled(Outcome::Success);
+        metrics.record_pulled(Outcome::Success);
+        metrics.record_pulled(Outcome::Failure);
 
         assert_eq!(
             metrics
-                .scrapes
-                .get(WindowsPerfCountersScrapeAttributes {
+                .pulled
+                .get(OutcomeAttributes {
                     outcome: Outcome::Success
                 })
-                .collections
+                .attempts
                 .get(),
             2
         );
         assert_eq!(
             metrics
-                .scrapes
-                .get(WindowsPerfCountersScrapeAttributes {
+                .pulled
+                .get(OutcomeAttributes {
                     outcome: Outcome::Failure
                 })
-                .collections
+                .attempts
                 .get(),
             1
         );
@@ -210,15 +202,17 @@ mod tests {
         let pipeline_ctx = test_pipeline_context();
         let mut metrics = WindowsPerfCountersMetrics::register(&pipeline_ctx);
 
-        metrics.record_scrape(Outcome::Success);
+        metrics.record_pulled(Outcome::Success);
         metrics.record_dropped(WindowsPerfCountersDropReason::DownstreamSendError);
         metrics.operational.scrape_overruns.inc();
+        metrics.record_duration(Duration::from_millis(50));
 
         let first = metrics.terminal_snapshots();
         assert!(!first.is_empty());
 
-        assert!(metrics.scrapes.terminal_snapshots().is_empty());
+        assert!(metrics.pulled.terminal_snapshots().is_empty());
         assert!(metrics.drops.terminal_snapshots().is_empty());
+        assert!(metrics.processing.terminal_snapshots().is_empty());
         assert_eq!(metrics.operational.scrape_overruns.get(), 0);
     }
 
@@ -234,28 +228,34 @@ mod tests {
     }
 
     /// Scenario: Verification of metric set names, instrument names, and units.
-    /// Guarantees: Telemetry contracts strictly adhere to `{scrape}`, `{batch}`, `{tick}`, and
-    /// `{counter}` units.
+    /// Guarantees: Telemetry contracts strictly adhere to `{attempt}`, `{batch}`, `{tick}`, and
+    /// `{counter}` units, and receiver.processing duration is in seconds.
     #[test]
     fn metric_descriptors_and_units_are_exact() {
         let pipeline_ctx = test_pipeline_context();
         let mut metrics = WindowsPerfCountersMetrics::register(&pipeline_ctx);
 
-        metrics.record_scrape(Outcome::Success);
+        metrics.record_pulled(Outcome::Success);
         metrics.record_dropped(WindowsPerfCountersDropReason::DownstreamSendError);
         metrics.operational.counter_add_failures.add(1);
+        metrics.record_duration(Duration::from_millis(50));
 
         let snapshots = metrics.terminal_snapshots();
-        let mut found_scrapes = false;
+        let mut found_pulled = false;
         let mut found_drops = false;
+        let mut found_processing = false;
         let mut found_operational = false;
 
         for snapshot in &snapshots {
             let desc = snapshot.descriptor();
-            if desc.name == "receiver.windows_perf_counters.scrapes" {
-                found_scrapes = true;
-                assert_eq!(desc.metrics[0].name, "collections");
-                assert_eq!(desc.metrics[0].unit, "{scrape}");
+            if desc.name == "receiver.pulled" {
+                found_pulled = true;
+                assert_eq!(desc.metrics[0].name, "attempts");
+                assert_eq!(desc.metrics[0].unit, "{attempt}");
+            } else if desc.name == "receiver.processing" {
+                found_processing = true;
+                assert_eq!(desc.metrics[0].name, "duration");
+                assert_eq!(desc.metrics[0].unit, "s");
             } else if desc.name == "receiver.windows_perf_counters.drops" {
                 found_drops = true;
                 assert_eq!(desc.metrics[0].name, "batches");
@@ -265,7 +265,6 @@ mod tests {
                 for m in desc.metrics {
                     match m.name {
                         "scrape.overruns" => assert_eq!(m.unit, "{tick}"),
-                        "scrape.duration" => assert_eq!(m.unit, "s"),
                         "counter.add.failures" => assert_eq!(m.unit, "{failure}"),
                         "active.counters" => assert_eq!(m.unit, "{counter}"),
                         _ => {}
@@ -274,8 +273,12 @@ mod tests {
             }
         }
 
-        assert!(found_scrapes, "scrapes metric set descriptor present");
+        assert!(found_pulled, "receiver.pulled metric set descriptor present");
         assert!(found_drops, "drops metric set descriptor present");
+        assert!(
+            found_processing,
+            "receiver.processing metric set descriptor present"
+        );
         assert!(
             found_operational,
             "operational metric set descriptor present"

@@ -200,18 +200,14 @@ impl WindowsPerfCountersReceiver {
             recreate,
             "windows_perf_counters_receiver.recreate_query.fail"
         );
-        // Both can count in one scrape: some queries collect while others fail.
+        // Record exactly one outcome per collection attempt.
         if !report.collect_failures.is_empty() {
-            self.metrics.record_scrape(Outcome::Failure);
-        }
-        if !report.collected.is_empty() {
-            self.metrics.record_scrape(Outcome::Success);
+            self.metrics.record_pulled(Outcome::Failure);
+        } else if !report.collected.is_empty() || duration.is_some() {
+            self.metrics.record_pulled(Outcome::Success);
         }
         if let Some(duration) = duration {
-            self.metrics
-                .operational
-                .scrape_duration
-                .record(duration.as_secs_f64());
+            self.metrics.record_duration(duration);
         }
         self.metrics
             .operational
