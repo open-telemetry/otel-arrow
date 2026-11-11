@@ -27,6 +27,7 @@ details plus custom node config guidance, see:
 - Processor behavior taxonomy: [docs/processors.md](processors.md).
 - Runnable configuration examples: [configs/README.md](../configs/README.md).
 - Transport header policies: [docs/transport-headers.md](transport-headers.md).
+- Codec configuration and validation boundaries: [docs/codecs.md](codecs.md).
 - Memory limiter policy: [docs/memory-limiter-phase1.md](memory-limiter-phase1.md).
 - Admin live pipeline reconfiguration:
   [docs/admin/live-reconfiguration.md](admin/live-reconfiguration.md).
@@ -160,6 +161,7 @@ At startup, the engine runtime accepts a single root configuration file format
 
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
+- `codecs`: optional codec bindings and named configurations inherited by pipelines
 - `topics`: optional top-level topic declarations
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
@@ -250,6 +252,7 @@ A **pipeline group** is a logical container for related pipelines.
 
 - It scopes a set of pipelines under one group id.
 - It can define group-level `policies` applied to pipelines in that group.
+- It can define codec bindings and named configurations inherited by that group.
 - It can define group-local `topics` that override top-level topics with the
   same local name for pipelines in that group.
 - It is the intermediate level between root defaults and
@@ -306,6 +309,7 @@ At pipeline level:
 
 - `type`: pipeline data type, defaulting to `otap`
 - `policies` (optional)
+- `codecs` (optional inherited codec settings)
 - `nodes`: map of node id -> node declaration
 - `extensions`: optional map of extension id -> extension declaration
 - `connections`: explicit graph wiring
@@ -376,6 +380,9 @@ Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 Internal telemetry settings are declared at `engine.telemetry`. The
 `reporting_interval` controls the metric-set snapshot cadence and supplies the
 internal telemetry receiver's default registry drain and export interval.
+`metric_unregister_grace_period` (default `0s`) keeps the metric sets of
+components that shut down visible to metric readers, such as the admin metrics
+endpoint, for that long, so a scraper can observe their final values.
 
 The internal telemetry receiver's `signals` field defaults to `[logs,
 metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
@@ -498,6 +505,25 @@ engine:
       provider: "oidc"
       token_endpoint: "https://auth.example.com/token"
 ```
+
+## Codec Configuration
+
+The optional `codecs` section defines `bindings` keyed by encoding and reusable
+named `configurations`. Omitted bindings use discovered distribution defaults;
+this is not an allowlist. A binding contains inline settings or a configuration
+reference, never both. Exactly one configuration applies per encoding per pipeline.
+
+Map entries inherit from pipeline, group, then root, with whole-entry replacement
+rather than deep option merging. Observability inherits its own declaration and
+root only. Empty sections inherit; an empty binding resets that encoding to its
+distribution default. Named definitions require an implementation ID. Missing
+names, incompatible implementations, and invalid options fail startup.
+
+`codecs.bindings.otlp-bytes.decode.validation` selects `best_effort` or `strict`
+for OTLP decoding; built-in defaults remain best effort. Strict decoding does not
+validate pass-through or borrowed encoded views. Selected settings participate
+in redeployment equality, independent of their scope or reference names. See the
+[codec guide](codecs.md) for examples and extension boundaries.
 
 ## Policy Hierarchy
 

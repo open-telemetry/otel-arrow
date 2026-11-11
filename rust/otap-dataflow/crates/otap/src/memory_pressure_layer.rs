@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 use tonic::{Code, Status, body::Body, metadata::MetadataMap};
 use tower::{Layer, Service};
 
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use crate::otlp::metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 
 /// Records request rejections before they enter the pipeline.

@@ -94,7 +94,13 @@ impl IdentityOwner {
                     Err(self.pending_error(error))
                 } else {
                     let optional_capacity = purpose == WritePurpose::FingerprintGrowth
-                        && matches!(error, StoreError::CompactionRequired);
+                        && matches!(
+                            error,
+                            StoreError::CompactionRequired | StoreError::SnapshotLimit { .. }
+                        );
+                    // A required snapshot rejection stops the whole owner, just like
+                    // required WAL exhaustion. It is not a per-source quarantine.
+                    // Optional evidence stays queued without blocking required sync.
                     self.stopped = !optional_capacity
                         && !matches!(error, StoreError::Encode(_) | StoreError::Replay(_));
                     Err(IdentityError::AppendRejected(error))
@@ -378,7 +384,7 @@ impl IdentityOwner {
         Ok(true)
     }
 
-    /// Persist optional growth as a separate transaction. Known pre-write WAL
+    /// Persist optional growth as a separate transaction. Pre-write WAL or snapshot
     /// capacity rejection retains the queue and returns None, without stopping
     /// the owner. This does not certify progress; use sync_checkpoint for that.
     /// Encoding/replay failures remain visible; write, sync and authority failures
@@ -422,7 +428,9 @@ impl IdentityOwner {
                 self.growth.clear();
                 Ok(Some(receipt))
             }
-            Err(IdentityError::AppendRejected(StoreError::CompactionRequired)) => Ok(None),
+            Err(IdentityError::AppendRejected(
+                StoreError::CompactionRequired | StoreError::SnapshotLimit { .. },
+            )) => Ok(None),
             Err(
                 error
                 @ IdentityError::AppendRejected(StoreError::Encode(_) | StoreError::Replay(_)),

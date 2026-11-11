@@ -7,7 +7,7 @@
 //! Uses a tokio channel to confirm that the gRPC server has received data from a client
 //!
 
-use crate::otlp_grpc::OTLPData;
+use crate::grpc::otlp::typed::OTLPData;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
