@@ -848,3 +848,46 @@ fn ack_during_growth_block_is_serviced_before_waiting() {
     ));
     assert_eq!(owner.state().unwrap().last_sequence(), 4);
 }
+
+/// Scenario: Deferred progress needs sync while the next batch is Sending, and the barrier fails before Accepted arrives.
+/// Guarantees: Sync reports its original storage error; the late send result cannot replace it with an invariant error or release unresolved work.
+#[test]
+fn late_send_after_sync_failure_is_a_noop() {
+    let f = Fixture::new();
+    let path = f.write("app", b"abcdef");
+    let inputs = f.inputs(|c| c.checkpoint.sync_interval = Duration::from_secs(2));
+    let mut owner = f.owner(&inputs);
+    let seed = commit(&mut owner, &path, Context::Unrelated);
+    let now = Instant::now();
+    let mut b = batch(&seed);
+    b.reseal = Some(next_progress(&seed));
+    let mut d = Delivery::new(b, &inputs).unwrap();
+    let _ = ack(&mut d, now);
+    assert!(matches!(
+        d.checkpoint(&mut owner, now).unwrap(),
+        CheckpointOutcome::Applied(_)
+    ));
+    let due = d.next_deadline().unwrap();
+    let attempt = d.next_attempt(now).unwrap().unwrap();
+    owner.store.inject_sync_failure("explicit file sync");
+    let error = d.sync(&mut owner, due).unwrap_err();
+    assert!(matches!(
+        error,
+        DeliveryError::Checkpoint(IdentityError::Store(StoreError::SyncFailed { .. }))
+    ));
+    assert!(d.is_stopped());
+    d.sent(attempt.correlation, SendOutcome::Accepted, due)
+        .unwrap();
+    assert!(d.is_stopped());
+    assert!(owner.is_stopped());
+    assert_eq!(owner.synced_sequence(), 1);
+    assert!(!d.builder().released);
+    assert_eq!(d.builder().progress, vec![next_progress(&seed)]);
+    assert!(d.builder_mut(due).is_none());
+    assert!(d.next_attempt(due).unwrap().is_none());
+    assert!(d.next_deadline().is_none());
+    assert!(matches!(
+        d.checkpoint(&mut owner, due).unwrap(),
+        CheckpointOutcome::NotReady
+    ));
+}

@@ -321,6 +321,9 @@ impl<B: RetainedBatch> Delivery<B> {
         outcome: SendOutcome,
         now: Instant,
     ) -> Result<(), DeliveryError> {
+        if self.is_stopped() {
+            return Ok(());
+        }
         if self.phase != Phase::Sending || self.correlation != id {
             return self.fail(DeliveryError::Invariant);
         }

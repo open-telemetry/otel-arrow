@@ -139,6 +139,8 @@ checked arithmetic prevents identity/deadline wraparound.
 Nacks and retryable publication failures preserve the exact batch. Exponential
 backoff saturates at the configured maximum. Default exhaustion pauses delivery
 with periodic retries at that maximum; explicit `fail` stops without progress.
+Pause-entry time and reason are not yet exposed; worker/telemetry integration
+must add that observability before the receiver is enabled.
 `drop_and_continue` is rejected by this internal coordinator until explicit-loss
 reporting is integrated. No new receiver configuration is exposed.
 

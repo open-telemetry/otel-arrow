@@ -333,7 +333,10 @@ fn completion_before_send_result_is_terminal() {
         assert!(d.is_stopped());
         assert!(!d.builder.released);
         assert!(d.next_attempt(now).unwrap().is_none());
-        assert!(d.sent(a.correlation, SendOutcome::Accepted, now).is_err());
+        d.sent(a.correlation, SendOutcome::Accepted, now).unwrap();
+        assert!(d.is_stopped());
+        assert!(!d.builder.released);
+        assert!(d.next_attempt(now).unwrap().is_none());
     }
 }
 
@@ -350,4 +353,64 @@ fn builder_failure_stops_before_send() {
     };
     assert!(error.downcast_ref::<BuilderError>().is_some());
     assert!(d.is_stopped());
+}
+
+/// Scenario: Cancellation stops delivery before its outstanding send reports Cancelled or Accepted.
+/// Guarantees: Late send results are harmless and cannot release the batch, promote carry-over or restart delivery.
+#[test]
+fn late_send_results_after_cancellation_are_noops() {
+    for outcome in [SendOutcome::Cancelled, SendOutcome::Accepted] {
+        let mut d = delivery();
+        let now = Instant::now();
+        let attempt = d.next_attempt(now).unwrap().unwrap();
+        let progress = d.builder.progress.clone();
+        let carry = d.builder.carry.clone();
+        d.cancel();
+        d.sent(attempt.correlation, outcome, now).unwrap();
+        assert!(d.is_stopped());
+        assert!(!d.builder.released);
+        assert_eq!(d.builder.progress, progress);
+        assert_eq!(d.builder.carry, carry);
+        assert!(d.builder.promoted.is_none());
+        assert!(d.builder_mut(now).is_none());
+        assert!(d.next_attempt(now).unwrap().is_none());
+        assert!(d.next_deadline().is_none());
+    }
+}
+
+/// Scenario: A live coordinator receives a wrong send identity or a send result while Awaiting, Backoff or Authorized.
+/// Guarantees: Ignoring results after stop does not weaken live correlation or ordering checks.
+#[test]
+fn invalid_send_results_while_live_remain_terminal() {
+    for phase in [
+        Phase::Sending,
+        Phase::Awaiting,
+        Phase::Backoff(Instant::now()),
+        Phase::Authorized,
+    ] {
+        let mut d = delivery();
+        let now = Instant::now();
+        let mut id = d.next_attempt(now).unwrap().unwrap().correlation;
+        match phase {
+            Phase::Sending => id.batch += 1,
+            Phase::Awaiting | Phase::Backoff(_) | Phase::Authorized => {
+                d.sent(id, SendOutcome::Accepted, now).unwrap();
+                if phase != Phase::Awaiting {
+                    assert!(
+                        d.complete(&id.calldata(), phase == Phase::Authorized, now)
+                            .unwrap()
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+        assert!(!d.is_stopped());
+        assert!(matches!(
+            d.sent(id, SendOutcome::Accepted, now),
+            Err(DeliveryError::Invariant)
+        ));
+        assert!(d.is_stopped());
+        assert!(!d.builder.released);
+        assert!(d.next_attempt(now).unwrap().is_none());
+    }
 }
