@@ -24,11 +24,13 @@
 use rand::{Rng, RngExt};
 use rand_distr::Distribution as _;
 
-use super::annotation::{Distribution, Range, Scalar, ValueSpec};
+use super::value_spec::{Distribution, Range, Scalar, ValueSpec};
 
-/// Largest integer range for which zipf uses a precomputed cumulative table.
-/// Larger ranges fall back to `rand_distr::Zipf` (rejection-inversion).
-pub const ZIPF_TABLE_CAP: u64 = 1 << 20;
+/// Largest integer range for which zipf uses a precomputed cumulative table
+/// (2^14 ranks, so at most ~128 KiB of `f64` per annotated attribute). Larger
+/// ranges fall back to `rand_distr::Zipf` (rejection-inversion), which uses no
+/// table.
+pub(crate) const ZIPF_TABLE_CAP: u64 = 1 << 14;
 
 // ---------------------------------------------------------------------------
 // Standard normal functions
@@ -39,14 +41,14 @@ const SQRT_2PI: f64 = 2.506_628_274_631_000_5;
 
 /// `P[Z <= z]` for a standard normal `Z`.
 #[must_use]
-pub fn normal_cdf(z: f64) -> f64 {
+pub(crate) fn normal_cdf(z: f64) -> f64 {
     0.5 * libm::erfc(-z / SQRT_2)
 }
 
 /// `P[Z > z]` for a standard normal `Z`, computed directly (not `1 - cdf`) so
 /// the upper tail keeps full precision.
 #[must_use]
-pub fn normal_sf(z: f64) -> f64 {
+pub(crate) fn normal_sf(z: f64) -> f64 {
     0.5 * libm::erfc(z / SQRT_2)
 }
 
@@ -54,7 +56,7 @@ pub fn normal_sf(z: f64) -> f64 {
 ///
 /// Returns `-inf` for `p <= 0` and `+inf` for `p >= 1`.
 #[must_use]
-pub fn normal_quantile(p: f64) -> f64 {
+pub(crate) fn normal_quantile(p: f64) -> f64 {
     if p >= 1.0 {
         f64::INFINITY
     } else if p > 0.5 {
@@ -68,7 +70,7 @@ pub fn normal_quantile(p: f64) -> f64 {
 ///
 /// Returns `+inf` for `q <= 0` and `-inf` for `q >= 1`.
 #[must_use]
-pub fn normal_inverse_sf(q: f64) -> f64 {
+pub(crate) fn normal_inverse_sf(q: f64) -> f64 {
     if q >= 1.0 {
         f64::NEG_INFINITY
     } else if q > 0.5 {
@@ -222,7 +224,7 @@ enum Continuous {
 /// ratio before squaring also avoids the overflow/underflow that squaring
 /// `mean` and `stddev` separately would cause at extreme scales.
 #[must_use]
-pub fn lognormal_params(mean: f64, stddev: f64) -> (f64, f64) {
+pub(crate) fn lognormal_params(mean: f64, stddev: f64) -> (f64, f64) {
     let cv = stddev / mean;
     let sigma2 = (cv * cv).ln_1p();
     let mu = mean.ln() - sigma2 / 2.0;
@@ -315,9 +317,12 @@ impl NumberSampler {
                         cumulative: zipf_table(n, exponent),
                     }
                 } else {
-                    Continuous::ZipfRejection {
-                        zipf: rand_distr::Zipf::new(n as f64, exponent)
-                            .expect("zipf parameters validated at parse time"),
+                    // Parse-time validation guarantees valid zipf parameters, so
+                    // this succeeds. If the sampler ever cannot be built, fall
+                    // back to uniform over the range instead of panicking.
+                    match rand_distr::Zipf::new(n as f64, exponent) {
+                        Ok(zipf) => Continuous::ZipfRejection { zipf },
+                        Err(_) => Continuous::Uniform,
                     }
                 }
             }
@@ -430,7 +435,7 @@ fn zipf_table(n: u64, exponent: f64) -> Vec<f64> {
 ///
 /// Used at parse time to reject ranges that are effectively unreachable.
 #[must_use]
-pub fn range_mass(range: &Range, distribution: &Distribution, integer: bool) -> f64 {
+pub(crate) fn range_mass(range: &Range, distribution: &Distribution, integer: bool) -> f64 {
     match distribution {
         Distribution::Uniform | Distribution::Zipf { .. } => 1.0,
         _ if range.min == range.max => 1.0,
@@ -609,6 +614,24 @@ impl<T> MappedSampler<T> {
             index: IndexSampler::new(outputs.len(), weights.as_deref()),
             outputs,
         })
+    }
+
+    /// Build a sampler from discrete values and optional weights with an
+    /// infallible mapping.
+    ///
+    /// Unlike [`Self::new`], this takes the discrete parts directly and the
+    /// mapping cannot reject a value, so it always produces a sampler (no
+    /// fallible unwrap at the call site).
+    pub fn from_discrete_parts(
+        values: &[Scalar],
+        weights: Option<&[f64]>,
+        map: impl FnMut(&Scalar) -> T,
+    ) -> Self {
+        let outputs: Vec<T> = values.iter().map(map).collect();
+        Self {
+            index: IndexSampler::new(outputs.len(), weights),
+            outputs,
+        }
     }
 
     /// Draw one precomputed output.

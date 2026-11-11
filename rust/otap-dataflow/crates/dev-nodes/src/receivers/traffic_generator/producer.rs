@@ -49,9 +49,18 @@ impl TrafficProducer {
         let mut generator: Box<dyn SignalGenerator> = match config.data_source() {
             DataSource::SemanticConventions => {
                 let model = config
-                    .get_semconv_model()
-                    .map_err(GenerateError::Configuration)?
-                    .expect("SemanticConventions data source should return Some model");
+                    .semconv_model()
+                    .map_err(GenerateError::Configuration)?;
+                // Annotations were requested but the registry has none, so every
+                // value falls back to enum members, examples, and type defaults.
+                // This is the common mistake of using `annotations: true` with
+                // the default upstream registry (which carries no annotations).
+                if config.annotations() && model.annotation_count() == 0 {
+                    otel_warn!(
+                        "traffic_generator.annotations_enabled_but_none_found",
+                        message = "annotations: true but the registry has no traffic-generator annotations; values fall back to enum members, examples, and type defaults. Point registry_path at an annotated registry (such as vendor/semconv/model)."
+                    );
+                }
                 Box::new(WeaverGenerator { model })
             }
             DataSource::Synthetic => {
@@ -1019,9 +1028,7 @@ mod tests {
     fn drain_items(producer: &mut TrafficProducer) -> Vec<usize> {
         let mut items = Vec::new();
         while let Some(run) = producer.next_run().expect("generation should succeed") {
-            let run_items: Vec<usize> = run
-                .map(|r| r.expect("payload").num_items())
-                .collect::<Vec<_>>();
+            let run_items: Vec<usize> = run.map(|r| r.expect("payload").num_items()).collect();
             producer.record_production(run_items.iter().sum::<usize>() as u64);
             items.extend(run_items);
         }
@@ -1029,7 +1036,7 @@ mod tests {
     }
 
     /// Scenario: Semantic-convention metrics are produced from the vendored,
-    /// annotated registry (whose histogram has 10-100 observations per point)
+    /// annotated registry (whose histogram has 10-50 observations per point)
     /// with `max_signal_count: 1` and `max_batch_size: 1`, using both `fresh`
     /// and `pre_generated` strategies.
     /// Guarantees: Exactly one metric data point is emitted in total, in a

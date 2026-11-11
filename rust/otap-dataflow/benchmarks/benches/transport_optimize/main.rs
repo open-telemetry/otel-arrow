@@ -53,10 +53,7 @@ fn gen_fake_logs_batch(batch_size: usize) {
 
     let traffic_config = TrafficConfig::new(None, None, 10000, 1, 1, 1);
     let config = Config::new(traffic_config, registry_path);
-    let model = config
-        .get_semconv_model()
-        .expect("registry init OK")
-        .expect("registry exist");
+    let model = config.semconv_model().expect("registry init OK");
     let logs = semconv_otlp_logs(batch_size, &model);
     let mut bytes = Vec::new();
     logs.encode(&mut bytes).expect("can encode logs");

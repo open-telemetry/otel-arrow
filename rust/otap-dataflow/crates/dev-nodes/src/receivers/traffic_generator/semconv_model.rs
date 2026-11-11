@@ -28,52 +28,52 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporal
 
 use super::annotation::{
     self, AnnotationError, AnnotationResult, EventSpec, MetricSpec, NAMESPACE,
-    RegistryAnnotationError, SEVERITY_NAMES, STATUS_NAMES, SpanSpec, scalar_to_string,
+    RegistryAnnotationError, SpanSpec, scalar_to_string,
 };
 use super::attributes::AttributeGen;
+use super::fake_data::HISTOGRAM_BOUNDS;
 use super::sampler::{MappedSampler, ValueSampler};
-use super::synthetic_signal::HISTOGRAM_BOUNDS;
 
 /// A span group compiled for generation.
 #[derive(Debug, Clone)]
 pub struct SpanTemplate {
     /// Span name (the group id).
-    pub name: String,
+    pub(crate) name: String,
     /// Span kind from the registry.
-    pub kind: Option<SpanKindSpec>,
+    pub(crate) kind: Option<SpanKindSpec>,
     /// Names of the span events.
-    pub events: Vec<String>,
+    pub(crate) events: Vec<String>,
     /// Attribute generators.
-    pub attributes: Vec<AttributeGen>,
+    pub(crate) attributes: Vec<AttributeGen>,
     /// Duration sampler in milliseconds (`duration` annotation).
-    pub duration_ms: Option<ValueSampler>,
+    pub(crate) duration_ms: Option<ValueSampler>,
     /// Status code sampler (`status` annotation).
-    pub status: Option<MappedSampler<i32>>,
+    pub(crate) status: Option<MappedSampler<i32>>,
 }
 
 /// A metric group compiled for generation.
 #[derive(Debug, Clone)]
 pub struct MetricTemplate {
     /// Metric name.
-    pub name: String,
+    pub(crate) name: String,
     /// Metric description (the group brief).
-    pub description: String,
+    pub(crate) description: String,
     /// Metric unit.
-    pub unit: String,
+    pub(crate) unit: String,
     /// Instrument kind.
-    pub instrument: InstrumentSpec,
+    pub(crate) instrument: InstrumentSpec,
     /// Attribute generators.
-    pub attributes: Vec<AttributeGen>,
+    pub(crate) attributes: Vec<AttributeGen>,
     /// Value sampler (`value`) for number points and histogram observations.
-    pub value: Option<ValueSampler>,
+    pub(crate) value: Option<ValueSampler>,
     /// Observations per histogram data point (`observations`).
-    pub observations: Option<ValueSampler>,
+    pub(crate) observations: Option<ValueSampler>,
     /// Histogram bucket bounds (`bounds`, or the SDK defaults).
-    pub bounds: Vec<f64>,
+    pub(crate) bounds: Vec<f64>,
     /// How histogram data points are populated.
-    pub histogram_mode: HistogramMode,
+    pub(crate) histogram_mode: HistogramMode,
     /// Sum and histogram temporality (`temporality`, or `Unspecified`).
-    pub temporality: AggregationTemporality,
+    pub(crate) temporality: AggregationTemporality,
 }
 
 /// How histogram data points are populated.
@@ -92,41 +92,28 @@ pub enum HistogramMode {
 #[derive(Debug, Clone)]
 pub struct EventTemplate {
     /// Event name.
-    pub name: String,
+    pub(crate) name: String,
     /// Log body text.
-    pub body: String,
+    pub(crate) body: String,
     /// Attribute generators.
-    pub attributes: Vec<AttributeGen>,
+    pub(crate) attributes: Vec<AttributeGen>,
     /// Severity number and text sampler (`severity` annotation).
-    pub severity: Option<MappedSampler<(i32, &'static str)>>,
+    pub(crate) severity: Option<MappedSampler<(i32, &'static str)>>,
 }
 
 /// A resolved registry compiled into signal templates.
 #[derive(Debug, Clone, Default)]
 pub struct SemconvModel {
     /// Span groups, in registry order.
-    pub spans: Vec<SpanTemplate>,
+    pub(crate) spans: Vec<SpanTemplate>,
     /// Metric groups with an instrument, in registry order.
-    pub metrics: Vec<MetricTemplate>,
+    pub(crate) metrics: Vec<MetricTemplate>,
     /// Event groups, in registry order.
-    pub events: Vec<EventTemplate>,
-}
-
-/// Map a severity short name to its SeverityNumber value (1..=24) and its
-/// static name.
-pub(crate) fn severity_entry(name: &str) -> Option<(i32, &'static str)> {
-    SEVERITY_NAMES
-        .iter()
-        .position(|n| *n == name)
-        .map(|i| (i as i32 + 1, SEVERITY_NAMES[i]))
-}
-
-/// Map a status name to its StatusCode value.
-pub(crate) fn status_entry(name: &str) -> Option<i32> {
-    STATUS_NAMES
-        .iter()
-        .position(|n| *n == name)
-        .map(|i| i as i32)
+    pub(crate) events: Vec<EventTemplate>,
+    /// Number of `traffic-generator` annotations found while compiling (0 when
+    /// compiled without annotations). Used to warn when `annotations: true` but
+    /// the registry carries none.
+    annotation_count: usize,
 }
 
 impl SemconvModel {
@@ -135,41 +122,14 @@ impl SemconvModel {
     /// Returns every invalid annotation (group, attribute, key path) so they
     /// can be reported together at startup.
     pub fn compile(registry: &ResolvedRegistry) -> Result<Self, Vec<RegistryAnnotationError>> {
-        Self::compile_inner(registry, true)
-    }
-
-    /// Compile `registry` ignoring every `traffic-generator` annotation.
-    ///
-    /// Annotations are never read, so invalid annotations cannot fail.
-    /// Attribute values come from enum members, examples, and type defaults;
-    /// signal-level settings use their defaults, and histogram points are
-    /// emitted without buckets ([`HistogramMode::Empty`]).
-    #[must_use]
-    pub fn compile_without_annotations(registry: &ResolvedRegistry) -> Self {
-        Self::compile_inner(registry, false).expect("compilation without annotations cannot fail")
-    }
-
-    fn compile_inner(
-        registry: &ResolvedRegistry,
-        use_annotations: bool,
-    ) -> Result<Self, Vec<RegistryAnnotationError>> {
         let mut model = SemconvModel::default();
         let mut errors = Vec::new();
         for group in &registry.groups {
             let mut attribute_errors = Vec::new();
-            let attributes = if use_annotations {
-                compile_attributes(group, &mut attribute_errors)
-            } else {
-                group
-                    .attributes
-                    .iter()
-                    .map(AttributeGen::fallback)
-                    .collect()
-            };
-            match compile_group(group, attributes, use_annotations) {
-                Ok(Some(Template::Span(t))) => model.spans.push(t),
-                Ok(Some(Template::Metric(t))) => model.metrics.push(t),
-                Ok(Some(Template::Event(t))) => model.events.push(t),
+            let attributes = compile_attributes(group, &mut attribute_errors);
+            model.annotation_count += count_group_annotations(group);
+            match compile_group(group, attributes, true) {
+                Ok(Some(template)) => model.push(template),
                 Ok(None) => {}
                 Err(error) => errors.push(RegistryAnnotationError {
                     group: group.id.clone(),
@@ -186,6 +146,56 @@ impl SemconvModel {
             Err(errors)
         }
     }
+
+    /// Compile `registry` ignoring every `traffic-generator` annotation.
+    ///
+    /// Annotations are never read, so invalid annotations cannot fail.
+    /// Attribute values come from enum members, examples, and type defaults;
+    /// signal-level settings use their defaults, and histogram points are
+    /// emitted without buckets ([`HistogramMode::Empty`]).
+    #[must_use]
+    pub fn compile_without_annotations(registry: &ResolvedRegistry) -> Self {
+        let mut model = SemconvModel::default();
+        for group in &registry.groups {
+            let attributes = group
+                .attributes
+                .iter()
+                .map(AttributeGen::fallback)
+                .collect();
+            // With annotations disabled no annotation is read, so this never
+            // returns an error.
+            if let Ok(Some(template)) = compile_group(group, attributes, false) {
+                model.push(template);
+            }
+        }
+        model
+    }
+
+    /// Number of `traffic-generator` annotations found while compiling (0 when
+    /// compiled without annotations).
+    #[must_use]
+    pub fn annotation_count(&self) -> usize {
+        self.annotation_count
+    }
+
+    fn push(&mut self, template: Template) {
+        match template {
+            Template::Span(t) => self.spans.push(t),
+            Template::Metric(t) => self.metrics.push(t),
+            Template::Event(t) => self.events.push(t),
+        }
+    }
+}
+
+/// Count the `traffic-generator` annotations on a group and its attributes.
+fn count_group_annotations(group: &ResolvedGroup) -> usize {
+    let has = |a| matches!(annotation::lookup(a), Ok(Some(_)));
+    usize::from(has(group.annotations.as_ref()))
+        + group
+            .attributes
+            .iter()
+            .filter(|attr| has(attr.annotations.as_ref()))
+            .count()
 }
 
 enum Template {
@@ -220,15 +230,16 @@ fn compile_group(
     attributes: Vec<AttributeGen>,
     use_annotations: bool,
 ) -> AnnotationResult<Option<Template>> {
-    let map = if use_annotations {
-        annotation::lookup(group.annotations.as_ref())?
+    // Both the group's annotation map and the histogram mode are decided by
+    // `use_annotations`: with annotations off, no map is read and histograms
+    // are emitted empty.
+    let (map, histogram_mode) = if use_annotations {
+        (
+            annotation::lookup(group.annotations.as_ref())?,
+            HistogramMode::Aggregated,
+        )
     } else {
-        None
-    };
-    let histogram_mode = if use_annotations {
-        HistogramMode::Aggregated
-    } else {
-        HistogramMode::Empty
+        (None, HistogramMode::Empty)
     };
     match (&group.r#type, &group.instrument) {
         (GroupType::Span, _) => {
@@ -245,7 +256,7 @@ fn compile_group(
                 status: spec
                     .status
                     .as_ref()
-                    .map(|s| named(s, "status", status_entry))
+                    .map(|s| named(s, "status", annotation::status_code))
                     .transpose()?,
             })))
         }
@@ -265,7 +276,7 @@ fn compile_group(
                 severity: spec
                     .severity
                     .as_ref()
-                    .map(|s| named(s, "severity", severity_entry))
+                    .map(|s| named(s, "severity", annotation::severity))
                     .transpose()?,
             })))
         }

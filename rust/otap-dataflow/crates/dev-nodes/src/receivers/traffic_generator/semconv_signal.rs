@@ -74,7 +74,7 @@ pub fn semconv_otlp_metrics(signal_count: usize, model: &SemconvModel) -> Metric
 }
 
 /// Like [`semconv_otlp_traces`], drawing random values from `rng`.
-pub fn semconv_otlp_traces_with_rng<R: Rng + ?Sized>(
+pub(crate) fn semconv_otlp_traces_with_rng<R: Rng + ?Sized>(
     signal_count: usize,
     model: &SemconvModel,
     rng: &mut R,
@@ -86,7 +86,7 @@ pub fn semconv_otlp_traces_with_rng<R: Rng + ?Sized>(
 }
 
 /// Like [`semconv_otlp_logs`], drawing random values from `rng`.
-pub fn semconv_otlp_logs_with_rng<R: Rng + ?Sized>(
+pub(crate) fn semconv_otlp_logs_with_rng<R: Rng + ?Sized>(
     signal_count: usize,
     model: &SemconvModel,
     rng: &mut R,
@@ -98,7 +98,7 @@ pub fn semconv_otlp_logs_with_rng<R: Rng + ?Sized>(
 }
 
 /// Like [`semconv_otlp_metrics`], drawing random values from `rng`.
-pub fn semconv_otlp_metrics_with_rng<R: Rng + ?Sized>(
+pub(crate) fn semconv_otlp_metrics_with_rng<R: Rng + ?Sized>(
     signal_count: usize,
     model: &SemconvModel,
     rng: &mut R,
@@ -269,7 +269,7 @@ fn start_time(metric: &MetricTemplate, now: u64) -> u64 {
 /// the last bucket (`bounds.len()`) counts `x > bounds[last]` (OTLP explicit
 /// bucket semantics).
 #[must_use]
-pub fn bucket_index(bounds: &[f64], x: f64) -> usize {
+pub(crate) fn bucket_index(bounds: &[f64], x: f64) -> usize {
     bounds.partition_point(|b| *b < x)
 }
 
@@ -322,18 +322,17 @@ fn logs<R: Rng + ?Sized>(signal_count: usize, model: &SemconvModel, rng: &mut R)
         // events are structured logs
         let timestamp = current_time();
         let (number, text) = log_severity(event, rng);
-        let builder = LogRecord::build()
-            .time_unix_nano(timestamp)
-            .severity_number(number)
-            .event_name(event.name.clone())
-            .attributes(attributes(&event.attributes, rng))
-            .body(AnyValue::new_string(event.body.clone()))
-            .observed_time_unix_nano(timestamp);
-        log_records.push(if text.is_empty() {
-            builder.finish()
-        } else {
-            builder.severity_text(text).finish()
-        });
+        log_records.push(
+            LogRecord::build()
+                .time_unix_nano(timestamp)
+                .severity_number(number)
+                .severity_text(text)
+                .event_name(event.name.clone())
+                .attributes(attributes(&event.attributes, rng))
+                .body(AnyValue::new_string(event.body.clone()))
+                .observed_time_unix_nano(timestamp)
+                .finish(),
+        );
     }
     log_records
 }

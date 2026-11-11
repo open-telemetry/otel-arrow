@@ -8,9 +8,10 @@
 //! The goal is to measure the cost of the annotation integration. Three kinds
 //! of cost are isolated:
 //!
-//! - `startup/resolve_compile`: resolve the registry and compile it into the
-//!   internal model (annotations parsed, samplers built). For `upstream` this
-//!   includes the git clone, so it is reported separately from `vendored`.
+//! - `startup/compile`: compile an already-resolved registry into the internal
+//!   model (annotations parsed, samplers built). The registry is resolved once
+//!   up front and reused, so the timed region excludes resolution -- and, for
+//!   `upstream`, the git clone -- and measures only the annotation compile cost.
 //! - `pregenerate`: build the full pre-generated payload set once, exactly as
 //!   the `pre_generated` strategy does at startup. This uses the producer's own
 //!   shaping (a 1:1:1 logs/metrics/traces mix, `1024 * max_batch_size` signals
@@ -21,18 +22,21 @@
 //!   per-batch cost paid continuously by the `fresh` strategy), through the same
 //!   `OtapPayload` encoder the receiver uses.
 //!
-//! Memory is reported out-of-band through a counting allocator that wraps
-//! jemalloc: per-run lines print bytes retained by the model, bytes allocated
-//! during resolve/compile, bytes per fresh batch, bytes retained by the
-//! pre-generated payload set, and its per-signal breakdown.
+//! Memory is reported out-of-band by reading jemalloc's process-wide allocation
+//! statistics (through `tikv_jemalloc_ctl`) around each region: per-run lines
+//! print bytes retained by the model, bytes allocated during compile, bytes per
+//! fresh batch, bytes retained by the pre-generated payload set, and its
+//! per-signal breakdown.
 //!
-//! Both `upstream` and `vendored` run by default. `upstream` requires network
-//! access to clone the registry; a clone failure is a hard error.
+//! `vendored` always runs (it needs no network). `upstream` is opt-in: set
+//! `TRAFFICGEN_BENCH_UPSTREAM=1` to also clone and benchmark the upstream
+//! registry; a clone failure is then a hard error.
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::annotation::format_errors;
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::{
     Config, TrafficConfig, default_registry_path, vendored_registry_path,
 };
@@ -42,6 +46,7 @@ use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::producer::{
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use weaver_common::vdir::VirtualDirectoryPath;
+use weaver_forge::v1::registry::ResolvedRegistry;
 
 // Use jemalloc so its statistics can be read through tikv_jemalloc_ctl. The
 // counters below are process-wide, so memory lines are only meaningful because
@@ -105,7 +110,16 @@ enum Registry {
 }
 
 impl Registry {
-    const ALL: [Registry; 2] = [Registry::Upstream, Registry::Vendored];
+    /// Registries to benchmark: `vendored` always, `upstream` only when
+    /// `TRAFFICGEN_BENCH_UPSTREAM=1` (it needs network access to clone).
+    fn selected() -> Vec<Registry> {
+        let upstream = std::env::var("TRAFFICGEN_BENCH_UPSTREAM").as_deref() == Ok("1");
+        if upstream {
+            vec![Registry::Upstream, Registry::Vendored]
+        } else {
+            vec![Registry::Vendored]
+        }
+    }
 
     fn id(self) -> &'static str {
         match self {
@@ -164,15 +178,37 @@ fn traffic_config() -> TrafficConfig {
     TrafficConfig::new(None, None, FRESH_BATCH, 1, 1, 1)
 }
 
-/// Resolve and compile the registry into a model, panicking on failure.
-fn compile_model(registry: Registry) -> SemconvModel {
-    // Annotations are enabled for both registries so the annotation-driven
-    // compile and generation paths are measured (upstream carries none).
-    let config = Config::new(traffic_config(), registry.path()).with_annotations(true);
+/// Resolve the registry (clones from git for `upstream`), panicking on failure.
+///
+/// Resolution is excluded from the compile benchmark so the timed region
+/// measures annotation compilation only, not the network-bound clone.
+fn resolve(registry: Registry) -> ResolvedRegistry {
+    let config = Config::new(traffic_config(), registry.path());
     config
-        .get_semconv_model()
-        .unwrap_or_else(|e| panic!("resolve/compile {} registry: {e}", registry.id()))
-        .expect("semantic_conventions data source returns Some model")
+        .resolve_registry()
+        .unwrap_or_else(|e| panic!("resolve {} registry: {e}", registry.id()))
+}
+
+/// Compile an already-resolved registry into a model, panicking on failure.
+///
+/// Annotations are enabled for both registries so the annotation-driven compile
+/// and generation paths are measured (upstream carries none).
+fn compile_resolved(registry: Registry, resolved: &ResolvedRegistry) -> SemconvModel {
+    SemconvModel::compile(resolved).unwrap_or_else(|errors| {
+        panic!(
+            "compile {} registry: {}",
+            registry.id(),
+            format_errors(&errors)
+        )
+    })
+}
+
+/// Resolve and compile the registry into a model, panicking on failure.
+///
+/// Used by the `fresh` and `pregenerate` benchmarks, which need a model but do
+/// not time its construction.
+fn compile_model(registry: Registry) -> SemconvModel {
+    compile_resolved(registry, &resolve(registry))
 }
 
 /// weaver clones the upstream registry over rustls without choosing a crypto
@@ -183,28 +219,32 @@ fn ensure_crypto() {
 
 #[allow(clippy::print_stdout)]
 fn bench_startup(c: &mut Criterion) {
-    let mut group = c.benchmark_group("startup/resolve_compile");
-    // Resolving (and, for upstream, cloning) is slow; keep the sample small.
+    let mut group = c.benchmark_group("startup/compile");
+    // Compilation is cheaper than resolution, but keep the sample modest since
+    // each iteration rebuilds every sampler.
     let _ = group.sample_size(10);
 
-    for registry in Registry::ALL {
+    for registry in Registry::selected() {
+        // Resolve once, outside the timed region, so the benchmark measures only
+        // annotation compilation (not the git clone for `upstream`).
+        let resolved = resolve(registry);
+
         if MEMORY_REPORT {
             let before = AllocSnapshot::now();
-            let model = compile_model(registry);
+            let model = compile_resolved(registry, &resolved);
             let after = AllocSnapshot::now();
-            // net_bytes is bytes still allocated to the application after
-            // resolve/compile completes (resolver scratch has been freed, the
-            // model is retained); resident_delta is the change in bytes mapped
-            // by the allocator, which includes fragmentation and retained
-            // arenas.
+            // net_bytes is bytes still allocated to the application after compile
+            // completes (the model is retained); resident_delta is the change in
+            // bytes mapped by the allocator, which includes fragmentation and
+            // retained arenas.
             println!(
-                "mem startup/{}: resolve_compile net={} B resident_delta={} B",
+                "mem startup/{}: compile net={} B resident_delta={} B",
                 registry.id(),
                 after.net_bytes(before),
                 after.resident_delta(before),
             );
             // Measure bytes retained by the model alone: snapshot around a
-            // clone so transient resolver state is excluded.
+            // clone so transient compile state is excluded.
             let before_model = AllocSnapshot::now();
             let cloned = black_box(model.clone());
             let after_model = AllocSnapshot::now();
@@ -221,7 +261,7 @@ fn bench_startup(c: &mut Criterion) {
             BenchmarkId::from_parameter(registry.id()),
             &registry,
             |b, &registry| {
-                b.iter(|| black_box(compile_model(registry)));
+                b.iter(|| black_box(compile_resolved(registry, &resolved)));
             },
         );
     }
@@ -233,7 +273,7 @@ fn bench_fresh(c: &mut Criterion) {
     let mut group = c.benchmark_group("fresh");
     let _ = group.throughput(Throughput::Elements(FRESH_BATCH as u64));
 
-    for registry in Registry::ALL {
+    for registry in Registry::selected() {
         let mut generator = WeaverGenerator::new(compile_model(registry));
         for signal in Signal::ALL {
             if MEMORY_REPORT {
@@ -321,7 +361,7 @@ fn bench_pregenerate(c: &mut Criterion) {
     // One run already generates a million+ signals; keep the sample small.
     let _ = group.sample_size(10);
 
-    for registry in Registry::ALL {
+    for registry in Registry::selected() {
         if MEMORY_REPORT {
             let before = AllocSnapshot::now();
             let mut payloads = black_box(pregenerate_set(registry));

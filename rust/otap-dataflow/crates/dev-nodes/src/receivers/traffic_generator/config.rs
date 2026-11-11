@@ -330,35 +330,33 @@ impl Config {
     }
 
     /// Resolve the registry and compile it for signal generation.
-    /// Returns None if data_source is Synthetic.
+    ///
+    /// Only valid for the `semantic_conventions` data source (the caller
+    /// selects the generator by data source, so this is never called for
+    /// `synthetic`).
     ///
     /// When `annotations` is enabled, every `traffic-generator` annotation is
     /// parsed, validated, and compiled into samplers once and an error lists
     /// each invalid annotation. When disabled, annotations are ignored. The
     /// resolved registry is dropped afterwards.
-    pub fn get_semconv_model(&self) -> Result<Option<SemconvModel>, String> {
-        match self.data_source {
-            DataSource::Synthetic => Ok(None),
-            DataSource::SemanticConventions => {
-                let resolved_registry = self.resolve_registry()?;
-                if self.annotations {
-                    SemconvModel::compile(&resolved_registry)
-                        .map(Some)
-                        .map_err(|errors| format_errors(&errors))
-                } else {
-                    Ok(Some(SemconvModel::compile_without_annotations(
-                        &resolved_registry,
-                    )))
-                }
-            }
+    pub fn semconv_model(&self) -> Result<SemconvModel, String> {
+        let resolved_registry = self.resolve_registry()?;
+        if self.annotations {
+            SemconvModel::compile(&resolved_registry).map_err(|errors| format_errors(&errors))
+        } else {
+            Ok(SemconvModel::compile_without_annotations(
+                &resolved_registry,
+            ))
         }
     }
 
     /// Resolve the semantic conventions registry at `registry_path`.
     ///
     /// Does not validate `traffic-generator` annotations; use
-    /// [`Self::get_semconv_model`] to obtain a validated, compiled model.
-    pub(crate) fn resolve_registry(&self) -> Result<ResolvedRegistry, String> {
+    /// [`Self::semconv_model`] to obtain a validated, compiled model. Exposed so
+    /// benchmarks can resolve once and time compilation separately from the
+    /// (for the upstream registry, network-bound) resolve step.
+    pub fn resolve_registry(&self) -> Result<ResolvedRegistry, String> {
         let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
             .map_err(|err| err.to_string())?;

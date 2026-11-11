@@ -160,7 +160,7 @@ Every generated value is described by a value spec in one of two forms:
 
 | Form | Keys | Meaning |
 | --- | --- | --- |
-| Discrete | `values` (required), `weights` (optional) | Pick one of `values`; uniform unless `weights` is given. Weights are relative, `>= 0`, and must have a finite sum `> 0`. |
+| Discrete | `values` (required), `weights` (optional) | Pick one of `values` (at most 128); uniform unless `weights` is given. Weights are relative, `>= 0`, and must have a finite sum `> 0`. |
 | Continuous | `range: { min, max }` (required), `distribution` (optional) | Sample a number in `[min, max]` (inclusive); uniform unless `distribution` is given. Int and double only. |
 
 `values` and `range` are mutually exclusive, `weights` requires `values`, and
@@ -189,7 +189,7 @@ distribution is rejected.
 | `string`, `boolean` | Discrete value spec. |
 | enum | Discrete value spec; every value must be a member value. Members that are not listed are never generated. |
 | `any` | Discrete value spec with mixed scalars. |
-| `T[]` | `length` (int value spec, `0` to `1024`) and `items` (value spec for `T`); each item is sampled independently. |
+| `T[]` | `length` (int value spec, `0` to `32`) and `items` (value spec for `T`); each item is sampled independently. |
 | `template[T]` | `keys` (string value spec) and `value` (value spec for `T`, or `length` / `items` for array templates). The emitted name is `<prefix>.<key>`, for example `http.request.header.content-type`. |
 
 ```yaml
@@ -216,8 +216,8 @@ distribution is rejected.
 | --- | --- | --- | --- |
 | metric | `value` | Int or double value spec; counters and histograms require values `>= 0` | `1` |
 | counter, updowncounter, histogram metric | `temporality` | `delta` (the only supported value); also sets each point's start time | `Unspecified`, no start time |
-| histogram metric | `observations` | Int value spec, `1` to `1000`; observations aggregated into each point | `1` |
-| histogram metric | `bounds` | Strictly increasing list of numbers | `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]` |
+| histogram metric | `observations` | Int value spec, `1` to `50`; observations aggregated into each point | `1` |
+| histogram metric | `bounds` | Strictly increasing list of numbers (at most 32) | `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]` |
 | span | `duration` | Value spec in milliseconds, `>= 0` | 10 microseconds |
 | span | `status` | Discrete, `unset` / `ok` / `error` | Status not set |
 | event | `severity` | Discrete, `SeverityNumber` short names (`TRACE`, `TRACE2`, ... `FATAL4`); sets number and text | `INFO`, no text |
@@ -233,7 +233,7 @@ distribution is rejected.
         range: { min: 0.0, max: 60.0 }
         distribution: { type: lognormal, mean: 0.1, stddev: 0.2 }
       bounds: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
-      observations: { range: { min: 10, max: 100 } }
+      observations: { range: { min: 10, max: 50 } }
       temporality: delta
 
 - id: event.http.server.request.exception
@@ -289,13 +289,22 @@ Validation rejects unknown keys at every level (for example `weight` instead
 of `weights`), keys used in the wrong context (`observations` or
 `temporality` on a gauge, `items` on a scalar), values that do not match the
 attribute type, invalid distribution parameters, unknown status, severity,
-and temporality names, bounds that are not strictly increasing, counts above
-their limits (`observations` 1000, array `length` 1024), int ranges beyond
-+/-(2^52 - 1), and weights whose sum is not finite.
+and temporality names, bounds that are not strictly increasing, lists above
+their size caps (`values` 128, `bounds` 32), counts above their limits
+(`observations` 50, array `length` 32), int ranges beyond +/-(2^52 - 1), and
+weights whose sum is not finite.
 
-The `observations` limit bounds the sampling work per histogram point; the
-work per batch still scales with `max_batch_size` (up to
-`max_batch_size * 1000` samples).
+These caps bound both the memory a compiled sampler retains and the per-batch
+sampling work. The `observations` limit bounds the sampling work per histogram
+point; the work per batch still scales with `max_batch_size` (up to
+`max_batch_size * 50` histogram samples, about 50k per batch at the default
+`max_batch_size` of 1000). The receiver yields between batches, so this bounds
+only the uninterrupted work inside one batch.
+
+If `annotations: true` but the registry has no `traffic-generator` annotations
+(for example the default upstream registry), the receiver logs a startup
+warning and every value falls back to enum members, examples, and type
+defaults.
 
 With `generation_strategy: pre_generated`, values are sampled once at startup
 and replayed, so variety exists only across the pre-generated batches.

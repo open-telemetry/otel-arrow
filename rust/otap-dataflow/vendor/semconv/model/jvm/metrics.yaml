@@ -68,7 +68,7 @@ groups:
           range: { min: 0.0, max: 10.0 }
           distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
         bounds: [0.01, 0.1, 1, 10]
-        observations: { range: { min: 10, max: 100 } }
+        observations: { range: { min: 10, max: 50 } }
         temporality: delta
     brief: "Duration of JVM garbage collection actions."
     instrument: histogram

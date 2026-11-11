@@ -1329,6 +1329,7 @@ dependencies = [
  "tracing-subscriber",
  "unsync",
  "weaver_common",
+ "weaver_forge",
 ]
 
 [[package]]

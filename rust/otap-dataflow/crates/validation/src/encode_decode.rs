@@ -61,6 +61,7 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel;
     use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
@@ -116,8 +117,8 @@ mod test {
     fn validate_encode_decode() {
         let mut otel_proto_simulator = OtelProtoSimulator::default();
 
-        let registry = otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel::compile(&get_registry())
-            .expect("registry annotations are valid");
+        let registry =
+            SemconvModel::compile(&get_registry()).expect("registry annotations are valid");
 
         for _ in 0..ITERATIONS {
             // generate data and simulate the protocol and compare result

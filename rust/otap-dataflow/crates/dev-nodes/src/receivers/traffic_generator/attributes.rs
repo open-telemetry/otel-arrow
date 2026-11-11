@@ -86,9 +86,12 @@ impl ScalarGen {
                 range,
                 distribution,
             } => ScalarGen::Number(NumberSampler::new(*range, *distribution, integer)),
-            ValueSpec::Discrete { .. } => ScalarGen::Choice(
-                MappedSampler::new(spec, |v| Some(scalar_to_any(v.clone())))
-                    .expect("discrete spec maps every value"),
+            // Every scalar maps to an `AnyValue`, so the infallible
+            // constructor applies.
+            ValueSpec::Discrete { values, weights } => ScalarGen::Choice(
+                MappedSampler::from_discrete_parts(values, weights.as_deref(), |v| {
+                    scalar_to_any(v.clone())
+                }),
             ),
         }
     }

@@ -72,6 +72,8 @@ pub mod semconv_model;
 pub mod semconv_signal;
 /// Synthetic hardcoded signal generators for lightweight load testing
 pub mod synthetic_signal;
+/// Shared value-spec vocabulary (leaf module, no sampler/annotation cycle)
+pub mod value_spec;
 
 /// The URN for the traffic generator receiver.
 pub const TRAFFIC_GENERATOR_RECEIVER_URN: &str = "urn:otel:receiver:traffic_generator";
@@ -1150,12 +1152,11 @@ mod tests {
 
     #[test]
     fn test_traffic_generator_receiver() {
-        // weaver fetches remote registries over rustls without choosing a crypto
-        // provider. Production installs one at startup; tests must do it here.
-        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        // Use the vendored registry (loaded from the source tree) so the test
+        // needs no network access or TLS crypto provider to clone upstream.
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path);

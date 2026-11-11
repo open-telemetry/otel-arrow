@@ -21,7 +21,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::status::StatusCode;
 use serde_json::{Map, Value};
 use weaver_semconv::YamlValue;
 use weaver_semconv::v1::attribute::{
@@ -72,144 +74,13 @@ impl std::error::Error for AnnotationError {}
 /// Result alias for annotation parsing.
 pub type AnnotationResult<T> = Result<T, AnnotationError>;
 
-/// The kind of scalar a value spec produces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalarKind {
-    /// 64-bit signed integer.
-    Int,
-    /// 64-bit float.
-    Double,
-    /// UTF-8 string.
-    String,
-    /// Boolean.
-    Bool,
-    /// Any scalar (int, double, string, or boolean), discrete form only.
-    Any,
-}
-
-impl ScalarKind {
-    const fn name(self) -> &'static str {
-        match self {
-            ScalarKind::Int => "int",
-            ScalarKind::Double => "double",
-            ScalarKind::String => "string",
-            ScalarKind::Bool => "boolean",
-            ScalarKind::Any => "any",
-        }
-    }
-
-    const fn is_numeric(self) -> bool {
-        matches!(self, ScalarKind::Int | ScalarKind::Double)
-    }
-}
-
-/// A scalar value in a discrete value list.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Scalar {
-    /// Integer value.
-    Int(i64),
-    /// Floating point value.
-    Double(f64),
-    /// String value.
-    String(String),
-    /// Boolean value.
-    Bool(bool),
-}
-
-/// Format a scalar as a plain string (template keys, status and severity
-/// names, error messages).
-#[must_use]
-pub fn scalar_to_string(value: &Scalar) -> String {
-    match value {
-        Scalar::String(s) => s.clone(),
-        Scalar::Int(i) => i.to_string(),
-        Scalar::Double(d) => d.to_string(),
-        Scalar::Bool(b) => b.to_string(),
-    }
-}
-
-/// An inclusive numeric range.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Range {
-    /// Inclusive lower bound.
-    pub min: f64,
-    /// Inclusive upper bound.
-    pub max: f64,
-}
-
-/// Distribution used to sample a continuous range.
-///
-/// Parameters are expressed in the units of the generated value and describe
-/// the distribution before truncation to the range.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Distribution {
-    /// Uniform over the range.
-    Uniform,
-    /// Normal (Gaussian).
-    Normal {
-        /// Mean of the distribution.
-        mean: f64,
-        /// Standard deviation of the distribution.
-        stddev: f64,
-    },
-    /// Log-normal parameterized by the mean and standard deviation of the value.
-    LogNormal {
-        /// Mean of the value.
-        mean: f64,
-        /// Standard deviation of the value.
-        stddev: f64,
-    },
-    /// Exponential parameterized by its mean (rate = 1 / mean).
-    Exponential {
-        /// Mean of the distribution.
-        mean: f64,
-    },
-    /// Zipf over integer ranks; rank 1 is `range.min`.
-    Zipf {
-        /// Zipf exponent.
-        exponent: f64,
-    },
-}
-
-/// A validated value spec: exactly one of the discrete or continuous forms.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ValueSpec {
-    /// Pick one of `values`, uniformly or by `weights`.
-    Discrete {
-        /// Candidate values.
-        values: Vec<Scalar>,
-        /// Optional relative weights, same length as `values`.
-        weights: Option<Vec<f64>>,
-    },
-    /// Sample a number in `range` using `distribution`.
-    Continuous {
-        /// Inclusive range.
-        range: Range,
-        /// Distribution (uniform when omitted).
-        distribution: Distribution,
-    },
-}
-
-/// Spec for an attribute value, depending on the attribute type.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AttributeSpec {
-    /// Scalar attribute (int, double, string, boolean, enum, any).
-    Scalar(ValueSpec),
-    /// Array attribute: a length spec and an item spec.
-    Array {
-        /// Int spec for the array length.
-        length: ValueSpec,
-        /// Spec for each element.
-        items: ValueSpec,
-    },
-    /// Template attribute: a key spec and a value spec.
-    Template {
-        /// String spec for the key appended to the template prefix.
-        keys: ValueSpec,
-        /// Spec for the value, according to the template's inner type.
-        value: Box<AttributeSpec>,
-    },
-}
+// The value-spec vocabulary (`ScalarKind`, `Scalar`, `Range`, `Distribution`,
+// `ValueSpec`, `AttributeSpec`, `scalar_to_string`) lives in the leaf
+// `value_spec` module so the parser here and the samplers can share it without
+// a module cycle. Re-exported so existing `annotation::*` paths keep working.
+pub use super::value_spec::{
+    AttributeSpec, Distribution, Range, Scalar, ScalarKind, ValueSpec, scalar_to_string,
+};
 
 /// Signal-level spec for a metric group.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -240,15 +111,75 @@ pub struct EventSpec {
     pub severity: Option<ValueSpec>,
 }
 
-/// Allowed status names for span `status`.
-pub const STATUS_NAMES: [&str; 3] = ["unset", "ok", "error"];
-
-/// Allowed severity names for event `severity`, indexed by SeverityNumber - 1.
-pub const SEVERITY_NAMES: [&str; 24] = [
-    "TRACE", "TRACE2", "TRACE3", "TRACE4", "DEBUG", "DEBUG2", "DEBUG3", "DEBUG4", "INFO", "INFO2",
-    "INFO3", "INFO4", "WARN", "WARN2", "WARN3", "WARN4", "ERROR", "ERROR2", "ERROR3", "ERROR4",
-    "FATAL", "FATAL2", "FATAL3", "FATAL4",
+/// Span `status` names and their OTLP [`StatusCode`].
+///
+/// Single source of truth: parsing validates names against it and
+/// generation maps names through it.
+pub const STATUS_TABLE: [(&str, StatusCode); 3] = [
+    ("unset", StatusCode::Unset),
+    ("ok", StatusCode::Ok),
+    ("error", StatusCode::Error),
 ];
+
+/// Event `severity` short names and their OTLP [`SeverityNumber`].
+///
+/// Single source of truth: parsing validates names against it and
+/// generation maps names through it.
+pub const SEVERITY_TABLE: [(&str, SeverityNumber); 24] = [
+    ("TRACE", SeverityNumber::Trace),
+    ("TRACE2", SeverityNumber::Trace2),
+    ("TRACE3", SeverityNumber::Trace3),
+    ("TRACE4", SeverityNumber::Trace4),
+    ("DEBUG", SeverityNumber::Debug),
+    ("DEBUG2", SeverityNumber::Debug2),
+    ("DEBUG3", SeverityNumber::Debug3),
+    ("DEBUG4", SeverityNumber::Debug4),
+    ("INFO", SeverityNumber::Info),
+    ("INFO2", SeverityNumber::Info2),
+    ("INFO3", SeverityNumber::Info3),
+    ("INFO4", SeverityNumber::Info4),
+    ("WARN", SeverityNumber::Warn),
+    ("WARN2", SeverityNumber::Warn2),
+    ("WARN3", SeverityNumber::Warn3),
+    ("WARN4", SeverityNumber::Warn4),
+    ("ERROR", SeverityNumber::Error),
+    ("ERROR2", SeverityNumber::Error2),
+    ("ERROR3", SeverityNumber::Error3),
+    ("ERROR4", SeverityNumber::Error4),
+    ("FATAL", SeverityNumber::Fatal),
+    ("FATAL2", SeverityNumber::Fatal2),
+    ("FATAL3", SeverityNumber::Fatal3),
+    ("FATAL4", SeverityNumber::Fatal4),
+];
+
+/// Distribution type, parsed once so both the key check and the
+/// construction below match exhaustively.
+#[derive(Clone, Copy)]
+enum Kind {
+    Uniform,
+    Normal,
+    LogNormal,
+    Exponential,
+    Zipf,
+}
+
+/// Map a status name to its [`StatusCode`] value.
+#[must_use]
+pub fn status_code(name: &str) -> Option<i32> {
+    STATUS_TABLE
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, code)| *code as i32)
+}
+
+/// Map a severity short name to its [`SeverityNumber`] value and static name.
+#[must_use]
+pub fn severity(name: &str) -> Option<(i32, &'static str)> {
+    SEVERITY_TABLE
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(n, sev)| (*sev as i32, *n))
+}
 
 /// Minimum probability mass a truncated range must carry to be accepted.
 ///
@@ -261,11 +192,26 @@ pub const MIN_RANGE_MASS: f64 = f64::MIN_POSITIVE;
 ///
 /// Every observation is sampled on the receiver task. This bounds the work
 /// per histogram data point; work per batch still scales with
-/// `max_batch_size` (at most `max_batch_size * MAX_OBSERVATIONS` samples).
-pub const MAX_OBSERVATIONS: u64 = 1_000;
+/// `max_batch_size` (at most `max_batch_size * MAX_OBSERVATIONS` samples, so
+/// about 50k draws per batch at the default `max_batch_size` of 1000). The
+/// receiver yields between batches, so this only bounds the uninterrupted work
+/// inside a single batch.
+pub const MAX_OBSERVATIONS: u64 = 50;
 
 /// Largest accepted array attribute `length` value.
-pub const MAX_ARRAY_LENGTH: u64 = 1_024;
+///
+/// Each element is sampled on the receiver task, so this bounds the per-batch
+/// work contributed by a single array attribute (at most
+/// `max_batch_size * MAX_ARRAY_LENGTH` samples).
+pub const MAX_ARRAY_LENGTH: u64 = 32;
+
+/// Largest accepted number of `values` (and matching `weights`) in a discrete
+/// value spec. Bounds the memory retained per compiled sampler.
+pub const MAX_DISCRETE_VALUES: usize = 128;
+
+/// Largest accepted number of histogram `bounds`. Bounds the per-point bucket
+/// vector and the memory retained per compiled metric.
+pub const MAX_HISTOGRAM_BOUNDS: usize = 32;
 
 /// Largest integer magnitude accepted for int `range` bounds.
 ///
@@ -341,21 +287,54 @@ pub fn format_errors(errors: &[RegistryAnnotationError]) -> String {
 // Attribute parsing
 // ---------------------------------------------------------------------------
 
+/// Scalar kind and whether the type is an array, for a primitive-or-array spec.
+const fn primitive_shape(p: &PrimitiveOrArrayTypeSpec) -> (ScalarKind, bool) {
+    match p {
+        PrimitiveOrArrayTypeSpec::Int => (ScalarKind::Int, false),
+        PrimitiveOrArrayTypeSpec::Double => (ScalarKind::Double, false),
+        PrimitiveOrArrayTypeSpec::String => (ScalarKind::String, false),
+        PrimitiveOrArrayTypeSpec::Boolean => (ScalarKind::Bool, false),
+        PrimitiveOrArrayTypeSpec::Any => (ScalarKind::Any, false),
+        PrimitiveOrArrayTypeSpec::Ints => (ScalarKind::Int, true),
+        PrimitiveOrArrayTypeSpec::Doubles => (ScalarKind::Double, true),
+        PrimitiveOrArrayTypeSpec::Strings => (ScalarKind::String, true),
+        PrimitiveOrArrayTypeSpec::Booleans => (ScalarKind::Bool, true),
+    }
+}
+
+/// Scalar kind and whether the type is an array, for a template inner spec.
+const fn template_shape(t: &TemplateTypeSpec) -> (ScalarKind, bool) {
+    match t {
+        TemplateTypeSpec::Int => (ScalarKind::Int, false),
+        TemplateTypeSpec::Double => (ScalarKind::Double, false),
+        TemplateTypeSpec::String => (ScalarKind::String, false),
+        TemplateTypeSpec::Boolean => (ScalarKind::Bool, false),
+        TemplateTypeSpec::Any => (ScalarKind::Any, false),
+        TemplateTypeSpec::Ints => (ScalarKind::Int, true),
+        TemplateTypeSpec::Doubles => (ScalarKind::Double, true),
+        TemplateTypeSpec::Strings => (ScalarKind::String, true),
+        TemplateTypeSpec::Booleans => (ScalarKind::Bool, true),
+    }
+}
+
+/// Parse a scalar or array value spec for a `(kind, is_array)` shape.
+fn scalar_or_array(
+    map: &Mapping,
+    path: &str,
+    (kind, is_array): (ScalarKind, bool),
+) -> AnnotationResult<AttributeSpec> {
+    if is_array {
+        array(map, path, kind)
+    } else {
+        scalar(map, path, kind)
+    }
+}
+
 /// Parse an attribute annotation for the given semconv attribute type.
 pub fn parse_attribute_spec(map: &Mapping, ty: &AttributeType) -> AnnotationResult<AttributeSpec> {
     let path = NAMESPACE;
     match ty {
-        AttributeType::PrimitiveOrArray(p) => match p {
-            PrimitiveOrArrayTypeSpec::Int => scalar(map, path, ScalarKind::Int),
-            PrimitiveOrArrayTypeSpec::Double => scalar(map, path, ScalarKind::Double),
-            PrimitiveOrArrayTypeSpec::String => scalar(map, path, ScalarKind::String),
-            PrimitiveOrArrayTypeSpec::Boolean => scalar(map, path, ScalarKind::Bool),
-            PrimitiveOrArrayTypeSpec::Any => scalar(map, path, ScalarKind::Any),
-            PrimitiveOrArrayTypeSpec::Ints => array(map, path, ScalarKind::Int),
-            PrimitiveOrArrayTypeSpec::Doubles => array(map, path, ScalarKind::Double),
-            PrimitiveOrArrayTypeSpec::Strings => array(map, path, ScalarKind::String),
-            PrimitiveOrArrayTypeSpec::Booleans => array(map, path, ScalarKind::Bool),
-        },
+        AttributeType::PrimitiveOrArray(p) => scalar_or_array(map, path, primitive_shape(p)),
         AttributeType::Enum { members } => {
             let spec = parse_value_spec(map, path, enum_kind(members))?;
             check_enum_members(&spec, members, path)?;
@@ -367,18 +346,7 @@ pub fn parse_attribute_spec(map: &Mapping, ty: &AttributeType) -> AnnotationResu
             let keys_path = format!("{path}.keys");
             let keys = parse_value_spec(keys_map, &keys_path, ScalarKind::String)?;
             let value_map = required_map(map, path, "value")?;
-            let value_path = format!("{path}.value");
-            let value = match t {
-                TemplateTypeSpec::Int => scalar(value_map, &value_path, ScalarKind::Int)?,
-                TemplateTypeSpec::Double => scalar(value_map, &value_path, ScalarKind::Double)?,
-                TemplateTypeSpec::String => scalar(value_map, &value_path, ScalarKind::String)?,
-                TemplateTypeSpec::Boolean => scalar(value_map, &value_path, ScalarKind::Bool)?,
-                TemplateTypeSpec::Any => scalar(value_map, &value_path, ScalarKind::Any)?,
-                TemplateTypeSpec::Ints => array(value_map, &value_path, ScalarKind::Int)?,
-                TemplateTypeSpec::Doubles => array(value_map, &value_path, ScalarKind::Double)?,
-                TemplateTypeSpec::Strings => array(value_map, &value_path, ScalarKind::String)?,
-                TemplateTypeSpec::Booleans => array(value_map, &value_path, ScalarKind::Bool)?,
-            };
+            let value = scalar_or_array(value_map, &format!("{path}.value"), template_shape(t))?;
             Ok(AttributeSpec::Template {
                 keys,
                 value: Box::new(value),
@@ -420,27 +388,22 @@ fn array(map: &Mapping, path: &str, kind: ScalarKind) -> AnnotationResult<Attrib
     Ok(AttributeSpec::Array { length, items })
 }
 
+/// Scalar kind used to type-check an enum annotation's `values`.
+///
+/// Enums only accept the discrete form, and membership is checked separately,
+/// so the kind only needs to be strict enough to catch obvious mismatches:
+/// all-string enums expect strings and all-bool enums expect bools; everything
+/// else (numeric or mixed) uses `Any`, which accepts any scalar.
 fn enum_kind(members: &[EnumEntriesSpec]) -> ScalarKind {
-    let mut kind = None;
-    for m in members {
-        let k = match m.value {
-            SemconvValueSpec::Int(_) => ScalarKind::Int,
-            SemconvValueSpec::Double(_) => ScalarKind::Double,
-            SemconvValueSpec::String(_) => ScalarKind::String,
-            SemconvValueSpec::Bool(_) => ScalarKind::Bool,
-        };
-        match kind {
-            None => kind = Some(k),
-            Some(prev) if prev != k => return ScalarKind::Any,
-            _ => {}
-        }
-    }
-    // Enums only accept the discrete form. Using Any for mixed enums keeps the
-    // value check permissive; membership is checked separately.
-    match kind {
-        Some(ScalarKind::Int) | Some(ScalarKind::Double) => ScalarKind::Any,
-        Some(k) => k,
-        None => ScalarKind::Any,
+    let all = |pred: fn(&SemconvValueSpec) -> bool| {
+        !members.is_empty() && members.iter().all(|m| pred(&m.value))
+    };
+    if all(|v| matches!(v, SemconvValueSpec::String(_))) {
+        ScalarKind::String
+    } else if all(|v| matches!(v, SemconvValueSpec::Bool(_))) {
+        ScalarKind::Bool
+    } else {
+        ScalarKind::Any
     }
 }
 
@@ -552,7 +515,7 @@ pub fn parse_span_spec(map: &Mapping) -> AnnotationResult<SpanSpec> {
     if let Some(m) = optional_map(map, path, "status")? {
         let p = format!("{path}.status");
         let v = parse_value_spec(m, &p, ScalarKind::String)?;
-        check_names(&v, &p, &STATUS_NAMES, "status")?;
+        check_names(&v, &p, |s| status_code(s).is_some(), "status")?;
         spec.status = Some(v);
     }
     Ok(spec)
@@ -573,7 +536,7 @@ pub fn parse_event_spec(map: &Mapping) -> AnnotationResult<EventSpec> {
     if let Some(m) = optional_map(map, path, "severity")? {
         let p = format!("{path}.severity");
         let v = parse_value_spec(m, &p, ScalarKind::String)?;
-        check_names(&v, &p, &SEVERITY_NAMES, "severity")?;
+        check_names(&v, &p, |s| severity(s).is_some(), "severity")?;
         spec.severity = Some(v);
     }
     Ok(spec)
@@ -601,6 +564,12 @@ fn parse_bounds(value: &Value, path: &str) -> AnnotationResult<Vec<f64>> {
     };
     if seq.is_empty() {
         return Err(AnnotationError::new(path, "must not be empty"));
+    }
+    if seq.len() > MAX_HISTOGRAM_BOUNDS {
+        return Err(AnnotationError::new(
+            path,
+            format!("must have at most {MAX_HISTOGRAM_BOUNDS} bounds"),
+        ));
     }
     let mut out = Vec::with_capacity(seq.len());
     for (i, v) in seq.iter().enumerate() {
@@ -667,6 +636,12 @@ pub fn parse_value_spec(
         if seq.is_empty() {
             return Err(AnnotationError::new(&values_path, "must not be empty"));
         }
+        if seq.len() > MAX_DISCRETE_VALUES {
+            return Err(AnnotationError::new(
+                &values_path,
+                format!("must have at most {MAX_DISCRETE_VALUES} values"),
+            ));
+        }
         let values = seq
             .iter()
             .enumerate()
@@ -728,9 +703,10 @@ fn parse_weights(value: &Value, path: &str, len: usize) -> AnnotationResult<Vec<
 
 /// Parse and validate a single `range` bound.
 ///
-/// For int specs the bound must be a whole number within +/-[`MAX_SAFE_INT`];
-/// both checks run on the converted `f64`, which is sound because values beyond
-/// the limit never round back into it (see [`MAX_SAFE_INT`]).
+/// For int specs the bound must be a whole number within +/-[`MAX_SAFE_INT`].
+/// Both checks run on the converted `f64`: an `f64` has a 53-bit mantissa, so
+/// every integer up to `MAX_SAFE_INT` (2^52 - 1) is represented exactly and the
+/// whole-number and range checks are precise at that scale.
 fn range_bound(m: &Mapping, key: &str, path: &str, kind: ScalarKind) -> AnnotationResult<f64> {
     let p = format!("{path}.{key}");
     let v = number(
@@ -789,11 +765,13 @@ fn parse_distribution(
     let ty = ty
         .as_str()
         .ok_or_else(|| AnnotationError::new(&format!("{path}.type"), "must be a string"))?;
-    let params: &[&str] = match ty {
-        "uniform" => &[],
-        "normal" | "lognormal" => &["mean", "stddev"],
-        "exponential" => &["mean"],
-        "zipf" => &["exponent"],
+
+    let (dist_kind, allowed): (Kind, &[&str]) = match ty {
+        "uniform" => (Kind::Uniform, &[]),
+        "normal" => (Kind::Normal, &["mean", "stddev"]),
+        "lognormal" => (Kind::LogNormal, &["mean", "stddev"]),
+        "exponential" => (Kind::Exponential, &["mean"]),
+        "zipf" => (Kind::Zipf, &["exponent"]),
         other => {
             return Err(AnnotationError::new(
                 &format!("{path}.type"),
@@ -804,20 +782,22 @@ fn parse_distribution(
         }
     };
     for key in m.keys() {
-        if key != "type" && !params.contains(&key.as_str()) {
+        if key != "type" && !allowed.contains(&key.as_str()) {
             return Err(AnnotationError::new(
                 path,
                 format!("unknown key \"{key}\" for type {ty}"),
             ));
         }
     }
+
     let param = |name: &str| -> AnnotationResult<f64> {
         let v = m.get(name).ok_or_else(|| {
             AnnotationError::new(path, format!("missing required `{name}` for type {ty}"))
         })?;
         number(v, &format!("{path}.{name}"))
     };
-    let positive = |name: &str, v: f64| -> AnnotationResult<f64> {
+    let positive = |name: &str| -> AnnotationResult<f64> {
+        let v = param(name)?;
         if v > 0.0 {
             Ok(v)
         } else {
@@ -827,31 +807,27 @@ fn parse_distribution(
             ))
         }
     };
-    match ty {
-        "uniform" => Ok(Distribution::Uniform),
-        "normal" => Ok(Distribution::Normal {
+
+    match dist_kind {
+        Kind::Uniform => Ok(Distribution::Uniform),
+        Kind::Normal => Ok(Distribution::Normal {
             mean: param("mean")?,
-            stddev: positive("stddev", param("stddev")?)?,
+            stddev: positive("stddev")?,
         }),
-        "lognormal" => Ok(Distribution::LogNormal {
-            mean: positive("mean", param("mean")?)?,
-            stddev: positive("stddev", param("stddev")?)?,
+        Kind::LogNormal => Ok(Distribution::LogNormal {
+            mean: positive("mean")?,
+            stddev: positive("stddev")?,
         }),
-        "exponential" => Ok(Distribution::Exponential {
-            mean: positive("mean", param("mean")?)?,
+        Kind::Exponential => Ok(Distribution::Exponential {
+            mean: positive("mean")?,
         }),
-        "zipf" => {
-            if kind != ScalarKind::Int {
-                return Err(AnnotationError::new(
-                    &format!("{path}.type"),
-                    "zipf only applies to int values",
-                ));
-            }
-            Ok(Distribution::Zipf {
-                exponent: positive("exponent", param("exponent")?)?,
-            })
-        }
-        _ => unreachable!("distribution type validated above"),
+        Kind::Zipf if kind != ScalarKind::Int => Err(AnnotationError::new(
+            &format!("{path}.type"),
+            "zipf only applies to int values",
+        )),
+        Kind::Zipf => Ok(Distribution::Zipf {
+            exponent: positive("exponent")?,
+        }),
     }
 }
 
@@ -1041,11 +1017,17 @@ fn check_count(spec: &ValueSpec, path: &str, min: u64, max: u64) -> AnnotationRe
     }
 }
 
-fn check_names(spec: &ValueSpec, path: &str, allowed: &[&str], what: &str) -> AnnotationResult<()> {
+/// Check that every value of a discrete string spec is a known name.
+fn check_names(
+    spec: &ValueSpec,
+    path: &str,
+    is_known: impl Fn(&str) -> bool,
+    what: &str,
+) -> AnnotationResult<()> {
     if let ValueSpec::Discrete { values, .. } = spec {
         for (i, v) in values.iter().enumerate() {
             if let Scalar::String(s) = v
-                && !allowed.contains(&s.as_str())
+                && !is_known(s)
             {
                 return Err(AnnotationError::new(
                     &format!("{path}.values[{i}]"),
