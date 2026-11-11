@@ -235,7 +235,8 @@ fn scoped_value_to_id_mask(
         // For attribute-scoped scalars, "all true" means "all rows that matched
         // the key filter pass", not ALL rows in the batch. We need to build an
         // IdMask from the parent_ids of the matching rows.
-        if matches!(sv.scope, DataScope::Attribute(_, _, _))
+        if matches!(scalar, ScalarValue::Boolean(Some(true)))
+            && matches!(sv.scope, DataScope::Attribute(_, _, _))
             && let Some(parent_ids) = &sv.parent_ids
         {
             let mut bitmap = pool.acquire();
