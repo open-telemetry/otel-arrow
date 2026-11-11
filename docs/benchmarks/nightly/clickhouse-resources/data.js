@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794332211860,
+  "lastUpdate": 1794364128706,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -8372,6 +8372,112 @@ window.BENCHMARK_DATA = {
           {
             "name": "test_duration",
             "value": 60.001976,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1f0c53c6959f2f03afb620fd9a1150c508d66c49",
+          "message": "chore(filelog): add bounded reader scheduling (#4627)\n\nAdds the logic that decides which log file to read next and how much\nwork it can do. Implements Task 15 of #2844 using the identity and\nownership support from #4566.\n\nFor example, if one file receives logs continuously while others receive\nonly a few lines, each file still gets a turn. When the open-file limit\nis reached, the scheduler can close a file, keep its unfinished record,\nand safely resume later.\n\n- Limits work per turn, open files, and memory used by unfinished\nrecords.\n  - Shares file-opening capacity between readers and discovery.\n- Preserves unfinished data and file ownership while waiting for\nresources or delivery.\n- Avoids repeated waits during discovery and unnecessary reads of\nunchanged files.\n  - Pauses safely when the batch sink cannot accept more data.\n\nThis is internal infrastructure; the Filelog receiver is not enabled\nyet. Batch construction follows in #4648. Worker hosting,\ndelivery/checkpoint handling, rotation controls, idle partial flushing,\nand remaining resource checks still need integration.",
+          "timestamp": "2026-11-10T23:55:33Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1f0c53c6959f2f03afb620fd9a1150c508d66c49"
+        },
+        "date": 1794364127941,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 47.85454523044569,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 87.85815590000765,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1238.01953125,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 181.875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 44.76970871659339,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 48.75355925173828,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1148.7421875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 47.47265625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.009191,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 24.07660866031257,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.45078572861416,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1166.265625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 51.25,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001864,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
           }
