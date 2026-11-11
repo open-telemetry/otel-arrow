@@ -686,14 +686,17 @@ mod test {
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 metrics::v1::{
-                    Gauge, Histogram, Metric, MetricsData, ResourceMetrics, ScopeMetrics, Sum,
+                    Gauge, Histogram, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+                    ScopeMetrics, Sum,
                 },
                 resource::v1::Resource,
                 trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData},
             },
         },
         schema::consts,
-        testing::round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs},
+        testing::round_trip::{
+            otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_otap_logs,
+        },
     };
 
     use otel_arrow_dfe_config::ContextEntryName;
@@ -2299,6 +2302,63 @@ mod test {
                 );
             })
             .validate(|_ctx| async move {});
+    }
+
+    /// Scenario: an OPL query filters data points based on whether a transport header is present
+    /// in the batch metadata
+    /// Guarantees: batches with the header pass through their data points whereas batches without
+    /// it have all their data points removed.
+    #[test]
+    fn test_filter_metric_data_points_by_header_presence() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor = try_create_with_opl_query(
+            r#"metrics | apply data_points {
+                where has_transport_header("foo")
+            }"#,
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let metric = Metric::build()
+                    .data_gauge(Gauge {
+                        data_points: vec![
+                            NumberDataPoint::build().value_int(5).finish(),
+                            NumberDataPoint::build().value_int(1).finish(),
+                            NumberDataPoint::build().value_int(4).finish(),
+                        ],
+                    })
+                    .finish();
+                let batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(vec![metric])));
+
+                let mut transport_headers = TransportHeaders::new();
+                transport_headers.push(TransportHeader::text(
+                    ContextEntryName::try_from("foo").unwrap(),
+                    "bar".to_string(),
+                ));
+                let mut metadata = Metadata::default();
+                metadata.set_transport_headers(transport_headers);
+                let context = Context::default().with_metadata(metadata);
+                let pdata1 = OtapPdata::new(context, batch.clone().into());
+
+                // create another batch that doesn't have the transport header
+                let pdata2 = OtapPdata::new_default(batch.into());
+
+                ctx.process(Message::PData(pdata1.clone())).await.unwrap();
+                ctx.process(Message::PData(pdata2.clone())).await.unwrap();
+
+                let out = ctx.drain_pdata().await;
+                assert_eq!(out.len(), 2);
+
+                // assert all dat data points retained from batch that had the header
+                assert_eq!(out[0].payload_ref().otap_ref().unwrap().num_items(), 3);
+
+                // assert no data points retained from batch that doesn't have the header
+                assert_eq!(out[1].payload_ref().otap_ref().unwrap().num_items(), 0);
+            })
+            .validate(|_ctx| async move {})
     }
 
     #[test]

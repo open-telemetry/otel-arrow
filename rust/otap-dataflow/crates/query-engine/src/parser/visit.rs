@@ -4,9 +4,10 @@
 //! Utilities for visiting nodes in the from the parsed query expression AST
 
 use otel_arrow_contrib_data_engine_expressions::{
-    CollectionScalarExpression, ConvertScalarExpression, DataExpression, InvokeFunctionArgument,
-    LogicalExpression, MapSelector, MathScalarExpression, ParseScalarExpression,
-    PipelineExpression, PipelineFunction, ReduceMapTransformExpression,
+    BranchDataExpression, CollectionScalarExpression, ConvertScalarExpression, DataExpression,
+    DiscardDataExpression, InvokeFunctionArgument, LogicalExpression, MapSelector,
+    MathScalarExpression, ParseScalarExpression, PipelineExpression, PipelineFunction,
+    PipelineFunctionExpression, PipelineFunctionImplementation, ReduceMapTransformExpression,
     RemoveMapKeysTransformExpression, ScalarExpression, TemporalScalarExpression,
     TextScalarExpression, TransformExpression,
 };
@@ -49,31 +50,42 @@ fn visit_data_expr<T: ExprAstVisitor>(
     visitor: &mut T,
 ) -> Result<()> {
     match data_expr {
-        DataExpression::Branch(branch) => {
-            for branch in branch.get_branches() {
-                if let Some(logical_expr) = branch.get_condition() {
-                    visit_logical_expr(logical_expr, functions, visitor)?;
-                }
-                for expr in branch.get_expressions() {
-                    visit_data_expr(expr, functions, visitor)?;
-                }
-            }
-        }
-        DataExpression::Discard(discard_expr) => {
-            if let Some(predicate) = discard_expr.get_predicate() {
-                visit_logical_expr(predicate, functions, visitor)?;
-            }
-        }
-        DataExpression::Transform(transform_expr) => {
-            visit_transform_expr(transform_expr, functions, visitor)?;
-        }
-
+        DataExpression::Branch(b) => visit_branch_data_expr(b, functions, visitor)?,
+        DataExpression::Discard(d) => visit_discard_data_expr(d, functions, visitor)?,
+        DataExpression::Transform(t) => visit_transform_expr(t, functions, visitor)?,
         DataExpression::Output(_) | DataExpression::Summary(_) => {
             // these have no child expressions that the visitor trait supports so
             // for now we can simply ignore these variants of DataExpression
         }
     }
 
+    Ok(())
+}
+
+fn visit_branch_data_expr<T: ExprAstVisitor>(
+    branch: &BranchDataExpression,
+    functions: &[PipelineFunction],
+    visitor: &mut T,
+) -> Result<()> {
+    for branch in branch.get_branches() {
+        if let Some(logical_expr) = branch.get_condition() {
+            visit_logical_expr(logical_expr, functions, visitor)?;
+        }
+        for expr in branch.get_expressions() {
+            visit_data_expr(expr, functions, visitor)?;
+        }
+    }
+    Ok(())
+}
+
+fn visit_discard_data_expr<T: ExprAstVisitor>(
+    discard_expr: &DiscardDataExpression,
+    functions: &[PipelineFunction],
+    visitor: &mut T,
+) -> Result<()> {
+    if let Some(predicate) = discard_expr.get_predicate() {
+        visit_logical_expr(predicate, functions, visitor)?;
+    }
     Ok(())
 }
 
@@ -223,6 +235,28 @@ fn visit_scalar_expr<T: ExprAstVisitor>(
             for arg in f.get_arguments() {
                 if let InvokeFunctionArgument::Scalar(expr) = arg {
                     visit_scalar_expr(expr, functions, visitor)?;
+                }
+            }
+
+            if let Some(func) = functions.get(f.get_function_id())
+                && let PipelineFunctionImplementation::Expressions(func_body) =
+                    func.get_implementation()
+            {
+                for func_body_expr in func_body {
+                    match func_body_expr {
+                        PipelineFunctionExpression::Branch(b) => {
+                            visit_branch_data_expr(b, functions, visitor)?
+                        }
+                        PipelineFunctionExpression::Discard(d) => {
+                            visit_discard_data_expr(d, functions, visitor)?
+                        }
+                        PipelineFunctionExpression::Transform(t) => {
+                            visit_transform_expr(t, functions, visitor)?
+                        }
+                        PipelineFunctionExpression::Return(r) => {
+                            visit_scalar_expr(r, functions, visitor)?
+                        }
+                    }
                 }
             }
         }
