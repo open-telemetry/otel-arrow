@@ -3,10 +3,9 @@
 
 //! Exclusive ownership of checkpoint storage identities, not database queries.
 
-use fs2::FileExt;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -90,7 +89,7 @@ impl SourceLease {
 impl Drop for SourceLease {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            _ = FileExt::unlock(&file);
+            _ = file.unlock();
         }
         if let Ok(mut leases) = SOURCE_LEASES.lock() {
             _ = leases.remove(&self.key);
@@ -167,15 +166,12 @@ fn acquire_file_lease(paths: &LeasePaths) -> Result<(File, u64), LeaseError> {
     let file = options
         .open(&paths.lock)
         .map_err(|source| LeaseError::io("open", &paths.lock, source))?;
-    match FileExt::try_lock_exclusive(&file) {
+    match file.try_lock() {
         Ok(()) => {}
-        Err(source)
-            if source.kind() == io::ErrorKind::WouldBlock
-                || source.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
-        {
-            return Err(LeaseError::AlreadyOwned);
+        Err(TryLockError::WouldBlock) => return Err(LeaseError::AlreadyOwned),
+        Err(TryLockError::Error(source)) => {
+            return Err(LeaseError::io("lock", &paths.lock, source));
         }
-        Err(source) => return Err(LeaseError::io("lock", &paths.lock, source)),
     }
 
     let generation = install_next_generation(paths)?;
