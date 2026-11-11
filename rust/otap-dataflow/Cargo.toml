@@ -123,7 +123,6 @@ dhat = "0.3.3"
 libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
-fs2 = "0.4.3"
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
@@ -147,6 +146,10 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
+# Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.
+mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
+# Match the driver's mysql_common version range for shared codec error types.
+mysql_common = { version = "0.37.1", default-features = false }
 jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
 tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
@@ -198,7 +201,7 @@ regex = "1.12"
 regex-automata = "0.4.18"
 regex-syntax = "0.8.11"
 ring = "0.17"
-roaring = "0.12.0"
+roaring = "0.11.2"
 ryu = "1"
 rustix = { version = "1.1.5", features = ["fs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
@@ -366,6 +369,10 @@ contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
 kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 
 # Contrib receivers.
+mysql = [
+    "otel-arrow-dfe-contrib-nodes/mysql",
+    "flat-file-user-pass-auth",
+]
 postgresql = [
     "otel-arrow-dfe-contrib-nodes/postgresql",
     "flat-file-user-pass-auth",
