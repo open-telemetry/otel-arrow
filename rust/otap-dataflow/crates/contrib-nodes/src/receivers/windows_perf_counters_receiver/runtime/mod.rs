@@ -4,7 +4,7 @@
 //! Scheduling, publishing, warnings, and shutdown for the single-core receiver.
 
 use super::config::Config;
-use super::metrics::{WindowsPerfCountersDropReason, WindowsPerfCountersMetrics};
+use super::metrics::WindowsPerfCountersMetrics;
 use super::otap_builder::project_points;
 use super::pdh::{NativePdh, Report, Stopped, Worker};
 use async_trait::async_trait;
@@ -16,8 +16,9 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::{ReceiverPullAttempt, ReceiverPullMetrics};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
@@ -88,13 +89,15 @@ struct InFlight {
     /// The start report, which is not a scrape.
     start: bool,
     late: bool,
+    attempt: Option<ReceiverPullAttempt>,
 }
 
 struct WindowsPerfCountersReceiver {
     config: Config,
     node: String,
-    metrics: WindowsPerfCountersMetrics,
+    metrics: MetricSet<WindowsPerfCountersMetrics>,
     diagnostics: Diagnostics,
+    boundary: ReceiverPullMetrics,
 }
 
 /// Creates the Windows performance-counter local receiver.
@@ -117,6 +120,7 @@ static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
             config,
             node: node.name.to_string(),
             metrics: WindowsPerfCountersMetrics::register(&pipeline),
+            boundary: ReceiverPullMetrics::register(&pipeline),
         };
         Ok(ReceiverWrapper::local(
             receiver,
@@ -152,7 +156,7 @@ impl Scrape for Worker {
 
 impl WindowsPerfCountersReceiver {
     /// Records a start or scrape report and emits any due warnings.
-    fn apply(&mut self, report: &Report, duration: Option<Duration>) {
+    fn apply(&mut self, report: &Report) {
         let node = self.node.as_str();
         let config = |counter: usize| &self.config.counters[counter];
         let episodes = &mut self.diagnostics.counters;
@@ -200,21 +204,10 @@ impl WindowsPerfCountersReceiver {
             recreate,
             "windows_perf_counters_receiver.recreate_query.fail"
         );
-        // Record exactly one outcome per collection attempt.
-        if !report.collect_failures.is_empty() {
-            self.metrics.record_pulled(Outcome::Failure);
-        } else if !report.collected.is_empty() || duration.is_some() {
-            self.metrics.record_pulled(Outcome::Success);
-        }
-        if let Some(duration) = duration {
-            self.metrics.record_duration(duration);
-        }
         self.metrics
-            .operational
             .counter_add_failures
             .add(report.add_failures.len() as u64);
         self.metrics
-            .operational
             .active_counters
             .set(report.active_counters as u64);
     }
@@ -241,6 +234,7 @@ impl WindowsPerfCountersReceiver {
             requested: tokio::time::Instant::now(),
             start: true,
             late: false,
+            attempt: None,
         });
         loop {
             // With a timeout, the overrun warning fires when it expires instead of at a skipped tick.
@@ -254,7 +248,8 @@ impl WindowsPerfCountersReceiver {
                 biased;
                 message = control.recv() => match message.map_err(Error::ChannelRecvError)? {
                     NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
-                        let _ = self.metrics.report(&mut metrics_reporter);
+                        let _ = metrics_reporter.report(&mut self.metrics);
+                        let _ = self.boundary.report(&mut metrics_reporter);
                     }
                     NodeControlMsg::DrainIngress { deadline, .. } => return Ok((deadline, true)),
                     NodeControlMsg::Shutdown { deadline, .. } => return Ok((deadline, false)),
@@ -265,18 +260,20 @@ impl WindowsPerfCountersReceiver {
                 _ = ticks.tick(), if !in_flight.as_ref().is_some_and(|p| p.start) => {
                     match in_flight.as_mut() {
                         Some(pending) => {
-                            self.metrics.operational.scrape_overruns.inc();
+                            self.metrics.scrape_overruns.inc();
                             if self.config.timeout.is_none() {
                                 pending.late = true;
                                 self.warn_overrun();
                             }
                         }
                         None => {
+                            let attempt = self.boundary.processing();
                             in_flight = Some(InFlight {
                                 report: worker.scrape(),
                                 requested: tokio::time::Instant::now(),
                                 start: false,
                                 late: false,
+                                attempt: Some(attempt),
                             });
                         }
                     }
@@ -287,14 +284,14 @@ impl WindowsPerfCountersReceiver {
                         None => None,
                     }
                 }, if in_flight.is_some() => {
-                    let Some(pending) = in_flight.take() else {
+                    let Some(mut pending) = in_flight.take() else {
                         continue;
                     };
                     let report = report.map_err(|_| {
                         receiver_error(effect_handler, "PDH worker stopped".to_owned())
                     })?;
                     if pending.start {
-                        self.apply(&report, None);
+                        self.apply(&report);
                         continue;
                     }
                     let elapsed = pending.requested.elapsed();
@@ -303,12 +300,24 @@ impl WindowsPerfCountersReceiver {
                     if late && !pending.late {
                         self.warn_overrun();
                     }
-                    self.apply(&report, Some(elapsed));
+                    self.apply(&report);
                     self.diagnostics.completed(!late);
                     // Late results are forwarded like any other.
-                    if let Some(records) = project_points(&self.config.counters, &report.points)
-                        .map_err(|err| receiver_error(effect_handler, err.to_string()))?
+                    let records = project_points(&self.config.counters, &report.points)
+                        .map_err(|err| receiver_error(effect_handler, err.to_string()))?;
+                    // Healthy counters (including valid empty reads) make a permitted partial
+                    // result. Failed query recreation keeps the old query and is diagnostic only.
+                    let source_failed = !report.add_failures.is_empty()
+                        || !report.collect_failures.is_empty()
+                        || !report.read_failures.is_empty();
+                    // Every read failure also appears in collected.
+                    let usable = report.collected.len() > report.read_failures.len();
+                    if let Some(attempt) = pending.attempt.take()
+                        && (!source_failed || usable)
                     {
+                        attempt.success();
+                    }
+                    if let Some(records) = records {
                         self.send(effect_handler, OtapPdata::new(Context::default(), records.into()))?;
                     }
                 }
@@ -322,6 +331,37 @@ impl WindowsPerfCountersReceiver {
         }
     }
 
+    /// Returns final snapshots, or hands them off before returning a fatal error.
+    async fn finish(
+        &mut self,
+        result: Result<(Instant, bool), Error>,
+        worker_deadline: Instant,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let deadline = result
+            .as_ref()
+            .map_or(worker_deadline, |(deadline, _)| *deadline);
+        let completion = match result {
+            Ok((_, true)) => effect_handler.notify_receiver_drained().await,
+            Ok((_, false)) => Ok(()),
+            Err(error) => Err(error),
+        };
+        let mut snapshots = self.metrics.terminal_snapshots();
+        snapshots.extend(self.boundary.terminal_snapshots());
+        let terminal = TerminalState::new(deadline, snapshots);
+        if let Err(error) = completion {
+            if let Err(report_error) = effect_handler.report_terminal_metrics(terminal).await {
+                otel_warn!(
+                    "windows_perf_counters_receiver.terminal_metrics.fail",
+                    node = self.node.as_str(),
+                    error = %report_error
+                );
+            }
+            return Err(error);
+        }
+        Ok(terminal)
+    }
+
     /// Forwards a batch without waiting; when downstream is full or closed, drops it.
     fn send(
         &mut self,
@@ -331,8 +371,7 @@ impl WindowsPerfCountersReceiver {
         match effect_handler.try_send_message_with_source_node(data) {
             Ok(()) => self.diagnostics.sent(),
             Err(TypedError::ChannelSendError(_)) => {
-                self.metrics
-                    .record_dropped(WindowsPerfCountersDropReason::DownstreamSendError);
+                self.metrics.batches_dropped.inc();
                 if self.diagnostics.dropped() {
                     otel_warn!(
                         "windows_perf_counters_receiver.batch.dropped",
@@ -395,14 +434,7 @@ impl local::Receiver<OtapPdata> for WindowsPerfCountersReceiver {
             }
         }
         let _ = telemetry.cancel().await;
-        let (deadline, drained) = result?;
-        if drained {
-            effect_handler.notify_receiver_drained().await?;
-        }
-        Ok(TerminalState::new(
-            deadline,
-            self.metrics.terminal_snapshots(),
-        ))
+        self.finish(result, worker_deadline, &effect_handler).await
     }
 }
 

@@ -1,9 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Migrate windows_perf_counters receiver self-metrics to shared receiver contract and enum attributes."
-issues: [3530]
-subtext: |
-  Migration: Update alerts and dashboards to use
-  `receiver.pulled.attempts` with `outcome` (`success`, `failure`),
-  `receiver.processing.duration`,
-  and `receiver.windows_perf_counters.drops.batches` with `reason` (`downstream_send_error`).
