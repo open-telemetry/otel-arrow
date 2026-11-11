@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794353829242,
+  "lastUpdate": 1794356770123,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -83197,6 +83197,148 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/3e6374982d7542f0a057b36cda29668a8374f6ca"
         },
         "date": 1794353810184,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 122.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 108.77,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1f0c53c6959f2f03afb620fd9a1150c508d66c49",
+          "message": "chore(filelog): add bounded reader scheduling (#4627)\n\nAdds the logic that decides which log file to read next and how much\nwork it can do. Implements Task 15 of #2844 using the identity and\nownership support from #4566.\n\nFor example, if one file receives logs continuously while others receive\nonly a few lines, each file still gets a turn. When the open-file limit\nis reached, the scheduler can close a file, keep its unfinished record,\nand safely resume later.\n\n- Limits work per turn, open files, and memory used by unfinished\nrecords.\n  - Shares file-opening capacity between readers and discovery.\n- Preserves unfinished data and file ownership while waiting for\nresources or delivery.\n- Avoids repeated waits during discovery and unnecessary reads of\nunchanged files.\n  - Pauses safely when the batch sink cannot accept more data.\n\nThis is internal infrastructure; the Filelog receiver is not enabled\nyet. Batch construction follows in #4648. Worker hosting,\ndelivery/checkpoint handling, rotation controls, idle partial flushing,\nand remaining resource checks still need integration.",
+          "timestamp": "2026-11-10T23:55:33Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1f0c53c6959f2f03afb620fd9a1150c508d66c49"
+        },
+        "date": 1794356755525,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
