@@ -230,6 +230,7 @@ fn visit_scalar_expr<T: ExprAstVisitor>(
                 visit_logical_expr(cond, functions, visitor)?;
                 visit_scalar_expr(branch, functions, visitor)?;
             }
+            visit_scalar_expr(c.get_else_expression(), functions, visitor)?;
         }
         ScalarExpression::Coalesce(c) => {
             for expr in c.get_expressions() {
