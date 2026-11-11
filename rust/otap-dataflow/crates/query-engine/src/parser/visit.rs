@@ -36,9 +36,32 @@ pub fn visit_expr_ast<T: ExprAstVisitor>(
     pipeline_expr: &PipelineExpression,
     visitor: &mut T,
 ) -> Result<()> {
+    // visit all the expressions
     let functions = pipeline_expr.get_functions();
     for expr in pipeline_expr.get_expressions() {
         visit_data_expr(expr, functions, visitor)?;
+    }
+
+    // visit all the expressions in any function definition
+    for func in functions {
+        if let PipelineFunctionImplementation::Expressions(func_body) = func.get_implementation() {
+            for func_body_expr in func_body {
+                match func_body_expr {
+                    PipelineFunctionExpression::Branch(b) => {
+                        visit_branch_data_expr(b, functions, visitor)?
+                    }
+                    PipelineFunctionExpression::Discard(d) => {
+                        visit_discard_data_expr(d, functions, visitor)?
+                    }
+                    PipelineFunctionExpression::Transform(t) => {
+                        visit_transform_expr(t, functions, visitor)?
+                    }
+                    PipelineFunctionExpression::Return(r) => {
+                        visit_scalar_expr(r, functions, visitor)?
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -235,28 +258,6 @@ fn visit_scalar_expr<T: ExprAstVisitor>(
             for arg in f.get_arguments() {
                 if let InvokeFunctionArgument::Scalar(expr) = arg {
                     visit_scalar_expr(expr, functions, visitor)?;
-                }
-            }
-
-            if let Some(func) = functions.get(f.get_function_id())
-                && let PipelineFunctionImplementation::Expressions(func_body) =
-                    func.get_implementation()
-            {
-                for func_body_expr in func_body {
-                    match func_body_expr {
-                        PipelineFunctionExpression::Branch(b) => {
-                            visit_branch_data_expr(b, functions, visitor)?
-                        }
-                        PipelineFunctionExpression::Discard(d) => {
-                            visit_discard_data_expr(d, functions, visitor)?
-                        }
-                        PipelineFunctionExpression::Transform(t) => {
-                            visit_transform_expr(t, functions, visitor)?
-                        }
-                        PipelineFunctionExpression::Return(r) => {
-                            visit_scalar_expr(r, functions, visitor)?
-                        }
-                    }
                 }
             }
         }
