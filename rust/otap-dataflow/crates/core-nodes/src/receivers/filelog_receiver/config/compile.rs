@@ -49,7 +49,7 @@ pub struct ResourceEstimates {
     pub reader_table_bytes: u64,
     /// Primitive payload growth allowance, excluding runtime reader metadata.
     pub framer_payload_bytes: u64,
-    /// Framer payload plus one owned source-turn remainder; runtime metadata is additional.
+    /// Complete partial-state slot: payload, source remainder, history, window and inline state.
     pub partial_state_floor_bytes: u64,
     /// Simultaneous retained batch and one maximum logical carry-over record.
     pub batch_and_carry_over_bytes: u64,
@@ -592,21 +592,29 @@ impl Config {
             line.payload_peak_bytes()
                 .map_err(|e| ConfigError::new("framing", e.to_string()))?
         } as u64;
-        let partial_floor = payload
-            .checked_add(l.max_read_bytes_per_turn)
-            .ok_or_else(|| {
-                ConfigError::new(
-                    "limits.max_partial_state_bytes",
-                    "framer payload plus source-turn remainder overflows",
-                )
-            })?;
+        let partial_floor = super::super::partial_state::slot_bytes(
+            payload as usize,
+            usize::try_from(l.max_read_bytes_per_turn)
+                .map_err(|e| ConfigError::new("limits.max_read_bytes_per_turn", e.to_string()))?,
+            if grouping.is_some() {
+                line.max_line_bytes
+            } else {
+                0
+            },
+        )
+        .ok_or_else(|| {
+            ConfigError::new(
+                "limits.max_partial_state_bytes",
+                "complete partial-state slot exceeds target allocation range",
+            )
+        })? as u64;
         if l.max_partial_state_bytes < partial_floor {
             return Err(ConfigError::new(
                 "limits.max_partial_state_bytes",
                 format!(
                     "{} is below partial_state_floor_bytes={partial_floor}; framer_payload_bytes={payload}, \
                  limits.max_read_bytes_per_turn={}, framing.max_line_bytes={}, framing.max_record_bytes={}, \
-                 encoding={:?}, on_decode_error={:?}, multiline={}; runtime reader metadata is additional",
+                 encoding={:?}, on_decode_error={:?}, multiline={}; includes source history, continuity window and inline state",
                     l.max_partial_state_bytes,
                     l.max_read_bytes_per_turn,
                     self.framing.max_line_bytes,

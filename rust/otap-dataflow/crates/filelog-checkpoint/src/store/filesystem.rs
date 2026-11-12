@@ -4,7 +4,7 @@
 //! Descriptor-relative Linux namespace operations. No diagnostic pathname is
 //! reopened and no namespace artifact is followed through a symbolic link.
 
-use std::fs::File;
+use std::fs::{File, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::BorrowedFd;
 use std::os::unix::fs::MetadataExt;
@@ -14,9 +14,8 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, FcntlArg, OFlag, fcntl, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, geteuid, unlinkat};
-// nix::renameat2 is GNU-only; rustix also supports Linux musl. Its flock API
-// avoids File::try_lock, which is newer than the workspace's Rust 1.88 MSRV.
-use rustix::fs::{FlockOperation, RenameFlags, flock, renameat_with};
+// nix::renameat2 is GNU-only; rustix also supports Linux musl.
+use rustix::fs::{RenameFlags, renameat_with};
 
 use super::{COMPACT, CREATE, DB, StoreError, io};
 
@@ -154,12 +153,9 @@ impl Namespace {
         if lock.metadata().map_err(|e| io("stat lock", e))?.len() != 0 {
             return Err(StoreError::Untrusted("lock file must be empty"));
         }
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-            if error == rustix::io::Errno::WOULDBLOCK {
-                StoreError::Locked
-            } else {
-                io("lock namespace", error)
-            }
+        lock.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => StoreError::Locked,
+            TryLockError::Error(source) => io("lock namespace", source),
         })?;
         verify_entry(&directory, LOCK, &lock)?;
         let namespace = Self {
@@ -286,6 +282,29 @@ impl Namespace {
         .map_err(|e| io("publish initial checkpoint without replacement", e))
     }
 
+    /// Atomically replaces authority in the held directory. Even an error must
+    /// be treated as uncertain by the caller; only recovery chooses authority.
+    /// This operation supplies no durability barrier and has no fallback.
+    pub fn replace_database(&self, io_ops: &mut Io) -> Result<(), StoreError> {
+        self.verify_ancestry()?;
+        io_ops.step("before checkpoint replacement")?;
+        renameat_with(
+            &self.directory,
+            COMPACT,
+            &self.directory,
+            DB,
+            RenameFlags::empty(),
+        )
+        .map_err(|e| io("replace checkpoint", e))?;
+        io_ops.step("after checkpoint replacement")
+    }
+
+    pub fn remove_with_io(&self, name: &str, io_ops: &mut Io) -> Result<(), StoreError> {
+        io_ops.step("before temporary removal")?;
+        self.remove(name)?;
+        io_ops.step("after temporary removal")
+    }
+
     pub fn remove(&self, name: &str) -> Result<(), StoreError> {
         debug_assert!(matches!(name, CREATE | COMPACT));
         self.verify_ancestry()?;
@@ -389,12 +408,41 @@ pub(super) struct Io {
     #[cfg(any(test, feature = "test-utils"))]
     pub fail_write_after: Option<usize>,
     #[cfg(test)]
+    pub replace_write_with: Option<Vec<u8>>,
+    #[cfg(test)]
+    pub fail_step: Option<&'static str>,
+    #[cfg(test)]
     pub events: Vec<&'static str>,
+    #[cfg(test)]
+    pub before_compaction_verify: Option<Box<dyn FnOnce()>>,
     #[cfg(test)]
     pub sync_fds: Vec<std::os::fd::RawFd>,
 }
 
 impl Io {
+    // Deterministic publication/cleanup interruption points share the existing
+    // instance-local fault seam. No production fault controls or retries.
+    pub fn step(&mut self, _operation: &'static str) -> Result<(), StoreError> {
+        self.check_sync_health()?;
+        #[cfg(test)]
+        {
+            self.events.push(_operation);
+            if _operation == "verify compaction temporary"
+                && let Some(action) = self.before_compaction_verify.take()
+            {
+                action();
+            }
+            if self.fail_step == Some(_operation) {
+                self.fail_step = None;
+                return Err(io(
+                    _operation,
+                    std::io::Error::other("injected I/O failure"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn check_sync_health(&self) -> Result<(), StoreError> {
         match self.sync_failed {
             Some(operation) => Err(StoreError::SyncPoisoned { operation }),
@@ -427,6 +475,12 @@ impl Io {
     }
 
     pub fn write_all(&mut self, file: &mut File, bytes: &[u8]) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if let Some(replacement) = self.replace_write_with.take() {
+            return file
+                .write_all(&replacement)
+                .map_err(|e| io("write checkpoint", e));
+        }
         #[cfg(any(test, feature = "test-utils"))]
         if let Some(count) = self.fail_write_after.take() {
             file.write_all(&bytes[..count.min(bytes.len())])

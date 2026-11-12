@@ -68,7 +68,7 @@ impl PipelineStage for FilterPipelineStage {
         let num_rows = root_rb.num_rows();
 
         // Evaluate the ScopedExpr tree to produce a boolean result, then align to root.
-        let eval_context = EvalContext::new(session_context);
+        let eval_context = EvalContext::new(session_context, exec_state);
         let result = self
             .predicate
             .execute_as_value(&otap_batch, &eval_context)?;
@@ -111,16 +111,17 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         if attrs_record_batch.num_rows() == 0 {
             // nothing to do
             return Ok(attrs_record_batch);
         }
 
-        let result = self
-            .predicate
-            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
+        let result = self.predicate.evaluate_on_attrs_batch(
+            &attrs_record_batch,
+            &EvalContext::new(session_context, exec_state),
+        )?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
@@ -134,14 +135,18 @@ impl PipelineStage for FilterPipelineStage {
         session_ctx: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         for metric_data_point_type in MetricDataPointType::all() {
             let dp_payload_type = metric_data_point_type.payload_type();
             if otap_batch.get(dp_payload_type).is_some() {
                 let predicate_eval_value = self.predicate.execute_as_value(
                     &otap_batch,
-                    &EvalContext::new_for_metrics_data_points(metric_data_point_type, session_ctx),
+                    &EvalContext::new_for_metrics_data_points(
+                        metric_data_point_type,
+                        session_ctx,
+                        exec_state,
+                    ),
                 )?;
                 match predicate_eval_value {
                     Some(value) => {

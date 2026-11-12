@@ -50,6 +50,7 @@ pub struct BindingBatch<'a, P, C> {
     budget: &'a ProbeBudget,
     cancelled: C,
     failure: Option<Failure>,
+    handoff_expired: bool,
 }
 
 impl<P: MatchPolicy> Scanner<P> {
@@ -77,6 +78,7 @@ impl<P: MatchPolicy> Scanner<P> {
             budget,
             cancelled,
             failure: None,
+            handoff_expired: false,
         })
     }
 
@@ -98,6 +100,7 @@ impl<P: MatchPolicy> Scanner<P> {
             budget,
             cancelled,
             failure,
+            handoff_expired: false,
         };
         consume(batch.check(path, expected_parent)?);
         Ok(())
@@ -153,6 +156,7 @@ impl<P: MatchPolicy> Scanner<P> {
         expected_parent: Option<FileLocator>,
         budget: &ProbeBudget,
         cancelled: &mut impl FnMut() -> bool,
+        handoff_expired: &mut bool,
     ) -> Result<FileLocator, Failure> {
         if cancelled() {
             return Err(Failure::coverage(ScanReason::Cancelled, None));
@@ -258,7 +262,9 @@ impl<P: MatchPolicy> Scanner<P> {
             );
         } else {
             self.batch.last_mut().reason = Some(ScanReason::ProbeBusy);
-            probe::probe(
+            // Preserve this check's ordinary binding result, but prevent another
+            // handoff wait for subsequent checks sharing this batch.
+            let progress = probe::probe(
                 &context,
                 &directory,
                 name,
@@ -269,6 +275,7 @@ impl<P: MatchPolicy> Scanner<P> {
                 &mut self.scratch,
                 cancelled,
             );
+            *handoff_expired |= progress.is_break();
         }
         drop(directory);
         if cancelled() {
@@ -302,6 +309,9 @@ impl<P: MatchPolicy> Scanner<P> {
 impl<P: MatchPolicy, C: FnMut() -> bool> BindingBatch<'_, P, C> {
     /// Checks a complete native filename. The result's lifetime is independent of
     /// `path`; consume it before the next check reuses scanner storage.
+    /// Handoff expiry leaves this check as ProbeBusy with its validated binding
+    /// context. Later checks skip I/O and report coverage uncertainty until a new
+    /// batch is created. Immediate contention never sets this latch.
     pub fn check(
         &mut self,
         path: &Path,
@@ -317,8 +327,16 @@ impl<P: MatchPolicy, C: FnMut() -> bool> BindingBatch<'_, P, C> {
             Err(Failure::coverage(ScanReason::Cancelled, None))
         } else if let Some(failure) = self.failure {
             Err(failure)
+        } else if self.handoff_expired {
+            Err(Failure::coverage(ScanReason::ProbeBusy, None))
         } else {
-            scanner.probe_binding_path(path, expected_parent, self.budget, &mut self.cancelled)
+            scanner.probe_binding_path(
+                path,
+                expected_parent,
+                self.budget,
+                &mut self.cancelled,
+                &mut self.handoff_expired,
+            )
         };
         let (parent, scope, root) = match result {
             Ok(parent) => {

@@ -3,6 +3,15 @@
 
 use std::num::NonZeroUsize;
 
+use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::pdata_context::{ConfigNodeContextDeclaration, NodeContextDeclarations};
+use otel_arrow_dfe_query_engine::parser::default_parser_options;
+use otel_arrow_dfe_query_engine::parser::visit::metadata::MetadataAccessDeclarationVisitor;
+use otel_arrow_dfe_query_engine::parser::visit::visit_expr_ast;
+
+use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
+use otel_arrow_dfe_query_engine_languages::ottl::OttlParser;
 use serde::Deserialize;
 
 /// Configuration for the [`TransformProcessor`](super::TransformProcessor)
@@ -74,4 +83,55 @@ const fn default_skip_sanitize_result() -> bool {
 
 const fn default_filter_attribute_keys_case_sensitive() -> bool {
     true
+}
+
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
+        let map_parser_err = |e| ConfigError::InvalidUserConfig {
+            error: format!("Could not parse TransformProcessor query: {e:?}"),
+        };
+        let map_pipeline_err = |e| ConfigError::InvalidUserConfig {
+            error: format!(
+                "Could not create context entry declarations from parsed query AST: {e}"
+            ),
+        };
+
+        // below we are going to parse the program, then visit the parser result (e.g. the
+        // expression AST) using this visitor implementation to track which metadata
+        // accesses may occur when the queries evaluate on some batch
+        let mut metadata_access_ast_visitor = MetadataAccessDeclarationVisitor::new();
+
+        match &self.query {
+            Query::KqlQuery(kql_query) => {
+                let parser_result =
+                    KqlParser::parse_with_options(kql_query, default_parser_options())
+                        .map_err(map_parser_err)?;
+                visit_expr_ast(&parser_result.pipeline, &mut metadata_access_ast_visitor)
+                    .map_err(map_pipeline_err)?;
+            }
+            Query::OplQuery(opl_query) => {
+                let parser_result =
+                    OplParser::parse_with_options(opl_query, default_parser_options())
+                        .map_err(map_parser_err)?;
+                visit_expr_ast(&parser_result.pipeline, &mut metadata_access_ast_visitor)
+                    .map_err(map_pipeline_err)?;
+            }
+            Query::Ottl(ottl) => {
+                let parser_options = default_parser_options();
+                if let Some(log_statements) = ottl.log_statements.as_ref() {
+                    for statement in log_statements {
+                        let parser_result =
+                            OttlParser::parse_with_options(statement, parser_options.clone())
+                                .map_err(map_parser_err)?;
+                        visit_expr_ast(&parser_result.pipeline, &mut metadata_access_ast_visitor)
+                            .map_err(map_pipeline_err)?;
+                    }
+                }
+            }
+        };
+
+        Ok(NodeContextDeclarations::from_iter(
+            metadata_access_ast_visitor.into_context_declarations(),
+        ))
+    }
 }

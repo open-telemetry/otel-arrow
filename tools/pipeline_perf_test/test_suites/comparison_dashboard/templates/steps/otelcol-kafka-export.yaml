@@ -133,36 +133,37 @@ steps:
     action:
       wait:
         delay_seconds: {{drain_wait_secs | default(10)}}
-  - name: Stop Load Generator
+  # Drain and remove each df-engine pipeline group, upstream first. Deleting a
+  # group (rather than calling groups/shutdown) keeps the engine process and its
+  # admin endpoint alive, so the final counts of the stopped pipelines remain
+  # scrapeable for engine.telemetry.metric_unregister_grace_period.
+  - name: Stop Load Generator Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(5)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8085/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(5)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(5) | int + 5}}
               raise_for_status: false
     action:
       no_op: {}
-  - name: Stop Backend
+  - name: Stop Backend Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(5)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8087/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(5)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(5) | int + 5}}
               raise_for_status: false
     action:
       no_op: {}
-  - name: Wait For Metrics Update
+  # Let a few scrapes observe the final post-drain counts.
+  - name: Wait For Final Metrics
     action:
       wait:
-        delay_seconds: 1
+        delay_seconds: {{final_metrics_wait_secs | default(3)}}
   - name: Stop Monitoring All
     action:
       multi_component_action:
@@ -172,6 +173,27 @@ steps:
           - load-generator
           - kafka-producer
           - kafka-broker
+  # Shut down the (now empty) engines so the processes exit gracefully.
+  - name: Shutdown Engines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+          - send_http_request:
+              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+    action:
+      no_op: {}
   - name: Destroy All
     action:
       multi_component_action:
