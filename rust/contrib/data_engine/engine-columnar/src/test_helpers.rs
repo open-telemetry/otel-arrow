@@ -72,6 +72,51 @@ pub(crate) fn run_scalar_expression_test_with_state<FValidate>(
     validate(result)
 }
 
+pub(crate) fn run_bound_diagnostic_test<FRun, FValidate>(run: FRun, validate: FValidate)
+where
+    for<'a, 'b> FRun: FnOnce(
+        &ColumnarEngineBoundDiagnosticReceiver<'a, 'b, ColumnarEngineDiagnosticReceiverImpl<'a, 'b>>,
+    ),
+    FValidate: FnOnce(Vec<ColumnarEngineDiagnostic>),
+{
+    run_bound_diagnostic_test_with_level(ColumnarEngineDiagnosticLevel::Verbose, run, validate)
+}
+
+pub(crate) fn run_bound_diagnostic_test_with_level<FRun, FValidate>(
+    diagnostic_level: ColumnarEngineDiagnosticLevel,
+    run: FRun,
+    validate: FValidate,
+) where
+    for<'a, 'b> FRun: FnOnce(
+        &ColumnarEngineBoundDiagnosticReceiver<'a, 'b, ColumnarEngineDiagnosticReceiverImpl<'a, 'b>>,
+    ),
+    FValidate: FnOnce(Vec<ColumnarEngineDiagnostic>),
+{
+    let d = RefCell::new(vec![]);
+
+    let pipeline = Default::default();
+
+    let expression = NullScalarExpression::new(QueryLocation::new_fake());
+
+    let ec = ExecutionContext::<EmptyRecords>::new(diagnostic_level, &d, &pipeline, None);
+
+    let receiver = ec.get_diagnostic_receiver().bind(&expression);
+
+    run(&receiver);
+
+    println!("{ec}");
+
+    let diagnostics = d.take();
+    for diagnostic in &diagnostics {
+        assert!(std::ptr::addr_eq(
+            diagnostic.get_expression(),
+            &expression as &dyn Expression,
+        ));
+    }
+
+    validate(diagnostics)
+}
+
 pub(crate) fn build_dictionary(
     keys: Vec<Option<u16>>,
     values: Vec<ValueOrRef<'static>>,
