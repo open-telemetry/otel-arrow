@@ -74,9 +74,16 @@ impl PolicyEngine {
         snapshot: &PolicySnapshot,
         otap_batch: OtapArrowRecords,
     ) -> Result<OtapArrowRecords, PolicyError> {
-        // TODO
+        // TODO:
         // - volume tracking
-        // - other signal type handling
+        // - metric signal type handling (MetricSignal, MetricFieldSelector)
+        // - trace signal type handling (TraceSignal, TraceFieldSelector)
+        //
+        // Adding a new signal type requires:
+        //   1. A find_matching_policies variant (or making it generic over S: Signal)
+        //   2. translate.rs equivalents for the signal's field selectors
+        //   3. transform.rs equivalents (classify_field, concat, etc.)
+        //   4. resolve_keep works generically already
 
         match otap_batch.signal_type() {
             SignalType::Logs => {
