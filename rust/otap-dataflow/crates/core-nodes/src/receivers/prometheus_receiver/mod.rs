@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Prometheus scrape receiver backed by `expfmt::arrow::ArrowDecoder`.
+//! Prometheus scrape receiver backed by `prometheus_expfmt::arrow::ArrowDecoder`.
 //!
 //! Scrapes configured HTTP `/metrics` endpoints (static URLs and optional headless DNS service
 //! endpoints) in a one-core source pipeline and decodes Prometheus text (`0.0.4` / `1.0.0`) and
@@ -14,8 +14,6 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 use async_trait::async_trait;
-use expfmt::arrow::{ArrowDecoder, DecodeOptions, OtapMetricRecords};
-use expfmt::format::{Format, FormatType, response_format};
 use linkme::distributed_slice;
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -39,6 +37,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry_macros::metric_set;
+use prometheus_expfmt::arrow::{ArrowDecoder, DecodeOptions, OtapMetricRecords};
+use prometheus_expfmt::format::{Format, FormatType, response_format};
 use reqwest::Url;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::Value;
@@ -306,7 +306,8 @@ pub(crate) fn records_to_otap_with_resource(
 ) -> Result<OtapArrowRecords, otel_arrow_dfe_pdata::error::Error> {
     let mut store = Metrics::new();
     let scrape_timestamp_ns = scrape_timestamp_ms.saturating_mul(1_000_000);
-    let univariate_batch = records.get(expfmt::arrow::MetricPayloadType::UnivariateMetrics);
+    let univariate_batch =
+        records.get(prometheus_expfmt::arrow::MetricPayloadType::UnivariateMetrics);
     for (payload_type, batch) in records.iter() {
         if let Ok(wire_type) = ArrowPayloadType::try_from(payload_type.as_i32()) {
             let mut batch = if !honor_timestamps && is_metric_data_point_table(wire_type) {

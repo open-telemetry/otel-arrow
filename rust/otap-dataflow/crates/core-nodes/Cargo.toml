@@ -30,7 +30,7 @@ otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 arrow = { workspace = true }
-expfmt = { workspace = true, optional = true }
+prometheus-expfmt = { workspace = true, optional = true }
 async-trait.workspace = true
 base64.workspace = true
 blake3.workspace = true
@@ -121,7 +121,7 @@ topic = []
 # Receivers.
 host-metrics = []
 journald = []
-prometheus = ["dep:expfmt"]
+prometheus = ["dep:prometheus-expfmt"]
 syslog-cef = ["otel-arrow-dfe-pdata-codec/syslog-cef"]
 
 # Processors.

@@ -7,7 +7,7 @@ groups:
         # prometheus_receiver -> OTLP/gRPC exporter pipeline.
         #
         # Scrapes Prometheus text (0.0.4 / 1.0.0) and OpenMetrics 1.0 endpoints
-        # and decodes them directly into OTAP Arrow record batches via `expfmt`.
+        # and decodes them directly into OTAP Arrow record batches via `prometheus-expfmt`.
         #
         # The prometheus_receiver requires a single-core source pipeline, so
         # this config is meant to be run as:
