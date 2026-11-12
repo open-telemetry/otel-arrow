@@ -13,11 +13,14 @@
 //!
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Datum, Float64Array, Int64Array,
+    Array, ArrayRef, BooleanArray, Datum, Float64Array, Int64Array, StringArray, UInt16Array,
 };
 use arrow::compute::kernels::cmp;
 use arrow::datatypes::DataType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, build_native_selection_vec};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 use policy_rs::engine::{
     CompiledNumericValue, CompiledTypedMatcher, CompiledValue, ExistenceCheck, LogSignal,
     TypedCheck,
@@ -71,14 +74,17 @@ pub(crate) fn evaluate_existence_check(
     };
 
     let result = match target {
-        FieldTarget::Attribute(_, _) => {
-            todo!("attribute field existence check with parent_id join-back via IdBitmap")
+        FieldTarget::Attribute(key, payload_type) => {
+            evaluate_existence_on_attribute(otap_batch, key, payload_type, check.should_exist)
         }
         FieldTarget::SimpleField(column_name) => {
             evaluate_existence_on_root(otap_batch, column_name, check.should_exist)
         }
     };
 
+    // TODO - we could potentially avoid allocating a buffer if internally we were to swap the
+    // predicates instead of just evaluating the operation specified by the matcher and then
+    // inverting the result.
     if check.is_negated {
         PolicyMatch::not(&result)
     } else {
@@ -259,5 +265,111 @@ fn evaluate_existence_on_root(
                 None => PolicyMatch::None,
             }
         }
+    }
+}
+
+/// Evaluate a field existence check on an attribute child batch.
+///
+/// For `should_exist: true`: returns true for root rows that have an attribute
+/// with the given key. For `should_exist: false`: returns true for root rows
+/// that do NOT have the attribute.
+fn evaluate_existence_on_attribute(
+    otap_batch: &OtapArrowRecords,
+    attr_key: &str,
+    payload_type: ArrowPayloadType,
+    should_exist: bool,
+) -> PolicyMatch {
+    // this is what we'll return if there is no matching attrs at all
+    let no_attrs_result = if should_exist {
+        PolicyMatch::None
+    } else {
+        PolicyMatch::All
+    };
+    let root_batch = match otap_batch.root_record_batch() {
+        Some(rb) => rb,
+        None => return no_attrs_result,
+    };
+
+    // Get the root id column and build a root-aligned selection vec.
+    let Some(root_id_col) = get_root_id_column(root_batch, payload_type) else {
+        // No ID column means no attributes
+        return no_attrs_result;
+    };
+
+    // Get the attribute batch. If it doesn't exist, no rows have any
+    // attributes of this type.
+    let Some(attrs_batch) = otap_batch.get(payload_type) else {
+        return no_attrs_result;
+    };
+
+    // Get the key column and find rows matching the target key.
+    let Some(key_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_KEY) else {
+        return no_attrs_result;
+    };
+
+    let key_scalar = StringArray::new_scalar(attr_key);
+    let Ok(key_mask) = cmp::eq(key_col, &key_scalar) else {
+        // Comparison failed (unexpected type) -- non-match.
+        return PolicyMatch::None;
+    };
+
+    if key_mask.true_count() == 0 {
+        // No rows match the key.
+        return no_attrs_result;
+    }
+
+    // Get the parent_id column from the attribute batch.
+    let Some(parent_id_col) = attrs_batch.column_by_name(consts::PARENT_ID) else {
+        return PolicyMatch::None;
+    };
+    let Some(parent_id_u16) = parent_id_col.as_any().downcast_ref::<UInt16Array>() else {
+        return PolicyMatch::None;
+    };
+
+    // Populate an IdBitmap with the parent_ids of rows that have the key.
+    // TODO: use an IdBitmapPool for reuse between evaluations.
+    let mut id_bitmap = IdBitmap::new();
+    for i in 0..parent_id_u16.len() {
+        if key_mask.value(i) {
+            id_bitmap.insert(u32::from(parent_id_u16.value(i)));
+        }
+    }
+
+    // TODO - we could change the impl of build_native_selection_vec to possibly avoid
+    // a heap allocation/drop for the Arc containing the BoolArray values.
+    let selection = build_native_selection_vec(root_id_col, &id_bitmap);
+    let result = PolicyMatch::from_boolean_array(&selection);
+
+    // TODO - build the inverted bitmap above instead of inverting this here
+    // For should_exist: false, invert the result.
+    if should_exist {
+        result
+    } else {
+        PolicyMatch::not(&result)
+    }
+}
+
+/// Get the root id column that corresponds to a given attribute payload type.
+///
+/// For log/span/metric attributes, the id is a plain column on the root batch.
+/// For resource/scope attributes, the id is nested inside a struct column.
+fn get_root_id_column<'a>(
+    root_batch: &'a arrow::array::RecordBatch,
+    attrs_payload_type: ArrowPayloadType,
+) -> Option<&'a UInt16Array> {
+    match attrs_payload_type {
+        ArrowPayloadType::ResourceAttrs => root_batch
+            .column_by_name(consts::RESOURCE)
+            .and_then(|col| col.as_any().downcast_ref::<arrow::array::StructArray>())
+            .and_then(|s| s.column_by_name(consts::ID))
+            .and_then(|col| col.as_any().downcast_ref::<UInt16Array>()),
+        ArrowPayloadType::ScopeAttrs => root_batch
+            .column_by_name(consts::SCOPE)
+            .and_then(|col| col.as_any().downcast_ref::<arrow::array::StructArray>())
+            .and_then(|s| s.column_by_name(consts::ID))
+            .and_then(|col| col.as_any().downcast_ref::<UInt16Array>()),
+        _ => root_batch
+            .column_by_name(consts::ID)
+            .and_then(|col| col.as_any().downcast_ref::<UInt16Array>()),
     }
 }
