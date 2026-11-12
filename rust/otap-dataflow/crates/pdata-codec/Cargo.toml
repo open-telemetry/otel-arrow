@@ -13,6 +13,7 @@ categories = ["encoding"]
 rust-version.workspace = true
 
 [dependencies]
+arrow.workspace = true
 bytes.workspace = true
 chrono = { workspace = true, optional = true }
 linkme.workspace = true

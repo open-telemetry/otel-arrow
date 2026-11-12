@@ -6,7 +6,7 @@
 mod batching;
 mod configuration;
 mod decoder;
-mod encoder;
+pub mod encoder;
 mod error;
 mod identity;
 mod payload;
@@ -16,6 +16,8 @@ mod runtime;
 mod view;
 
 mod codecs;
+
+pub mod native;
 
 pub use batching::{
     BatchPlan, BatchSettings, BatchSizer, BatchingOutput, BatchingSupport, CodecBatches,

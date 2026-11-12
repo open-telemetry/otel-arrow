@@ -43,12 +43,12 @@ use super::arrow_records_encoder::ReceivedArrowRecordsBuilder;
 use super::{MAX_MESSAGE_SIZE, parser};
 
 /// Stable identity of the versioned syslog/CEF batch representation.
-const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
+pub(super) const SYSLOG_CEF_ENCODING: PdataEncoding = PdataEncoding::new("syslog-batch");
 
-const MAGIC: &[u8; 4] = b"SLG1";
-const BATCH_HEADER_LEN: usize = 8;
-const RUN_HEADER_LEN: usize = 16;
-const FRAME_HEADER_LEN: usize = 4;
+pub(super) const MAGIC: &[u8; 4] = b"SLG1";
+pub(super) const BATCH_HEADER_LEN: usize = 8;
+pub(super) const RUN_HEADER_LEN: usize = 16;
+pub(super) const FRAME_HEADER_LEN: usize = 4;
 // Hard admission limits bound each complete input independently of configurable
 // batch targets and the per-step cooperative decode budget.
 /// Maximum number of messages in one encoded batch.
@@ -80,7 +80,7 @@ pub struct SyslogFramingError {
     reason: String,
 }
 
-fn framing_error(reason: impl Into<String>) -> SyslogFramingError {
+pub(super) fn framing_error(reason: impl Into<String>) -> SyslogFramingError {
     SyslogFramingError {
         reason: reason.into(),
     }
@@ -886,7 +886,9 @@ register_pdata_codec!(
     CodecRegistration::new(&SYSLOG_CEF_METADATA)
         .with_implementation("otel.syslog_cef")
         .with_default_for_encoding()
+        .with_preparer(super::encoder::prepare)
         .with_decoder(create_decoder)
+        .with_encoder(|policy| Ok(Box::new(super::encoder::SyslogEncoder::new(policy))))
         .with_batcher(CodecBatcherRegistration::new(
             &SYSLOG_BATCHING_SUPPORT,
             || Box::<SyslogBatcher>::default(),

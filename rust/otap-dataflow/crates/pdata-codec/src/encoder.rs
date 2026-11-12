@@ -124,3 +124,26 @@ impl AsRef<[u8]> for EncodeOutput<'_> {
         }
     }
 }
+
+/// Returns the number of bytes in the decimal representation, including a sign.
+#[must_use]
+pub fn decimal_len(value: i64) -> usize {
+    let magnitude = value.unsigned_abs();
+    let digits = if magnitude == 0 {
+        1
+    } else {
+        magnitude.ilog10() as usize + 1
+    };
+    digits + usize::from(value < 0)
+}
+
+/// Formats a signed integer into caller-owned scratch without allocating.
+pub fn decimal_bytes(value: i64, storage: &mut [u8; 20]) -> std::io::Result<&[u8]> {
+    use std::io::Write;
+    let length = {
+        let mut decimal = std::io::Cursor::new(storage.as_mut_slice());
+        write!(decimal, "{value}")?;
+        decimal.position() as usize
+    };
+    Ok(&storage[..length])
+}

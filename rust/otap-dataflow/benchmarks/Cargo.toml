@@ -50,6 +50,7 @@ unsync.workspace = true
 otel-arrow-dfe-test-net.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
+weaver_semconv.workspace = true
 bytes.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]
@@ -84,6 +85,10 @@ harness = false
 
 [[bench]]
 name = "syslog_cef_receiver"
+harness = false
+
+[[bench]]
+name = "codec_encoders"
 harness = false
 
 [[bench]]
