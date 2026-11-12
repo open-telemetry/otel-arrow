@@ -18,4 +18,4 @@ issues: [4643]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Select a fixed wire format or test-oriented all-profile rotation across records and batches. CEF supports explicit vendor extensions. Message attributes remain usable with empty log bodies. No syslog exporter is added.
+subtext: Supports configurable output profiles and representative sample data for syslog and CEF workflows.

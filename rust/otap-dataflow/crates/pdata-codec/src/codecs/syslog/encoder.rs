@@ -127,7 +127,6 @@ pub(super) struct SyslogEncoder {
     buffer: ProtoBuffer,
     message: Vec<u8>,
     timestamp: String,
-    run_offsets: Vec<usize>,
     log_rows: Vec<(u16, u16, usize)>,
     log_index: AttributeIndex,
     resource_index: AttributeIndex,
@@ -149,7 +148,6 @@ impl SyslogEncoder {
             buffer: ProtoBuffer::with_capacity_and_limit(0, max_bytes),
             message: Vec::new(),
             timestamp: String::new(),
-            run_offsets: Vec::new(),
             log_rows: Vec::new(),
             log_index: AttributeIndex::default(),
             resource_index: AttributeIndex::default(),
@@ -163,10 +161,27 @@ impl SyslogEncoder {
 }
 
 #[derive(Clone, Copy)]
+struct HeaderField<'a> {
+    value: OtapAnyValueView<'a>,
+    name: &'static str,
+}
+
+impl<'a> HeaderField<'a> {
+    fn new(value: OtapAnyValueView<'a>, name: &'static str) -> Self {
+        Self { value, name }
+    }
+
+    fn text(self, limit: usize) -> Result<&'a str, CodecError> {
+        header_text(self.value, self.name, limit)
+    }
+}
+
+#[derive(Clone, Copy)]
 struct Header<'a> {
-    hostname: &'a str,
-    app: &'a str,
-    process: FieldValue<'a>,
+    hostname: HeaderField<'a>,
+    app: HeaderField<'a>,
+    process: Option<HeaderField<'a>>,
+    process_str: Option<OtapAnyValueView<'a>>,
     message_id: &'a str,
     facility: u8,
     severity: Option<u8>,
@@ -177,9 +192,10 @@ struct Header<'a> {
 impl Default for Header<'_> {
     fn default() -> Self {
         Self {
-            hostname: "-",
-            app: "-",
-            process: FieldValue::Text(b"-"),
+            hostname: HeaderField::new(OtapAnyValueView::Str(b"-"), "syslog.host_name"),
+            app: HeaderField::new(OtapAnyValueView::Str(b"-"), "syslog.app_name"),
+            process: None,
+            process_str: None,
             message_id: "-",
             facility: 1,
             severity: None,
@@ -214,34 +230,28 @@ fn number<'a>(value: &impl AnyValueView<'a>, name: &str, max: i64) -> Result<i64
 }
 
 impl<'a> Header<'a> {
-    fn apply_resource(
-        &mut self,
-        key: &[u8],
-        value: OtapAnyValueView<'a>,
-    ) -> Result<(), CodecError> {
+    fn apply_resource(&mut self, key: &[u8], value: OtapAnyValueView<'a>) {
         match key {
-            b"host.name" => self.hostname = header_text(value, "host.name", 255)?,
-            b"service.name" => self.app = header_text(value, "service.name", 48)?,
+            b"host.name" => self.hostname = HeaderField::new(value, "host.name"),
+            b"service.name" => self.app = HeaderField::new(value, "service.name"),
             b"process.pid" => {
-                self.process = FieldValue::Integer(number(&value, "process.pid", i64::MAX)?);
+                self.process = Some(HeaderField::new(value, "process.pid"));
             }
             _ => {}
         }
-        Ok(())
     }
 
     fn apply_log(&mut self, key: &[u8], value: OtapAnyValueView<'a>) -> Result<(), CodecError> {
         match key {
             b"syslog.host_name" => {
-                self.hostname = header_text(value, "syslog.host_name", 255)?;
+                self.hostname = HeaderField::new(value, "syslog.host_name");
             }
-            b"syslog.app_name" => self.app = header_text(value, "syslog.app_name", 48)?,
+            b"syslog.app_name" => self.app = HeaderField::new(value, "syslog.app_name"),
             b"syslog.process_id" => {
-                self.process = FieldValue::Integer(number(&value, "syslog.process_id", i64::MAX)?);
+                self.process = Some(HeaderField::new(value, "syslog.process_id"));
             }
             b"syslog.process_id_str" => {
-                self.process =
-                    FieldValue::Text(header_text(value, "syslog.process_id_str", 128)?.as_bytes());
+                self.process_str = Some(value);
             }
             b"syslog.msg_id" => self.message_id = header_text(value, "syslog.msg_id", 32)?,
             b"syslog.facility" => {
@@ -275,6 +285,17 @@ impl<'a> Header<'a> {
             _ => {}
         }
         Ok(())
+    }
+
+    fn fields(&self) -> Result<(&'a str, &'a str, FieldValue<'a>), CodecError> {
+        let process = if let Some(value) = self.process_str {
+            FieldValue::Text(header_text(value, "syslog.process_id_str", 128)?.as_bytes())
+        } else if let Some(field) = self.process {
+            FieldValue::Integer(number(&field.value, field.name, i64::MAX)?)
+        } else {
+            FieldValue::Text(b"-")
+        };
+        Ok((self.hostname.text(255)?, self.app.text(48)?, process))
     }
 }
 
@@ -560,34 +581,27 @@ fn serialize_message(
     match format {
         Format::Cef => {}
         Format::Rfc5424 | Format::CefRfc5424 => {
-            write!(
-                message,
-                "<{priority}>1 {timestamp} {} {} ",
-                header.hostname, header.app
-            )
-            .map_err(error_source)?;
-            header.process.append_raw(message)?;
+            let (hostname, app, process) = header.fields()?;
+            write!(message, "<{priority}>1 {timestamp} {hostname} {app} ",)
+                .map_err(error_source)?;
+            process.append_raw(message)?;
             write!(message, " {} -", header.message_id).map_err(error_source)?;
         }
         Format::Rfc3164 | Format::CefRfc3164 => {
-            if header.hostname.contains(':')
-                || header.app.len() > 32
-                || header.app.contains([':', '[', ']'])
-                || matches!(header.process, FieldValue::Text(text) if text != b"-" && !text.iter().all(u8::is_ascii_digit))
+            let (hostname, app, process) = header.fields()?;
+            if hostname.contains(':')
+                || app.len() > 32
+                || app.contains([':', '[', ']'])
+                || matches!(process, FieldValue::Text(text) if text != b"-" && !text.iter().all(u8::is_ascii_digit))
             {
                 return Err(error(
                     "RFC 3164 requires an unambiguous hostname and app tag with a numeric process ID",
                 ));
             }
-            write!(
-                message,
-                "<{priority}>{timestamp} {} {}",
-                header.hostname, header.app
-            )
-            .map_err(error_source)?;
-            if header.process != FieldValue::Text(b"-") {
+            write!(message, "<{priority}>{timestamp} {hostname} {app}").map_err(error_source)?;
+            if process != FieldValue::Text(b"-") {
                 append_bytes(message, b"[")?;
-                header.process.append_raw(message)?;
+                process.append_raw(message)?;
                 append_bytes(message, b"]")?;
             }
             append_bytes(message, b":")?;
@@ -619,7 +633,6 @@ fn append_batch(buffer: &mut ProtoBuffer, bytes: &[u8]) -> Result<(), CodecError
 impl SyslogEncoder {
     fn encode_into(&mut self, records: &mut OtapArrowRecords) -> Result<(), CodecError> {
         self.buffer.clear();
-        self.run_offsets.clear();
         if records.signal_type() != SignalType::Logs {
             return Err(error("syslog encoding supports only logs"));
         }
@@ -639,11 +652,10 @@ impl SyslogEncoder {
         append_batch(&mut self.buffer, MAGIC)?;
         append_batch(&mut self.buffer, &(count as u32).to_be_bytes())?;
         let mut encoded_size = BATCH_HEADER_LEN;
-        let mut previous_year = None;
+        let mut previous_context = None;
         let mut item_count = 0;
         let mut run_count = 0_u32;
         let mut run_count_offset = 0;
-        let mut observed_time = 0;
         // Commit the rotation only after a whole batch has encoded successfully.
         let mut next_format = self.next_format;
         for resource_logs in view.resources() {
@@ -665,7 +677,7 @@ impl SyslogEncoder {
                                 for (key, value) in
                                     resource.attributes(self.resource_index.rows_for(resource_id))
                                 {
-                                    resource_header.apply_resource(key, value)?;
+                                    resource_header.apply_resource(key, value);
                                 }
                             }
                             resource_initialized = true;
@@ -716,8 +728,14 @@ impl SyslogEncoder {
                         body,
                         format.is_cef().then_some(cef),
                     )?;
+                    let observed_time = i64::try_from(log.observed_time_unix_nano().unwrap_or(0))
+                        .map_err(|_| {
+                        error("observed timestamp exceeds syslog batch timestamp range")
+                    })?;
+                    let context = (observed_time, year);
+                    let new_run = previous_context != Some(context);
                     encoded_size += FRAME_HEADER_LEN + self.message.len();
-                    if previous_year != Some(year) {
+                    if new_run {
                         encoded_size += RUN_HEADER_LEN;
                     }
                     if encoded_size > self.max_bytes {
@@ -727,18 +745,12 @@ impl SyslogEncoder {
                             limit: self.max_bytes,
                         });
                     }
-                    if let Some(time) = log.observed_time_unix_nano() {
-                        observed_time = observed_time.max(i64::try_from(time).map_err(|_| {
-                            error("observed timestamp exceeds syslog batch timestamp range")
-                        })?);
-                    }
-                    if previous_year != Some(year) {
-                        if previous_year.is_some() {
+                    if new_run {
+                        if previous_context.is_some() {
                             self.buffer.as_mut_slice()[run_count_offset..run_count_offset + 4]
                                 .copy_from_slice(&run_count.to_be_bytes());
                         }
-                        self.run_offsets.push(self.buffer.len());
-                        append_batch(&mut self.buffer, &0_i64.to_be_bytes())?;
+                        append_batch(&mut self.buffer, &observed_time.to_be_bytes())?;
                         run_count_offset = self.buffer.len();
                         append_batch(&mut self.buffer, &0_u32.to_be_bytes())?;
                         append_batch(&mut self.buffer, &year.to_be_bytes())?;
@@ -748,7 +760,7 @@ impl SyslogEncoder {
                     item_count += 1;
                     append_batch(&mut self.buffer, &(self.message.len() as u32).to_be_bytes())?;
                     append_batch(&mut self.buffer, &self.message)?;
-                    previous_year = Some(year);
+                    previous_context = Some(context);
                     if matches!(self.profile, Profile::All) {
                         next_format = (next_format + 1) % ALL_FORMATS.len();
                     }
@@ -760,10 +772,6 @@ impl SyslogEncoder {
         }
         self.buffer.as_mut_slice()[run_count_offset..run_count_offset + 4]
             .copy_from_slice(&run_count.to_be_bytes());
-        for offset in &self.run_offsets {
-            self.buffer.as_mut_slice()[*offset..*offset + 8]
-                .copy_from_slice(&observed_time.to_be_bytes());
-        }
         self.next_format = next_format;
         Ok(())
     }
@@ -786,7 +794,6 @@ impl PdataEncoder for SyslogEncoder {
             self.buffer.clear();
             self.buffer.retain_capacity(MAX_RETAINED_BUFFER_CAPACITY);
             self.message.clear();
-            self.run_offsets.clear();
             return Err(error);
         }
         Ok(EncodeOutput::buffer(
@@ -1094,6 +1101,99 @@ mod tests {
         );
     }
 
+    /// Scenario: Invalid resource headers are overridden by valid per-log fields in each syslog profile.
+    /// Guarantees: Unused resource values cannot reject logs, while invalid fallbacks still fail when selected.
+    #[test]
+    fn syslog_encoder_validates_only_resolved_defaults() {
+        for format in [
+            Format::Rfc3164,
+            Format::Rfc5424,
+            Format::CefRfc3164,
+            Format::CefRfc5424,
+        ] {
+            let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+            for (override_key, fallback) in [
+                ("syslog.host_name", integer("host.name", 1)),
+                ("syslog.host_name", text("host.name", &"x".repeat(256))),
+                ("syslog.app_name", text("service.name", &"x".repeat(49))),
+                ("syslog.process_id", integer("process.pid", -1)),
+            ] {
+                let mut input = log("body");
+                input.time_unix_nano = 1_704_164_645_000_000_000;
+                input.attributes = cef_attributes();
+                input.attributes.extend([
+                    text("syslog.host_name", "host"),
+                    text("syslog.app_name", "app"),
+                    integer("syslog.process_id", 42),
+                ]);
+                let bytes = encoder
+                    .encode(records(vec![input.clone()], vec![fallback.clone()]))
+                    .unwrap();
+                let decoded = decode(bytes);
+                for expected in [
+                    text("syslog.host_name", "host"),
+                    text("syslog.app_name", "app"),
+                    integer("syslog.process_id", 42),
+                ] {
+                    assert!(decoded[0].attributes.contains(&expected));
+                }
+                input
+                    .attributes
+                    .retain(|attribute| attribute.key != override_key);
+                assert!(
+                    encoder
+                        .encode(records(vec![input], vec![fallback]))
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    /// Scenario: RFC 5424 PROCIDs have leading zeros, a minus sign, or opaque text alongside numeric attributes in either order.
+    /// Guarantees: The selected string survives parser re-encoding unchanged, unused numeric values are ignored, and invalid selected strings fail.
+    #[test]
+    fn syslog_encoder_preserves_opaque_procids() {
+        for format in [Format::Rfc5424, Format::CefRfc5424] {
+            let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+            for (process, number) in [("00123", 123), ("-42", -42), ("opaque", -1)] {
+                for reverse in [false, true] {
+                    let mut input = log("body");
+                    input.attributes = cef_attributes();
+                    input.attributes.extend([
+                        text("syslog.process_id_str", process),
+                        integer("syslog.process_id", number),
+                    ]);
+                    if reverse {
+                        input.attributes.reverse();
+                    }
+                    let bytes = encoder.encode(records(vec![input], vec![])).unwrap();
+                    let prefix = format!("<14>1 - - - {process} - - ");
+                    assert!(messages(&bytes)[0].starts_with(prefix.as_bytes()));
+                    let decoded = decode(bytes.clone());
+                    assert!(
+                        decoded[0]
+                            .attributes
+                            .contains(&text("syslog.process_id_str", process))
+                    );
+                    let rewritten = encoder.encode(records(decoded, vec![])).unwrap();
+                    assert_eq!(messages(&rewritten), messages(&bytes));
+                }
+            }
+            for invalid in [
+                text("syslog.process_id_str", "bad value"),
+                text("syslog.process_id_str", &"x".repeat(129)),
+                integer("syslog.process_id_str", 42),
+            ] {
+                let mut input = log("body");
+                input.attributes = cef_attributes();
+                input
+                    .attributes
+                    .extend([integer("syslog.process_id", 42), invalid]);
+                assert!(encoder.encode(records(vec![input], vec![])).is_err());
+            }
+        }
+    }
+
     /// Scenario: Borrowed CEF fields contain signed integer extremes and custom keys are replaced in unsorted order.
     /// Guarantees: Text fields borrow native storage, decimal formatting is exact, and custom output preserves bounded last-value-wins replacement regardless of order.
     #[test]
@@ -1197,7 +1297,6 @@ mod tests {
             input.attributes = cef_attributes();
             let mut later = input.clone();
             later.time_unix_nano = 1_735_787_045_000_000_000;
-            later.observed_time_unix_nano = later.time_unix_nano + 7;
             let mut batch = records(vec![input.clone(), later, input], vec![]);
             let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
             let output = encoder.prepare_encode(&mut batch).unwrap();
@@ -1213,7 +1312,7 @@ mod tests {
             }
             assert_eq!(
                 builder
-                    .finish(1_735_787_045_000_000_007)
+                    .finish(1_704_164_645_000_000_007)
                     .unwrap()
                     .into_parts()
                     .0,
@@ -1449,6 +1548,70 @@ mod tests {
         ));
         encoder.max_bytes += 1;
         assert_eq!(encoder.encode(records(inputs, vec![])).unwrap(), bytes);
+    }
+
+    /// Scenario: Observed timestamps repeat, change, decrease, or are absent within the same year, including explicit profile rewrites.
+    /// Guarantees: Every profile preserves per-record observed time, coalesces only adjacent equal contexts, and budgets all run headers exactly.
+    #[test]
+    fn syslog_encoder_preserves_observed_runs() {
+        let observed_times = [100, 100, 200, 0, 100];
+        for profile in ["rfc3164", "rfc5424", "cef", "cef_rfc3164", "cef_rfc5424"] {
+            let inputs: Vec<_> = observed_times
+                .iter()
+                .map(|observed| LogRecord {
+                    time_unix_nano: 1_704_164_645_000_000_000,
+                    observed_time_unix_nano: *observed,
+                    attributes: cef_attributes(),
+                    ..log("body")
+                })
+                .collect();
+            let mut encoder =
+                SyslogEncoder::for_format(EncodePolicy::default(), Format::parse(profile).unwrap());
+            let bytes = encoder.encode(records(inputs.clone(), vec![])).unwrap();
+            let decoded = decode(bytes.clone());
+            assert_eq!(
+                decoded
+                    .iter()
+                    .map(|log| log.observed_time_unix_nano)
+                    .collect::<Vec<_>>(),
+                observed_times,
+                "{profile}"
+            );
+            let expected_size = BATCH_HEADER_LEN
+                + 4 * RUN_HEADER_LEN
+                + messages(&bytes)
+                    .iter()
+                    .map(|message| FRAME_HEADER_LEN + message.len())
+                    .sum::<usize>();
+            assert_eq!(bytes.len(), expected_size);
+            encoder.max_bytes = expected_size - 1;
+            assert!(matches!(
+                encoder.encode(records(inputs.clone(), vec![])),
+                Err(CodecError::EncodedSizeLimitExceeded { actual, limit, .. })
+                    if actual == expected_size && limit == expected_size - 1
+            ));
+            encoder.max_bytes = expected_size;
+            assert_eq!(encoder.encode(records(inputs, vec![])).unwrap(), bytes);
+
+            let service = configured_service(&format!("{{profile: {profile}}}")).unwrap();
+            let plan = EncodingPlan::resolve(
+                service.registry(),
+                &PdataEncoding::new("syslog-batch"),
+                EncodePolicy::default(),
+            )
+            .unwrap();
+            let mut payload =
+                OtapPayload::from(plan.codec().admit(SignalType::Logs, bytes).unwrap());
+            let rewritten = payload.encode_bytes(&service, &plan).unwrap();
+            assert_eq!(
+                decode(rewritten)
+                    .iter()
+                    .map(|log| log.observed_time_unix_nano)
+                    .collect::<Vec<_>>(),
+                observed_times,
+                "{profile}"
+            );
+        }
     }
 
     /// Scenario: Profile options or mapped CEF/RFC 3164 fields are invalid, missing, or oversized after escaping.
