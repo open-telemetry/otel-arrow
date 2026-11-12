@@ -666,6 +666,35 @@ signals | apply attributes {
 }
 ```
 
+### Metadata Availability & Validation
+
+There may be cases where it can be determined a-priori based on the pipeline
+configuration that a given metadata entry accessed by the program either will
+not be present, or may not be present.
+
+For example, if we make a call to access a transport header but there is no
+header capture policy, we know this header will never be present in the batch.
+Another example is if the program is used downstream of a batch processor,
+which _may_ remove the header during batching (depending on the configured
+batch sizes).
+
+There are a few ways we could handle this. I think it would be good to support
+the following behaviours, and make the behaviour configurable:
+
+- _Config Error_: If we know that metadata is referenced that will not be
+  present at runtime due to policy configuration, we should have the option to
+  consider the pipeline invalid.
+- _Null at Runtime_: If we chose not to surface a configuration error, we can
+  treat the metadata as missing at runtime. Interestingly in this mode, the
+  planner may be able to convert function invocation expressions into static
+  literals as an optimization.
+
+In cases where the metadata _may_ not be present due to it being possibly
+removed by an upstream processor (such as the batch processor case mentioned
+above), we could consider this a pipeline lint error (lints described in RFC
+0008).
+
+
 ## Rationale and alternatives
 
 ### Alternative 1: Do it with Processors
@@ -786,26 +815,6 @@ which in OTAP we call `attributes`, but this could still incite confusion.
   before merge?
 - What related issues are out of scope for this RFC and could be addressed
   independently later?
-
-### Static resolution of context entries & program validity
-
-Since context entries, transport header capture, etc. are part of the pipeline
-configuration, presumably we may have a way to "know" statically the return
-value of many of the functions.
-
-For example, if we did not have a context policy that defines a context entry
-called `"foo"` containing a member called `"bar"`, we know that calls such as
-`has_context_entry("foo")` and `has_context_entry_member("foo", "bar")` will
-always return `False` and similarly that calls such as
-`context_entry_value("foo", "bar")` will always return `Null`.
-
-I think for now it's fine if we let these resolve at runtime, but a performance
-optimization may be to try to resolve them statically.
-
-However, we can consider alternatives -- perhaps we want to say that such a
-program would actually be _invalid_ in a context where no such policies are
-defined. I can't think of a reason _why_ we might want to do this, but maybe
-it's worth considering.
 
 ### Implicit header capture
 
