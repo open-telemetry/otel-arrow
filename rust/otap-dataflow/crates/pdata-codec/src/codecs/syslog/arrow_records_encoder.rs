@@ -14,7 +14,7 @@ use otel_arrow_dfe_pdata::{
 
 use otel_arrow_dfe_pdata::encode::Result;
 
-use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
+use crate::codecs::syslog::parser::parsed_message::ParsedSyslogMessage;
 
 /// Builder for creating Arrow record batches from parsed syslog messages.
 pub struct ArrowRecordsBuilder {
@@ -166,7 +166,7 @@ impl ReceivedArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::syslog_cef_receiver::parser::parse;
+    use crate::codecs::syslog::parser::parse;
     use otel_arrow_dfe_pdata::{
         otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
