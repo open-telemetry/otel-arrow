@@ -97,6 +97,8 @@ impl AcceptedEncodings {
     }
 
     pub(crate) fn accepts(&self, codec: ResolvedCodec) -> bool {
-        self.accepted.contains(&codec)
+        self.accepted
+            .iter()
+            .any(|accepted| accepted.encoding() == codec.encoding())
     }
 }

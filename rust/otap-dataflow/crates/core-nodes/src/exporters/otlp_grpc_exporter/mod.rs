@@ -34,12 +34,12 @@ use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
-use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
-use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
+use otel_arrow_dfe_otap::grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
-use otel_arrow_dfe_otap::otlp_exporter::{InFlightExports, default_max_in_flight};
+use otel_arrow_dfe_otap::grpc::settings::GrpcClientSettings;
+use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
+use otel_arrow_dfe_otap::otlp::exporter::{InFlightExports, default_max_in_flight};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -70,8 +70,7 @@ pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 /// Raises the shared auth warnings under this exporter's event namespace.
 const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
     validate_header_name: |name| {
-        otel_arrow_dfe_otap::otap_grpc::client_settings::validate_grpc_metadata_key(name.as_str())
-            .map(|_| ())
+        otel_arrow_dfe_otap::grpc::settings::validate_grpc_metadata_key(name.as_str()).map(|_| ())
     },
     on_invalid: |source, error| {
         otel_warn!("otlp.exporter.grpc.auth.invalid", source = %source, error = %error);
@@ -1197,7 +1196,7 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node, test_pipeline_ctx_with_interests,
     };
-    use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
+    use otel_arrow_dfe_otap::grpc::otlp::typed::OTLPData;
     use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};

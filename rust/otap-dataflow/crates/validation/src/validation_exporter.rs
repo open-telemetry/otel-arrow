@@ -130,7 +130,7 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 };
 
 impl ConfigNodeContextDeclaration for ValidationExporterConfig {
-    fn context_declarations(&self) -> NodeContextDeclarations {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
         let mut require_key_names = std::collections::BTreeSet::new();
         let mut require_key_value_names = std::collections::BTreeSet::new();
         let mut deny_names = std::collections::BTreeSet::new();
@@ -158,7 +158,7 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
         }
 
         // Key and deny checks need presence only; value checks scan every duplicate.
-        [
+        Ok([
             (require_key_names, ContextEntryTake::Exists),
             (require_key_value_names, ContextEntryTake::All),
             (deny_names, ContextEntryTake::Exists),
@@ -181,7 +181,7 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
                     .collect(),
             },
         })
-        .collect()
+        .collect())
     }
 }
 
@@ -434,7 +434,8 @@ mod tests {
                 let selected = bindings
                     .value(&selector)
                     .expect("declared presence read")
-                    .read(&metadata);
+                    .read(&metadata)
+                    .expect("read succeeds");
                 let present = selected.is_some();
                 if let Some(selected) = selected {
                     selected.visit_members(|member| assert_eq!(member.values().count(), 0));
@@ -463,6 +464,7 @@ mod tests {
                 .value(&selector)
                 .expect("declared value read")
                 .read(&metadata)
+                .expect("read succeeds")
             {
                 selected.visit_members(|member| {
                     matches_value |= member.values().any(|value| value.bytes == b"acme");

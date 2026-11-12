@@ -61,13 +61,13 @@ fn default_heartbeat_version() -> String {
 
 #[inline]
 fn default_heartbeat_os_name() -> String {
-    System::name().unwrap_or_else(|| std::env::consts::OS.to_string())
+    System::name().unwrap_or_else(|_| std::env::consts::OS.to_string())
 }
 
 #[inline]
 fn default_heartbeat_computer() -> String {
     std::env::var("HOSTNAME")
-        .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "UnknownComputer".to_string()))
+        .unwrap_or_else(|_| System::host_name().unwrap_or_else(|_| "UnknownComputer".to_string()))
 }
 
 /// Parse OS version into (major, minor) components

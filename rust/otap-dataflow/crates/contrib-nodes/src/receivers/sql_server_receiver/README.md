@@ -956,7 +956,10 @@ reader sessions.
 To exercise replacement/expiry, stop all receiver clients, then run
 `sql-server-fixture.py rotate-certificate --directory <fixture> --certificate
 replacement` (or `expired`, then `valid`). This restarts only the owned
-container and does not change host trust. Docker may reassign the ephemeral
+container and does not change host trust. Rotation waits up to 120 seconds for
+a successful read from `otap_fixture.dbo.OTAP_SQL_EVENTS`; accepting connections
+alone does not mean the fixture database has finished recovering.
+Docker may reassign the ephemeral
 host port when it restarts; rotation refreshes the loopback-only port in the
 manifest. Reload `fixture.json` environment values and run only
 `live_certificate_rotation_state` after each rotation.

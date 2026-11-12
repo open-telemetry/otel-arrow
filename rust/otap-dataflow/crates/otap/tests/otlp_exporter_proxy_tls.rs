@@ -7,9 +7,9 @@
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
-use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
-use otel_arrow_dfe_otap::otap_grpc::otlp::client::LogsServiceClient;
-use otel_arrow_dfe_otap::otap_grpc::proxy::ProxyConfig;
+use otel_arrow_dfe_otap::grpc::otlp::client::LogsServiceClient;
+use otel_arrow_dfe_otap::grpc::proxy::ProxyConfig;
+use otel_arrow_dfe_otap::grpc::settings::GrpcClientSettings;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
