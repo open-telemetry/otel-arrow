@@ -111,7 +111,6 @@ groups:
       - id: k8s.node.system_container.name
         annotations:
           traffic-generator:
-            values: [kubelet, runtime, pods, misc]
             weights: [3, 3, 3, 1]
         type: string
         stability: development
@@ -316,7 +315,6 @@ groups:
       - id: k8s.container.ephemeral_storage.fs_type
         annotations:
           traffic-generator:
-            values: [rootfs, logs]
             weights: [3, 2]
         type:
           members:
@@ -663,7 +661,6 @@ groups:
       - id: k8s.hpa.scaletargetref.api_version
         annotations:
           traffic-generator:
-            values: [apps/v1, autoscaling/v2]
             weights: [9, 1]
         type: string
         stability: development
@@ -854,7 +851,6 @@ groups:
       - id: k8s.namespace.phase
         annotations:
           traffic-generator:
-            values: [active, terminating]
             weights: [19, 1]
         stability: development
         brief: >
@@ -916,7 +912,6 @@ groups:
       - id: k8s.node.condition.status
         annotations:
           traffic-generator:
-            values: ['true', 'false', unknown]
             weights: [4, 5, 1]
         stability: development
         brief: >
@@ -939,8 +934,7 @@ groups:
       - id: k8s.container.status.state
         annotations:
           traffic-generator:
-            values: [running, waiting, terminated]
-            weights: [17, 2, 1]
+            weights: [1, 17, 2]
         stability: experimental
         brief: >
           The state of the container.
@@ -963,7 +957,6 @@ groups:
       - id: k8s.container.status.reason
         annotations:
           traffic-generator:
-            values: [ContainerCreating, CrashLoopBackOff, CreateContainerConfigError, ErrImagePull, ImagePullBackOff, OOMKilled, Completed, Error, ContainerCannotRun]
             weights: [6, 3, 1, 1, 2, 2, 6, 2, 1]
         type:
           members:
@@ -1179,7 +1172,6 @@ groups:
       - id: k8s.service.traffic_distribution
         annotations:
           traffic-generator:
-            values: [PreferSameZone, PreferSameNode]
             weights: [3, 1]
         type: string
         stability: development
@@ -1262,7 +1254,6 @@ groups:
       - id: k8s.service.publish_not_ready_addresses
         annotations:
           traffic-generator:
-            values: [true, false]
             weights: [1, 9]
         type: boolean
         stability: development
@@ -1278,7 +1269,6 @@ groups:
       - id: k8s.service.endpoint.condition
         annotations:
           traffic-generator:
-            values: [ready, serving, terminating]
             weights: [6, 6, 1]
         stability: development
         brief: >
@@ -1415,7 +1405,6 @@ groups:
       - id: k8s.persistentvolume.reclaim_policy
         annotations:
           traffic-generator:
-            values: [Delete, Retain, Recycle]
             weights: [7, 3, 0.2]
         stability: development
         brief: >
@@ -1441,8 +1430,7 @@ groups:
       - id: k8s.persistentvolume.status.phase
         annotations:
           traffic-generator:
-            values: [Available, Bound, Failed, Pending, Released]
-            weights: [2, 15, 0.5, 1, 1]
+            weights: [1, 2, 15, 1, 0.5]
         stability: development
         brief: >
           The phase of the PersistentVolume.
@@ -1537,8 +1525,7 @@ groups:
       - id: k8s.persistentvolumeclaim.status.phase
         annotations:
           traffic-generator:
-            values: [Bound, Lost, Pending]
-            weights: [17, 0.5, 2]
+            weights: [2, 17, 0.5]
         stability: development
         brief: >
           The phase of the PersistentVolumeClaim.

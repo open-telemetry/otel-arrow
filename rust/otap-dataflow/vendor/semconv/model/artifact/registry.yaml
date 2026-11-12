@@ -12,13 +12,6 @@ groups:
       - id: artifact.filename
         annotations:
           traffic-generator:
-            values:
-              [
-                golang-binary-amd64-v0.1.0,
-                docker-image-amd64-v0.1.0,
-                release-1.tar.gz,
-                file-name-package.tar.gz,
-              ]
             weights: [4, 3, 2, 1]
         type: string
         stability: development
@@ -104,11 +97,6 @@ groups:
       - id: artifact.attestation.filename
         annotations:
           traffic-generator:
-            values:
-              - golang-binary-amd64-v0.1.0.attestation
-              - docker-image-amd64-v0.1.0.intoto.json1
-              - release-1.tar.gz.attestation
-              - file-name-package.tar.gz.intoto.json1
             weights: [4, 3, 2, 1]
         type: string
         stability: development

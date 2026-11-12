@@ -260,7 +260,6 @@ groups:
         stability: stable
         annotations:
           traffic-generator:
-            values: [ipv4, ipv6]
             weights: [80, 20]
         type:
           members:

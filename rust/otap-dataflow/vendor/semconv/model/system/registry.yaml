@@ -58,7 +58,6 @@ groups:
       - id: system.memory.linux.slab.state
         annotations:
           traffic-generator:
-            values: [reclaimable, unreclaimable]
             weights: [3, 2]
         type:
           members:

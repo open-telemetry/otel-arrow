@@ -19,7 +19,6 @@ groups:
           dependency_resolution:
             exclude: true
           traffic-generator:
-            values: [auto, default]
             weights: [3, 7]
         stability: development
         type:

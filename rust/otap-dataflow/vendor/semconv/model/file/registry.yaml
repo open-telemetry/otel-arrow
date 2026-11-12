@@ -231,7 +231,6 @@ groups:
       - id: file.lock.mechanism
         annotations:
           traffic-generator:
-            values: [POSIX, FLOCK, DELEG, LEASE]
             weights: [6, 3, 1, 1]
         type: string
         brief: "The lock mechanism such as noted by [POSIX](https://pubs.opengroup.org/onlinepubs/9699919799/functions/fcntl.html)"
@@ -240,7 +239,6 @@ groups:
       - id: file.lock.mode
         annotations:
           traffic-generator:
-            values: [ADVISORY, MANDATORY, BREAKING, ACTIVE, BREAKER]
             weights: [6, 1, 1, 3, 1]
         type: string
         brief: >

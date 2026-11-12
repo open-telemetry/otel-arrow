@@ -90,7 +90,6 @@ groups:
       - id: service.criticality
         annotations:
           traffic-generator:
-            values: [critical, high, medium, low]
             weights: [2, 3, 3, 2]
         type:
           members:

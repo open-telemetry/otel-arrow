@@ -126,8 +126,7 @@ groups:
       - id: azure.cosmosdb.consistency.level
         annotations:
           traffic-generator:
-            values: [Session, Eventual, Strong, BoundedStaleness, ConsistentPrefix]
-            weights: [60, 15, 10, 10, 5]
+            weights: [15, 5, 10, 10, 60]
         type:
           members:
             - id: strong

@@ -8,7 +8,6 @@ groups:
       - id: go.memory.type
         annotations:
           traffic-generator:
-            values: [other, stack]
             weights: [7, 3]
         stability: development
         type:

@@ -334,7 +334,6 @@ groups:
       - id: rpc.jsonrpc.version
         annotations:
           traffic-generator:
-            values: ["2.0", "1.0"]
             weights: [9, 1]
         type: string
         stability: development

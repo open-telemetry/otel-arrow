@@ -44,7 +44,6 @@ groups:
       - id: jvm.memory.type
         annotations:
           traffic-generator:
-            values: [heap, non_heap]
             weights: [1, 1]
         stability: stable
         type:

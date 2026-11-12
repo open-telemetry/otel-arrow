@@ -31,7 +31,6 @@ groups:
       - id: http.scheme
         annotations:
           traffic-generator:
-            values: [http, https]
             weights: [2, 8]
         type: string
         brief: 'Deprecated, use `url.scheme` instead.'

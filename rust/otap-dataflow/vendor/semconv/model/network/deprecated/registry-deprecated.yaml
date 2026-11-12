@@ -167,8 +167,7 @@ groups:
         type: string
         annotations:
           traffic-generator:
-            values: [http, amqp, mqtt]
-            weights: [8, 1, 1]
+            weights: [1, 8, 1]
         deprecated:
           reason: renamed
           renamed_to: network.protocol.name

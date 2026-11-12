@@ -147,7 +147,6 @@ groups:
       - id: aws.dynamodb.projection
         annotations:
           traffic-generator:
-            values: [Title, "Title, Price, Color", "Title, Description, RelatedItems, ProductReviews"]
             weights: [5, 3, 2]
         type: string
         stability: development
@@ -418,11 +417,6 @@ groups:
         brief: >
           The [launch type](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html) for an ECS task.
       - id: aws.ecs.task.arn
-        annotations:
-          traffic-generator:
-            values:
-              - "arn:aws:ecs:us-west-1:123456789123:task/10838bed-421f-43ef-870a-f43feacbbb5b"
-              - "arn:aws:ecs:us-west-1:123456789123:task/my-cluster/task-id/23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd"
         type: string
         stability: development
         brief: >

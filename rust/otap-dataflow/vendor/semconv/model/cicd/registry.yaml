@@ -16,7 +16,6 @@ groups:
       - id: cicd.pipeline.name
         annotations:
           traffic-generator:
-            values: [Build and Test, Lint, Deploy Go Project, deploy_to_environment]
             weights: [4, 3, 2, 1]
         type: string
         stability: release_candidate
@@ -57,7 +56,6 @@ groups:
       - id: cicd.pipeline.run.state
         annotations:
           traffic-generator:
-            values: [pending, executing, finalizing]
             weights: [2, 7, 1]
         type:
           members:
@@ -81,7 +79,6 @@ groups:
       - id: cicd.pipeline.task.name
         annotations:
           traffic-generator:
-            values: [Run GoLang Linter, Go Build, go-test, deploy_binary]
             weights: [2, 3, 4, 1]
         type: string
         stability: release_candidate
@@ -161,7 +158,6 @@ groups:
       - id: cicd.pipeline.task.type
         annotations:
           traffic-generator:
-            values: [build, test, deploy]
             weights: [4, 5, 1]
         type:
           members:
@@ -222,7 +218,6 @@ groups:
       - id: cicd.pipeline.action.name
         annotations:
           traffic-generator:
-            values: [BUILD, RUN, SYNC]
             weights: [5, 4, 1]
         type:
           members:
@@ -285,7 +280,6 @@ groups:
       - id: cicd.worker.state
         annotations:
           traffic-generator:
-            values: [available, busy, offline]
             weights: [4, 5, 1]
         type:
           members:
@@ -311,7 +305,6 @@ groups:
       - id: cicd.system.component
         annotations:
           traffic-generator:
-            values: [controller, scheduler, agent]
             weights: [2, 2, 6]
         type: string
         stability: release_candidate

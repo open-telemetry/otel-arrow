@@ -15,7 +15,6 @@ groups:
               stability: development
         annotations:
           traffic-generator:
-            values: [reclaimable, unreclaimable]
             weights: [3, 2]
         stability: development
         brief: "The Linux Slab memory state"

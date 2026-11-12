@@ -245,7 +245,6 @@ groups:
       - id: http.connection.state
         annotations:
           traffic-generator:
-            values: [active, idle]
             weights: [3, 7]
         type:
           members:

@@ -65,7 +65,6 @@ groups:
         type: double
         annotations:
           traffic-generator:
-            values: [0.016, 0.7, 1.024]
             weights: [6, 3, 1]
         brief: The minimum rendering threshold for this jank, in seconds.
         examples: [ 0.016, 0.700, 1.024 ]
@@ -74,7 +73,6 @@ groups:
         type: double
         annotations:
           traffic-generator:
-            values: [1.0, 5.0, 10.24]
             weights: [5, 3, 2]
         brief: The time period, in seconds, for which this jank is being reported.
         examples: [ 1.0, 5.0, 10.24 ]
@@ -99,7 +97,6 @@ groups:
         type: string
         annotations:
           traffic-generator:
-            values: [f9bc787d-ff05-48ad-90e1-fca1d46130b3, com.example.app.MainActivity, com.example.shop.ProductDetailFragment, MyApp.ProfileView, MyApp.ProfileViewController]
             weights: [1, 4, 3, 2, 2]
         stability: development
         brief: >
@@ -160,9 +157,6 @@ groups:
         examples: [ "submit", "attack", "Clear Cart" ]
       - id: app.build_id
         type: string
-        annotations:
-          traffic-generator:
-            values: [6cff0a7e-cefc-4668-96f5-1273d8b334d0, 9f2b833506aa6973a92fde9733e6271f, my-app-1.0.0-code-123]
         stability: development
         brief: 'Unique identifier for a particular build or compilation of the application.'
         examples: ['6cff0a7e-cefc-4668-96f5-1273d8b334d0', '9f2b833506aa6973a92fde9733e6271f', 'my-app-1.0.0-code-123']

@@ -28,7 +28,6 @@ groups:
       - id: jsonrpc.protocol.version
         annotations:
           traffic-generator:
-            values: ["2.0", "1.0"]
             weights: [95, 5]
         type: string
         stability: development

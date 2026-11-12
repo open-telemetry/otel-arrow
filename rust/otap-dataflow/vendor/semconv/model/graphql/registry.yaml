@@ -16,7 +16,6 @@ groups:
       - id: graphql.operation.type
         annotations:
           traffic-generator:
-            values: [query, mutation, subscription]
             weights: [80, 17, 3]
         brief: "The type of the operation being executed."
         stability: development

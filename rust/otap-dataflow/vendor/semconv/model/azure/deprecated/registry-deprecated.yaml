@@ -23,7 +23,6 @@ groups:
       - id: az.namespace
         annotations:
           traffic-generator:
-            values: [Microsoft.Storage, Microsoft.KeyVault, Microsoft.ServiceBus]
             weights: [5, 2, 2]
         type: string
         stability: development

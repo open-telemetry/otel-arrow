@@ -285,7 +285,6 @@ groups:
       - id: hw.vendor
         annotations:
           traffic-generator:
-            values: [Dell, HP, Intel, AMD, LSI, Lenovo]
             weights: [5, 4, 4, 2, 1, 2]
         type: string
         stability: development
@@ -295,7 +294,6 @@ groups:
       - id: hw.sensor_location
         annotations:
           traffic-generator:
-            values: [cpu0, ps1, INLET, CPU0_DIE, AMBIENT, MOTHERBOARD, PS0 V3_3, MAIN_12V, CPU_VCORE]
             weights: [3, 1, 2, 3, 2, 2, 1, 1, 1]
         type: string
         stability: development

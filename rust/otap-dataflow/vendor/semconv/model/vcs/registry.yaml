@@ -67,7 +67,6 @@ groups:
       - id: vcs.ref.base.type
         annotations:
           traffic-generator:
-            values: [branch, tag]
             weights: [9, 1]
         type:
           members:
@@ -142,7 +141,6 @@ groups:
       - id: vcs.ref.head.type
         annotations:
           traffic-generator:
-            values: [branch, tag]
             weights: [9, 1]
         type:
           members:
@@ -199,7 +197,6 @@ groups:
       - id: vcs.ref.type
         annotations:
           traffic-generator:
-            values: [branch, tag]
             weights: [85, 15]
         type:
           members:
@@ -236,7 +233,6 @@ groups:
       - id: vcs.line_change.type
         annotations:
           traffic-generator:
-            values: [added, removed]
             weights: [6, 4]
         type:
           members:
@@ -331,7 +327,6 @@ groups:
       - id: vcs.provider.name
         annotations:
           traffic-generator:
-            values: [github, gitlab, gitea, bitbucket]
             weights: [70, 20, 3, 7]
         type:
           members:

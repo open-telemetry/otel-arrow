@@ -19,7 +19,6 @@ groups:
       - id: test.suite.run.status
         annotations:
           traffic-generator:
-            values: [success, failure, skipped, aborted, timed_out, in_progress]
             weights: [70, 12, 5, 2, 2, 9]
         type:
           members:
@@ -60,9 +59,6 @@ groups:
             "in_progress",
           ]
       - id: test.case.name
-        annotations:
-          traffic-generator:
-            values: [org.example.TestCase1.test1, example/tests/TestCase1.test1, ExampleTestCase1_test1]
         type: string
         stability: development
         brief: >
@@ -76,7 +72,6 @@ groups:
       - id: test.case.result.status
         annotations:
           traffic-generator:
-            values: [pass, fail]
             weights: [9, 1]
         type:
           members:

@@ -70,7 +70,6 @@ groups:
       - id: aspnetcore.routing.match_status
         annotations:
           traffic-generator:
-            values: [success, failure]
             weights: [95, 5]
         type:
           members:
@@ -154,7 +153,6 @@ groups:
       - id: aspnetcore.authentication.scheme
         annotations:
           traffic-generator:
-            values: [Cookies, Bearer, Identity.Application]
             weights: [4, 4, 2]
         type: string
         stability: development
@@ -181,7 +179,6 @@ groups:
       - id: aspnetcore.authorization.result
         annotations:
           traffic-generator:
-            values: [success, failure]
             weights: [92, 8]
         type:
           members:
@@ -199,7 +196,6 @@ groups:
       - id: aspnetcore.identity.result
         annotations:
           traffic-generator:
-            values: [success, failure]
             weights: [9, 1]
         type:
           members:
@@ -458,7 +454,6 @@ groups:
       - id: aspnetcore.identity.token_verified
         annotations:
           traffic-generator:
-            values: [success, failure]
             weights: [9, 1]
         type:
           members:

@@ -426,8 +426,7 @@ groups:
       - id: db.cosmosdb.consistency_level
         annotations:
           traffic-generator:
-            values: [Session, Eventual, ConsistentPrefix, BoundedStaleness, Strong]
-            weights: [60, 15, 8, 10, 7]
+            weights: [15, 8, 10, 7, 60]
         type:
           members:
             - id: strong

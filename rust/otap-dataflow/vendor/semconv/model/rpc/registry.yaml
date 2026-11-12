@@ -92,9 +92,6 @@ groups:
           method actually executing the call on the server side, or the
           RPC client stub method on the client side.
       - id: rpc.method_original
-        annotations:
-          traffic-generator:
-            values: [com.myservice.EchoService/catchAll, com.myservice.EchoService/unknownMethod, InvalidMethod]
         type: string
         stability: release_candidate
         brief: >

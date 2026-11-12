@@ -91,11 +91,6 @@ groups:
           but other identifiers (e.g. UUID) may be used as needed.
         examples: ["01ARZ3NDEKTSV4RRFFQ69G5FAV"]
       - id: log.record.original
-        annotations:
-          traffic-generator:
-            values:
-              - "77 <86>1 2015-08-06T21:58:59.694Z 192.168.2.133 inactive - - - Something happened"
-              - "[INFO] 8/3/24 12:34:56 Something happened"
         type: string
         stability: development
         brief: >
