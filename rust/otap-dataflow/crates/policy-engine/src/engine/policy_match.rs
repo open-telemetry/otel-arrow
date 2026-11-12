@@ -10,6 +10,7 @@
 
 use arrow::array::{Array, BooleanArray};
 use arrow::buffer::BooleanBuffer;
+use arrow::compute::filter as arrow_filter;
 use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::PredicateResult;
 
 /// Indicates which rows in a batch matched a policy.
@@ -124,6 +125,80 @@ impl PolicyMatch {
             PolicyMatch::All => num_rows,
             PolicyMatch::None => 0,
             PolicyMatch::Some(buf) => buf.count_set_bits(),
+        }
+    }
+
+    /// Invert this bitmap: `true` becomes `false` and vice versa.
+    ///
+    /// `num_rows` is needed to materialize `All` -> all-set buffer for
+    /// negation. Returns `All` if all bits become set, `None` if all
+    /// become unset.
+    #[must_use]
+    pub(crate) fn not(this: &PolicyMatch, num_rows: usize) -> PolicyMatch {
+        match this {
+            PolicyMatch::All => PolicyMatch::None,
+            PolicyMatch::None => PolicyMatch::All,
+            PolicyMatch::Some(buf) => {
+                let result = !buf;
+                if result.count_set_bits() == 0 {
+                    PolicyMatch::None
+                } else if result.count_set_bits() == result.len() {
+                    PolicyMatch::All
+                } else {
+                    PolicyMatch::Some(result)
+                }
+            }
+        }
+    }
+
+    /// Filter this bitmap to keep only the rows indicated by `keep_mask`.
+    ///
+    /// The result has `keep_mask.count_true(num_rows)` rows -- one for each
+    /// `true` bit in `keep_mask`. Used to shrink per-policy match bitmaps
+    /// down to only the surviving rows after the discard filter is applied.
+    #[must_use]
+    pub(crate) fn filter_by(&self, keep_mask: &PolicyMatch, num_rows: usize) -> PolicyMatch {
+        match (self, keep_mask) {
+            // If the mask keeps everything, the bitmap is unchanged.
+            (x, PolicyMatch::All) => x.clone(),
+            // If the mask keeps nothing, no rows survive.
+            (_, PolicyMatch::None) => PolicyMatch::None,
+            // If this bitmap matches everything, the filtered result is All
+            // (all surviving rows are matched).
+            (PolicyMatch::All, _) => PolicyMatch::All,
+            // If this bitmap matches nothing, still nothing.
+            (PolicyMatch::None, _) => PolicyMatch::None,
+            // Filter the bitmap: keep only bits where keep_mask is true.
+            (PolicyMatch::Some(buf), PolicyMatch::Some(mask)) => {
+                debug_assert_eq!(buf.len(), mask.len());
+                let arr = BooleanArray::new(buf.clone(), None);
+                let mask_arr = BooleanArray::new(mask.clone(), None);
+                let filtered = arrow_filter(&arr, &mask_arr)
+                    .expect("filter should not fail on equal-length boolean arrays");
+                let filtered_bool = filtered
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .expect("filter of BooleanArray produces BooleanArray");
+                let new_buf = filtered_bool.values().clone();
+                if new_buf.count_set_bits() == 0 {
+                    PolicyMatch::None
+                } else if new_buf.count_set_bits() == new_buf.len() {
+                    PolicyMatch::All
+                } else {
+                    PolicyMatch::Some(new_buf)
+                }
+            }
+        }
+    }
+
+    /// Convert to a [`BooleanArray`] for use with `filter_otap_batch`.
+    ///
+    /// `true` means the row should be **kept** (not discarded).
+    pub(crate) fn to_boolean_array(&self, num_rows: usize) -> BooleanArray {
+        match self {
+            PolicyMatch::All => BooleanArray::new(BooleanBuffer::new_set(num_rows), None),
+            PolicyMatch::None => BooleanArray::new(BooleanBuffer::new_unset(num_rows), None),
+            PolicyMatch::Some(buf) => BooleanArray::new(buf.clone(), None),
         }
     }
 

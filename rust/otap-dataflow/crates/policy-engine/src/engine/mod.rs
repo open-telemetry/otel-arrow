@@ -8,6 +8,24 @@
 //! it operates on entire columns, using per-policy bitmaps to track which
 //! rows each policy matches.
 //!
+//! # Performance optimizations (TODO)
+//!
+//! The following optimizations should be evaluated and implemented:
+//!
+//! - **Short-circuit evaluation**: if all rows are discarded at any point
+//!   during keep resolution (i.e., the discard bitmap becomes `All`), skip
+//!   remaining policy evaluation and return an empty batch immediately.
+//!
+//! - **Predicate caching**: keep the planned [`Predicate`] instances between
+//!   batch evaluations instead of re-planning from `LogicalExpression` on
+//!   every call. The `Predicate` contains a compiled `ScopedExpr` and a
+//!   `SessionContext` that can be reused across batches.
+//!
+//! - **Buffer pooling**: reuse `BooleanBuffer` heap allocations across
+//!   batches and across policies within a batch rather than allocating and
+//!   discarding them each time. The `PolicyMatch` bitmaps are prime
+//!   candidates for pooling since they have predictable sizes.
+//!
 //! # Error handling
 //!
 //! TODO: validate that errors returned by this module conform to the policy
@@ -21,9 +39,11 @@
 //! See the "Error Handling" section of the policy specification.
 
 mod policy_match;
+mod transform;
 mod translate;
 
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::Predicate;
 use otel_arrow_dfe_query_engine::pipeline::{RecordType, SignalContext, SignalKind};
@@ -31,6 +51,7 @@ use policy_rs::engine::{CompiledKeep, CompiledMatchers, CompiledPolicy, LogSigna
 use policy_rs::{PolicyError, PolicySnapshot};
 
 use policy_match::PolicyMatch;
+use transform::{apply_policy_transforms, concat_log_batches};
 use translate::{existence_check_to_logical, typed_check_to_logical};
 
 /// Columnar policy evaluation engine.
@@ -69,17 +90,120 @@ impl PolicyEngine {
                     .map(|rb| rb.num_rows())
                     .unwrap_or(0);
 
+                if num_rows == 0 {
+                    return Ok(otap_batch);
+                }
+
                 let policy_matches =
                     find_matching_policies(compiled_matchers, &otap_batch)?;
 
-                let _discard_bitmap = resolve_keep(
+                let discard_bitmap = resolve_keep(
                     &compiled_matchers.policies,
                     &policy_matches,
                     num_rows,
                 );
 
-                // TODO: filter the otap_batch using discard_bitmap
-                // TODO: apply transforms from matching keep:"all" policies
+                // Invert: filter_otap_batch expects true = keep.
+                let keep_mask = PolicyMatch::not(&discard_bitmap, num_rows);
+
+                // Short-circuit: if everything was discarded, return empty.
+                if matches!(keep_mask, PolicyMatch::None) {
+                    return Ok(OtapArrowRecords::Logs(
+                        otel_arrow_dfe_pdata::otap::Logs::default(),
+                    ));
+                }
+
+                // Filter the OTAP batch to remove discarded rows.
+                // If nothing was discarded, skip the filter entirely.
+                // TODO: keep id_bitmap_pool for reuse between invocations
+                // (similar to the Predicate caching optimization).
+                let mut id_bitmap_pool = IdBitmapPool::new();
+                let mut filtered_batch = if matches!(keep_mask, PolicyMatch::All) {
+                    otap_batch
+                } else {
+                    let keep_array = keep_mask.to_boolean_array(num_rows);
+                    filter_otap_batch(&keep_array, &otap_batch, &mut id_bitmap_pool)
+                        .map_err(|e| PolicyError::CompileError {
+                            reason: format!("filter: {e}"),
+                        })?
+                };
+
+                // Apply transforms from matching keep:"all" policies.
+                // Policies are already in alphabetical ID order from compilation.
+                // Filtered match bitmaps are computed on the fly to avoid
+                // materializing a Vec of all filtered bitmaps up front.
+                let surviving_rows = filtered_batch
+                    .root_record_batch()
+                    .map(|rb| rb.num_rows())
+                    .unwrap_or(0);
+
+                for (idx, policy) in compiled_matchers.policies.iter().enumerate() {
+                    let Some(transform) = &policy.transform else {
+                        continue;
+                    };
+                    if matches!(policy.keep, CompiledKeep::None) {
+                        // Transforms never run on dropped rows.
+                        continue;
+                    }
+                    if transform.is_empty() {
+                        continue;
+                    }
+
+                    let filtered_match =
+                        policy_matches[idx].filter_by(&keep_mask, num_rows);
+
+                    match filtered_match {
+                        PolicyMatch::None => continue,
+                        PolicyMatch::All => {
+                            // Transform all surviving rows in place.
+                            apply_policy_transforms(&mut filtered_batch, transform)
+                                .map_err(|e| PolicyError::CompileError {
+                                    reason: format!("transform: {e}"),
+                                })?;
+                        }
+                        PolicyMatch::Some(_) => {
+                            // Split: matched subset + unmatched remainder.
+                            let selection =
+                                filtered_match.to_boolean_array(surviving_rows);
+                            let not_selection =
+                                PolicyMatch::not(&filtered_match, surviving_rows)
+                                    .to_boolean_array(surviving_rows);
+
+                            let mut matched_batch = filter_otap_batch(
+                                &selection,
+                                &filtered_batch,
+                                &mut id_bitmap_pool,
+                            )
+                            .map_err(|e| PolicyError::CompileError {
+                                reason: format!("transform filter: {e}"),
+                            })?;
+
+                            let unmatched_batch = filter_otap_batch(
+                                &not_selection,
+                                &filtered_batch,
+                                &mut id_bitmap_pool,
+                            )
+                            .map_err(|e| PolicyError::CompileError {
+                                reason: format!("transform filter: {e}"),
+                            })?;
+
+                            // Apply transforms to matched subset.
+                            apply_policy_transforms(&mut matched_batch, transform)
+                                .map_err(|e| PolicyError::CompileError {
+                                    reason: format!("transform: {e}"),
+                                })?;
+
+                            // Concat back together.
+                            filtered_batch =
+                                concat_log_batches(matched_batch, unmatched_batch)
+                                    .map_err(|e| PolicyError::CompileError {
+                                        reason: format!("transform concat: {e}"),
+                                    })?;
+                        }
+                    }
+                }
+
+                return Ok(filtered_batch);
             }
             _ => {
                 // TODO: support other signal types
