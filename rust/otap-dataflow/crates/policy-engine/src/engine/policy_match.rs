@@ -1,12 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-policy match bitmaps with lazy materialization.
-//!
-//! [`PolicyMatch`] represents which rows in an OTAP Arrow batch matched a
-//! policy's matchers. It avoids allocating a full boolean buffer when all
-//! rows or no rows matched -- a common case that lets us skip bitmap work
-//! entirely.
+//! Per-policy match bitmaps.
 
 use arrow::array::{Array, BooleanArray};
 use arrow::buffer::BooleanBuffer;
@@ -15,25 +10,19 @@ use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::PredicateResult;
 
 /// Indicates which rows in a batch matched a policy.
 ///
-/// The three variants form a lattice for AND:
-///   `None` < `Some(bitmap)` < `All`
-///
-/// This lets the common all-match and no-match cases avoid bitmap
-/// allocation entirely.
+/// Allows the all-match and no-match cases avoid bitmap allocation.
 #[derive(Clone, Debug)]
 pub(crate) enum PolicyMatch {
-    /// Every row matched (or no matcher has been applied yet).
+    /// Every row matched.
     All,
     /// No rows matched.
     None,
-    /// A subset of rows matched; the buffer has one bit per row.
+    /// A subset of rows matched
     Some(BooleanBuffer),
 }
 
 impl PolicyMatch {
-    /// AND this match with another: a row is in the result only if it
-    /// appears in both inputs. Used to fold matcher results into the
-    /// per-policy "matched" bitmap.
+    /// AND this match with another
     #[must_use]
     pub(crate) fn and(&self, other: &PolicyMatch) -> PolicyMatch {
         match (self, other) {
@@ -56,9 +45,7 @@ impl PolicyMatch {
         }
     }
 
-    /// OR this match with another: a row is in the result if it appears
-    /// in either input. Used to accumulate the "already discarded"
-    /// bitmap during keep resolution.
+    /// OR this match with another
     #[must_use]
     pub(crate) fn or(&self, other: &PolicyMatch) -> PolicyMatch {
         match (self, other) {
@@ -79,8 +66,7 @@ impl PolicyMatch {
         }
     }
 
-    /// Compute `self AND NOT other`. Returns only the rows that are set
-    /// in `self` but not set in `other`.
+    /// Compute `self AND NOT other`
     #[must_use]
     pub(crate) fn and_not(&self, other: &PolicyMatch) -> PolicyMatch {
         match (self, other) {
@@ -116,10 +102,9 @@ impl PolicyMatch {
     }
 
     /// Returns the number of set bits (matched rows).
-    ///
-    /// For `All`, requires `num_rows` to know the total.
-    /// For `None`, always 0.
-    /// For `Some`, uses `BooleanBuffer::count_set_bits`.
+    /// - For `All`, requires `num_rows` to know the total.
+    /// - For `None`, always 0.
+    /// - For `Some`, uses `BooleanBuffer::count_set_bits`.
     pub(crate) fn count_true(&self, num_rows: usize) -> usize {
         match self {
             PolicyMatch::All => num_rows,
@@ -129,10 +114,6 @@ impl PolicyMatch {
     }
 
     /// Invert this bitmap: `true` becomes `false` and vice versa.
-    ///
-    /// `num_rows` is needed to materialize `All` -> all-set buffer for
-    /// negation. Returns `All` if all bits become set, `None` if all
-    /// become unset.
     #[must_use]
     pub(crate) fn not(this: &PolicyMatch) -> PolicyMatch {
         match this {
@@ -161,9 +142,9 @@ impl PolicyMatch {
             (_, PolicyMatch::None) => PolicyMatch::None,
             // If this bitmap matches everything, the filtered result is All
             // (all surviving rows are matched).
-            (PolicyMatch::All, _) => PolicyMatch::All,
+            (PolicyMatch::All, PolicyMatch::Some(_)) => PolicyMatch::All,
             // If this bitmap matches nothing, still nothing.
-            (PolicyMatch::None, _) => PolicyMatch::None,
+            (PolicyMatch::None, PolicyMatch::Some(_)) => PolicyMatch::None,
             // Filter the bitmap: keep only bits where keep_mask is true.
             (PolicyMatch::Some(buf), PolicyMatch::Some(mask)) => {
                 debug_assert_eq!(buf.len(), mask.len());
@@ -187,9 +168,7 @@ impl PolicyMatch {
         }
     }
 
-    /// Convert to a [`BooleanArray`] for use with `filter_otap_batch`.
-    ///
-    /// `true` means the row should be **kept** (not discarded).
+    /// Convert to a [`BooleanArray`]
     pub(crate) fn to_boolean_array(&self, num_rows: usize) -> BooleanArray {
         match self {
             PolicyMatch::All => BooleanArray::new(BooleanBuffer::new_set(num_rows), None),
@@ -199,25 +178,16 @@ impl PolicyMatch {
     }
 
     /// Create a [`PolicyMatch`] from a [`PredicateResult`].
-    ///
-    /// Preserves the scalar shortcuts from `PredicateResult` -- `All` and
-    /// `None` map directly without bitmap allocation. For array results,
-    /// delegates to [`from_boolean_array`](Self::from_boolean_array).
-    pub(crate) fn from_predicate_result(result: PredicateResult) -> PolicyMatch {
+    pub(crate) fn from_predicate_result(result: PredicateResult) -> Self {
         match result {
-            PredicateResult::All => PolicyMatch::All,
-            PredicateResult::None => PolicyMatch::None,
+            PredicateResult::All => Self::All,
+            PredicateResult::None => Self::None,
             PredicateResult::Array(arr) => Self::from_boolean_array(&arr),
         }
     }
 
     /// Create a [`PolicyMatch`] from a [`BooleanArray`].
-    ///
-    /// Null values in the array are treated as `false` (fail-open).
-    /// If all values are true, returns [`PolicyMatch::All`]; if all
-    /// are false/null, returns [`PolicyMatch::None`]; otherwise
-    /// returns [`PolicyMatch::Some`] with the boolean buffer.
-    fn from_boolean_array(arr: &BooleanArray) -> PolicyMatch {
+    fn from_boolean_array(arr: &BooleanArray) -> Self {
         // Strip nulls: treat null as false by ANDing values with validity.
         let buffer = match arr.nulls() {
             Some(nulls) => arr.values() & nulls.inner(),
@@ -226,11 +196,11 @@ impl PolicyMatch {
 
         let set_bits = buffer.count_set_bits();
         if set_bits == 0 {
-            PolicyMatch::None
+            Self::None
         } else if set_bits == buffer.len() {
-            PolicyMatch::All
+            Self::All
         } else {
-            PolicyMatch::Some(buffer)
+            Self::Some(buffer)
         }
     }
 }

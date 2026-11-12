@@ -3,38 +3,18 @@
 
 //! Translation and application of policy transforms to OTAP Arrow batches.
 //!
-//! # Signal type generalization (TODO)
-//!
-//! All transform functions in this module are currently hardcoded for
-//! `LogSignal` / `LogFieldSelector`. To support metrics and traces:
-//! - `classify_field` needs variants for `MetricFieldSelector` and
-//!   `TraceFieldSelector` (mapping to their respective attribute payload
-//!   types like `MetricAttrs`, `SpanAttrs`, `NumberDpAttrs`, etc.).
-//! - `apply_policy_transforms` needs to be generic over `S: Signal` or
-//!   dispatched per signal type.
-//! - `concat_log_batches` needs metric and trace equivalents (or a single
-//!   generic concat that dispatches on the `OtapArrowRecords` variant).
-//! - The `simple_field_name` mapping in `translate.rs` needs equivalents
-//!   for metric and trace root fields.
-//!
-//! # Transform optimization (TODO)
-//!
-//! When a policy has multiple transforms of the same kind (e.g. several
-//! renames, or several removes), they should be combined into a single
-//! `AttributesTransform` call rather than applied one at a time. For example:
-//! - Multiple renames -> one `RenameTransform` with all entries
-//! - Multiple removes -> one `DeleteTransform` with all keys
-//! - Multiple redacts on attributes -> one `AssignPipelineStage` with all
-//!   assignments batched together
-//!
-//! Similarly, a remove followed by a rename (within the same policy) could
-//! be combined into a single `AttributesTransform` with both a `delete` and
-//! a `rename` field set, since `apply_attribute_transform` handles both in
-//! one pass.
+// TODOs:
+// - Signal type generalization - currently only supports logs
+// - Coalesce transformations (optimization): When a policy has multiple transforms of the same
+//   kind (e.g. several renames, or several removes), they can probably be combined into a single
+//  `AttributesTransform` call rather than applied one at a time. Similarly, a remove followed by
+//   a rename (within the same policy) could be combined into a single `AttributesTransform` with
+//   both a `delete` and a `rename` field set, since `apply_attribute_transform` handles both in.
+// - Validation: double check that we don't need to validate field names here (that they're already
+//   validated by policy-rs during compilation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use arrow::array::RecordBatch;
 use otel_arrow_dfe_pdata::otap::raw_batch_store::{LOGS_TYPE_MASK, RawBatchStore};
 use otel_arrow_dfe_pdata::otap::transform::concatenate::{ConcatOptions, concatenate};
 use otel_arrow_dfe_pdata::otap::transform::{
@@ -42,22 +22,22 @@ use otel_arrow_dfe_pdata::otap::transform::{
 };
 use otel_arrow_dfe_pdata::otap::{Logs, OtapBatchStore};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use policy_rs::engine::{CompiledTransform, LogSignal, TransformOp};
 use policy_rs::LogFieldSelector;
-use policy_rs::proto::tero::policy::v1::LogField;
 
 use crate::engine::translate::simple_field_name;
 
-/// Apply all transform operations from a compiled policy transform to an
-/// OTAP batch.
-///
-/// Operations are applied in the spec-mandated order: remove, redact,
-/// rename, add. The `CompiledTransform` already stores ops in this order.
+/// Apply all transform operations from a compiled policy transform to an OTAP batch.
 pub(crate) fn apply_policy_transforms(
     batch: &mut OtapArrowRecords,
     transform: &CompiledTransform<LogSignal>,
 ) -> Result<(), otel_arrow_dfe_pdata::error::Error> {
+    // Note: the spec mandates an execution order for these: remove, redact, rename, add.
+    // However the `CompiledTransform` already stores ops in this order, so we can just iterate
+    // what has been given to us
+    // (TODO ^^ validate this assumption - it's a claim from an LLM that hasn't been double checked 
+    // by a human being).
     for op in &transform.ops {
         match op {
             TransformOp::Remove { field } => {
@@ -67,9 +47,8 @@ pub(crate) fn apply_policy_transforms(
                 // TODO: implement redact transform
             }
             TransformOp::Rename { from, to, upsert: _ } => {
-                // TODO: handle the upsert flag. Currently we always rename
-                // (overwrite). Per spec, if upsert is false and the target
-                // key already exists, the rename should be a no-op.
+                // TODO: handle the upsert flag. Currently we always rename (overwrite). Per spec, if
+                // upsert is false and the target key already exists, the rename should be a no-op.
                 apply_rename(batch, from, to)?;
             }
             TransformOp::Add { .. } => {
@@ -80,8 +59,8 @@ pub(crate) fn apply_policy_transforms(
     Ok(())
 }
 
-/// Classify a `LogFieldSelector` as either an attribute operation (with key
-/// and payload type) or a simple field operation (with column name).
+/// Classify a `LogFieldSelector` as either an attribute operation (with key and payload type) or
+/// a simple field operation (with column name).
 enum FieldTarget<'a> {
     /// An attribute field: the key to match and the Arrow payload type
     /// for that attribute batch.
@@ -92,12 +71,12 @@ enum FieldTarget<'a> {
 
 /// Map a `LogFieldSelector` to a `FieldTarget`.
 ///
-/// Returns `None` if the field selector uses a nested attribute path
-/// (path length > 1), which is not yet supported for transforms.
+/// *Does not _yet_ support nested attribute access!* Returns `None` if the field selector uses a
+/// nested attribute path (path length > 1), which is not yet supported for transforms.
 ///
-/// TODO: support nested attribute paths (e.g., `["http", "request", "method"]`).
-/// This requires operating on serialized map/slice values within the
-/// attribute's value column, not just matching on the top-level key.
+// TODO: support nested attribute paths (e.g., `["http", "request", "method"]`). This requires
+// operating on serialized map/slice values within the attribute's value column, not just matching
+// on the top-level key.
 fn classify_field(field: &LogFieldSelector) -> Option<FieldTarget<'_>> {
     match field {
         LogFieldSelector::LogAttribute(path) => {
@@ -129,13 +108,8 @@ fn classify_field(field: &LogFieldSelector) -> Option<FieldTarget<'_>> {
 }
 
 /// Apply a single remove operation to an OTAP batch.
-///
-/// For attribute fields: uses `DeleteTransform` to remove matching rows
-/// from the attribute batch.
-///
-/// For simple fields: removes the column from the root record batch
-/// (following the same approach as `AssignPipelineStage::assign_null_record_column`).
-/// If the field does not exist, this is a no-op.
+/// - For attribute fields: uses `DeleteTransform` to remove matching rows from the attribute batch./
+/// - For simple fields: removes the column from the root record batch.
 fn apply_remove(
     batch: &mut OtapArrowRecords,
     field: &LogFieldSelector,
@@ -176,8 +150,9 @@ fn apply_remove(
 
 /// Apply a single attribute rename to an OTAP batch.
 ///
-/// Renaming simple fields (body, severity_text, etc.) is a no-op per spec
-/// and the reference implementations (Go, Zig).
+/// Renaming simple fields (body, severity_text, etc.) is a no-op per spec and
+/// the reference implementations
+// (TODO ^^ validate this assumption as a human)
 fn apply_rename(
     batch: &mut OtapArrowRecords,
     from: &LogFieldSelector,
@@ -202,10 +177,9 @@ fn apply_rename(
     Ok(())
 }
 
-/// Concatenate two OTAP log batches that are disjoint pieces of the same
-/// original batch. IDs are preserved (not reindexed).
+/// Concatenate two OTAP log batches that are disjoint pieces of the same original batch.
 ///
-/// TODO: generalize to metrics and traces signal types.
+// TODO: generalize to metrics and traces signal types.
 pub(crate) fn concat_log_batches(
     a: OtapArrowRecords,
     b: OtapArrowRecords,

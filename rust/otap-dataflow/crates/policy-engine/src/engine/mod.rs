@@ -331,22 +331,9 @@ fn resolve_keep_and_record_stats(
     PolicyMatch::not(&already_discarded)
 }
 
-/// Returns a [`Vec`] of [`PolicyMatch`] indicating which rows matched each
-/// policy at the corresponding index.
+/// Returns a [`Vec`] of [`PolicyMatch`] indicating which rows matched each policy at the
+/// corresponding index.
 ///
-/// The evaluation iterates through three categories of matchers from the
-/// compiled policy snapshot:
-///
-/// 1. **Vectorscan databases** -- string pattern matchers (exact, regex,
-///    starts_with, ends_with, contains) grouped by (field, negated).
-/// 2. **Existence checks** -- field presence/absence tests.
-/// 3. **Typed checks** -- typed equality and numeric comparisons.
-///
-/// For existence and typed checks, negation is handled during expression
-/// translation (the `NOT` is baked into the `LogicalExpression`), so all
-/// results are AND'd into the per-policy `matched` bitmap.
-///
-/// The final match for each policy is the `matched` bitmap.
 // TODO: generalize to other signal types (MetricSignal, TraceSignal)
 fn find_matching_policies(
     compiled: &CompiledMatchers<LogSignal>,
@@ -357,25 +344,24 @@ fn find_matching_policies(
         return Ok(Vec::new());
     }
 
-    // Per-policy bitmap: initialized to All, AND'd with each matcher result.
-    // Negation for existence and typed checks is baked into the translated
-    // LogicalExpression, so we always AND.
+    // Per-policy bitmap: initialized to All, but will be updated as rows are eliminated
+    // as we evaluate each policy's matchers.
     let mut matched = vec![PolicyMatch::All; policy_count];
 
     // TODO: evaluate Vectorscan databases (string pattern matchers).
     //
-    // Vectorscan scans all patterns for a given (field, negated) group in one
-    // pass and returns which patterns matched. Unlike existence/typed checks,
-    // negation cannot be baked into the scan -- it must be tracked separately.
-    // When adding Vectorscan support:
-    //   - For non-negated databases: patterns that matched AND into `matched`.
-    //     Patterns in the database that did NOT match must also AND false into
-    //     `matched` for their respective policies.
-    //   - For negated databases: patterns that matched must set the
-    //     corresponding rows to not-matched for their policies. This may
-    //     require a separate `disqualified` bitmap (OR'd with negated hits)
-    //     and a final `matched AND NOT disqualified` step, or the negation
-    //     can be applied inline by AND'ing `NOT(hit)` into `matched`.
+    // Vectorscan scans all patterns for a given (field, negated) group in one pass and returns
+    // which patterns matched. Unlike existence/typed checks, negation cannot be baked into the
+    // scan -- it'll have to be tracked separately when we support this. When adding Vectorscan
+    // support:
+    // - For non-negated databases: patterns that matched AND into `matched`. Patterns in the
+    //   database that did NOT match must also AND false into `matched` for their respective
+    //   policies.
+    // - For negated databases: patterns that matched must set the corresponding rows to
+    //   not-matched for their policies. This may require a separate `disqualified` bitmap (OR'd
+    //   with negated hits) and a final `matched AND NOT disqualified` step, or the negation can be
+    //   applied inline by AND'ing `NOT(hit)` into `matched`. For reference re: 'disqualified', see
+    //   how this is done in the policy-rs crate.
 
     // Evaluate existence checks.
     //
@@ -386,6 +372,7 @@ fn find_matching_policies(
     for check in &compiled.existence_checks {
         let logical_expr = existence_check_to_logical(check);
 
+        // TODO - keep this between invocations to avoid invoking the planner each time.
         let mut predicate =
             Predicate::try_new(&logical_expr, record_type.clone()).map_err(|e| {
                 PolicyError::CompileError {
