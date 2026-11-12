@@ -6,7 +6,6 @@
 use arrow::array::{Array, BooleanArray};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::filter as arrow_filter;
-use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::PredicateResult;
 
 /// Indicates which rows in a batch matched a policy.
 ///
@@ -177,17 +176,10 @@ impl PolicyMatch {
         }
     }
 
-    /// Create a [`PolicyMatch`] from a [`PredicateResult`].
-    pub(crate) fn from_predicate_result(result: PredicateResult) -> Self {
-        match result {
-            PredicateResult::All => Self::All,
-            PredicateResult::None => Self::None,
-            PredicateResult::Array(arr) => Self::from_boolean_array(&arr),
-        }
-    }
-
     /// Create a [`PolicyMatch`] from a [`BooleanArray`].
-    fn from_boolean_array(arr: &BooleanArray) -> Self {
+    ///
+    /// Null values in the array are treated as `false` (fail-open).
+    pub(crate) fn from_boolean_array(arr: &BooleanArray) -> Self {
         // Strip nulls: treat null as false by ANDing values with validity.
         let buffer = match arr.nulls() {
             Some(nulls) => arr.values() & nulls.inner(),
@@ -285,39 +277,6 @@ mod tests {
 
         let result = a.and(&b);
         assert!(matches!(result, PolicyMatch::None));
-    }
-
-    /// Scenario: from_predicate_result maps All directly.
-    /// Guarantees: Scalar true avoids bitmap allocation.
-    #[test]
-    fn from_predicate_result_all() {
-        let result = PolicyMatch::from_predicate_result(PredicateResult::All);
-        assert!(matches!(result, PolicyMatch::All));
-    }
-
-    /// Scenario: from_predicate_result maps None directly.
-    /// Guarantees: Scalar false avoids bitmap allocation.
-    #[test]
-    fn from_predicate_result_none() {
-        let result = PolicyMatch::from_predicate_result(PredicateResult::None);
-        assert!(matches!(result, PolicyMatch::None));
-    }
-
-    /// Scenario: from_predicate_result with a mixed array produces Some.
-    /// Guarantees: Array results are converted to bitmaps.
-    #[test]
-    fn from_predicate_result_array() {
-        let arr = BooleanArray::from(vec![true, false, true]);
-        let result = PolicyMatch::from_predicate_result(PredicateResult::Array(arr));
-        match result {
-            PolicyMatch::Some(buf) => {
-                assert_eq!(buf.len(), 3);
-                assert!(buf.value(0));
-                assert!(!buf.value(1));
-                assert!(buf.value(2));
-            }
-            _ => panic!("expected Some"),
-        }
     }
 
     /// Scenario: from_boolean_array with all-true values returns All.

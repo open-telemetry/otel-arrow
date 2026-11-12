@@ -1,6 +1,6 @@
 [package]
 name = "otel-arrow-dfe-policy-engine"
-description = "Telemetry policy evaluation engine built on the OTAP query engine"
+description = "Telemetry policy evaluation engine for OTAP Dataflow"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -13,9 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 arrow.workspace = true
-otel-arrow-contrib-data-engine-expressions.workspace = true
 otel-arrow-dfe-config.workspace = true
-otel-arrow-dfe-query-engine.workspace = true
 otel-arrow-dfe-pdata.workspace = true
 policy-rs.workspace = true
 thiserror.workspace = true

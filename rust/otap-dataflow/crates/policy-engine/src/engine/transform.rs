@@ -24,9 +24,10 @@ use otel_arrow_dfe_pdata::otap::{Logs, OtapBatchStore};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use policy_rs::engine::{CompiledTransform, LogSignal, TransformOp};
+use policy_rs::proto::tero::policy::v1::LogField;
 use policy_rs::LogFieldSelector;
 
-use crate::engine::translate::simple_field_name;
+
 
 /// Apply all transform operations from a compiled policy transform to an OTAP batch.
 pub(crate) fn apply_policy_transforms(
@@ -59,9 +60,29 @@ pub(crate) fn apply_policy_transforms(
     Ok(())
 }
 
+/// Map a `LogField` enum variant to its OTAP Arrow column name.
+///
+/// Note: schema URL fields (`ResourceSchemaUrl`, `ScopeSchemaUrl`) are
+/// struct sub-fields in the OTAP format (`resource.schema_url`,
+/// `instrumentation_scope.schema_url`). The current mapping returns the
+/// shared `"schema_url"` column name, which is only correct for the
+/// top-level `schema_url` column. 
+// TODO: verify/fix schema_url mapping for resource vs scope distinction.
+pub(crate) fn simple_field_name(field: &LogField) -> &'static str {
+    match field {
+        LogField::Body => "body",
+        LogField::SeverityText => "severity_text",
+        LogField::TraceId => "trace_id",
+        LogField::SpanId => "span_id",
+        LogField::EventName => "event_name",
+        LogField::ResourceSchemaUrl | LogField::ScopeSchemaUrl => "schema_url",
+        LogField::Unspecified => "body", // fallback, should not occur
+    }
+}
+
 /// Classify a `LogFieldSelector` as either an attribute operation (with key and payload type) or
 /// a simple field operation (with column name).
-enum FieldTarget<'a> {
+pub(crate) enum FieldTarget<'a> {
     /// An attribute field: the key to match and the Arrow payload type
     /// for that attribute batch.
     Attribute(&'a str, ArrowPayloadType),
@@ -77,7 +98,7 @@ enum FieldTarget<'a> {
 // TODO: support nested attribute paths (e.g., `["http", "request", "method"]`). This requires
 // operating on serialized map/slice values within the attribute's value column, not just matching
 // on the top-level key.
-fn classify_field(field: &LogFieldSelector) -> Option<FieldTarget<'_>> {
+pub(crate) fn classify_field(field: &LogFieldSelector) -> Option<FieldTarget<'_>> {
     match field {
         LogFieldSelector::LogAttribute(path) => {
             if path.len() != 1 {

@@ -48,23 +48,21 @@
 //!
 //! See the "Error Handling" section of the policy specification.
 
+mod evaluate;
 mod policy_match;
 mod transform;
-mod translate;
 
 use arrow::array::BooleanArray;
 use arrow::compute::not;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
-use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::Predicate;
-use otel_arrow_dfe_query_engine::pipeline::{RecordType, SignalContext, SignalKind};
 use policy_rs::engine::{CompiledKeep, CompiledMatchers, CompiledPolicy, LogSignal, Signal};
 use policy_rs::{PolicyError, PolicySnapshot};
 
+use evaluate::{evaluate_existence_check, evaluate_typed_check};
 use policy_match::PolicyMatch;
 use transform::{apply_policy_transforms, concat_log_batches};
-use translate::{existence_check_to_logical, typed_check_to_logical};
 
 /// Columnar policy evaluation engine.
 ///
@@ -140,15 +138,14 @@ impl PolicyEngine {
                     }
                 };
 
-                // Apply transforms from matching keep:"all" policies.
-                // Policies are already in alphabetical ID order from compilation.
-                // Filtered match bitmaps are computed on the fly to avoid
-                // materializing a Vec of all filtered bitmaps up front.
-                let surviving_rows = filtered_batch.num_items();
-
+                // Apply transforms from matching keep:"all" policies
+                //
+                // Note: the spec states that the policies must be applied in a "consistent order
+                // (e.g., alphabetically by ID)", and we're assuming that the compiled matcher we
+                // received from the snapshot has already applied this sort order.
                 for (idx, policy) in compiled_matchers.policies.iter().enumerate() {
-                    // TODO this should be policy matches != ALL (so we don't accidentally
-                    // evaluate unsupported "sampling" policies)?
+                    // TODO this should be policy matches != ALL (so we don't accidentally evaluate
+                    // unsupported "sampling" policies)?
                     // TODO Do the transforms run on the rows that are not dropped in case of None?
                     if matches!(policy.keep, CompiledKeep::None) {
                         // Transforms never run on dropped rows.
@@ -181,7 +178,8 @@ impl PolicyEngine {
                             };
 
                             // Apply transforms to matched subset.
-                            let selection = filtered_match.to_boolean_array(surviving_rows);
+                            let selection =
+                                filtered_match.to_boolean_array(filtered_batch.num_items());
                             let mut matched_batch =
                                 filter_otap_batch(&selection, &filtered_batch, &mut id_bitmap_pool)
                                     .map_err(map_transform_filter)?;
@@ -364,60 +362,21 @@ fn find_matching_policies(
     //   how this is done in the policy-rs crate.
 
     // Evaluate existence checks.
-    //
-    // TODO: consider grouping checks that target the same field into a single
-    // Predicate evaluation to avoid redundant column access.
-    let record_type = RecordType::Signal(SignalContext::Single(SignalKind::Logs));
-
     for check in &compiled.existence_checks {
-        let logical_expr = existence_check_to_logical(check);
-
-        // TODO - keep this between invocations to avoid invoking the planner each time.
-        let mut predicate =
-            Predicate::try_new(&logical_expr, record_type.clone()).map_err(|e| {
-                PolicyError::CompileError {
-                    reason: format!("existence check: {e}"),
-                }
-            })?;
-
-        let result = predicate
-            .evaluate(otap_batch)
-            .map_err(|e| PolicyError::CompileError {
-                reason: format!("existence check eval: {e}"),
-            })?;
-
-        let policy_match = PolicyMatch::from_predicate_result(result);
-        matched[check.policy_index] = matched[check.policy_index].and(&policy_match);
+        // skip evaluating the check if we've already determined there are no matching rows
+        if !matches!(matched[check.policy_index], PolicyMatch::None) {
+            let policy_match = evaluate_existence_check(otap_batch, check);
+            matched[check.policy_index] = matched[check.policy_index].and(&policy_match);
+        }
     }
 
     // Evaluate typed checks (equals, gt, gte, lt, lte).
-    //
-    // TODO: consider grouping checks that target the same field into a single
-    // compound expression to avoid redundant column access.
     for check in &compiled.typed_checks {
-        let Some(logical_expr) = typed_check_to_logical(check) else {
-            // Unsupported matcher (e.g., Equals(Bytes)) -- skip.
-            // Since we use a bitmap approach (not counts), we explicitly
-            // mark this policy as not matching for this check.
-            matched[check.policy_index] = PolicyMatch::None;
-            continue;
-        };
-
-        let mut predicate =
-            Predicate::try_new(&logical_expr, record_type.clone()).map_err(|e| {
-                PolicyError::CompileError {
-                    reason: format!("typed check: {e}"),
-                }
-            })?;
-
-        let result = predicate
-            .evaluate(otap_batch)
-            .map_err(|e| PolicyError::CompileError {
-                reason: format!("typed check eval: {e}"),
-            })?;
-
-        let policy_match = PolicyMatch::from_predicate_result(result);
-        matched[check.policy_index] = matched[check.policy_index].and(&policy_match);
+        // skip evaluating the check if we've already determined there are no matching rows
+        if !matches!(matched[check.policy_index], PolicyMatch::None) {
+            let policy_match = evaluate_typed_check(otap_batch, check);
+            matched[check.policy_index] = matched[check.policy_index].and(&policy_match);
+        }
     }
 
     Ok(matched)

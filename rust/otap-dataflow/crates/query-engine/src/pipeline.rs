@@ -47,7 +47,6 @@ mod project;
 mod scale_metric;
 
 pub mod partition;
-pub mod pipeline_expr;
 pub mod routing;
 pub mod state;
 
