@@ -180,7 +180,7 @@ fn field_selector_to_scalar(field: &LogFieldSelector) -> ScalarExpression {
 }
 
 /// Map a `LogField` enum variant to its OTAP Arrow column name.
-fn simple_field_name(field: &LogField) -> &'static str {
+pub(super) fn simple_field_name(field: &LogField) -> &'static str {
     match field {
         LogField::Body => "body",
         LogField::SeverityText => "severity_text",
