@@ -13,7 +13,7 @@ This documentation applies to all telemetry produced by the OTAP dataflow engine
 - traces (when implemented)
 
 For an operator-facing guide covering the embedded debugging UI, admin HTTP
-endpoints, Prometheus scraping, and the complete reference of exposed metrics,
+endpoints, Prometheus scraping, and the engine and runtime metrics reference,
 see [Self-observability](../self-observability.md).
 
 ## Normative language

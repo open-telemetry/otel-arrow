@@ -22,7 +22,7 @@ pipeline. Configure an `engine.observability.pipeline` to export them, or use
 the admin metrics endpoint while developing. See
 [Configuration](configuration.md#engine-section) for observability-pipeline
 configuration and [Self-observability](self-observability.md) for the embedded
-debugging UI, admin HTTP endpoints, and full metrics reference.
+debugging UI, admin HTTP endpoints, and runtime metrics reference.
 
 ## Choose the Right Metric Layer
 
