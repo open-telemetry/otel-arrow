@@ -134,7 +134,7 @@ default pipeline that routes `its` logs to `exporter:console` and metrics to
 
 ### Controlling metric verbosity
 
-Set `policies.telemetry` at the top level, pipeline group, pipeline, or node:
+Set `policies.telemetry` at the top level, pipeline group, or pipeline:
 
 ```yaml
 policies:
