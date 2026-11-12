@@ -1,6 +1,9 @@
 groups:
   - id: event.rpc.message
     type: event
+    annotations:
+      traffic-generator:
+        severity: { values: [DEBUG, INFO, TRACE], weights: [6, 3, 1] }
     stability: development
     name: rpc.message
     brief: Describes a message sent or received within the context of an RPC call.

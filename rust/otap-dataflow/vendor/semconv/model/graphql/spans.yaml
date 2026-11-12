@@ -1,5 +1,13 @@
 groups:
   - id: span.graphql.server
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.5, max: 10000.0 }
+          distribution: { type: lognormal, mean: 80.0, stddev: 150.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [88, 8, 4]
     type: span
     stability: development
     span_kind: server

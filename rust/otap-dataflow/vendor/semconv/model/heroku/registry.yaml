@@ -6,18 +6,27 @@ groups:
         This document defines attributes for the Heroku platform on which application/s are running.
     attributes:
       - id: heroku.release.creation_timestamp
+        annotations:
+          traffic-generator:
+            values: ["2022-10-23T18:00:42Z", "2023-03-14T09:26:53Z", "2024-07-01T12:00:00Z"]
         type: string
         stability: development
         brief: >
           Time and date the release was created
         examples: [ '2022-10-23T18:00:42Z' ]
       - id: heroku.release.commit
+        annotations:
+          traffic-generator:
+            values: [e6134959463efd8966b20e75b913cafe3f5ec, 9f2c4b1a7d3e5f60812a4b5c6d7e8f9012345678, 1a2b3c4d5e6f708192a3b4c5d6e7f80912ab34cd]
         type: string
         stability: development
         brief: >
           Commit hash for the current release
         examples: [ 'e6134959463efd8966b20e75b913cafe3f5ec' ]
       - id: heroku.app.id
+        annotations:
+          traffic-generator:
+            values: [2daa2797-e42b-4624-9322-ec3f968df4da, 5b1e9c3a-7f2d-4e8b-a6c4-1d9e0f2a3b4c]
         type: string
         stability: development
         brief: >

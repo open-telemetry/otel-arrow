@@ -9,6 +9,10 @@ groups:
         the process, i.e., the virtualized guest rather than the underlying host.
     attributes:
       - id: os.type
+        annotations:
+          traffic-generator:
+            values: [linux, windows, darwin, freebsd, openbsd, netbsd, dragonflybsd, solaris, aix, hpux, zos]
+            weights: [70, 18, 6, 2, 1, 1, 1, 1, 0.5, 0.25, 0.25]
         type:
           members:
             - id: windows
@@ -66,6 +70,10 @@ groups:
           The operating system type.
         stability: development
       - id: os.description
+        annotations:
+          traffic-generator:
+            values: ["Ubuntu 22.04.4 LTS", "Ubuntu 18.04.1 LTS", "Debian GNU/Linux 12 (bookworm)", "Microsoft Windows [Version 10.0.18363.778]", "Microsoft Windows [Version 10.0.20348.2340]", "macOS 14.2.1 (23C71)"]
+            weights: [35, 10, 20, 10, 15, 10]
         type: string
         stability: development
         brief: >
@@ -73,11 +81,19 @@ groups:
           like e.g. reported by `ver` or `lsb_release -a` commands.
         examples: ['Microsoft Windows [Version 10.0.18363.778]', 'Ubuntu 18.04.1 LTS']
       - id: os.name
+        annotations:
+          traffic-generator:
+            values: ["Ubuntu", "Debian GNU/Linux", "Windows Server", "macOS", "iOS", "Android"]
+            weights: [35, 20, 15, 10, 10, 10]
         type: string
         stability: development
         brief: 'Human readable operating system name.'
         examples: ['iOS', 'Android', 'Ubuntu']
       - id: os.version
+        annotations:
+          traffic-generator:
+            values: ["22.04", "18.04.1", "12", "10.0.20348", "14.2.1", "17.4"]
+            weights: [35, 10, 20, 15, 10, 10]
         type: string
         stability: development
         brief: >
@@ -85,6 +101,9 @@ groups:
           [Version Attributes](/docs/resource/README.md#version-attributes).
         examples: ['14.2.1', '18.04.1']
       - id: os.build_id
+        annotations:
+          traffic-generator:
+            values: ["TQ3C.230805.001.B2", "20E247", "22621", "20348", "23C71"]
         type: string
         stability: development
         brief: 'Unique identifier for a particular build or compilation of the operating system.'

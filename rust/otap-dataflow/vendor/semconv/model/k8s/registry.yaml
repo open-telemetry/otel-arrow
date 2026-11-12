@@ -6,12 +6,19 @@ groups:
       Kubernetes resource attributes.
     attributes:
       - id: k8s.cluster.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry-cluster, prod-us-east-1, prod-eu-west-1, staging, dev]
+            weights: [3, 4, 3, 2, 1]
         type: string
         stability: stable
         brief: >
           The name of the cluster.
         examples: ['opentelemetry-cluster']
       - id: k8s.cluster.uid
+        annotations:
+          traffic-generator:
+            values: ['218fc5a9-a5f1-4b54-aa05-46717d0ab26d', '7c1e4d2b-3a9f-4e8c-b6d5-0f2a1c9e8b74', 'e5b9a3c1-6d4f-4a2e-9c8b-1f7d3e5a2b60']
         type: string
         stability: stable
         brief: >
@@ -42,18 +49,32 @@ groups:
           conflict.
         examples: ['218fc5a9-a5f1-4b54-aa05-46717d0ab26d']
       - id: k8s.node.name
+        annotations:
+          traffic-generator:
+            values: [node-1, node-2, node-3, ip-10-0-1-23.ec2.internal, aks-nodepool1-12345678-vmss000000, gke-prod-default-pool-1a2b3c4d-x9z8]
         type: string
         stability: stable
         brief: >
           The name of the Node.
         examples: ['node-1']
       - id: k8s.node.uid
+        annotations:
+          traffic-generator:
+            values: ['1eb3a0c6-0477-4080-a9cb-0cb7db65c6a2', '5f2d8e14-9b3a-4c71-8e6f-2a4b9c0d1e37', 'a8c4e2f6-1d3b-4f59-b7a0-6e9c2d4f8b13']
         type: string
         stability: stable
         brief: >
           The UID of the Node.
         examples: ['1eb3a0c6-0477-4080-a9cb-0cb7db65c6a2']
       - id: k8s.node.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [kubernetes.io/arch, kubernetes.io/os, node.kubernetes.io/instance-type, topology.kubernetes.io/zone, data]
+              weights: [3, 3, 2, 2, 1]
+            value:
+              values: [arm64, amd64, linux, m5.xlarge, us-east-1a, '']
+              weights: [2, 3, 4, 2, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -67,6 +88,14 @@ groups:
             the `k8s.node.label.data` attribute with value `""`.
         examples: ['arm64', '']
       - id: k8s.node.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [node.alpha.kubernetes.io/ttl, volumes.kubernetes.io/controller-managed-attach-detach, kubeadm.alpha.kubernetes.io/cri-socket, data]
+              weights: [3, 3, 2, 1]
+            value:
+              values: ['0', 'true', 'unix:///run/containerd/containerd.sock', '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -80,18 +109,34 @@ groups:
             the `k8s.node.annotation.data` attribute with value `""`.
         examples: [ '0', '' ]
       - id: k8s.node.system_container.name
+        annotations:
+          traffic-generator:
+            values: [kubelet, runtime, pods, misc]
+            weights: [3, 3, 3, 1]
         type: string
         stability: development
         brief: >
           The name of the system container running on the K8s Node.
         examples: ['kubelet', 'runtime', 'pods', 'misc']
       - id: k8s.namespace.name
+        annotations:
+          traffic-generator:
+            values: [default, kube-system, monitoring, production, staging, opentelemetry]
+            weights: [5, 3, 2, 4, 2, 2]
         type: string
         stability: stable
         brief: >
           The name of the namespace that the pod is running in.
         examples: ['default']
       - id: k8s.namespace.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [kubernetes.io/metadata.name, team, environment, data]
+              weights: [5, 2, 2, 1]
+            value:
+              values: [default, kube-system, platform, production, '']
+              weights: [4, 2, 2, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -106,6 +151,14 @@ groups:
             the `k8s.namespace.label.data` attribute with value `""`.
         examples: ['default', '']
       - id: k8s.namespace.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [ttl, owner, scheduler.alpha.kubernetes.io/node-selector, data]
+              weights: [3, 2, 1, 1]
+            value:
+              values: ['0', '3600', team-platform, '']
+              weights: [3, 1, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -120,18 +173,27 @@ groups:
             the `k8s.namespace.annotation.data` attribute with value `""`.
         examples: ['0', '']
       - id: k8s.pod.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '3c9f1a7e-2b4d-4e8a-9f6c-1d5e7b3a9c20', '9e4b2d6f-8a1c-4f3e-b5d7-0c2a6e8f1b49', 'd1f7a3c5-6e2b-4b9d-8c4a-7f0e3b5d2a86']
         type: string
         stability: stable
         brief: >
           The UID of the Pod.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.pod.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry-pod-autoconf, frontend-7d4b9c8f6d-x2k9p, checkout-5f6c7d8b9-qwz4m, redis-0, otel-collector-agent-8hk2l, coredns-5d78c9869d-abcde]
         type: string
         stability: stable
         brief: >
           The name of the Pod.
         examples: ['opentelemetry-pod-autoconf']
       - id: k8s.pod.ip
+        annotations:
+          traffic-generator:
+            values: [172.18.0.2, 10.244.0.15, 10.244.1.37, 10.244.2.8, 192.168.45.12]
         type: string
         stability: stable
         brief: >
@@ -141,6 +203,9 @@ groups:
           This attribute aligns with the `podIP` field of the
           [K8s PodStatus](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.34/#podstatus-v1-core).
       - id: k8s.pod.hostname
+        annotations:
+          traffic-generator:
+            values: [collector-gateway, redis-0, web-1, db-primary]
         type: string
         stability: stable
         brief: >
@@ -154,6 +219,9 @@ groups:
           [K8s PodSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.34/#podspec-v1-core).
         examples: [ 'collector-gateway' ]
       - id: k8s.pod.start_time
+        annotations:
+          traffic-generator:
+            values: ['2025-12-04T08:41:03Z', '2025-12-03T22:15:47Z', '2025-11-28T14:02:19Z', '2025-12-04T09:30:00Z']
         type: string
         stability: stable
         brief: >
@@ -167,6 +235,14 @@ groups:
           [K8s PodStatus](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.34/#podstatus-v1-core),
           in ISO 8601 (RFC 3339 compatible) format.
       - id: k8s.pod.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, app.kubernetes.io/name, pod-template-hash, mycompany.io/arch, data]
+              weights: [5, 4, 3, 1, 1]
+            value:
+              values: [my-app, frontend, 7d4b9c8f6d, x64, '']
+              weights: [4, 3, 3, 1, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -182,6 +258,14 @@ groups:
           - A label `data` with empty string value SHOULD be recorded as
             the `k8s.pod.label.data` attribute with value `""`.
       - id: k8s.pod.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [kubernetes.io/enforce-mountable-secrets, prometheus.io/scrape, prometheus.io/port, mycompany.io/arch, data]
+              weights: [1, 4, 3, 1, 1]
+            value:
+              values: ['true', '8080', x64, '']
+              weights: [4, 3, 1, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -197,6 +281,10 @@ groups:
             the `k8s.pod.annotation.data` attribute with value `""`.
         examples: [ 'true', 'x64', '' ]
       - id: k8s.container.name
+        annotations:
+          traffic-generator:
+            values: [redis, app, nginx, otel-collector, istio-proxy, envoy]
+            weights: [2, 4, 2, 2, 2, 1]
         type: string
         stability: stable
         brief: >
@@ -205,6 +293,10 @@ groups:
           name (`container.name`).
         examples: ['redis']
       - id: k8s.container.restart_count
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 100 }
+            distribution: { type: zipf, exponent: 1.5 }
         type: int
         stability: stable
         brief: >
@@ -212,12 +304,20 @@ groups:
           used to identify a particular container (running or stopped) within a
           container spec.
       - id: k8s.container.status.last_terminated_reason
+        annotations:
+          traffic-generator:
+            values: [Completed, Error, OOMKilled, Evicted, ContainerCannotRun]
+            weights: [6, 3, 2, 1, 1]
         type: string
         stability: development
         brief: >
           Last terminated reason of the Container.
         examples: ["Evicted", "Error"]
       - id: k8s.container.ephemeral_storage.fs_type
+        annotations:
+          traffic-generator:
+            values: [rootfs, logs]
+            weights: [3, 2]
         type:
           members:
             - id: rootfs
@@ -236,18 +336,32 @@ groups:
         examples: ['rootfs', 'logs']
 
       - id: k8s.replicaset.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '4a7c9e1b-3d5f-4b2a-8e6c-9f1d3b5a7c02', 'b8e2f4a6-7c1d-4e3b-9a5f-2d6c8e0b4f17']
         type: string
         stability: stable
         brief: >
           The UID of the ReplicaSet.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.replicaset.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, frontend-7d4b9c8f6d, checkout-5f6c7d8b9, coredns-5d78c9869d]
         type: string
         stability: stable
         brief: >
           The name of the ReplicaSet.
         examples: ['opentelemetry']
       - id: k8s.replicaset.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, pod-template-hash, app.kubernetes.io/name, injected]
+              weights: [4, 3, 2, 1]
+            value:
+              values: [guestbook, frontend, 7d4b9c8f6d, '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -262,6 +376,14 @@ groups:
             the `k8s.replicaset.label.injected` attribute with value `""`.
         examples: ['guestbook', '']
       - id: k8s.replicaset.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [replicas, deployment.kubernetes.io/desired-replicas, deployment.kubernetes.io/revision, data]
+              weights: [2, 3, 3, 1]
+            value:
+              values: ['0', '1', '3', '']
+              weights: [1, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -276,42 +398,68 @@ groups:
             the `k8s.replicaset.annotation.data` attribute with value `""`.
         examples: ['0', '']
       - id: k8s.replicationcontroller.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '6d1f3b5a-9c7e-4a2d-8b4f-0e2c6a8d1f53']
         type: string
         stability: development
         brief: >
           The UID of the replication controller.
         examples: [ '275ecb36-5aa8-4c2a-9c47-d8bb681b9aff' ]
       - id: k8s.replicationcontroller.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, nginx, legacy-web]
         type: string
         stability: development
         brief: >
           The name of the replication controller.
         examples: [ 'opentelemetry' ]
       - id: k8s.resourcequota.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '8f3a5c7e-1b9d-4d2f-a6c8-3e5b7d9f1a24']
         type: string
         stability: development
         brief: >
           The UID of the resource quota.
         examples: [ '275ecb36-5aa8-4c2a-9c47-d8bb681b9aff' ]
       - id: k8s.resourcequota.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, compute-resources, object-counts, storage-quota]
         type: string
         stability: development
         brief: >
           The name of the resource quota.
         examples: [ 'opentelemetry' ]
       - id: k8s.deployment.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '2e6a8c0f-4b1d-4f7e-9d3a-5c7e9b1d3f68', 'c4f6b8d0-2e9a-4c5f-8b1d-7a3e5c9f0b82']
         type: string
         stability: stable
         brief: >
           The UID of the Deployment.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.deployment.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, frontend, checkout, coredns, otel-collector]
         type: string
         stability: stable
         brief: >
           The name of the Deployment.
         examples: ['opentelemetry']
       - id: k8s.deployment.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, app.kubernetes.io/name, app.kubernetes.io/version, injected]
+              weights: [4, 3, 2, 1]
+            value:
+              values: [guestbook, frontend, 1.2.0, '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -326,6 +474,14 @@ groups:
             the `k8s.deployment.label.injected` attribute with value `""`.
         examples: ['guestbook', '']
       - id: k8s.deployment.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [replicas, deployment.kubernetes.io/revision, meta.helm.sh/release-name, data]
+              weights: [2, 4, 2, 1]
+            value:
+              values: ['1', '3', my-release, '']
+              weights: [3, 2, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -340,18 +496,32 @@ groups:
             the `k8s.deployment.annotation.data` attribute with value `""`.
         examples: ['1', '']
       - id: k8s.statefulset.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '5b7d9f1a-3c6e-4a8b-9d2f-1e4a6c8b0d35']
         type: string
         stability: stable
         brief: >
           The UID of the StatefulSet.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.statefulset.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, redis, postgres, kafka, zookeeper]
         type: string
         stability: stable
         brief: >
           The name of the StatefulSet.
         examples: ['opentelemetry']
       - id: k8s.statefulset.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, app.kubernetes.io/name, app.kubernetes.io/component, injected]
+              weights: [4, 3, 2, 1]
+            value:
+              values: [guestbook, redis, database, '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -366,6 +536,14 @@ groups:
             the `k8s.statefulset.label.injected` attribute with value `""`.
         examples: ['guestbook', '']
       - id: k8s.statefulset.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [replicas, meta.helm.sh/release-name, data]
+              weights: [3, 2, 1]
+            value:
+              values: ['1', '3', my-release, '']
+              weights: [3, 2, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -380,18 +558,32 @@ groups:
             the `k8s.statefulset.annotation.data` attribute with value `""`.
         examples: ['1', '']
       - id: k8s.daemonset.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '9a1c3e5f-7b2d-4e6a-8c0f-4d6b8a2c1e79']
         type: string
         stability: stable
         brief: >
           The UID of the DaemonSet.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.daemonset.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, kube-proxy, fluent-bit, node-exporter, otel-collector-agent]
         type: string
         stability: stable
         brief: >
           The name of the DaemonSet.
         examples: ['opentelemetry']
       - id: k8s.daemonset.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, k8s-app, app.kubernetes.io/name, injected]
+              weights: [4, 3, 2, 1]
+            value:
+              values: [guestbook, kube-proxy, fluent-bit, '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -406,6 +598,14 @@ groups:
             the `k8s.daemonset.label.injected` attribute with value `""`.
         examples: ['guestbook', '']
       - id: k8s.daemonset.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [replicas, deprecated.daemonset.template.generation, data]
+              weights: [2, 3, 1]
+            value:
+              values: ['1', '2', '']
+              weights: [3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -420,18 +620,28 @@ groups:
             the `k8s.daemonset.annotation.data` attribute with value `""`.
         examples: ['1', '']
       - id: k8s.hpa.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '1f3b5d7a-9c2e-4b6d-8a0c-6e8a0c2e4b91']
         type: string
         stability: development
         brief: >
           The UID of the horizontal pod autoscaler.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.hpa.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, frontend-hpa, checkout-hpa]
         type: string
         stability: development
         brief: >
           The name of the horizontal pod autoscaler.
         examples: ['opentelemetry']
       - id: k8s.hpa.scaletargetref.kind
+        annotations:
+          traffic-generator:
+            values: [Deployment, StatefulSet, ReplicaSet]
+            weights: [8, 2, 1]
         type: string
         stability: development
         brief: >
@@ -440,6 +650,9 @@ groups:
           This maps to the `kind` field in the `scaleTargetRef` of the HPA spec.
         examples: ["Deployment", "StatefulSet"]
       - id: k8s.hpa.scaletargetref.name
+        annotations:
+          traffic-generator:
+            values: [my-deployment, my-statefulset, frontend, checkout]
         type: string
         stability: development
         brief: >
@@ -448,6 +661,10 @@ groups:
           This maps to the `name` field in the `scaleTargetRef` of the HPA spec.
         examples: ["my-deployment", "my-statefulset"]
       - id: k8s.hpa.scaletargetref.api_version
+        annotations:
+          traffic-generator:
+            values: [apps/v1, autoscaling/v2]
+            weights: [9, 1]
         type: string
         stability: development
         brief: >
@@ -456,6 +673,10 @@ groups:
           This maps to the `apiVersion` field in the `scaleTargetRef` of the HPA spec.
         examples: ["apps/v1", "autoscaling/v2"]
       - id: k8s.hpa.metric.type
+        annotations:
+          traffic-generator:
+            values: [Resource, ContainerResource, Pods, Object, External]
+            weights: [6, 2, 1, 1, 1]
         type: string
         stability: development
         brief: >
@@ -464,18 +685,32 @@ groups:
         note: >
           This attribute reflects the `type` field of spec.metrics[] in the HPA.
       - id: k8s.job.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '7e9a1c3f-5d2b-4f8e-a4c6-8b0d2f4a6c13']
         type: string
         stability: stable
         brief: >
           The UID of the Job.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.job.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, db-migrate, backup-29123400, report-generator]
         type: string
         stability: stable
         brief: >
           The name of the Job.
         examples: ['opentelemetry']
       - id: k8s.job.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [jobtype, job-name, batch.kubernetes.io/job-name, automated]
+              weights: [3, 3, 2, 1]
+            value:
+              values: [ci, db-migrate, backup, '']
+              weights: [3, 2, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -490,6 +725,14 @@ groups:
             the `k8s.job.label.automated` attribute with value `""`.
         examples: ['ci', '']
       - id: k8s.job.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [number, batch.kubernetes.io/job-tracking, data]
+              weights: [3, 2, 1]
+            value:
+              values: ['1', '2', '']
+              weights: [3, 1, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -504,18 +747,32 @@ groups:
             the `k8s.job.annotation.data` attribute with value `""`.
         examples: ['1', '']
       - id: k8s.cronjob.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '3d5f7b9a-1c4e-4d6a-b8f0-2a4c6e8b0d57']
         type: string
         stability: stable
         brief: >
           The UID of the CronJob.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.cronjob.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, nightly-backup, hourly-report, cleanup]
         type: string
         stability: stable
         brief: >
           The name of the CronJob.
         examples: ['opentelemetry']
       - id: k8s.cronjob.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [type, app, automated]
+              weights: [3, 3, 1]
+            value:
+              values: [weekly, daily, backup, '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -529,6 +786,14 @@ groups:
             the `k8s.cronjob.label.automated` attribute with value `""`.
         examples: ['weekly', '']
       - id: k8s.cronjob.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [retries, owner, data]
+              weights: [3, 2, 1]
+            value:
+              values: ['4', '3', team-platform, '']
+              weights: [3, 2, 2, 1]
         type: template[string]
         stability: stable
         brief: >
@@ -542,12 +807,20 @@ groups:
             the `k8s.cronjob.annotation.data` attribute with value `""`.
         examples: [ '4', '' ]
       - id: k8s.volume.name
+        annotations:
+          traffic-generator:
+            values: [volume0, kube-api-access-x7k2p, data, config, tmp]
+            weights: [2, 4, 3, 2, 1]
         type: string
         stability: development
         brief: >
           The name of the K8s volume.
         examples: [ 'volume0' ]
       - id: k8s.volume.type
+        annotations:
+          traffic-generator:
+            values: [persistentVolumeClaim, configMap, downwardAPI, emptyDir, secret, local]
+            weights: [3, 3, 1, 3, 2, 1]
         stability: development
         brief: >
           The type of the K8s volume.
@@ -579,6 +852,10 @@ groups:
               brief: "A [local](https://kubernetes.io/docs/concepts/storage/volumes/#local) volume"
               stability: development
       - id: k8s.namespace.phase
+        annotations:
+          traffic-generator:
+            values: [active, terminating]
+            weights: [19, 1]
         stability: development
         brief: >
           The phase of the K8s namespace.
@@ -597,6 +874,9 @@ groups:
               brief: "Terminating namespace phase as described by [K8s API](https://pkg.go.dev/k8s.io/api@v0.31.3/core/v1#NamespacePhase)"
               stability: development
       - id: k8s.node.condition.type
+        annotations:
+          traffic-generator:
+            values: [Ready, DiskPressure, MemoryPressure, PIDPressure, NetworkUnavailable]
         stability: development
         brief: >
           The condition type of a K8s Node.
@@ -634,6 +914,10 @@ groups:
               brief: "The network for the node is not correctly configured"
               stability: development
       - id: k8s.node.condition.status
+        annotations:
+          traffic-generator:
+            values: ['true', 'false', unknown]
+            weights: [4, 5, 1]
         stability: development
         brief: >
           The status of the condition, one of True, False, Unknown.
@@ -653,6 +937,10 @@ groups:
               value: 'unknown'
               stability: development
       - id: k8s.container.status.state
+        annotations:
+          traffic-generator:
+            values: [running, waiting, terminated]
+            weights: [17, 2, 1]
         stability: experimental
         brief: >
           The state of the container.
@@ -673,6 +961,10 @@ groups:
               stability: experimental
         examples: ['terminated', 'running', 'waiting']
       - id: k8s.container.status.reason
+        annotations:
+          traffic-generator:
+            values: [ContainerCreating, CrashLoopBackOff, CreateContainerConfigError, ErrImagePull, ImagePullBackOff, OOMKilled, Completed, Error, ContainerCannotRun]
+            weights: [6, 3, 1, 1, 2, 2, 6, 2, 1]
         type:
           members:
             - id: container_creating
@@ -719,12 +1011,20 @@ groups:
           [K8s ContainerStateTerminated](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.34/#containerstateterminated-v1-core)
         examples: ['ContainerCreating', 'CrashLoopBackOff', 'CreateContainerConfigError', 'ErrImagePull', 'ImagePullBackOff', 'OOMKilled', 'Completed', 'Error', 'ContainerCannotRun']
       - id: k8s.hugepage.size
+        annotations:
+          traffic-generator:
+            values: [2Mi, 1Gi]
+            weights: [4, 1]
         type: string
         stability: development
         brief: >
           The size (identifier) of the K8s huge page.
         examples: [ '2Mi' ]
       - id: k8s.storageclass.name
+        annotations:
+          traffic-generator:
+            values: [gold.storageclass.storage.k8s.io, standard, gp3, premium-rwo, local-path]
+            weights: [1, 4, 3, 2, 1]
         type: string
         stability: development
         brief: >
@@ -733,6 +1033,10 @@ groups:
           object.
         examples: [ 'gold.storageclass.storage.k8s.io' ]
       - id: k8s.resourcequota.resource_name
+        annotations:
+          traffic-generator:
+            values: [count/replicationcontrollers, count/deployments.apps, count/pods, pods, services, configmaps, secrets, persistentvolumeclaims]
+            weights: [1, 2, 2, 4, 3, 3, 2, 2]
         type: string
         stability: development
         brief: >
@@ -746,6 +1050,10 @@ groups:
           for more details.
         examples: [ 'count/replicationcontrollers' ]
       - id: k8s.pod.status.reason
+        annotations:
+          traffic-generator:
+            values: [Evicted, NodeAffinity, NodeLost, Shutdown, UnexpectedAdmissionError]
+            weights: [6, 2, 1, 2, 1]
         type:
           members:
             - id: evicted
@@ -778,6 +1086,10 @@ groups:
           [K8s PodStatus](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#podstatus-v1-core)
         examples: ['Evicted', 'NodeAffinity']
       - id: k8s.pod.status.phase
+        annotations:
+          traffic-generator:
+            values: [Pending, Running, Succeeded, Failed, Unknown]
+            weights: [5, 80, 10, 4, 1]
         type:
           members:
             - id: pending
@@ -817,18 +1129,28 @@ groups:
           [K8s PodStatus](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#podstatus-v1-core)
         examples: [ 'Pending', 'Running' ]
       - id: k8s.service.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '0b2d4f6a-8c1e-4a3c-9e5b-7d9f1b3d5a28', 'f6a8c0e2-4b7d-4d9f-a1c3-5e7a9c1e3b64']
         type: string
         stability: development
         brief: >
           The UID of the Service.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.service.name
+        annotations:
+          traffic-generator:
+            values: [my-service, kubernetes, frontend, checkout, redis, kube-dns]
         type: string
         stability: development
         brief: >
           The name of the Service.
         examples: ['my-service']
       - id: k8s.service.type
+        annotations:
+          traffic-generator:
+            values: [ClusterIP, NodePort, LoadBalancer, ExternalName]
+            weights: [14, 2, 3, 1]
         stability: development
         brief: >
           The type of the Kubernetes Service.
@@ -855,6 +1177,10 @@ groups:
               brief: 'ExternalName service type'
               stability: development
       - id: k8s.service.traffic_distribution
+        annotations:
+          traffic-generator:
+            values: [PreferSameZone, PreferSameNode]
+            weights: [3, 1]
         type: string
         stability: development
         brief: >
@@ -869,6 +1195,14 @@ groups:
           When not set, Kubernetes distributes traffic evenly across all endpoints cluster-wide.
         examples: ['PreferSameZone', 'PreferSameNode']
       - id: k8s.service.selector
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, version, app.kubernetes.io/name, app.kubernetes.io/instance]
+              weights: [5, 2, 3, 2]
+            value:
+              values: [my-app, v1, frontend, redis]
+              weights: [3, 2, 2, 1]
         type: template[string]
         stability: development
         brief: >
@@ -884,6 +1218,14 @@ groups:
             the `k8s.service.selector.version` attribute with value `"v1"`.
         examples: ['my-app', 'v1']
       - id: k8s.service.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, app.kubernetes.io/name, component, data]
+              weights: [4, 3, 2, 1]
+            value:
+              values: [my-service, frontend, apiserver, '']
+              weights: [3, 3, 1, 1]
         type: template[string]
         stability: development
         brief: >
@@ -897,6 +1239,14 @@ groups:
             the `k8s.service.label.data` attribute with value `""`.
         examples: ['my-service', '']
       - id: k8s.service.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [prometheus.io/scrape, prometheus.io/port, service.beta.kubernetes.io/aws-load-balancer-type, data]
+              weights: [4, 3, 1, 1]
+            value:
+              values: ['true', '9090', nlb, '']
+              weights: [4, 3, 1, 1]
         type: template[string]
         stability: development
         brief: >
@@ -910,6 +1260,10 @@ groups:
             the `k8s.service.annotation.data` attribute with value `""`.
         examples: ['true', '']
       - id: k8s.service.publish_not_ready_addresses
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [1, 9]
         type: boolean
         stability: development
         brief: >
@@ -922,6 +1276,10 @@ groups:
           [K8s ServiceSpec](https://kubernetes.io/docs/reference/kubernetes-api/service-resources/service-v1/#ServiceSpec).
         examples: [true, false]
       - id: k8s.service.endpoint.condition
+        annotations:
+          traffic-generator:
+            values: [ready, serving, terminating]
+            weights: [6, 6, 1]
         stability: development
         brief: >
           The condition of the service endpoint.
@@ -945,6 +1303,10 @@ groups:
               stability: development
         examples: ['ready', 'serving', 'terminating']
       - id: k8s.service.endpoint.address_type
+        annotations:
+          traffic-generator:
+            values: [IPv4, IPv6, FQDN]
+            weights: [16, 3, 1]
         stability: development
         type:
           members:
@@ -970,6 +1332,10 @@ groups:
           (e.g., in dual-stack clusters).
         examples: ['IPv4', 'IPv6']
       - id: k8s.service.endpoint.zone
+        annotations:
+          traffic-generator:
+            values: [us-east-1a, us-east-1b, us-west-2b, zone-a, '']
+            weights: [4, 4, 3, 2, 1]
         type: string
         stability: development
         brief: >
@@ -987,18 +1353,32 @@ groups:
 
       # PersistentVolume attributes
       - id: k8s.persistentvolume.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '4c6e8a0b-2d5f-4b7a-9c1e-3f5b7d9a1c46']
         type: string
         stability: development
         brief: >
           The UID of the PersistentVolume.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.persistentvolume.name
+        annotations:
+          traffic-generator:
+            values: [pv-data-01, pv-data-02, pvc-3f8a2c1e-7b4d-4e9a-8c6f-1d2e3f4a5b6c]
         type: string
         stability: development
         brief: >
           The name of the PersistentVolume.
         examples: ['pv-data-01']
       - id: k8s.persistentvolume.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [type, topology.kubernetes.io/zone, data]
+              weights: [3, 2, 1]
+            value:
+              values: [ssd, hdd, us-east-1a, '']
+              weights: [3, 1, 2, 1]
         type: template[string]
         stability: development
         brief: >
@@ -1012,6 +1392,14 @@ groups:
             the `k8s.persistentvolume.label.data` attribute with value `""`.
         examples: ['ssd', '']
       - id: k8s.persistentvolume.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [pv.kubernetes.io/provisioned-by, pv.kubernetes.io/bound-by-controller, data]
+              weights: [4, 2, 1]
+            value:
+              values: [kubernetes.io/aws-ebs, ebs.csi.aws.com, 'yes', '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: development
         brief: >
@@ -1025,6 +1413,10 @@ groups:
             the `k8s.persistentvolume.annotation.data` attribute with value `""`.
         examples: ['kubernetes.io/aws-ebs', '']
       - id: k8s.persistentvolume.reclaim_policy
+        annotations:
+          traffic-generator:
+            values: [Delete, Retain, Recycle]
+            weights: [7, 3, 0.2]
         stability: development
         brief: >
           The reclaim policy of the PersistentVolume.
@@ -1047,6 +1439,10 @@ groups:
               brief: 'The volume will be retained when released from its claim.'
               stability: development
       - id: k8s.persistentvolume.status.phase
+        annotations:
+          traffic-generator:
+            values: [Available, Bound, Failed, Pending, Released]
+            weights: [2, 15, 0.5, 1, 1]
         stability: development
         brief: >
           The phase of the PersistentVolume.
@@ -1079,18 +1475,32 @@ groups:
 
       # PersistentVolumeClaim attributes
       - id: k8s.persistentvolumeclaim.uid
+        annotations:
+          traffic-generator:
+            values: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff', '3f8a2c1e-7b4d-4e9a-8c6f-1d2e3f4a5b6c']
         type: string
         stability: development
         brief: >
           The UID of the PersistentVolumeClaim.
         examples: ['275ecb36-5aa8-4c2a-9c47-d8bb681b9aff']
       - id: k8s.persistentvolumeclaim.name
+        annotations:
+          traffic-generator:
+            values: [pvc-data-01, data-redis-0, data-postgres-0, www-web-1]
         type: string
         stability: development
         brief: >
           The name of the PersistentVolumeClaim.
         examples: ['pvc-data-01']
       - id: k8s.persistentvolumeclaim.label
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, app.kubernetes.io/name, data]
+              weights: [4, 2, 1]
+            value:
+              values: [my-app, redis, postgres, '']
+              weights: [3, 2, 2, 1]
         type: template[string]
         stability: development
         brief: >
@@ -1104,6 +1514,14 @@ groups:
             the `k8s.persistentvolumeclaim.label.data` attribute with value `""`.
         examples: ['my-app', '']
       - id: k8s.persistentvolumeclaim.annotation
+        annotations:
+          traffic-generator:
+            keys:
+              values: [volume.beta.kubernetes.io/storage-provisioner, volume.kubernetes.io/storage-provisioner, pv.kubernetes.io/bind-completed, data]
+              weights: [3, 3, 2, 1]
+            value:
+              values: [kubernetes.io/aws-ebs, ebs.csi.aws.com, 'yes', '']
+              weights: [3, 3, 2, 1]
         type: template[string]
         stability: development
         brief: >
@@ -1117,6 +1535,10 @@ groups:
             the `k8s.persistentvolumeclaim.annotation.data` attribute with value `""`.
         examples: ['kubernetes.io/aws-ebs', '']
       - id: k8s.persistentvolumeclaim.status.phase
+        annotations:
+          traffic-generator:
+            values: [Bound, Lost, Pending]
+            weights: [17, 0.5, 2]
         stability: development
         brief: >
           The phase of the PersistentVolumeClaim.

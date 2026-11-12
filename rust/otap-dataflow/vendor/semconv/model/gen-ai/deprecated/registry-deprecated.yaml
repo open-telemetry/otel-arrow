@@ -21,6 +21,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 1, max: 32000 }
+            distribution: { type: lognormal, mean: 800, stddev: 1500 }
         stability: development
         deprecated:
           reason: uncategorized
@@ -33,6 +36,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 1, max: 8192 }
+            distribution: { type: lognormal, mean: 300, stddev: 400 }
         stability: development
         deprecated:
           reason: uncategorized
@@ -45,6 +51,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["[{'role': 'user', 'content': 'What is the capital of France?'}]", "[{'role': 'user', 'content': 'Summarize this article.'}]", "[{'role': 'system', 'content': 'You are a helpful assistant.'}, {'role': 'user', 'content': 'Hi'}]"]
         stability: development
         deprecated:
           reason: obsoleted
@@ -56,6 +64,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["[{'role': 'assistant', 'content': 'The capital of France is Paris.'}]", "[{'role': 'assistant', 'content': 'Here is a short summary of the article.'}]", "[{'role': 'assistant', 'content': 'Hello! How can I help you today?'}]"]
         stability: development
         deprecated:
           reason: obsoleted
@@ -67,6 +77,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [openai, anthropic, azure.ai.openai, aws.bedrock, gcp.vertex_ai, gcp.gemini, gcp.gen_ai, azure.ai.inference, cohere, mistral_ai, groq, deepseek, ibm.watsonx.ai, perplexity, xai]
+            weights: [35, 15, 12, 10, 6, 5, 1, 3, 3, 3, 2, 2, 1, 1, 1]
         type:
           members:
             - id: openai
@@ -182,6 +195,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0, max: 10000 }
         type: int
         deprecated:
           reason: uncategorized
@@ -194,6 +209,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [text, json_object, json_schema]
+            weights: [7, 2, 1]
         type:
           members:
             - id: text
@@ -219,6 +237,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [auto, default]
+            weights: [3, 7]
         type:
           members:
             - id: auto
@@ -239,6 +260,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [default, scale, flex]
+            weights: [8, 1, 1]
         type: string
         brief: "Deprecated, use `openai.response.service_tier`."
         examples: ['scale', 'default']
@@ -251,6 +275,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [fp_44709d6fcb, fp_3bc1b5746c, fp_a24b4d720c]
         type: string
         brief: "Deprecated, use `openai.response.system_fingerprint`."
         examples: ["fp_44709d6fcb"]
@@ -276,6 +302,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [openai, anthropic, azure.ai.openai, aws.bedrock, gcp.vertex_ai, gcp.gemini, gcp.gen_ai, azure.ai.inference, cohere, mistral_ai, groq, deepseek, ibm.watsonx.ai, perplexity, x_ai]
+            weights: [35, 15, 12, 10, 6, 5, 1, 3, 3, 3, 2, 2, 1, 1, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -376,6 +405,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [gpt-4o, gpt-4o-mini, gpt-4, claude-3-5-sonnet, gemini-1.5-pro, llama3-70b, text-embedding-3-small]
+            weights: [25, 20, 10, 15, 10, 10, 10]
         deprecated:
           reason: uncategorized
           note: >
@@ -389,6 +421,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [100, 256, 512, 1024, 2048, 4096]
+            weights: [1, 2, 3, 3, 2, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -401,6 +436,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 1, max: 8 }
+            distribution: { type: zipf, exponent: 1.5 }
         deprecated:
           reason: uncategorized
           note: >
@@ -413,6 +451,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0.0, max: 2.0 }
+            distribution: { type: normal, mean: 0.7, stddev: 0.3 }
         deprecated:
           reason: uncategorized
           note: >
@@ -425,6 +466,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0.0, max: 1.0 }
+            distribution: { type: normal, mean: 0.9, stddev: 0.1 }
         deprecated:
           reason: uncategorized
           note: >
@@ -437,6 +481,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [1.0, 10.0, 40.0, 50.0, 100.0]
+            weights: [1, 2, 3, 3, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -449,6 +496,10 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            length: { range: { min: 0, max: 4 } }
+            items:
+              values: [forest, lived, "\n\n", "END", "</s>"]
         deprecated:
           reason: uncategorized
           note: >
@@ -462,6 +513,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: -2.0, max: 2.0 }
+            distribution: { type: normal, mean: 0.1, stddev: 0.3 }
         deprecated:
           reason: uncategorized
           note: >
@@ -474,6 +528,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: -2.0, max: 2.0 }
+            distribution: { type: normal, mean: 0.1, stddev: 0.3 }
         deprecated:
           reason: uncategorized
           note: >
@@ -486,6 +543,11 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values: [float, base64, binary]
+              weights: [6, 3, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -503,6 +565,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0, max: 10000 }
         deprecated:
           reason: uncategorized
           note: >
@@ -515,6 +579,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [true, false]
+            weights: [6, 4]
         deprecated:
           reason: uncategorized
           note: >
@@ -526,6 +593,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [chatcmpl-123, chatcmpl-9xK2aB7c, msg_01XFDUDYJgAACzvnptvVoYEL, resp_67ccd2bed1ec8190]
         deprecated:
           reason: uncategorized
           note: >
@@ -538,6 +607,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [gpt-4o-2024-08-06, gpt-4o-mini-2024-07-18, gpt-4-0613, claude-3-5-sonnet-20241022, gemini-1.5-pro-002, llama3-70b-8192, text-embedding-3-small]
+            weights: [25, 20, 10, 15, 10, 10, 10]
         deprecated:
           reason: uncategorized
           note: >
@@ -550,6 +622,11 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values: [stop, length, tool_calls, content_filter]
+              weights: [80, 10, 8, 2]
         deprecated:
           reason: uncategorized
           note: >
@@ -564,6 +641,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0.05, max: 30.0 }
+            distribution: { type: lognormal, mean: 0.8, stddev: 0.8 }
         deprecated:
           reason: uncategorized
           note: >
@@ -579,6 +659,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 1, max: 128000 }
+            distribution: { type: lognormal, mean: 1000, stddev: 2000 }
         deprecated:
           reason: uncategorized
           note: >
@@ -596,6 +679,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0, max: 64000 }
+            distribution: { type: lognormal, mean: 400, stddev: 800 }
         deprecated:
           reason: uncategorized
           note: >
@@ -610,6 +696,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0, max: 32000 }
+            distribution: { type: lognormal, mean: 200, stddev: 500 }
         deprecated:
           reason: uncategorized
           note: >
@@ -624,6 +713,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 1, max: 16384 }
+            distribution: { type: lognormal, mean: 300, stddev: 400 }
         deprecated:
           reason: uncategorized
           note: >
@@ -636,6 +728,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 0, max: 32000 }
+            distribution: { type: lognormal, mean: 500, stddev: 1000 }
         deprecated:
           reason: uncategorized
           note: >
@@ -650,6 +745,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [input, output]
+            weights: [1, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -678,6 +776,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [conv_5j66UpCpwteGg4YSxUnt7lPY, conv_8kQ2rTz7LmN4pXc1VbH9sJdE, conv_2aB9cD4eF6gH8iJ0kL1mN3oP]
         deprecated:
           reason: uncategorized
           note: >
@@ -690,6 +790,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [asst_5j66UpCpwteGg4YSxUnt7lPY, asst_abc123XYZ, asst_q7Wm2NpR4sTv]
         deprecated:
           reason: uncategorized
           note: >
@@ -702,6 +804,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["Math Tutor", "Fiction Writer", "Customer Support", "Code Reviewer"]
         deprecated:
           reason: uncategorized
           note: >
@@ -714,6 +818,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["Helps with math problems", "Generates fiction stories", "Answers customer support questions", "Reviews pull requests"]
         deprecated:
           reason: uncategorized
           note: >
@@ -726,6 +832,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["1.0.0", "1.2.3", "2.0.0", "2025-05-01"]
+            weights: [4, 3, 2, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -738,6 +847,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [Flights, get_weather, search_web, multiply, query_database]
+            weights: [2, 3, 3, 1, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -751,6 +863,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [call_mszuSIzqtI65i1wAUOE8w5H4, call_VSPygqKTWdrhaFErNvMV18Yl, toolu_01A09q90qw90lq917835lq9]
         deprecated:
           reason: uncategorized
           note: >
@@ -763,6 +877,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["Multiply two numbers", "Get the current weather in a given location", "Search for flights between two cities"]
         deprecated:
           reason: uncategorized
           note: >
@@ -775,6 +891,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [function, extension, datastore]
+            weights: [7, 2, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -794,6 +913,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['{"location": "San Francisco?", "date": "2025-10-01"}', '{"a": 6, "b": 7}', '{"origin": "SEA", "destination": "JFK"}']
         deprecated:
           reason: uncategorized
           note: >
@@ -819,6 +940,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['{"temperature_range": {"high": 75, "low": 60}, "conditions": "sunny"}', '{"result": 42}', 42, "rainy, 57F"]
+            weights: [4, 3, 2, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -848,6 +972,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['[{"type": "function", "name": "get_current_weather", "description": "Get the current weather in a given location"}]', '[{"type": "function", "name": "multiply", "description": "Multiply two numbers"}]']
         deprecated:
           reason: uncategorized
           note: >
@@ -899,6 +1025,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [H7STPQYOND, KB9XWZ2LMA, DS4F8GQ1RT]
         deprecated:
           reason: uncategorized
           note: >
@@ -916,6 +1044,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [chat, generate_content, text_completion, embeddings, retrieval, create_agent, invoke_agent, execute_tool, invoke_workflow]
+            weights: [50, 8, 3, 15, 6, 1, 7, 8, 2]
         deprecated:
           reason: uncategorized
           note: >
@@ -968,6 +1099,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [text, json, image, speech]
+            weights: [70, 20, 6, 4]
         deprecated:
           reason: uncategorized
           note: >
@@ -1009,6 +1143,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [256, 512, 768, 1024, 1536, 3072]
+            weights: [1, 2, 2, 2, 3, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -1021,6 +1158,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['[{"id": "doc_123", "score": 0.95}, {"id": "doc_456", "score": 0.87}, {"id": "doc_789", "score": 0.82}]', '[{"id": "doc_321", "score": 0.91}]']
         deprecated:
           reason: uncategorized
           note: >
@@ -1056,6 +1195,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["What is the capital of France?", "weather in Paris", "how to reset my password"]
         deprecated:
           reason: uncategorized
           note: >
@@ -1071,6 +1212,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['[{"type": "text", "content": "You are an Agent that greet users, always use greetings tool to respond"}]', '[{"type": "text", "content": "You are a language translator."}, {"type": "text", "content": "Your mission is to translate text in English to French."}]']
         deprecated:
           reason: uncategorized
           note: >
@@ -1123,6 +1266,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['[{"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]}]', '[{"role": "user", "parts": [{"type": "text", "content": "What is the capital of France?"}]}]']
         deprecated:
           reason: uncategorized
           note: >
@@ -1186,6 +1331,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ['[{"role": "assistant", "parts": [{"type": "text", "content": "The weather in Paris is currently rainy with a temperature of 57F."}], "finish_reason": "stop"}]', '[{"role": "assistant", "parts": [{"type": "text", "content": "The capital of France is Paris."}], "finish_reason": "stop"}]']
         deprecated:
           reason: uncategorized
           note: >
@@ -1232,6 +1379,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [Relevance, IntentResolution, Groundedness, Coherence, Fluency]
         deprecated:
           reason: uncategorized
           note: >
@@ -1244,6 +1393,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            range: { min: 1.0, max: 5.0 }
+            distribution: { type: normal, mean: 4.0, stddev: 0.8 }
         deprecated:
           reason: uncategorized
           note: >
@@ -1256,6 +1408,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [relevant, not_relevant, correct, incorrect, pass, fail]
+            weights: [3, 1, 3, 1, 3, 1]
         deprecated:
           reason: uncategorized
           note: >
@@ -1273,6 +1428,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: ["The response is factually accurate but lacks sufficient detail to fully address the question.", "The response fully addresses the question.", "The response contains unsupported claims."]
         deprecated:
           reason: uncategorized
           note: >
@@ -1285,6 +1442,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [analyze-code, summarize-document, translate-text]
         brief: The name of the prompt that uniquely identifies it.
         stability: development
         deprecated:
@@ -1297,6 +1456,8 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [multi_agent_rag, customer_support_pipeline]
         deprecated:
           reason: uncategorized
           note: >

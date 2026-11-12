@@ -7,25 +7,44 @@ groups:
     attributes:
       - id: network.carrier.icc
         type: string
+        annotations:
+          traffic-generator:
+            values: [DE, US, GB, FR, JP, IN, BR]
+            weights: [2, 5, 2, 2, 2, 3, 2]
         stability: development
         brief: "The ISO 3166-1 alpha-2 2-character country code associated with the mobile carrier network."
         examples: "DE"
       - id: network.carrier.mcc
         type: string
+        annotations:
+          traffic-generator:
+            values: ["310", "311", "262", "234", "208", "440", "404"]
+            weights: [4, 2, 2, 2, 2, 2, 3]
         stability: development
         brief: "The mobile carrier country code."
         examples: "310"
       - id: network.carrier.mnc
         type: string
+        annotations:
+          traffic-generator:
+            values: ["001", "260", "410", "01", "02", "10", "20"]
         stability: development
         brief: "The mobile carrier network code."
         examples: "001"
       - id: network.carrier.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [sprint, verizon, t-mobile, at&t, vodafone, orange]
+            weights: [1, 4, 3, 3, 2, 2]
         stability: development
         brief: "The name of the mobile carrier."
         examples: "sprint"
       - id: network.connection.subtype
+        annotations:
+          traffic-generator:
+            values: [lte, nr, nrnsa, lte_ca, hspap, hspa, umts, hsdpa, hsupa, edge, gprs, gsm, iwlan, cdma, evdo_0, evdo_a, evdo_b, cdma2000_1xrtt, iden, ehrpd, td_scdma]
+            weights: [40, 15, 12, 8, 4, 3, 2, 2, 1, 2, 1, 1, 3, 0.5, 0.2, 0.5, 0.2, 0.3, 0.1, 0.3, 0.3]
         type:
           members:
             - id: gprs
@@ -116,6 +135,10 @@ groups:
         brief: 'This describes more details regarding the connection.type. It may be the type of cell technology connection, but it could be used for describing details about a Wi-Fi connection.'
         examples: 'LTE'
       - id: network.connection.type
+        annotations:
+          traffic-generator:
+            values: [wifi, wired, cell, unavailable, unknown]
+            weights: [45, 25, 25, 3, 2]
         type:
           members:
             - id: wifi
@@ -140,32 +163,55 @@ groups:
       - id: network.local.address
         stability: stable
         type: string
+        annotations:
+          traffic-generator:
+            values: ["10.1.2.80", "/tmp/my.sock", "192.168.0.15", "172.17.0.2", "::1", "127.0.0.1"]
+            weights: [4, 1, 3, 3, 1, 2]
         brief: Local address of the network connection - IP address or UNIX domain socket name.
         examples: ['10.1.2.80', '/tmp/my.sock']
       - id: network.local.port
         stability: stable
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 32768, max: 65535 }
         brief: Local port number of the network connection.
         examples: [65123]
       - id: network.peer.address
         stability: stable
         type: string
+        annotations:
+          traffic-generator:
+            values: ["10.1.2.80", "/tmp/my.sock", "10.0.3.17", "192.168.1.25", "2001:db8::10", "52.94.236.248"]
+            weights: [4, 1, 3, 3, 1, 2]
         brief: Peer address of the network connection - IP address or UNIX domain socket name.
         examples: ['10.1.2.80', '/tmp/my.sock']
       - id: network.peer.port
         stability: stable
         type: int
+        annotations:
+          traffic-generator:
+            values: [443, 80, 8080, 5432, 3306, 6379, 9092, 4317, 65123]
+            weights: [30, 10, 10, 8, 6, 8, 5, 5, 2]
         brief: Peer port number of the network connection.
         examples: [65123]
       - id: network.protocol.name
         stability: stable
         type: string
+        annotations:
+          traffic-generator:
+            values: [http, amqp, mqtt, grpc, kafka]
+            weights: [70, 8, 5, 12, 5]
         brief: '[OSI application layer](https://wikipedia.org/wiki/Application_layer) or non-OSI equivalent.'
         note: The value SHOULD be normalized to lowercase.
         examples: ['amqp', 'http', 'mqtt']
       - id: network.protocol.version
         stability: stable
         type: string
+        annotations:
+          traffic-generator:
+            values: ["1.1", "2", "3", "1.0"]
+            weights: [50, 40, 8, 2]
         brief: The actual version of the protocol used for network communication.
         examples: ['1.1', '2']
         note: >
@@ -174,6 +220,10 @@ groups:
           this attribute SHOULD NOT be set.
       - id: network.transport
         stability: stable
+        annotations:
+          traffic-generator:
+            values: [tcp, udp, unix, pipe, quic]
+            weights: [80, 10, 5, 2, 3]
         type:
           members:
             - id: tcp
@@ -208,6 +258,10 @@ groups:
         examples: ['tcp', 'udp']
       - id: network.type
         stability: stable
+        annotations:
+          traffic-generator:
+            values: [ipv4, ipv6]
+            weights: [80, 20]
         type:
           members:
             - id: ipv4
@@ -222,6 +276,9 @@ groups:
         note: The value SHOULD be normalized to lowercase.
         examples: ['ipv4', 'ipv6']
       - id: network.io.direction
+        annotations:
+          traffic-generator:
+            values: [transmit, receive]
         type:
           members:
             - id: transmit
@@ -237,10 +294,18 @@ groups:
         examples: ["transmit"]
       - id: network.interface.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [lo, eth0, eth1, ens5, wlan0, docker0]
+            weights: [2, 6, 2, 3, 1, 1]
         brief: 'The network interface name.'
         examples: [ 'lo', 'eth0' ]
         stability: release_candidate
       - id: network.connection.state
+        annotations:
+          traffic-generator:
+            values: [established, time_wait, listen, close_wait, syn_sent, syn_received, fin_wait_1, fin_wait_2, last_ack, closing, closed]
+            weights: [50, 15, 10, 8, 3, 2, 3, 4, 2, 1, 2]
         type:
           members:
             - id: closed

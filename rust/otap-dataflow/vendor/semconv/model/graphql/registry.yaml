@@ -5,11 +5,19 @@ groups:
     brief: 'This document defines attributes for GraphQL.'
     attributes:
       - id: graphql.operation.name
+        annotations:
+          traffic-generator:
+            values: [findBookById, listBooks, createOrder, getUserProfile, onOrderUpdated]
+            weights: [4, 3, 2, 3, 1]
         brief: "The name of the operation being executed."
         type: string
         stability: development
         examples: 'findBookById'
       - id: graphql.operation.type
+        annotations:
+          traffic-generator:
+            values: [query, mutation, subscription]
+            weights: [80, 17, 3]
         brief: "The type of the operation being executed."
         stability: development
         type:
@@ -28,6 +36,14 @@ groups:
               stability: development
         examples: ['query', 'mutation', 'subscription']
       - id: graphql.document
+        annotations:
+          traffic-generator:
+            values:
+              - "query findBookById { bookById(id: ?) { name } }"
+              - "query listBooks { books(first: ?) { id name } }"
+              - "mutation createOrder { createOrder(input: ?) { id status } }"
+              - "subscription onOrderUpdated { orderUpdated(id: ?) { status } }"
+            weights: [4, 3, 2, 1]
         brief: "The GraphQL document being executed."
         type: string
         stability: development

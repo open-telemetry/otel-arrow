@@ -5,6 +5,10 @@ groups:
     brief: "Describes deprecated HTTP attributes."
     attributes:
       - id: http.method
+        annotations:
+          traffic-generator:
+            values: [GET, POST, PUT, DELETE, HEAD, PATCH, OPTIONS]
+            weights: [60, 20, 6, 4, 4, 3, 3]
         type: string
         brief: 'Deprecated, use `http.request.method` instead.'
         stability: development
@@ -13,6 +17,10 @@ groups:
           renamed_to: http.request.method
         examples: ["GET", "POST", "HEAD"]
       - id: http.status_code
+        annotations:
+          traffic-generator:
+            values: [200, 201, 204, 301, 304, 400, 401, 403, 404, 500, 502, 503]
+            weights: [70, 5, 4, 2, 3, 3, 2, 1, 5, 2, 1, 2]
         type: int
         brief: 'Deprecated, use `http.response.status_code` instead.'
         stability: development
@@ -21,6 +29,10 @@ groups:
           renamed_to: http.response.status_code
         examples: [200]
       - id: http.scheme
+        annotations:
+          traffic-generator:
+            values: [http, https]
+            weights: [2, 8]
         type: string
         brief: 'Deprecated, use `url.scheme` instead.'
         stability: development
@@ -29,6 +41,10 @@ groups:
           renamed_to: url.scheme
         examples: ['http', 'https']
       - id: http.url
+        annotations:
+          traffic-generator:
+            values: ["https://www.foo.bar/search?q=OpenTelemetry#SemConv", "https://api.example.com/v1/orders/42", "http://localhost:8080/health"]
+            weights: [3, 5, 2]
         type: string
         brief: 'Deprecated, use `url.full` instead.'
         stability: development
@@ -37,6 +53,10 @@ groups:
           renamed_to: url.full
         examples: ['https://www.foo.bar/search?q=OpenTelemetry#SemConv']
       - id: http.target
+        annotations:
+          traffic-generator:
+            values: ["/search?q=OpenTelemetry#SemConv", /v1/orders/42, /health, /]
+            weights: [3, 4, 2, 1]
         type: string
         brief: 'Deprecated, use `url.path` and `url.query` instead.'
         stability: development
@@ -45,6 +65,10 @@ groups:
           note: Split to `url.path` and `url.query`.
         examples: ['/search?q=OpenTelemetry#SemConv']
       - id: http.request_content_length
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 10485760 }
+            distribution: { type: lognormal, mean: 3495, stddev: 20000 }
         type: int
         brief: 'Deprecated, use `http.request.header.content-length` instead.'
         stability: development
@@ -53,6 +77,10 @@ groups:
           note: Replaced by `http.request.header.content-length`.
         examples: 3495
       - id: http.response_content_length
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 52428800 }
+            distribution: { type: lognormal, mean: 3495, stddev: 30000 }
         type: int
         brief: 'Deprecated, use `http.response.header.content-length` instead.'
         stability: development
@@ -61,6 +89,9 @@ groups:
           note: Replaced by `http.response.header.content-length`.
         examples: 3495
       - id: http.client_ip
+        annotations:
+          traffic-generator:
+            values: [83.164.160.102, 10.0.0.15, 192.168.1.42, 172.16.3.7]
         type: string
         stability: development
         deprecated:
@@ -69,6 +100,10 @@ groups:
         brief: "Deprecated, use `client.address` instead."
         examples: '83.164.160.102'
       - id: http.host
+        annotations:
+          traffic-generator:
+            values: [www.example.org, api.example.com, "localhost:8080"]
+            weights: [4, 4, 2]
         type: string
         stability: development
         deprecated:
@@ -78,6 +113,10 @@ groups:
         brief: "Deprecated, use one of `server.address`, `client.address` or `http.request.header.host` instead, depending on the usage."
         examples: ['www.example.org']
       - id: http.request_content_length_uncompressed
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 10485760 }
+            distribution: { type: lognormal, mean: 5493, stddev: 30000 }
         stability: development
         deprecated:
           reason: renamed
@@ -86,6 +125,10 @@ groups:
         brief: "Deprecated, use `http.request.body.size` instead."
         examples: 5493
       - id: http.response_content_length_uncompressed
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 52428800 }
+            distribution: { type: lognormal, mean: 5493, stddev: 40000 }
         stability: development
         deprecated:
           reason: renamed
@@ -94,6 +137,9 @@ groups:
         brief: "Deprecated, use `http.response.body.size` instead."
         examples: 5493
       - id: http.server_name
+        annotations:
+          traffic-generator:
+            values: [example.com, api.example.com, www.example.org]
         type: string
         stability: development
         deprecated:
@@ -102,6 +148,10 @@ groups:
         brief: "Deprecated, use `server.address` instead."
         examples: ['example.com']
       - id: http.flavor
+        annotations:
+          traffic-generator:
+            values: ["1.0", "1.1", "2.0", "3.0", SPDY, QUIC]
+            weights: [2, 50, 38, 8, 1, 1]
         type:
           members:
             - id: http_1_0
@@ -134,6 +184,14 @@ groups:
           note: "Split into `network.protocol.name` and `network.protocol.version`"
         stability: development
       - id: http.user_agent
+        annotations:
+          traffic-generator:
+            values:
+              - CERN-LineMode/2.15 libwww/2.17b3
+              - "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1"
+              - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              - curl/8.4.0
+            weights: [1, 4, 5, 2]
         type: string
         brief: 'Deprecated, use `user_agent.original` instead.'
         examples: ['CERN-LineMode/2.15 libwww/2.17b3',

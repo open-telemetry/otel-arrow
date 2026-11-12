@@ -134,6 +134,13 @@ groups:
 
   - id: span.gen_ai.inference.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 50.0, max: 120000.0 }
+          distribution: { type: lognormal, mean: 2500.0, stddev: 3000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 5, 5]
       dependency_resolution:
         exclude: true
     type: span
@@ -212,6 +219,13 @@ groups:
 
   - id: span.openai.inference.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 50.0, max: 120000.0 }
+          distribution: { type: lognormal, mean: 2500.0, stddev: 3000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 5, 5]
       dependency_resolution:
         exclude: true
     extends: attributes.gen_ai.inference.openai_based
@@ -254,6 +268,13 @@ groups:
 
   - id: span.azure.ai.inference.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 50.0, max: 120000.0 }
+          distribution: { type: lognormal, mean: 2800.0, stddev: 3000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 5, 5]
       dependency_resolution:
         exclude: true
     extends: attributes.gen_ai.inference.openai_based
@@ -290,6 +311,13 @@ groups:
 
   - id: span.gen_ai.embeddings.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 10.0, max: 30000.0 }
+          distribution: { type: lognormal, mean: 200.0, stddev: 250.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 5, 3]
       dependency_resolution:
         exclude: true
     type: span
@@ -330,6 +358,13 @@ groups:
 
   - id: span.gen_ai.retrieval.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 5.0, max: 30000.0 }
+          distribution: { type: lognormal, mean: 150.0, stddev: 200.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 5, 3]
       dependency_resolution:
         exclude: true
     type: span
@@ -369,6 +404,13 @@ groups:
 
   - id: span.gen_ai.create_agent.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 20.0, max: 30000.0 }
+          distribution: { type: lognormal, mean: 500.0, stddev: 600.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 5, 3]
       dependency_resolution:
         exclude: true
     type: span
@@ -530,6 +572,13 @@ groups:
 
   - id: span.gen_ai.invoke_agent.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 200.0, max: 600000.0 }
+          distribution: { type: lognormal, mean: 8000.0, stddev: 12000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [88, 5, 7]
       dependency_resolution:
         exclude: true
     type: span
@@ -565,6 +614,13 @@ groups:
 
   - id: span.gen_ai.invoke_agent.internal
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 100.0, max: 600000.0 }
+          distribution: { type: lognormal, mean: 6000.0, stddev: 10000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [88, 5, 7]
       dependency_resolution:
         exclude: true
     type: span
@@ -596,6 +652,13 @@ groups:
 
   - id: span.gen_ai.execute_tool.internal
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 60000.0 }
+          distribution: { type: lognormal, mean: 300.0, stddev: 600.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [88, 5, 7]
       dependency_resolution:
         exclude: true
     type: span
@@ -649,6 +712,13 @@ groups:
 
   - id: span.aws.bedrock.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 50.0, max: 120000.0 }
+          distribution: { type: lognormal, mean: 2500.0, stddev: 3000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 5, 5]
       dependency_resolution:
         exclude: true
     extends: span.gen_ai.inference.client
@@ -669,6 +739,13 @@ groups:
 
   - id: span.anthropic.inference.client
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 50.0, max: 120000.0 }
+          distribution: { type: lognormal, mean: 3000.0, stddev: 3500.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 5, 5]
       dependency_resolution:
         exclude: true
     extends: attributes.gen_ai.inference.client
@@ -702,6 +779,13 @@ groups:
 
   - id: span.gen_ai.invoke_workflow.internal
     annotations:
+      traffic-generator:
+        duration:
+          range: { min: 500.0, max: 1800000.0 }
+          distribution: { type: lognormal, mean: 15000.0, stddev: 25000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [88, 5, 7]
       dependency_resolution:
         exclude: true
     type: span

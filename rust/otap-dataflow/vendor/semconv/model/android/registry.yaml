@@ -6,6 +6,10 @@ groups:
       The Android platform on which the Android application is running.
     attributes:
       - id: android.os.api_level
+        annotations:
+          traffic-generator:
+            values: ["35", "34", "33", "32", "31", "30", "29", "28"]
+            weights: [15, 25, 20, 8, 12, 9, 6, 5]
         type: string
         stability: development
         brief: >
@@ -14,6 +18,10 @@ groups:
           in the [Android API levels documentation](https://developer.android.com/guide/topics/manifest/uses-sdk-element#ApiLevels).
         examples: ['33', '32']
       - id: android.app.state
+        annotations:
+          traffic-generator:
+            values: [created, background, foreground]
+            weights: [10, 35, 55]
         stability: development
         brief: >
           This attribute represents the state of the application.

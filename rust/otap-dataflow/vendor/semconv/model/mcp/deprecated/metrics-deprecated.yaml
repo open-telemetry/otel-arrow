@@ -47,6 +47,13 @@ groups:
     annotations:
       dependency_resolution:
         exclude: true
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 0.15, stddev: 0.4 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     deprecated:
       reason: uncategorized
       note: >
@@ -72,6 +79,13 @@ groups:
     annotations:
       dependency_resolution:
         exclude: true
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 0.1, stddev: 0.3 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     deprecated:
       reason: uncategorized
       note: >
@@ -90,6 +104,13 @@ groups:
     annotations:
       dependency_resolution:
         exclude: true
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 86400.0 }
+          distribution: { type: lognormal, mean: 600.0, stddev: 1800.0 }
+        bounds: [1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]
+        observations: { range: { min: 1, max: 10 } }
+        temporality: delta
     deprecated:
       reason: uncategorized
       note: >
@@ -113,6 +134,13 @@ groups:
     annotations:
       dependency_resolution:
         exclude: true
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 86400.0 }
+          distribution: { type: lognormal, mean: 600.0, stddev: 1800.0 }
+        bounds: [1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400]
+        observations: { range: { min: 1, max: 10 } }
+        temporality: delta
     deprecated:
       reason: uncategorized
       note: >

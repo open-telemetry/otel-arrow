@@ -5,6 +5,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 5.0 }
+          distribution: { type: lognormal, mean: 0.005, stddev: 0.02 }
+        bounds: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     brief: "Garbage collection duration."
     instrument: histogram
     unit: "s"
@@ -21,6 +28,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2147483648 }
+          distribution: { type: lognormal, mean: 16777216, stddev: 67108864 }
     brief: "Heap space available size."
     instrument: updowncounter
     unit: "By"
@@ -37,6 +48,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2147483648 }
+          distribution: { type: lognormal, mean: 33554432, stddev: 67108864 }
     brief: "Committed size of a heap space."
     instrument: updowncounter
     unit: "By"
@@ -53,6 +68,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 262144, max: 2147483648 }
+          distribution: { type: lognormal, mean: 33554432, stddev: 67108864 }
     brief: "Total heap memory size pre-allocated for a heap space."
     instrument: updowncounter
     unit: "By"
@@ -70,6 +89,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2147483648 }
+          distribution: { type: lognormal, mean: 25165824, stddev: 50331648 }
     brief: "Heap Memory size allocated."
     instrument: updowncounter
     unit: "By"
@@ -87,6 +110,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 500 }
+          distribution: { type: exponential, mean: 20 }
     brief: "Gauge of the active resources that are currently keeping the event loop alive."
     instrument: gauge
     unit: "{resource}"

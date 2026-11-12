@@ -22,6 +22,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [12500000, 125000000, 1250000000, 3125000000, 12500000000], weights: [1, 4, 4, 2, 1] }
     stability: development
     brief: "Link speed."
     instrument: updowncounter
@@ -34,6 +36,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: exponential, mean: 0.15 }
     stability: development
     brief: "Utilization of the network bandwidth as a fraction."
     instrument: gauge
@@ -46,6 +52,11 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1073741824 }
+          distribution: { type: lognormal, mean: 5242880, stddev: 20971520 }
+        temporality: delta
     stability: development
     brief: "Received and transmitted network traffic in bytes."
     instrument: counter
@@ -61,6 +72,11 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000000 }
+          distribution: { type: lognormal, mean: 5000, stddev: 15000 }
+        temporality: delta
     stability: development
     brief: "Received and transmitted network traffic in packets (or frames)."
     instrument: counter
@@ -76,6 +92,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [1, 0], weights: [95, 5] }
     stability: development
     brief: "Link status: `1` (up) or `0` (down)."
     instrument: updowncounter

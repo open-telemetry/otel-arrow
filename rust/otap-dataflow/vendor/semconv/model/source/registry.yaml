@@ -3,6 +3,10 @@ file_format: definition/2
 attributes:
   - key: source.address
     type: string
+    annotations:
+      traffic-generator:
+        values: [source.example.com, "10.1.2.80", /tmp/my.sock, "192.168.1.42", "2001:db8::5"]
+        weights: [3, 4, 1, 3, 1]
     stability: development
     brief: "Source address - domain name if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name."
     note: >
@@ -11,6 +15,9 @@ attributes:
     examples: ['source.example.com', '10.1.2.80', '/tmp/my.sock']
   - key: source.port
     type: int
+    annotations:
+      traffic-generator:
+        range: { min: 1024, max: 65535 }
     stability: development
     brief: 'Source port number'
     examples: [3389, 2888]

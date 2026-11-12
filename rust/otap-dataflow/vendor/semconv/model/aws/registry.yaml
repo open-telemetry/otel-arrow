@@ -6,6 +6,9 @@ groups:
       This section defines generic attributes for AWS services.
     attributes:
       - id: aws.request_id
+        annotations:
+          traffic-generator:
+            values: [79b9da39-b7ae-508a-a6bc-864b2829c622, C9ER4AJX75574TDJ, 4f1c2b6e-9a3d-4e7b-8c21-0d5e6f7a8b9c, 8XKD2M7QPZ3RT9VB]
         type: string
         stability: development
         brief: "The AWS request ID as returned in the response headers `x-amzn-requestid`, `x-amzn-request-id` or `x-amz-request-id`."
@@ -13,6 +16,9 @@ groups:
           - 79b9da39-b7ae-508a-a6bc-864b2829c622
           - C9ER4AJX75574TDJ
       - id: aws.extended_request_id
+        annotations:
+          traffic-generator:
+            values: ["wzHcyEWfmOGDIE5QOhTAqFDoDWP3y8IUvpNINCwL9N4TEHbUw0/gZJ+VZTmCNCWR7fezEN3eCiQ=", "Kq1Zr8m3nV0b6yTqXc5hP2sD9fG4jL7aE1uW0oI3kR8tY6xN5zM2vB4cA7pQ9eS=", "a8Zp3QwErTy6UiOp1AsDfGhJkL0zXcVbNm9QwErTyUiOp2AsDfGhJkL4zXcVbNm="]
         type: string
         stability: development
         brief: "The AWS extended request ID as returned in the response header `x-amz-id-2`."
@@ -25,12 +31,25 @@ groups:
             This document defines attributes for AWS DynamoDB.
     attributes:
       - id: aws.dynamodb.table_names
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items: { values: [Users, Cats, Orders, Sessions, Products], weights: [5, 2, 4, 3, 2] }
         type: string[]
         stability: development
         brief: The keys in the `RequestItems` object field.
         examples:
           - [Users, Cats]
       - id: aws.dynamodb.consumed_capacity
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - '{"CapacityUnits": 1.0, "TableName": "Users"}'
+                - '{"CapacityUnits": 2.5, "ReadCapacityUnits": 2.5, "TableName": "Orders"}'
+                - '{"CapacityUnits": 0.5, "Table": {"CapacityUnits": 0.5}, "TableName": "Cats"}'
+              weights: [5, 3, 2]
         type: string[]
         stability: development
         brief: "The JSON-serialized value of each item in the `ConsumedCapacity` response field."
@@ -61,6 +80,11 @@ groups:
               "WriteCapacityUnits": number
             }']
       - id: aws.dynamodb.item_collection_metrics
+        annotations:
+          traffic-generator:
+            values:
+              - '{"Users": [{"ItemCollectionKey": {"id": {"S": "42"}}, "SizeEstimateRangeGB": [0.0, 1.0]}]}'
+              - '{"Orders": [{"ItemCollectionKey": {"customer": {"S": "alice"}}, "SizeEstimateRangeGB": [1.0, 2.0]}]}'
         type: string
         stability: development
         brief: "The JSON-serialized value of the `ItemCollectionMetrics` response field."
@@ -91,6 +115,10 @@ groups:
               ]
             }'
       - id: aws.dynamodb.provisioned_read_capacity
+        annotations:
+          traffic-generator:
+            values: [1.0, 2.0, 5.0, 10.0, 25.0, 100.0]
+            weights: [5, 4, 3, 2, 1, 1]
         type: double
         stability: development
         brief: "The value of the `ProvisionedThroughput.ReadCapacityUnits` request parameter."
@@ -98,6 +126,10 @@ groups:
           - 1.0
           - 2.0
       - id: aws.dynamodb.provisioned_write_capacity
+        annotations:
+          traffic-generator:
+            values: [1.0, 2.0, 5.0, 10.0, 25.0, 100.0]
+            weights: [5, 4, 3, 2, 1, 1]
         type: double
         stability: development
         brief: "The value of the `ProvisionedThroughput.WriteCapacityUnits` request parameter."
@@ -105,10 +137,18 @@ groups:
           - 1.0
           - 2.0
       - id: aws.dynamodb.consistent_read
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [1, 3]
         type: boolean
         stability: development
         brief: "The value of the `ConsistentRead` request parameter."
       - id: aws.dynamodb.projection
+        annotations:
+          traffic-generator:
+            values: [Title, "Title, Price, Color", "Title, Description, RelatedItems, ProductReviews"]
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: "The value of the `ProjectionExpression` request parameter."
@@ -117,24 +157,40 @@ groups:
           - Title, Price, Color
           - Title, Description, RelatedItems, ProductReviews
       - id: aws.dynamodb.limit
+        annotations:
+          traffic-generator:
+            values: [10, 25, 50, 100, 1000]
+            weights: [5, 3, 3, 2, 1]
         type: int
         stability: development
         brief: "The value of the `Limit` request parameter."
         examples:
           - 10
       - id: aws.dynamodb.attributes_to_get
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 4 } }
+            items: { values: [id, lives, name, email, created_at], weights: [5, 2, 3, 2, 1] }
         type: string[]
         stability: development
         brief: "The value of the `AttributesToGet` request parameter."
         examples:
           - [lives, id]
       - id: aws.dynamodb.index_name
+        annotations:
+          traffic-generator:
+            values: [name_to_group, email_index, created_at_index]
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: "The value of the `IndexName` request parameter."
         examples:
           - name_to_group
       - id: aws.dynamodb.select
+        annotations:
+          traffic-generator:
+            values: [ALL_ATTRIBUTES, ALL_PROJECTED_ATTRIBUTES, SPECIFIC_ATTRIBUTES, COUNT]
+            weights: [6, 2, 3, 1]
         type: string
         stability: development
         brief: "The value of the `Select` request parameter."
@@ -142,6 +198,13 @@ groups:
           - ALL_ATTRIBUTES
           - COUNT
       - id: aws.dynamodb.global_secondary_indexes
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - '{"IndexName": "email_index", "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}], "Projection": {"ProjectionType": "ALL"}}'
+                - '{"IndexName": "name_to_group", "KeySchema": [{"AttributeName": "name", "KeyType": "HASH"}], "Projection": {"ProjectionType": "KEYS_ONLY"}, "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}}'
         type: string[]
         stability: development
         brief: "The JSON-serialized value of each item of the `GlobalSecondaryIndexes` request field"
@@ -164,6 +227,13 @@ groups:
               }
             }']
       - id: aws.dynamodb.local_secondary_indexes
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - '{"IndexName": "created_at_index", "IndexSizeBytes": 1048576, "ItemCount": 1200, "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}, {"AttributeName": "created_at", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "ALL"}}'
+                - '{"IndexName": "status_index", "IndexSizeBytes": 65536, "ItemCount": 80, "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}, {"AttributeName": "status", "KeyType": "RANGE"}], "Projection": {"ProjectionType": "KEYS_ONLY"}}'
         type: string[]
         stability: development
         brief: "The JSON-serialized value of each item of the `LocalSecondaryIndexes` request field."
@@ -185,45 +255,80 @@ groups:
               }
             }']
       - id: aws.dynamodb.exclusive_start_table
+        annotations:
+          traffic-generator:
+            values: [Users, CatsTable, Orders]
         type: string
         stability: development
         brief: "The value of the `ExclusiveStartTableName` request parameter."
         examples: [Users, CatsTable]
       - id: aws.dynamodb.table_count
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 100 }
+            distribution: { type: zipf, exponent: 1.1 }
         type: int
         stability: development
         brief: "The number of items in the `TableNames` response parameter."
         examples:
           - 20
       - id: aws.dynamodb.scan_forward
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [4, 1]
         type: boolean
         stability: development
         brief: "The value of the `ScanIndexForward` request parameter."
       - id: aws.dynamodb.segment
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 99 }
         type: int
         stability: development
         brief: "The value of the `Segment` request parameter."
         examples:
           - 10
       - id: aws.dynamodb.total_segments
+        annotations:
+          traffic-generator:
+            values: [1, 4, 8, 16, 100]
+            weights: [3, 3, 2, 1, 1]
         type: int
         stability: development
         brief: "The value of the `TotalSegments` request parameter."
         examples:
           - 100
       - id: aws.dynamodb.count
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 1000 }
+            distribution: { type: zipf, exponent: 1.2 }
         type: int
         stability: development
         brief: "The value of the `Count` response parameter."
         examples:
           - 10
       - id: aws.dynamodb.scanned_count
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 10000 }
+            distribution: { type: zipf, exponent: 1.1 }
         type: int
         stability: development
         brief: "The value of the `ScannedCount` response parameter."
         examples:
           - 50
       - id: aws.dynamodb.attribute_definitions
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items:
+              values:
+                - '{"AttributeName": "id", "AttributeType": "S"}'
+                - '{"AttributeName": "created_at", "AttributeType": "N"}'
+                - '{"AttributeName": "email", "AttributeType": "S"}'
+              weights: [5, 3, 2]
         type: string[]
         stability: development
         brief: "The JSON-serialized value of each item in the `AttributeDefinitions` request field."
@@ -233,6 +338,15 @@ groups:
               "AttributeType": "string"
             }']
       - id: aws.dynamodb.global_secondary_index_updates
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - '{"Create": {"IndexName": "email_index", "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}], "Projection": {"ProjectionType": "ALL"}, "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}}}'
+                - '{"Update": {"IndexName": "name_to_group", "ProvisionedThroughput": {"ReadCapacityUnits": 10, "WriteCapacityUnits": 10}}}'
+                - '{"Delete": {"IndexName": "status_index"}}'
+              weights: [4, 4, 2]
         type: string[]
         stability: development
         brief: "The JSON-serialized value of each item in the `GlobalSecondaryIndexUpdates` request field."
@@ -262,6 +376,11 @@ groups:
       This document defines attributes for AWS Elastic Container Service (ECS).
     attributes:
       - id: aws.ecs.container.arn
+        annotations:
+          traffic-generator:
+            values:
+              - "arn:aws:ecs:us-west-1:123456789123:container/32624152-9086-4f0e-acae-1a75b14fe4d9"
+              - "arn:aws:ecs:us-east-1:123456789123:container/7c1e5a2d-4b3f-4e8a-9d10-2f6b8c4e1a37"
         type: string
         stability: development
         brief: >
@@ -271,12 +390,20 @@ groups:
             "arn:aws:ecs:us-west-1:123456789123:container/32624152-9086-4f0e-acae-1a75b14fe4d9",
           ]
       - id: aws.ecs.cluster.arn
+        annotations:
+          traffic-generator:
+            values: ["arn:aws:ecs:us-west-2:123456789123:cluster/my-cluster", "arn:aws:ecs:us-east-1:123456789123:cluster/prod-cluster"]
+            weights: [1, 2]
         type: string
         stability: development
         brief: >
           The ARN of an [ECS cluster](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/clusters.html).
         examples: ["arn:aws:ecs:us-west-2:123456789123:cluster/my-cluster"]
       - id: aws.ecs.launchtype
+        annotations:
+          traffic-generator:
+            values: [ec2, fargate]
+            weights: [4, 6]
         type:
           members:
             - id: ec2
@@ -291,6 +418,11 @@ groups:
         brief: >
           The [launch type](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html) for an ECS task.
       - id: aws.ecs.task.arn
+        annotations:
+          traffic-generator:
+            values:
+              - "arn:aws:ecs:us-west-1:123456789123:task/10838bed-421f-43ef-870a-f43feacbbb5b"
+              - "arn:aws:ecs:us-west-1:123456789123:task/my-cluster/task-id/23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd"
         type: string
         stability: development
         brief: >
@@ -301,12 +433,19 @@ groups:
             "arn:aws:ecs:us-west-1:123456789123:task/my-cluster/task-id/23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd"
           ]
       - id: aws.ecs.task.family
+        annotations:
+          traffic-generator:
+            values: [opentelemetry-family, web-api, worker]
+            weights: [2, 5, 3]
         type: string
         stability: development
         brief: >
           The family name of the [ECS task definition](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definitions.html) used to create the ECS task.
         examples: ["opentelemetry-family"]
       - id: aws.ecs.task.id
+        annotations:
+          traffic-generator:
+            values: [10838bed-421f-43ef-870a-f43feacbbb5b, 23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd, 5e9a7c31-2d48-4f6b-b0e3-91c4a8d27f60]
         type: string
         stability: development
         brief: >
@@ -317,6 +456,10 @@ groups:
             "23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd"
           ]
       - id: aws.ecs.task.revision
+        annotations:
+          traffic-generator:
+            values: ["1", "8", "26", "42"]
+            weights: [2, 3, 3, 2]
         type: string
         stability: development
         brief: >
@@ -329,6 +472,9 @@ groups:
       This document defines attributes for AWS Elastic Kubernetes Service (EKS).
     attributes:
       - id: aws.eks.cluster.arn
+        annotations:
+          traffic-generator:
+            values: ["arn:aws:ecs:us-west-2:123456789123:cluster/my-cluster", "arn:aws:eks:us-east-1:123456789123:cluster/prod-eks"]
         type: string
         stability: development
         brief: >
@@ -341,6 +487,10 @@ groups:
       This document defines attributes for AWS Logs.
     attributes:
       - id: aws.log.group.names
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items: { values: [/aws/lambda/my-function, opentelemetry-service, /ecs/web-api], weights: [4, 3, 3] }
         type: string[]
         stability: development
         brief: >
@@ -352,6 +502,13 @@ groups:
           where a single application has sidecar containers, and each write to their own log
           group.
       - id: aws.log.group.arns
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - "arn:aws:logs:us-west-1:123456789012:log-group:/aws/my/group:*"
+                - "arn:aws:logs:us-east-1:123456789012:log-group:/ecs/web-api:*"
         type: string[]
         stability: development
         brief: >
@@ -362,6 +519,10 @@ groups:
           See the
           [log group ARN format documentation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/iam-access-control-overview-cwl.html#CWL_ARN_Format).
       - id: aws.log.stream.names
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items: { values: [logs/main/10838bed-421f-43ef-870a-f43feacbbb5b, logs/sidecar/23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd] }
         type: string[]
         stability: development
         brief: >
@@ -369,6 +530,13 @@ groups:
         examples:
           - ["logs/main/10838bed-421f-43ef-870a-f43feacbbb5b"]
       - id: aws.log.stream.arns
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - "arn:aws:logs:us-west-1:123456789012:log-group:/aws/my/group:log-stream:logs/main/10838bed-421f-43ef-870a-f43feacbbb5b"
+                - "arn:aws:logs:us-west-1:123456789012:log-group:/aws/my/group:log-stream:logs/sidecar/23ebb8ac-c18f-46c6-8bbe-d55d0e37cfbd"
         type: string[]
         stability: development
         brief: >
@@ -388,6 +556,13 @@ groups:
         This document defines attributes for AWS Lambda.
     attributes:
       - id: aws.lambda.invoked_arn
+        annotations:
+          traffic-generator:
+            values:
+              - "arn:aws:lambda:us-east-1:123456:function:myfunction:myalias"
+              - "arn:aws:lambda:us-east-1:123456:function:myfunction"
+              - "arn:aws:lambda:us-west-2:123456:function:order-processor:prod"
+            weights: [3, 5, 2]
         type: string
         stability: development
         brief: >
@@ -396,6 +571,9 @@ groups:
         note: This may be different from `cloud.resource_id` if an alias is involved.
         examples: ["arn:aws:lambda:us-east-1:123456:function:myfunction:myalias"]
       - id: aws.lambda.resource_mapping.id
+        annotations:
+          traffic-generator:
+            values: [587ad24b-03b9-4413-8202-bbd56b36e5b7, 9c2e4f1a-6b7d-4e83-a5c0-3d8f1b2e7a64]
         type: string
         stability: development
         brief: >
@@ -411,6 +589,10 @@ groups:
       This document defines attributes for AWS S3.
     attributes:
       - id: aws.s3.bucket
+        annotations:
+          traffic-generator:
+            values: [some-bucket-name, app-assets, backups-prod, logs-archive]
+            weights: [2, 4, 1, 3]
         type: string
         stability: development
         brief: "The S3 bucket name the request refers to. Corresponds to the `--bucket` parameter of the [S3 API](https://docs.aws.amazon.com/cli/latest/reference/s3api/index.html) operations."
@@ -420,6 +602,10 @@ groups:
           The `bucket` attribute is applicable to all S3 operations that reference a bucket, i.e. that require the bucket name as a mandatory parameter.
           This applies to almost all S3 operations except `list-buckets`.
       - id: aws.s3.key
+        annotations:
+          traffic-generator:
+            values: [someFile.yml, images/logo.png, data/2026/11/11/events.json, backups/db.tar.gz]
+            weights: [2, 4, 3, 1]
         type: string
         stability: development
         brief: "The S3 object key the request refers to. Corresponds to the `--key` parameter of the [S3 API](https://docs.aws.amazon.com/cli/latest/reference/s3api/index.html) operations."
@@ -443,6 +629,9 @@ groups:
           - [upload-part](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part.html)
           - [upload-part-copy](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part-copy.html)
       - id: aws.s3.copy_source
+        annotations:
+          traffic-generator:
+            values: [someFile.yml, app-assets/images/logo.png, logs-archive/data/2026/11/11/events.json]
         type: string
         stability: development
         brief: "The source object (in the form `bucket`/`key`) for the copy operation."
@@ -456,6 +645,9 @@ groups:
           - [copy-object](https://docs.aws.amazon.com/cli/latest/reference/s3api/copy-object.html)
           - [upload-part-copy](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part-copy.html)
       - id: aws.s3.upload_id
+        annotations:
+          traffic-generator:
+            values: [dfRtDYWFbkRONycy.Yxwh66Yjlx.cph0gtNBtJ, VXBsb2FkIElEIGZvciA2aWWpbmcncyBteS1tb3ZpZS5tMnRzIHVwbG9hZA]
         type: string
         stability: development
         brief: "Upload ID that identifies the multipart upload."
@@ -472,6 +664,12 @@ groups:
           - [upload-part](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part.html)
           - [upload-part-copy](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part-copy.html)
       - id: aws.s3.delete
+        annotations:
+          traffic-generator:
+            values:
+              - "Objects=[{Key=string,VersionId=string},{Key=string,VersionId=string}],Quiet=boolean"
+              - "Objects=[{Key=someFile.yml}],Quiet=false"
+              - "Objects=[{Key=images/logo.png},{Key=backups/db.tar.gz}],Quiet=true"
         type: string
         stability: development
         brief: "The delete request container that specifies the objects to be deleted."
@@ -482,6 +680,10 @@ groups:
           The `delete` attribute corresponds to the `--delete` parameter of the
           [delete-objects operation within the S3 API](https://docs.aws.amazon.com/cli/latest/reference/s3api/delete-objects.html).
       - id: aws.s3.part_number
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 10000 }
+            distribution: { type: zipf, exponent: 1.1 }
         type: int
         stability: development
         brief: "The part number of the part being uploaded in a multipart-upload operation. This is a positive integer between 1 and 10,000."
@@ -499,6 +701,9 @@ groups:
         This document defines attributes for AWS SQS.
     attributes:
       - id: aws.sqs.queue.url
+        annotations:
+          traffic-generator:
+            values: ["https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue", "https://sqs.us-west-2.amazonaws.com/123456789012/orders-queue"]
         type: string
         stability: development
         brief: >
@@ -512,6 +717,9 @@ groups:
         This document defines attributes for AWS SNS.
     attributes:
       - id: aws.sns.topic.arn
+        annotations:
+          traffic-generator:
+            values: ["arn:aws:sns:us-east-1:123456789012:mystack-mytopic-NZJ5JSMVGFIE", "arn:aws:sns:us-east-1:123456789012:order-events"]
         type: string
         stability: development
         brief: >
@@ -524,6 +732,9 @@ groups:
         This document defines attributes for AWS Kinesis.
     attributes:
       - id: aws.kinesis.stream_name
+        annotations:
+          traffic-generator:
+            values: [some-stream-name, clickstream, telemetry-events]
         type: string
         stability: development
         brief: >
@@ -537,12 +748,18 @@ groups:
         This document defines attributes for AWS Step Functions.
     attributes:
       - id: aws.step_functions.activity.arn
+        annotations:
+          traffic-generator:
+            values: ["arn:aws:states:us-east-1:123456789012:activity:get-greeting", "arn:aws:states:us-east-1:123456789012:activity:process-order"]
         type: string
         stability: development
         brief: >
           The ARN of the AWS Step Functions Activity.
         examples: ["arn:aws:states:us-east-1:123456789012:activity:get-greeting"]
       - id: aws.step_functions.state_machine.arn
+        annotations:
+          traffic-generator:
+            values: ["arn:aws:states:us-east-1:123456789012:stateMachine:myStateMachine:1", "arn:aws:states:us-east-1:123456789012:stateMachine:OrderWorkflow"]
         type: string
         stability: development
         brief: >
@@ -555,6 +772,9 @@ groups:
         This document defines attributes for AWS Secrets Manager.
     attributes:
       - id: aws.secretsmanager.secret.arn
+        annotations:
+          traffic-generator:
+            values: ["arn:aws:secretsmanager:us-east-1:123456789012:secret:SecretName-6RandomCharacters", "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/db-password-a1B2c3"]
         type: string
         stability: development
         brief: >
@@ -567,6 +787,9 @@ groups:
         This document defines attributes for AWS Bedrock.
     attributes:
       - id: aws.bedrock.guardrail.id
+        annotations:
+          traffic-generator:
+            values: [sgi5gkybzqak, h7k2m9xq4wpe]
         type: string
         stability: development
         brief: >
@@ -574,6 +797,9 @@ groups:
           A [guardrail](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html) helps safeguard and prevent unwanted behavior from model responses or user messages.
         examples: ["sgi5gkybzqak"]
       - id: aws.bedrock.knowledge_base.id
+        annotations:
+          traffic-generator:
+            values: [XFWUPB9PAW, K3RTZQ8MLN]
         type: string
         stability: development
         brief: >

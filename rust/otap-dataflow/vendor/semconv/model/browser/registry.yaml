@@ -6,6 +6,12 @@ groups:
       The web browser attributes
     attributes:
       - id: browser.brands
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items:
+              values: [" Not A;Brand 99", Chromium 99, Chrome 99, Microsoft Edge 120, Chromium 120]
+              weights: [3, 4, 3, 1, 1]
         type: string[]
         stability: development
         brief: 'Array of brand name and version separated by a space'
@@ -16,6 +22,10 @@ groups:
         examples:
           - [ ' Not A;Brand 99', 'Chromium 99', 'Chrome 99' ]
       - id: browser.platform
+        annotations:
+          traffic-generator:
+            values: [Windows, macOS, Android, Linux, iOS, Chrome OS]
+            weights: [40, 15, 30, 5, 8, 2]
         type: string
         stability: development
         brief: 'The platform on which the browser is running'
@@ -34,6 +44,10 @@ groups:
           should capture the exact value that the user agent provides.
         examples: ['Windows', 'macOS', 'Android']
       - id: browser.mobile
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [55, 45]
         type: boolean
         stability: development
         brief: 'A boolean that is true if the browser is running on a mobile device'
@@ -43,12 +57,25 @@ groups:
           (`navigator.userAgentData.mobile`). If unavailable, this attribute
           SHOULD be left unset.
       - id: browser.document.url.full
+        annotations:
+          traffic-generator:
+            values:
+              - "https://www.example.com/search?q=OpenTelemetry#SemConv"
+              - "https://www.example.com/"
+              - "https://www.example.com/products/42"
+              - "https://www.example.com/cart"
+              - "https://www.example.com/account/settings"
+            weights: [2, 5, 3, 1, 1]
         type: string
         stability: development
         brief: >
           Absolute URL of the current browser document according to [RFC3986](https://www.rfc-editor.org/rfc/rfc3986).
         examples: ["https://www.example.com/search?q=OpenTelemetry#SemConv"]
       - id: browser.language
+        annotations:
+          traffic-generator:
+            values: [en, en-US, fr, fr-FR, de-DE, es-ES, ja-JP, zh-CN]
+            weights: [10, 40, 3, 7, 8, 8, 6, 8]
         type: string
         stability: development
         brief: 'Preferred language of the user using the browser'
@@ -57,6 +84,10 @@ groups:
           `navigator.language`.
         examples: ["en", "en-US", "fr", "fr-FR"]
       - id: browser.web_vital.name
+        annotations:
+          traffic-generator:
+            values: [cls, lcp, fcp, inp, ttfb, fid]
+            weights: [20, 20, 20, 20, 18, 2]
         type:
           members:
             - id: cls
@@ -90,21 +121,40 @@ groups:
         brief: Name of the web vital.
         examples: ["cls"]
       - id: browser.web_vital.value
+        annotations:
+          traffic-generator:
+            range: { min: 0.0, max: 10000.0 }
+            distribution: { type: lognormal, mean: 600.0, stddev: 900.0 }
         type: double
         stability: development
         brief: Value of the web vital.
         examples: [1.0]
       - id: browser.web_vital.delta
+        annotations:
+          traffic-generator:
+            range: { min: 0.0, max: 5000.0 }
+            distribution: { type: lognormal, mean: 150.0, stddev: 400.0 }
         type: double
         stability: development
         brief: The delta between the current value and the last-reported value. See [delta](https://github.com/GoogleChrome/web-vitals?tab=readme-ov-file#report-only-the-delta-of-changes).
         examples: [0.2]
       - id: browser.web_vital.id
+        annotations:
+          traffic-generator:
+            values:
+              - v3-1677874579383-6381583661209
+              - v3-1677874580112-4829175630182
+              - v4-1712345678901-1234567890123
+              - v4-1712345690456-9876543210987
         type: string
         stability: development
         brief: A unique ID representing this particular metric instance.
         examples: ["v3-1677874579383-6381583661209"]
       - id: browser.web_vital.rating
+        annotations:
+          traffic-generator:
+            values: [good, needs-improvement, poor]
+            weights: [75, 18, 7]
         type:
           members:
             - id: good
@@ -125,6 +175,10 @@ groups:
           and "poor" thresholds defined for the metric.
         examples: ["good"]
       - id: browser.web_vital.navigation_type
+        annotations:
+          traffic-generator:
+            values: [navigate, reload, back-forward, back-forward-cache, prerender, restore]
+            weights: [70, 10, 8, 7, 4, 1]
         type:
           members:
             - id: navigate

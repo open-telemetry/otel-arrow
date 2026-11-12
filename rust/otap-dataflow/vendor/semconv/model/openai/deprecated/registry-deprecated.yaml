@@ -18,6 +18,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [auto, default]
+            weights: [3, 7]
         stability: development
         type:
           members:
@@ -39,6 +42,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [chat_completions, responses]
+            weights: [6, 4]
         stability: development
         type:
           members:
@@ -59,6 +65,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [default, scale, flex, priority]
+            weights: [70, 15, 10, 5]
         stability: development
         type: string
         brief: The service tier used for the response.
@@ -71,6 +80,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [fp_44709d6fcb, fp_3bc1b5746c, fp_6b68a8204b, fp_0ba0d124f1]
+            weights: [4, 3, 2, 1]
         stability: development
         type: string
         brief: A fingerprint to track any eventual change in the Generative AI environment.

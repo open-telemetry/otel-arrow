@@ -6,6 +6,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     entity_associations:
       - container
     deprecated:

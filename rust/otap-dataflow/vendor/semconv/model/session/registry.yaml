@@ -15,11 +15,17 @@ groups:
       backends can link the two sessions.
     attributes:
       - id: session.id
+        annotations:
+          traffic-generator:
+            values: ["00112233-4455-6677-8899-aabbccddeeff", "3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d", "a1b2c3d4-e5f6-4789-9abc-def012345678", "7c9e6679-7425-40de-944b-e07fc1f90ae7"]
         type: string
         stability: development
         brief: "A unique ID to identify a session."
         examples: "00112233-4455-6677-8899-aabbccddeeff"
       - id: session.previous_id
+        annotations:
+          traffic-generator:
+            values: ["00112233-4455-6677-8899-aabbccddeeff", "9b2e4f60-1c3d-4a5b-8e7f-0123456789ab", "e4d909c2-90d0-4fb4-8a4b-6f1c2d3e4f50"]
         type: string
         stability: development
         brief: "The previous `session.id` for this user, when known."

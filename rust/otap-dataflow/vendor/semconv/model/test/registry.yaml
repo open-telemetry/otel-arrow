@@ -7,12 +7,20 @@ groups:
       [software tests](https://wikipedia.org/wiki/Software_testing).
     attributes:
       - id: test.suite.name
+        annotations:
+          traffic-generator:
+            values: [TestSuite1, IntegrationTests, UnitTests, SmokeTests]
+            weights: [2, 3, 5, 1]
         type: string
         stability: development
         brief: >
           The human readable name of a [test suite](https://wikipedia.org/wiki/Test_suite).
         examples: ["TestSuite1"]
       - id: test.suite.run.status
+        annotations:
+          traffic-generator:
+            values: [success, failure, skipped, aborted, timed_out, in_progress]
+            weights: [70, 12, 5, 2, 2, 9]
         type:
           members:
             - id: success
@@ -52,6 +60,9 @@ groups:
             "in_progress",
           ]
       - id: test.case.name
+        annotations:
+          traffic-generator:
+            values: [org.example.TestCase1.test1, example/tests/TestCase1.test1, ExampleTestCase1_test1]
         type: string
         stability: development
         brief: >
@@ -63,6 +74,10 @@ groups:
             "ExampleTestCase1_test1",
           ]
       - id: test.case.result.status
+        annotations:
+          traffic-generator:
+            values: [pass, fail]
+            weights: [9, 1]
         type:
           members:
             - id: pass

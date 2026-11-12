@@ -5,6 +5,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 10.0, max: 45.0 }
+          distribution: { type: normal, mean: 23.0, stddev: 4.0 }
     stability: development
     brief: "Ambient (external) temperature of the physical host."
     instrument: gauge
@@ -17,6 +21,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000000 }
+          distribution: { type: lognormal, mean: 30000, stddev: 20000 }
+        temporality: delta
     stability: development
     brief: "Total energy consumed by the entire physical host, in joules."
     instrument: counter
@@ -33,6 +42,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: -5.0, max: 60.0 }
+          distribution: { type: normal, mean: 25.0, stddev: 10.0 }
     stability: development
     brief: >
       By how many degrees Celsius the temperature of the physical host can be increased, before reaching a warning
@@ -47,6 +60,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 50.0, max: 2000.0 }
+          distribution: { type: normal, mean: 350.0, stddev: 150.0 }
     stability: development
     brief: >
       Instantaneous power consumed by the entire physical host in Watts (`hw.host.energy` is preferred).

@@ -14,6 +14,10 @@ groups:
       delivers software.
     attributes:
       - id: cicd.pipeline.name
+        annotations:
+          traffic-generator:
+            values: [Build and Test, Lint, Deploy Go Project, deploy_to_environment]
+            weights: [4, 3, 2, 1]
         type: string
         stability: release_candidate
         brief: >
@@ -26,12 +30,21 @@ groups:
             "deploy_to_environment",
           ]
       - id: cicd.pipeline.run.id
+        annotations:
+          traffic-generator:
+            values: ["120912", "120913", "120914", "120915"]
         type: string
         stability: release_candidate
         brief: >
           The unique identifier of a pipeline run within a CI/CD system.
         examples: ["120912"]
       - id: cicd.pipeline.run.url.full
+        annotations:
+          traffic-generator:
+            values:
+              - "https://github.com/open-telemetry/semantic-conventions/actions/runs/9753949763?pr=1075"
+              - "https://github.com/open-telemetry/semantic-conventions/actions/runs/9753949764"
+              - "https://gitlab.example.com/group/project/-/pipelines/120912"
         type: string
         stability: release_candidate
         brief: >
@@ -42,6 +55,10 @@ groups:
             "https://github.com/open-telemetry/semantic-conventions/actions/runs/9753949763?pr=1075",
           ]
       - id: cicd.pipeline.run.state
+        annotations:
+          traffic-generator:
+            values: [pending, executing, finalizing]
+            weights: [2, 7, 1]
         type:
           members:
             - id: pending
@@ -62,6 +79,10 @@ groups:
           The pipeline run goes through these states during its lifecycle.
         examples: ["pending", "executing", "finalizing"]
       - id: cicd.pipeline.task.name
+        annotations:
+          traffic-generator:
+            values: [Run GoLang Linter, Go Build, go-test, deploy_binary]
+            weights: [2, 3, 4, 1]
         type: string
         stability: release_candidate
         brief: >
@@ -71,6 +92,9 @@ groups:
           procedures.
         examples: ["Run GoLang Linter", "Go Build", "go-test", "deploy_binary"]
       - id: cicd.pipeline.task.run.id
+        annotations:
+          traffic-generator:
+            values: ["12097", "12098", "12099", "12100"]
         type: string
         stability: release_candidate
         brief: >
@@ -81,6 +105,12 @@ groups:
           the same, enabling correlation of `cicd.pipeline.task.run.result` values across multiple pipeline runs.
         examples: ["12097"]
       - id: cicd.pipeline.task.run.url.full
+        annotations:
+          traffic-generator:
+            values:
+              - "https://github.com/open-telemetry/semantic-conventions/actions/runs/9753949763/job/26920038674?pr=1075"
+              - "https://github.com/open-telemetry/semantic-conventions/actions/runs/9753949763/job/26920038675"
+              - "https://gitlab.example.com/group/project/-/jobs/12097"
         type: string
         stability: release_candidate
         brief: >
@@ -91,6 +121,10 @@ groups:
             "https://github.com/open-telemetry/semantic-conventions/actions/runs/9753949763/job/26920038674?pr=1075",
           ]
       - id: cicd.pipeline.task.run.result
+        annotations:
+          traffic-generator:
+            values: [success, failure, error, timeout, cancellation, skip]
+            weights: [80, 8, 2, 2, 3, 5]
         type:
           members:
             - id: success
@@ -125,6 +159,10 @@ groups:
           The result of a task run.
         examples: ["success", "failure", "timeout", "skip"]
       - id: cicd.pipeline.task.type
+        annotations:
+          traffic-generator:
+            values: [build, test, deploy]
+            weights: [4, 5, 1]
         type:
           members:
             - id: build
@@ -144,6 +182,10 @@ groups:
           The type of the task within a pipeline.
         examples: ["build", "test", "deploy"]
       - id: cicd.pipeline.result
+        annotations:
+          traffic-generator:
+            values: [success, failure, error, timeout, cancellation, skip]
+            weights: [78, 10, 2, 2, 5, 3]
         type:
           members:
             - id: success
@@ -178,6 +220,10 @@ groups:
           The result of a pipeline run.
         examples: ["success", "failure", "timeout", "skip"]
       - id: cicd.pipeline.action.name
+        annotations:
+          traffic-generator:
+            values: [BUILD, RUN, SYNC]
+            weights: [5, 4, 1]
         type:
           members:
             - id: build
@@ -197,6 +243,10 @@ groups:
           The kind of action a pipeline run is performing.
         examples: ["BUILD", "RUN", "SYNC"]
       - id: cicd.worker.id
+        annotations:
+          traffic-generator:
+            values: [abc123, def456, 10.0.1.2, controller]
+            weights: [3, 3, 2, 1]
         type: string
         stability: release_candidate
         brief: The unique identifier of a worker within a CI/CD system.
@@ -207,6 +257,10 @@ groups:
             "controller",
           ]
       - id: cicd.worker.name
+        annotations:
+          traffic-generator:
+            values: [agent-abc, agent-def, controller, Ubuntu LTS]
+            weights: [3, 3, 1, 2]
         type: string
         stability: release_candidate
         brief: The name of a worker within a CI/CD system.
@@ -217,6 +271,9 @@ groups:
             "Ubuntu LTS"
           ]
       - id: cicd.worker.url.full
+        annotations:
+          traffic-generator:
+            values: ["https://cicd.example.org/worker/abc123", "https://cicd.example.org/worker/def456"]
         type: string
         stability: release_candidate
         brief: The [URL](https://wikipedia.org/wiki/URL) of the worker,
@@ -226,6 +283,10 @@ groups:
             "https://cicd.example.org/worker/abc123",
           ]
       - id: cicd.worker.state
+        annotations:
+          traffic-generator:
+            values: [available, busy, offline]
+            weights: [4, 5, 1]
         type:
           members:
             - id: available
@@ -248,6 +309,10 @@ groups:
           The state of a CI/CD worker / agent.
         examples: ["available", "busy", "offline"]
       - id: cicd.system.component
+        annotations:
+          traffic-generator:
+            values: [controller, scheduler, agent]
+            weights: [2, 2, 6]
         type: string
         stability: release_candidate
         brief: The name of a component of the CI/CD system.

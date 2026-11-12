@@ -6,6 +6,10 @@ groups:
       These attributes may be used for any operation to store information about a thread that started a span.
     attributes:
       - id: thread.id
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 512 }
+            distribution: { type: zipf, exponent: 1.2 }
         type: int
         stability: development
         brief: >
@@ -32,6 +36,10 @@ groups:
           | Erlang | `erlang:self()` |
         examples: 42
       - id: thread.name
+        annotations:
+          traffic-generator:
+            values: [main, worker-1, worker-2, pool-1-thread-1, http-nio-8080-exec-1]
+            weights: [4, 2, 2, 1, 1]
         type: string
         stability: development
         brief: >

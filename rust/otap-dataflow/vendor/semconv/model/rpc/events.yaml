@@ -3,6 +3,9 @@ groups:
     name: rpc.client.call.exception
     stability: development
     type: event
+    annotations:
+      traffic-generator:
+        severity: { values: [WARN, ERROR], weights: [85, 15] }
     brief: >
       This event represents an exception that occurred during an outgoing RPC call,
       such as network failures, timeouts, serialization errors, or other errors that
@@ -27,6 +30,9 @@ groups:
     name: rpc.server.call.exception
     stability: development
     type: event
+    annotations:
+      traffic-generator:
+        severity: { values: [ERROR, WARN, FATAL], weights: [85, 10, 5] }
     brief: >
       This event represents an exception that occurred during incoming RPC call processing,
       such as application errors, internal failures, or other exceptions that prevent

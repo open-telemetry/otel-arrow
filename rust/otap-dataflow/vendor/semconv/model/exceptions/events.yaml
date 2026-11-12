@@ -1,5 +1,8 @@
 groups:
   - id: event.exception
+    annotations:
+      traffic-generator:
+        severity: { values: [ERROR, WARN, FATAL], weights: [80, 15, 5] }
     name: exception
     stability: stable
     type: event

@@ -7,6 +7,9 @@ groups:
     attributes:
       - id: net.sock.peer.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [/var/my.sock, /tmp/my.sock, /run/docker.sock]
         deprecated:
           reason: obsoleted
           note: "Removed. No replacement at this time."
@@ -15,6 +18,9 @@ groups:
         examples: ['/var/my.sock']
       - id: net.sock.peer.addr
         type: string
+        annotations:
+          traffic-generator:
+            values: ["192.168.0.1", "10.0.3.17", "172.17.0.3", "2001:db8::10"]
         deprecated:
           reason: renamed
           renamed_to: network.peer.address
@@ -23,6 +29,9 @@ groups:
         examples: ['192.168.0.1']
       - id: net.sock.peer.port
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 1024, max: 65535 }
         deprecated:
           reason: renamed
           renamed_to: network.peer.port
@@ -31,6 +40,9 @@ groups:
         brief: Deprecated, use `network.peer.port`.
       - id: net.peer.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [example.com, api.example.com, db.internal, cache.internal]
         deprecated:
           reason: uncategorized
           note: Replaced by `server.address` on client spans and `client.address` on server spans.
@@ -39,6 +51,10 @@ groups:
         examples: ['example.com']
       - id: net.peer.port
         type: int
+        annotations:
+          traffic-generator:
+            values: [443, 80, 8080, 5432, 6379]
+            weights: [40, 15, 20, 15, 10]
         deprecated:
           reason: uncategorized
           note: Replaced by `server.port` on client spans and `client.port` on server spans.
@@ -47,6 +63,9 @@ groups:
         examples: [8080]
       - id: net.peer.ip
         type: string
+        annotations:
+          traffic-generator:
+            values: ["127.0.0.1", "10.0.3.17", "192.168.1.25", "2001:db8::10"]
         deprecated:
           reason: renamed
           renamed_to: network.peer.address
@@ -55,6 +74,9 @@ groups:
         examples: '127.0.0.1'
       - id: net.host.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [example.com, localhost, web-01.example.com, api.example.com]
         deprecated:
           reason: renamed
           renamed_to: server.address
@@ -63,6 +85,9 @@ groups:
         examples: ['example.com']
       - id: net.host.ip
         type: string
+        annotations:
+          traffic-generator:
+            values: ["192.168.0.1", "10.1.2.80", "172.17.0.2", "::1"]
         deprecated:
           reason: renamed
           renamed_to: network.local.address
@@ -71,6 +96,10 @@ groups:
         examples: '192.168.0.1'
       - id: net.host.port
         type: int
+        annotations:
+          traffic-generator:
+            values: [8080, 443, 80, 8443, 3000]
+            weights: [30, 30, 20, 10, 10]
         deprecated:
           reason: renamed
           renamed_to: server.port
@@ -79,6 +108,9 @@ groups:
         examples: [8080]
       - id: net.sock.host.addr
         type: string
+        annotations:
+          traffic-generator:
+            values: [/var/my.sock, "10.1.2.80", "192.168.0.15", "172.17.0.2"]
         deprecated:
           reason: renamed
           renamed_to: network.local.address
@@ -87,6 +119,10 @@ groups:
         examples: ['/var/my.sock']
       - id: net.sock.host.port
         type: int
+        annotations:
+          traffic-generator:
+            values: [8080, 443, 80, 8443, 3000]
+            weights: [30, 30, 20, 10, 10]
         deprecated:
           reason: renamed
           renamed_to: network.local.port
@@ -94,6 +130,10 @@ groups:
         brief: Deprecated, use `network.local.port`.
         examples: [8080]
       - id: net.transport
+        annotations:
+          traffic-generator:
+            values: [ip_tcp, ip_udp, pipe, inproc, other]
+            weights: [80, 10, 3, 5, 2]
         type:
           members:
             - id: ip_tcp
@@ -125,6 +165,10 @@ groups:
         brief: Deprecated, use `network.transport`.
       - id: net.protocol.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [http, amqp, mqtt]
+            weights: [8, 1, 1]
         deprecated:
           reason: renamed
           renamed_to: network.protocol.name
@@ -133,6 +177,10 @@ groups:
         examples: ['amqp', 'http', 'mqtt']
       - id: net.protocol.version
         type: string
+        annotations:
+          traffic-generator:
+            values: ["3.1.1", "1.1", "2", "5.0"]
+            weights: [2, 5, 3, 1]
         deprecated:
           reason: renamed
           renamed_to: network.protocol.version
@@ -140,6 +188,10 @@ groups:
         brief: Deprecated, use `network.protocol.version`.
         examples: '3.1.1'
       - id: net.sock.family
+        annotations:
+          traffic-generator:
+            values: [inet, inet6, unix]
+            weights: [75, 15, 10]
         type:
           members:
             - id: inet

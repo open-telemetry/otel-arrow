@@ -55,6 +55,13 @@ groups:
     type: metric
     metric_name: gen_ai.client.token.usage
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 1, max: 131072 }
+          distribution: { type: lognormal, mean: 600, stddev: 1500 }
+        bounds: [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: int
       dependency_resolution:
@@ -75,6 +82,13 @@ groups:
     type: metric
     metric_name: gen_ai.client.operation.duration
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.01, max: 120.0 }
+          distribution: { type: lognormal, mean: 3.0, stddev: 4.0 }
+        bounds: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
       dependency_resolution:
@@ -100,6 +114,13 @@ groups:
     type: metric
     metric_name: gen_ai.client.operation.time_to_first_chunk
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.01, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.6, stddev: 0.6 }
+        bounds: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
       dependency_resolution:
@@ -119,6 +140,13 @@ groups:
     type: metric
     metric_name: gen_ai.client.operation.time_per_output_chunk
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.001, max: 2.5 }
+          distribution: { type: lognormal, mean: 0.03, stddev: 0.03 }
+        bounds: [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 2.5]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
       dependency_resolution:
@@ -139,6 +167,13 @@ groups:
     type: metric
     metric_name: gen_ai.server.request.duration
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.01, max: 120.0 }
+          distribution: { type: lognormal, mean: 2.5, stddev: 3.5 }
+        bounds: [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
       dependency_resolution:
@@ -156,6 +191,13 @@ groups:
     type: metric
     metric_name: gen_ai.server.time_per_output_token
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.001, max: 2.5 }
+          distribution: { type: lognormal, mean: 0.025, stddev: 0.02 }
+        bounds: [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 2.5]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
       dependency_resolution:
@@ -173,6 +215,13 @@ groups:
     type: metric
     metric_name: gen_ai.server.time_to_first_token
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.001, max: 10.0 }
+          distribution: { type: lognormal, mean: 0.3, stddev: 0.4 }
+        bounds: [0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
       dependency_resolution:

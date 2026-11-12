@@ -7,24 +7,62 @@ groups:
     attributes:
       # COMMON ATTRIBUTES FOR ALL
       - id: hw.id
+        annotations:
+          traffic-generator:
+            values:
+              - win32battery_battery_testsysa33_1
+              - cpu_0
+              - cpu_1
+              - fan_1
+              - physical_disk_0
+              - memory_dimm_a1
+              - eth0
+              - psu_1
+            weights: [1, 3, 3, 2, 2, 2, 2, 1]
         type: string
         stability: development
         brief: >
           An identifier for the hardware component, unique within the monitored host
         examples: ['win32battery_battery_testsysa33_1']
       - id: hw.name
+        annotations:
+          traffic-generator:
+            values: [eth0, eth1, CPU 0, Fan 1, Disk 0, DIMM A1, Power Supply 1]
+            weights: [3, 1, 3, 2, 2, 2, 1]
         type: string
         stability: development
         brief: >
           An easily-recognizable name for the hardware component
         examples: ['eth0']
       - id: hw.parent
+        annotations:
+          traffic-generator:
+            values: [dellStorage_perc_0, enclosure_0, enclosure_1, disk_controller_0]
+            weights: [3, 4, 1, 2]
         type: string
         stability: development
         brief: >
           Unique identifier of the parent component (typically the `hw.id` attribute of the enclosure, or disk controller)
         examples: ['dellStorage_perc_0']
       - id: hw.type
+        annotations:
+          traffic-generator:
+            values:
+              - battery
+              - cpu
+              - disk_controller
+              - enclosure
+              - fan
+              - gpu
+              - logical_disk
+              - memory
+              - network
+              - physical_disk
+              - power_supply
+              - tape_drive
+              - temperature
+              - voltage
+            weights: [1, 8, 2, 1, 6, 2, 3, 6, 4, 6, 3, 1, 8, 5]
         type:
           members:
             - id: battery
@@ -91,6 +129,10 @@ groups:
           `hw.type=temperature` along with `hw.state=degraded` would indicate that the temperature of the hardware
           component has been reported as `degraded`.
       - id: hw.state
+        annotations:
+          traffic-generator:
+            values: [ok, degraded, failed, needs_cleaning, predicted_failure]
+            weights: [90, 5, 2, 1, 2]
         type:
           members:
             - id: degraded
@@ -117,6 +159,10 @@ groups:
         brief: >
           The current state of the component
       - id: hw.battery.state
+        annotations:
+          traffic-generator:
+            values: [charging, discharging]
+            weights: [3, 2]
         type:
           members:
             - id: charging
@@ -131,6 +177,19 @@ groups:
         brief: >
           The current state of the battery
       - id: hw.limit_type
+        annotations:
+          traffic-generator:
+            values:
+              - critical
+              - degraded
+              - high.critical
+              - high.degraded
+              - low.critical
+              - low.degraded
+              - max
+              - throttled
+              - turbo
+            weights: [3, 3, 3, 3, 2, 2, 4, 1, 1]
         type:
           members:
             - id: critical
@@ -175,42 +234,69 @@ groups:
 
       # COMMON ATTRIBUTES FOR SOME HARDWARE COMPONENTS
       - id: hw.bios_version
+        annotations:
+          traffic-generator:
+            values: [1.2.3, 2.15.1, 1.8.0, A22]
+            weights: [3, 3, 2, 1]
         type: string
         stability: development
         brief: >
           BIOS version of the hardware component
         examples: ['1.2.3']
       - id: hw.driver_version
+        annotations:
+          traffic-generator:
+            values: [10.2.1-3, 535.104.05, 7.715.03.00, 5.15.0]
+            weights: [3, 2, 2, 1]
         type: string
         stability: development
         brief: >
           Driver version for the hardware component
         examples: ['10.2.1-3']
       - id: hw.firmware_version
+        annotations:
+          traffic-generator:
+            values: [2.0.1, 51.16.0-4076, 1.0.4, GXA1]
+            weights: [3, 2, 2, 1]
         type: string
         stability: development
         brief: >
           Firmware version of the hardware component
         examples: ['2.0.1']
       - id: hw.model
+        annotations:
+          traffic-generator:
+            values: [PERC H740P, Intel(R) Core(TM) i7-10700K, Dell XPS 15 Battery, NVIDIA A100-SXM4-40GB, Samsung PM883]
+            weights: [2, 3, 1, 1, 2]
         type: string
         stability: development
         brief: >
           Descriptive model name of the hardware component
         examples: ['PERC H740P', 'Intel(R) Core(TM) i7-10700K', 'Dell XPS 15 Battery']
       - id: hw.serial_number
+        annotations:
+          traffic-generator:
+            values: [CNFCP0123456789, S3EVNX0K812345, WD-WCC4N1234567, "1324520012345"]
         type: string
         stability: development
         brief: >
           Serial number of the hardware component
         examples: ['CNFCP0123456789']
       - id: hw.vendor
+        annotations:
+          traffic-generator:
+            values: [Dell, HP, Intel, AMD, LSI, Lenovo]
+            weights: [5, 4, 4, 2, 1, 2]
         type: string
         stability: development
         brief: >
           Vendor name of the hardware component
         examples: ['Dell', 'HP', 'Intel', 'AMD', 'LSI', 'Lenovo']
       - id: hw.sensor_location
+        annotations:
+          traffic-generator:
+            values: [cpu0, ps1, INLET, CPU0_DIE, AMBIENT, MOTHERBOARD, PS0 V3_3, MAIN_12V, CPU_VCORE]
+            weights: [3, 1, 2, 3, 2, 2, 1, 1, 1]
         type: string
         stability: development
         brief: >
@@ -219,12 +305,19 @@ groups:
 
       # BATTERY ATTRIBUTES
       - id: hw.battery.chemistry
+        annotations:
+          traffic-generator:
+            values: [Li-ion, NiMH, Lead-Acid, LiPo]
+            weights: [6, 1, 2, 1]
         type: string
         stability: development
         brief: >
           Battery [chemistry](https://schemas.dmtf.org/wbem/cim-html/2.31.0/CIM_Battery.html), e.g. Lithium-Ion, Nickel-Cadmium, etc.
         examples: ['Li-ion', 'NiMH']
       - id: hw.battery.capacity
+        annotations:
+          traffic-generator:
+            values: [9.3Ah, 50Wh, 86Wh, 7.2Ah]
         type: string
         stability: development
         brief: >
@@ -233,6 +326,10 @@ groups:
 
       # ENCLOSURE ATTRIBUTES
       - id: hw.enclosure.type
+        annotations:
+          traffic-generator:
+            values: [Computer, Storage, Switch, Blade]
+            weights: [6, 2, 1, 1]
         type: string
         stability: development
         brief: >
@@ -241,6 +338,10 @@ groups:
 
       # GPU ATTRIBUTES
       - id: hw.gpu.task
+        annotations:
+          traffic-generator:
+            values: [general, decoder, encoder]
+            weights: [8, 1, 1]
         type:
           members:
             - id: decoder
@@ -261,12 +362,19 @@ groups:
 
       # LOGICAL DISK ATTRIBUTES
       - id: hw.logical_disk.raid_level
+        annotations:
+          traffic-generator:
+            values: [RAID0+1, RAID5, RAID10, RAID1, RAID6]
+            weights: [1, 4, 3, 3, 2]
         type: string
         stability: development
         brief: >
           RAID Level of the logical disk
         examples: ['RAID0+1', 'RAID5', 'RAID10']
       - id: hw.logical_disk.state
+        annotations:
+          traffic-generator:
+            values: [used, free]
         type:
           members:
             - id: used
@@ -283,6 +391,10 @@ groups:
 
       # MEMORY ATTRIBUTES
       - id: hw.memory.type
+        annotations:
+          traffic-generator:
+            values: [DDR4, DDR5, LPDDR5, DDR3]
+            weights: [5, 3, 1, 1]
         type: string
         stability: development
         brief: >
@@ -291,12 +403,21 @@ groups:
 
       # NETWORK ATTRIBUTES
       - id: hw.network.logical_addresses
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items:
+              values: ["172.16.8.21", "57.11.193.42", "10.0.0.15", "fe80::1c2b:3cff:fe4d:5e6f", "50:06:01:60:3b:20:1d:4e"]
+              weights: [3, 2, 3, 1, 1]
         type: string[]
         stability: development
         brief: >
           Logical addresses of the adapter (e.g. IP address, or WWPN)
         examples: [['172.16.8.21', '57.11.193.42']]
       - id: hw.network.physical_address
+        annotations:
+          traffic-generator:
+            values: [00-90-F5-E9-7B-36, 3C-EC-EF-12-34-56, 00-1B-21-AB-CD-EF, B8-CA-3A-01-02-03]
         type: string
         stability: development
         brief: >
@@ -305,12 +426,19 @@ groups:
 
       # PHYSICAL DISK ATTRIBUTES
       - id: hw.physical_disk.type
+        annotations:
+          traffic-generator:
+            values: [HDD, SSD, 10K, NVMe]
+            weights: [3, 4, 1, 2]
         type: string
         stability: development
         brief: >
           Type of the physical disk
         examples: ['HDD', 'SSD', '10K']
       - id: hw.physical_disk.state
+        annotations:
+          traffic-generator:
+            values: [remaining]
         type:
           members:
             - id: remaining
@@ -321,6 +449,10 @@ groups:
         brief: >
           State of the physical disk endurance utilization
       - id: hw.physical_disk.smart_attribute
+        annotations:
+          traffic-generator:
+            values: [Spin Retry Count, Seek Error Rate, Raw Read Error Rate, Reallocated Sectors Count, Power-On Hours]
+            weights: [1, 2, 3, 3, 2]
         type: string
         stability: development
         brief: >
@@ -329,6 +461,10 @@ groups:
 
       # TAPE DRIVE ATTRIBUTES
       - id: hw.tape_drive.operation_type
+        annotations:
+          traffic-generator:
+            values: [mount, unmount, clean]
+            weights: [5, 5, 1]
         type:
           members:
             - id: mount

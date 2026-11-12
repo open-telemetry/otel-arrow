@@ -5,6 +5,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 4000000000 }
+          distribution: { type: lognormal, mean: 200000000, stddev: 300000000 }
     stability: development
     deprecated:
       reason: renamed
@@ -18,6 +22,11 @@ groups:
   - id: metric.system.network.connections
     type: metric
     metric_name: system.network.connections
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 5000 }
+          distribution: { type: exponential, mean: 100 }
     stability: development
     deprecated:
       reason: renamed
@@ -37,6 +46,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 1 }
+        temporality: delta
     stability: development
     deprecated:
       reason: renamed
@@ -62,6 +76,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000000 }
+          distribution: { type: lognormal, mean: 5000, stddev: 20000 }
+        temporality: delta
     stability: development
     deprecated:
       reason: renamed
@@ -81,6 +100,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000000 }
+          distribution: { type: lognormal, mean: 5000, stddev: 20000 }
+        temporality: delta
     stability: development
     deprecated:
       reason: renamed
@@ -97,6 +121,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000000 }
+          distribution: { type: lognormal, mean: 5000, stddev: 20000 }
+        temporality: delta
     stability: development
     deprecated:
       reason: renamed

@@ -5,6 +5,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [0, 2555904, 7667712, 268435456, 536870912], weights: [3, 2, 2, 2, 1] }
     stability: development
     extends: attributes.jvm.memory
     brief: "Measure of initial memory requested."
@@ -17,6 +19,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: normal, mean: 0.35, stddev: 0.2 }
     stability: development
     brief: "Recent CPU utilization for the whole system as reported by the JVM."
     note: >
@@ -33,6 +39,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 16.0 }
+          distribution: { type: lognormal, mean: 1.5, stddev: 1.5 }
     stability: development
     brief: "Average CPU load of the whole system for the last minute as reported by the JVM."
     note: >
@@ -56,6 +66,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1073741824 }
+          distribution: { type: lognormal, mean: 8388608, stddev: 33554432 }
     stability: development
     extends: attributes.jvm.buffer
     brief: "Measure of memory used by buffers."
@@ -68,6 +82,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1073741824 }
+          distribution: { type: lognormal, mean: 16777216, stddev: 33554432 }
     stability: development
     extends: attributes.jvm.buffer
     brief: "Measure of total memory capacity of buffers."
@@ -80,6 +98,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 5000 }
+          distribution: { type: lognormal, mean: 100, stddev: 200 }
     stability: development
     extends: attributes.jvm.buffer
     brief: "Number of buffers in the pool."
@@ -92,6 +114,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 10, max: 65536 }
+          distribution: { type: lognormal, mean: 200, stddev: 300 }
     stability: development
     brief: "Number of open file descriptors as reported by the JVM."
     instrument: updowncounter
@@ -103,6 +129,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [1024, 4096, 65536, 1048576], weights: [2, 2, 4, 1] }
     stability: development
     brief: "Measure of max open file descriptors as reported by the JVM."
     instrument: updowncounter

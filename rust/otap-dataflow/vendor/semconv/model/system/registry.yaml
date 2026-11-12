@@ -7,6 +7,10 @@ groups:
     attributes:
       - id: system.device
         type: string
+        annotations:
+          traffic-generator:
+            values: [sda, sda1, nvme0n1, nvme0n1p1, eth0, lo, dm-0]
+            weights: [3, 2, 4, 3, 3, 1, 1]
         stability: development
         brief: "The device identifier"
         examples: ["(identifier)"]
@@ -17,6 +21,10 @@ groups:
     brief: "Describes System Memory attributes"
     attributes:
       - id: system.memory.state
+        annotations:
+          traffic-generator:
+            values: [used, free, buffers, cached]
+            weights: [35, 25, 10, 30]
         type:
           members:
             - id: used
@@ -48,6 +56,10 @@ groups:
         brief: "The memory state"
         examples: ["free", "cached"]
       - id: system.memory.linux.slab.state
+        annotations:
+          traffic-generator:
+            values: [reclaimable, unreclaimable]
+            weights: [3, 2]
         type:
           members:
             - id: reclaimable
@@ -60,6 +72,9 @@ groups:
         brief: "The Linux Slab memory state"
         examples: ["reclaimable", "unreclaimable"]
       - id: system.memory.linux.hugepages.state
+        annotations:
+          traffic-generator:
+            values: [free, used]
         type:
           members:
             - id: free
@@ -78,6 +93,10 @@ groups:
     brief: "Describes System Memory Paging attributes"
     attributes:
       - id: system.paging.state
+        annotations:
+          traffic-generator:
+            values: [used, free]
+            weights: [3, 7]
         type:
           members:
             - id: used
@@ -90,6 +109,10 @@ groups:
         brief: "The memory paging state"
         examples: ["free"]
       - id: system.paging.fault.type
+        annotations:
+          traffic-generator:
+            values: [minor, major]
+            weights: [95, 5]
         type:
           members:
             - id: major
@@ -102,6 +125,10 @@ groups:
         brief: "The paging fault type"
         examples: ["minor"]
       - id: system.paging.direction
+        annotations:
+          traffic-generator:
+            values: [in, out]
+            weights: [6, 4]
         type:
           members:
             - id: in
@@ -120,6 +147,10 @@ groups:
     attributes:
       - id: system.filesystem.state
         brief: "The filesystem state"
+        annotations:
+          traffic-generator:
+            values: [used, free, reserved]
+            weights: [45, 45, 10]
         type:
           members:
             - id: used
@@ -134,6 +165,10 @@ groups:
         stability: development
         examples: ["used"]
       - id: system.filesystem.type
+        annotations:
+          traffic-generator:
+            values: [ext4, ntfs, refs, hfsplus, exfat, fat32]
+            weights: [60, 20, 3, 5, 5, 7]
         type:
           members:
             - id: fat32
@@ -159,11 +194,19 @@ groups:
         examples: ["ext4"]
       - id: system.filesystem.mode
         type: string
+        annotations:
+          traffic-generator:
+            values: [rw, ro]
+            weights: [9, 1]
         stability: development
         brief: "The filesystem mode"
         examples: ["rw, ro"]
       - id: system.filesystem.mountpoint
         type: string
+        annotations:
+          traffic-generator:
+            values: [/, /mnt/data, /boot, /home, /var, /tmp]
+            weights: [5, 2, 1, 2, 2, 1]
         stability: development
         brief: "The filesystem mount path"
         examples: ["/mnt/data"]

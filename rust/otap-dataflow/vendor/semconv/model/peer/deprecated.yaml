@@ -9,6 +9,10 @@ groups:
       Instrumentations SHOULD provide a way for users to configure this name.
     attributes:
       - id: peer.service
+        annotations:
+          traffic-generator:
+            values: [AuthTokenCache, AuthService, ExternalApiService, PaymentService, InventoryDB]
+            weights: [3, 3, 2, 1, 1]
         type: string
         stability: development
         deprecated:

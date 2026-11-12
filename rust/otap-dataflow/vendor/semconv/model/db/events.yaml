@@ -3,6 +3,9 @@ groups:
     name: db.client.operation.exception
     stability: development
     type: event
+    annotations:
+      traffic-generator:
+        severity: { values: [WARN, ERROR], weights: [85, 15] }
     brief: >
       This event represents an exception that occurred during a database client operation,
       such as connection failures, query errors, timeouts, or other errors that prevent

@@ -8,6 +8,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2147483648 }
+          distribution: { type: lognormal, mean: 16777216, stddev: 67108864 }
     brief: "Deprecated, use `v8js.memory.heap.space.available_size` instead."
     instrument: updowncounter
     unit: "By"
@@ -24,6 +28,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2147483648 }
+          distribution: { type: lognormal, mean: 33554432, stddev: 67108864 }
     brief: "Deprecated, use `v8js.memory.heap.space.physical_size` instead."
     instrument: updowncounter
     unit: "By"
@@ -37,6 +45,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 16777216, max: 8589934592 }
+          distribution: { type: lognormal, mean: 2197815296, stddev: 1073741824 }
     brief: "Deprecated, use `v8js.memory.heap.space.size` instead."
     instrument: updowncounter
     unit: "By"

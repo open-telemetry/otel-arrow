@@ -7,16 +7,28 @@ groups:
         This document defines attributes for Feature Flags.
     attributes:
       - id: feature_flag.key
+        annotations:
+          traffic-generator:
+            values: [logo-color, new-checkout-flow, dark-mode, search-v2, beta-banner]
+            weights: [3, 4, 2, 2, 1]
         type: string
         stability: release_candidate
         brief: The lookup key of the feature flag.
         examples: ["logo-color"]
       - id: feature_flag.provider.name
+        annotations:
+          traffic-generator:
+            values: [Flag Manager, LaunchDarkly, flagd, Unleash, Split]
+            weights: [3, 3, 2, 1, 1]
         type: string
         stability: release_candidate
         brief: Identifies the feature flag provider.
         examples: ["Flag Manager"]
       - id: feature_flag.result.variant
+        annotations:
+          traffic-generator:
+            values: [red, "true", "on", "off", "false", control, treatment]
+            weights: [2, 3, 3, 2, 2, 2, 2]
         type: string
         stability: release_candidate
         examples: ["red", "true", "on"]
@@ -28,24 +40,44 @@ groups:
           provide additional context for understanding the meaning behind a value.
           For example, the variant `red` maybe be used for the value `#c05543`.
       - id: feature_flag.context.id
+        annotations:
+          traffic-generator:
+            values:
+              - 5157782b-2203-4c80-a857-dbbd5e7761db
+              - 0d8e3f2a-6b1c-4f7e-9a2d-3c4b5a6d7e8f
+              - 9a7b6c5d-4e3f-4a1b-8c2d-1e0f9a8b7c6d
+              - user-12345
+              - user-67890
         type: string
         stability: release_candidate
         examples: ["5157782b-2203-4c80-a857-dbbd5e7761db"]
         brief: >
           The unique identifier for the flag evaluation context. For example, the targeting key.
       - id: feature_flag.version
+        annotations:
+          traffic-generator:
+            values: ["1", "2", "3", 01ABCDEF, 02BCDEF0]
+            weights: [3, 3, 2, 1, 1]
         type: string
         stability: release_candidate
         examples: ["1", "01ABCDEF"]
         brief: >
           The version of the ruleset used during the evaluation. This may be any stable value which uniquely identifies the ruleset.
       - id: feature_flag.set.id
+        annotations:
+          traffic-generator:
+            values: [proj-1, ab98sgs, service1/dev, service1/prod]
+            weights: [3, 1, 2, 4]
         type: string
         stability: release_candidate
         examples: ["proj-1", "ab98sgs", "service1/dev"]
         brief: >
           The identifier of the [flag set](https://openfeature.dev/specification/glossary/#flag-set) to which the feature flag belongs.
       - id: feature_flag.result.reason
+        annotations:
+          traffic-generator:
+            values: [static, default, targeting_match, split, cached, disabled, unknown, stale, error]
+            weights: [20, 15, 30, 10, 15, 3, 2, 2, 3]
         type:
           members:
             - id: static
@@ -104,6 +136,14 @@ groups:
           It may be desirable to redact or otherwise limit the size and scope of `feature_flag.result.value` if possible.
           Because the evaluated flag value is unstructured and may be any type, it is left to the instrumentation author to determine how best to achieve this.
       - id: feature_flag.error.message
+        annotations:
+          traffic-generator:
+            values:
+              - "Unexpected input type: string"
+              - The user has exceeded their storage quota
+              - Flag not found
+              - Provider not ready
+            weights: [3, 1, 4, 2]
         type: string
         stability: release_candidate
         brief: >

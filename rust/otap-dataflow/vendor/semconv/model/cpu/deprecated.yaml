@@ -5,6 +5,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 5.0, stddev: 8.0 }
+        temporality: delta
     brief: "Deprecated. Use `system.cpu.time` instead."
     deprecated:
       reason: renamed
@@ -23,6 +28,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: normal, mean: 0.35, stddev: 0.2 }
     brief: "Deprecated. Use `system.cpu.utilization` instead."
     deprecated:
       reason: renamed
@@ -41,6 +50,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 800000000, max: 5000000000 }
+          distribution: { type: normal, mean: 2800000000, stddev: 600000000 }
     brief: "Deprecated. Use `system.cpu.frequency` instead."
     deprecated:
       reason: renamed

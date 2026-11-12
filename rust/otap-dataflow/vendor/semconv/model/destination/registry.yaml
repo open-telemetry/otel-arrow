@@ -2,6 +2,10 @@
 file_format: definition/2
 attributes:
   - key: destination.address
+    annotations:
+      traffic-generator:
+        values: [destination.example.com, 10.1.2.80, /tmp/my.sock, api.example.com, 192.168.1.20]
+        weights: [4, 3, 1, 3, 2]
     type: string
     stability: development
     brief: "Destination address - domain name if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name."
@@ -10,6 +14,10 @@ attributes:
       the destination address behind any intermediaries, for example proxies, if it's available.
     examples: ['destination.example.com', '10.1.2.80', '/tmp/my.sock']
   - key: destination.port
+    annotations:
+      traffic-generator:
+        values: [443, 80, 8080, 3389, 2888, 53]
+        weights: [40, 20, 10, 5, 5, 10]
     type: int
     stability: development
     brief: 'Destination port number'

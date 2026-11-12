@@ -9,6 +9,10 @@ groups:
         stability: development
         brief: >
           The stream associated with the log. See below for a list of well-known values.
+        annotations:
+          traffic-generator:
+            values: [stdout, stderr]
+            weights: [8, 2]
         type:
           members:
             - id: stdout
@@ -27,24 +31,38 @@ groups:
       Attributes for a file to which log was emitted.
     attributes:
       - id: log.file.name
+        annotations:
+          traffic-generator:
+            values: [audit.log, app.log, error.log, access.log, syslog]
+            weights: [2, 4, 2, 3, 1]
         type: string
         stability: development
         brief: >
           The basename of the file.
         examples: [ "audit.log" ]
       - id: log.file.path
+        annotations:
+          traffic-generator:
+            values: [/var/log/mysql/audit.log, /var/log/app/app.log, /var/log/nginx/access.log, /var/log/nginx/error.log, /var/log/syslog]
+            weights: [2, 4, 3, 2, 1]
         type: string
         stability: development
         brief: >
           The full path to the file.
         examples: [ "/var/log/mysql/audit.log" ]
       - id: log.file.name_resolved
+        annotations:
+          traffic-generator:
+            values: [uuid.log, 3f2a9c1e-json.log, app.log.1]
         type: string
         stability: development
         brief: >
           The basename of the file, with symlinks resolved.
         examples: [ "uuid.log" ]
       - id: log.file.path_resolved
+        annotations:
+          traffic-generator:
+            values: [/var/lib/docker/uuid.log, /var/lib/docker/containers/3f2a9c1e/3f2a9c1e-json.log, /var/log/app/app.log.1]
         type: string
         stability: development
         brief: >
@@ -58,6 +76,9 @@ groups:
       This document defines the generic attributes that may be used in any Log Record.
     attributes:
       - id: log.record.uid
+        annotations:
+          traffic-generator:
+            values: [01ARZ3NDEKTSV4RRFFQ69G5FAV, 01BX5ZZKBKACTAV9WEVGEMMVRY, 01HGW2N7EHJVJ6H8B5Q4ZJ1K9T]
         type: string
         stability: development
         brief: >
@@ -70,6 +91,11 @@ groups:
           but other identifiers (e.g. UUID) may be used as needed.
         examples: ["01ARZ3NDEKTSV4RRFFQ69G5FAV"]
       - id: log.record.original
+        annotations:
+          traffic-generator:
+            values:
+              - "77 <86>1 2015-08-06T21:58:59.694Z 192.168.2.133 inactive - - - Something happened"
+              - "[INFO] 8/3/24 12:34:56 Something happened"
         type: string
         stability: development
         brief: >

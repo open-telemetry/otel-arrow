@@ -3,6 +3,10 @@ groups:
     type: metric
     metric_name: otel.sdk.span.live
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2000 }
+          distribution: { type: lognormal, mean: 50, stddev: 50 }
       code_generation:
         metric_value_type: int
     stability: development
@@ -18,6 +22,11 @@ groups:
     type: metric
     metric_name: otel.sdk.span.started
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20000 }
+          distribution: { type: lognormal, mean: 500, stddev: 1000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -34,6 +43,10 @@ groups:
     type: metric
     metric_name: otel.sdk.processor.span.queue.size
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2048 }
+          distribution: { type: lognormal, mean: 200, stddev: 200 }
       code_generation:
         metric_value_type: int
     stability: development
@@ -50,6 +63,8 @@ groups:
     type: metric
     metric_name: otel.sdk.processor.span.queue.capacity
     annotations:
+      traffic-generator:
+        value: { values: [2048, 4096, 8192], weights: [7, 2, 1] }
       code_generation:
         metric_value_type: int
     stability: development
@@ -66,6 +81,11 @@ groups:
     type: metric
     metric_name: otel.sdk.processor.span.processed
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20000 }
+          distribution: { type: lognormal, mean: 500, stddev: 1000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -94,6 +114,10 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.span.inflight
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 4096 }
+          distribution: { type: lognormal, mean: 256, stddev: 256 }
       code_generation:
         metric_value_type: int
     stability: development
@@ -117,6 +141,11 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.span.exported
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20000 }
+          distribution: { type: lognormal, mean: 500, stddev: 1000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -146,6 +175,11 @@ groups:
     type: metric
     metric_name: otel.sdk.log.created
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: lognormal, mean: 1000, stddev: 2000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -157,6 +191,10 @@ groups:
     type: metric
     metric_name: otel.sdk.processor.log.queue.size
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2048 }
+          distribution: { type: lognormal, mean: 200, stddev: 200 }
       code_generation:
         metric_value_type: int
     stability: development
@@ -173,6 +211,8 @@ groups:
     type: metric
     metric_name: otel.sdk.processor.log.queue.capacity
     annotations:
+      traffic-generator:
+        value: { values: [2048, 4096, 8192], weights: [7, 2, 1] }
       code_generation:
         metric_value_type: int
     stability: development
@@ -189,6 +229,11 @@ groups:
     type: metric
     metric_name: otel.sdk.processor.log.processed
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: lognormal, mean: 1000, stddev: 2000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -217,6 +262,10 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.log.inflight
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 4096 }
+          distribution: { type: lognormal, mean: 256, stddev: 256 }
       code_generation:
         metric_value_type: int
     stability: development
@@ -240,6 +289,11 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.log.exported
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: lognormal, mean: 1000, stddev: 2000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -269,6 +323,10 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.metric_data_point.inflight
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 10000 }
+          distribution: { type: lognormal, mean: 500, stddev: 500 }
       code_generation:
         metric_value_type: int
     stability: development
@@ -292,6 +350,11 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.metric_data_point.exported
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: lognormal, mean: 1000, stddev: 2000 }
+        temporality: delta
       code_generation:
         metric_value_type: int
     stability: development
@@ -321,6 +384,13 @@ groups:
     type: metric
     metric_name: otel.sdk.metric_reader.collection.duration
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.02, stddev: 0.05 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
     stability: development
@@ -339,6 +409,13 @@ groups:
     type: metric
     metric_name: otel.sdk.exporter.operation.duration
     annotations:
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 0.1, stddev: 0.25 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
       code_generation:
         metric_value_type: double
     stability: development

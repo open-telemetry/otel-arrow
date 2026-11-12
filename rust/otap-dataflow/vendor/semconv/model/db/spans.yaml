@@ -113,6 +113,14 @@ groups:
           recommended: If operation applies to a specific stored procedure.
 
   - id: span.db.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 30000.0 }
+          distribution: { type: lognormal, mean: 20.0, stddev: 60.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 5, 5]
     type: span
     stability: stable
     brief: This span describes database client call.
@@ -151,6 +159,14 @@ groups:
           by the instrumentation at the time the span ends.
 
   - id: span.db.sql_server.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.2, max: 30000.0 }
+          distribution: { type: lognormal, mean: 25.0, stddev: 80.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     stability: stable
     extends: span.db.sql.client
@@ -191,6 +207,14 @@ groups:
         examples: ["102", "40020"]
 
   - id: span.db.postgresql.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 30000.0 }
+          distribution: { type: lognormal, mean: 15.0, stddev: 50.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     stability: stable
     extends: span.db.sql.client
@@ -231,6 +255,14 @@ groups:
           Response codes of "Class 02" or higher SHOULD be considered errors.
         examples: ["08000", "08P01"]
   - id: span.db.mysql.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 30000.0 }
+          distribution: { type: lognormal, mean: 12.0, stddev: 40.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     stability: stable
     extends: span.db.sql.client
@@ -263,6 +295,14 @@ groups:
         examples: ["1005", "MY-010016"]
 
   - id: span.db.mariadb.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 30000.0 }
+          distribution: { type: lognormal, mean: 12.0, stddev: 40.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     stability: stable
     extends: span.db.sql.client
@@ -303,6 +343,14 @@ groups:
 
         examples: ["1008", "3058"]
   - id: span.db.cassandra.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.2, max: 20000.0 }
+          distribution: { type: lognormal, mean: 8.0, stddev: 25.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [93, 3, 4]
     type: span
     span_kind: client
     stability: development
@@ -350,6 +398,14 @@ groups:
           All Cassandra protocol error codes SHOULD be considered errors.
         examples: ["102", "40020"]
   - id: span.db.hbase.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.2, max: 30000.0 }
+          distribution: { type: lognormal, mean: 10.0, stddev: 30.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [93, 3, 4]
     type: span
     span_kind: client
     stability: development
@@ -392,6 +448,14 @@ groups:
         requirement_level:
           conditionally_required: If response was received.
   - id: span.db.couchdb.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.5, max: 30000.0 }
+          distribution: { type: lognormal, mean: 25.0, stddev: 60.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     span_kind: client
     stability: development
@@ -431,6 +495,14 @@ groups:
           conditionally_required: If response was received and the HTTP response code is available.
 
   - id: span.db.redis.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.05, max: 5000.0 }
+          distribution: { type: lognormal, mean: 1.5, stddev: 4.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [95, 3, 2]
     type: span
     stability: development
     span_kind: client
@@ -517,6 +589,14 @@ groups:
         sampling_relevant: true
 
   - id: span.db.mongodb.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 30000.0 }
+          distribution: { type: lognormal, mean: 10.0, stddev: 35.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [93, 3, 4]
     type: span
     stability: development
     span_kind: client
@@ -561,6 +641,14 @@ groups:
         examples: ["36", "11602"]
 
   - id: span.db.elasticsearch.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.5, max: 60000.0 }
+          distribution: { type: lognormal, mean: 40.0, stddev: 120.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [91, 4, 5]
     type: span
     stability: development
     span_kind: client
@@ -642,6 +730,14 @@ groups:
         requirement_level:
           conditionally_required: If response was received.
   - id: span.db.sql.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 30000.0 }
+          distribution: { type: lognormal, mean: 18.0, stddev: 60.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     span_kind: client
     stability: stable
@@ -988,6 +1084,14 @@ groups:
       - ref: db.query.parameter
         requirement_level: opt_in
   - id: span.db.oracledb.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.2, max: 30000.0 }
+          distribution: { type: lognormal, mean: 25.0, stddev: 80.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 4, 4]
     type: span
     stability: release_candidate
     extends: span.db.sql.client
