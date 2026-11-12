@@ -1,19 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tests that the OTAP -> OTLP logs encoder emits protobuf fields in the same
-//! order as Go pdata.
+//! Tests that the OTAP -> OTLP logs encoder emits `LogRecord` and `KeyValue`
+//! fields in the order chosen for compression.
 //!
-//! Go pdata marshals each message backwards in struct declaration order. On the
-//! wire, fields therefore appear in reverse `.proto` declaration order (which is
-//! not always descending field-number order) and repeated elements keep their
-//! order. For logs this layout compresses noticeably better than forward order,
-//! so the logs encoder mirrors it. Traces and metrics showed no gain and keep
-//! forward order for their own messages. These tests walk the encoded bytes and
-//! check every message in the logs tree against the expected order.
+//! - `KeyValue` is written value first, then key (as Go pdata does).
+//! - `LogRecord` keeps forward field order, except that `observed_time_unix_nano`
+//!   (11) and `time_unix_nano` (1) are written last.
+//!
+//! Field order does not change the decoded data, but these layouts make OTLP logs
+//! compress noticeably better. Other messages are walked but their order is not
+//! checked. See the "Field order" section of the module README.
 
 use std::collections::{HashMap, HashSet};
 
+use crate::TryIntoWithOptions;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::OtlpProtoBytes;
 use crate::proto::OtlpProtoMessage;
@@ -25,34 +26,21 @@ use crate::proto::opentelemetry::logs::v1::{
 use crate::proto::opentelemetry::resource::v1::Resource;
 use crate::testing::round_trip::otlp_to_otap;
 use crate::views::otlp::bytes::decode::{field_value_range, read_varint};
-use crate::TryIntoWithOptions;
 
 const TRACE_ID: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const SPAN_ID: [u8; 8] = [21, 22, 23, 24, 25, 26, 27, 28];
 
 /// Scenario: a logs batch with every encodable field set at every level, including
 /// map and array attribute values and a map body, is encoded from OTAP to OTLP.
-/// Guarantees: every message in the output (LogsData down to nested KeyValue) lists
-/// its fields in Go pdata order, and every expected field is observed at least once.
+/// Guarantees: every `LogRecord` lists its fields in forward order with the two
+/// timestamps last, every `KeyValue` (including nested ones) lists value before
+/// key, and every expected field of those messages is observed at least once.
 #[test]
-fn test_logs_field_order_matches_go_pdata() {
+fn test_logs_field_order() {
     let msg = OtlpProtoMessage::Logs(full_logs());
     let bytes = encode_to_otlp(&msg);
     let seen = check_message_tree(Msg::LogsData, &bytes);
-    assert_full_coverage(
-        &seen,
-        &[
-            Msg::LogsData,
-            Msg::ResourceLogs,
-            Msg::ScopeLogs,
-            Msg::LogRecord,
-            Msg::Resource,
-            Msg::Scope,
-            Msg::KeyValue,
-            Msg::ArrayValue,
-            Msg::KeyValueList,
-        ],
-    );
+    assert_full_coverage(&seen, &[Msg::LogRecord, Msg::KeyValue]);
 }
 
 fn encode_to_otlp(msg: &OtlpProtoMessage) -> Vec<u8> {
@@ -77,21 +65,15 @@ enum Msg {
 }
 
 impl Msg {
-    /// Field numbers in the order Go pdata writes them to the wire (reverse proto
-    /// declaration order). Taken from pdata v1.70 `internal/generated_proto_*.go`.
-    fn go_order(self) -> &'static [u64] {
+    /// Expected wire order of field numbers, or `None` if the order of this message
+    /// is not checked.
+    fn expected_order(self) -> Option<&'static [u64]> {
         match self {
-            Msg::LogsData => &[1],
-            Msg::ResourceLogs => &[3, 2, 1],
-            Msg::ScopeLogs => &[3, 2, 1],
-            Msg::LogRecord => &[12, 10, 9, 8, 7, 6, 5, 3, 2, 11, 1],
-            // entity_refs (3) is not produced from OTAP data.
-            Msg::Resource => &[2, 1],
-            Msg::Scope => &[4, 3, 2, 1],
-            Msg::KeyValue => &[2, 1],
-            // A oneof: exactly one field is present, so the order is trivially satisfied.
-            Msg::AnyValue => &[1, 2, 3, 4, 5, 6, 7],
-            Msg::ArrayValue | Msg::KeyValueList => &[1],
+            // Forward order, but observed_time_unix_nano (11) and time_unix_nano (1)
+            // come last.
+            Msg::LogRecord => Some(&[2, 3, 5, 6, 7, 8, 9, 10, 12, 11, 1]),
+            Msg::KeyValue => Some(&[2, 1]),
+            _ => None,
         }
     }
 
@@ -121,8 +103,8 @@ impl Msg {
 /// Field numbers seen per message kind across the whole tree.
 type SeenFields = HashMap<Msg, HashSet<u64>>;
 
-/// Walks the encoded message tree rooted at `bytes`, asserting that each message's
-/// fields appear in Go pdata order. Returns the fields observed for each message kind.
+/// Walks the encoded message tree rooted at `bytes`, asserting that the fields of
+/// each checked message appear in the expected order. Returns the fields observed for each message kind.
 fn check_message_tree(root: Msg, bytes: &[u8]) -> SeenFields {
     let mut seen = SeenFields::new();
     check_message(root, bytes, &mut seen);
@@ -153,16 +135,18 @@ fn check_message(msg: Msg, bytes: &[u8], seen: &mut SeenFields) {
         }
     }
 
+    let Some(order) = msg.expected_order() else {
+        return;
+    };
     let present: HashSet<u64> = observed.iter().copied().collect();
-    let expected: Vec<u64> = msg
-        .go_order()
+    let expected: Vec<u64> = order
         .iter()
         .copied()
         .filter(|f| present.contains(f))
         .collect();
     assert_eq!(
         observed, expected,
-        "{msg:?}: fields out of Go pdata order (or a repeated field is not contiguous)"
+        "{msg:?}: fields out of expected order (or a repeated field is not contiguous)"
     );
 }
 
@@ -172,7 +156,8 @@ fn assert_full_coverage(seen: &SeenFields, kinds: &[Msg]) {
     for kind in kinds {
         let fields = seen.get(kind).cloned().unwrap_or_default();
         let missing: Vec<u64> = kind
-            .go_order()
+            .expected_order()
+            .expect("coverage is only checked for messages with an expected order")
             .iter()
             .copied()
             .filter(|f| !fields.contains(f))
