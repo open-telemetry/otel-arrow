@@ -11,6 +11,7 @@ pub(crate) const VALUE_FIELD_NAME: &str = "value";
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
 pub(crate) const ENDS_WITH_FUNC_NAME: &str = "ends_with";
 pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";
+pub(crate) const HAS_TRANSPORT_HEADER_FUNC_NAME: &str = "has_transport_header";
 pub(crate) const LOG_FUNC_NAME: &str = "log10";
 pub(crate) const LTRIM_FUNC_NAME: &str = "ltrim";
 pub(crate) const NOW_FUNC_NAME: &str = "now";
