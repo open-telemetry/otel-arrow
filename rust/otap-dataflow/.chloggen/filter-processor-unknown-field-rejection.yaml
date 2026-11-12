@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: pipeline
+note: Filter processor config validation now rejects unknown fields instead of silently ignoring them.
+issues: [3568]
+subtext: |
+  Filter configurations containing typos or unsupported keys now fail validation with an explicit error.
