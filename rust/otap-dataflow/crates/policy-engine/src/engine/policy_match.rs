@@ -17,9 +17,6 @@ use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::PredicateResult;
 /// The three variants form a lattice for AND:
 ///   `None` < `Some(bitmap)` < `All`
 ///
-/// And for OR:
-///   `None` < `Some(bitmap)` < `All`
-///
 /// This lets the common all-match and no-match cases avoid bitmap
 /// allocation entirely.
 #[derive(Clone, Debug)]
@@ -34,8 +31,8 @@ pub(crate) enum PolicyMatch {
 
 impl PolicyMatch {
     /// AND this match with another: a row is in the result only if it
-    /// appears in both inputs. Used to fold non-negated matcher results
-    /// into the "matched" bitmap.
+    /// appears in both inputs. Used to fold matcher results into the
+    /// per-policy "matched" bitmap.
     #[must_use]
     pub(crate) fn and(&self, other: &PolicyMatch) -> PolicyMatch {
         match (self, other) {
@@ -59,8 +56,8 @@ impl PolicyMatch {
     }
 
     /// OR this match with another: a row is in the result if it appears
-    /// in either input. Used to fold negated matcher results into the
-    /// "disqualified" bitmap.
+    /// in either input. Used to accumulate the "already discarded"
+    /// bitmap during keep resolution.
     #[must_use]
     pub(crate) fn or(&self, other: &PolicyMatch) -> PolicyMatch {
         match (self, other) {
@@ -72,9 +69,7 @@ impl PolicyMatch {
             (PolicyMatch::Some(a), PolicyMatch::Some(b)) => {
                 debug_assert_eq!(a.len(), b.len());
                 let result = a | b;
-                if result.count_set_bits() == 0 {
-                    PolicyMatch::None
-                } else if result.count_set_bits() == result.len() {
+                if result.count_set_bits() == result.len() {
                     PolicyMatch::All
                 } else {
                     PolicyMatch::Some(result)
@@ -83,14 +78,14 @@ impl PolicyMatch {
         }
     }
 
-    /// Compute `self AND NOT other`. Used to compute the final match
-    /// result: `matched AND NOT disqualified`.
+    /// Compute `self AND NOT other`. Returns only the rows that are set
+    /// in `self` but not set in `other`.
     #[must_use]
     pub(crate) fn and_not(&self, other: &PolicyMatch) -> PolicyMatch {
         match (self, other) {
-            // x AND NOT None = x  (nothing disqualified)
+            // x AND NOT None = x  (nothing to subtract)
             (x, PolicyMatch::None) => x.clone(),
-            // x AND NOT All = None  (everything disqualified)
+            // x AND NOT All = None  (everything subtracted)
             (_, PolicyMatch::All) => PolicyMatch::None,
             // None AND NOT _ = None
             (PolicyMatch::None, _) => PolicyMatch::None,
@@ -112,8 +107,6 @@ impl PolicyMatch {
                 let result = m & &not_d;
                 if result.count_set_bits() == 0 {
                     PolicyMatch::None
-                } else if result.count_set_bits() == result.len() {
-                    PolicyMatch::All
                 } else {
                     PolicyMatch::Some(result)
                 }
@@ -121,9 +114,20 @@ impl PolicyMatch {
         }
     }
 
-    /// Create a [`PolicyMatch`] from a [`PredicateResult`] produced by
-    /// evaluating a [`Predicate`](otel_arrow_dfe_query_engine::pipeline::pipeline_expr::Predicate)
-    /// against an OTAP batch.
+    /// Returns the number of set bits (matched rows).
+    ///
+    /// For `All`, requires `num_rows` to know the total.
+    /// For `None`, always 0.
+    /// For `Some`, uses `BooleanBuffer::count_set_bits`.
+    pub(crate) fn count_true(&self, num_rows: usize) -> usize {
+        match self {
+            PolicyMatch::All => num_rows,
+            PolicyMatch::None => 0,
+            PolicyMatch::Some(buf) => buf.count_set_bits(),
+        }
+    }
+
+    /// Create a [`PolicyMatch`] from a [`PredicateResult`].
     ///
     /// Preserves the scalar shortcuts from `PredicateResult` -- `All` and
     /// `None` map directly without bitmap allocation. For array results,
@@ -136,14 +140,13 @@ impl PolicyMatch {
         }
     }
 
-    /// Create a [`PolicyMatch`] from a [`BooleanArray`] produced by
-    /// evaluating a predicate against an OTAP batch.
+    /// Create a [`PolicyMatch`] from a [`BooleanArray`].
     ///
     /// Null values in the array are treated as `false` (fail-open).
     /// If all values are true, returns [`PolicyMatch::All`]; if all
     /// are false/null, returns [`PolicyMatch::None`]; otherwise
     /// returns [`PolicyMatch::Some`] with the boolean buffer.
-    pub(crate) fn from_boolean_array(arr: &BooleanArray) -> PolicyMatch {
+    fn from_boolean_array(arr: &BooleanArray) -> PolicyMatch {
         // Strip nulls: treat null as false by ANDing values with validity.
         let buffer = match arr.nulls() {
             Some(nulls) => arr.values() & nulls.inner(),
@@ -243,108 +246,28 @@ mod tests {
         assert!(matches!(result, PolicyMatch::None));
     }
 
-    /// Scenario: OR of None with any value returns that value.
-    /// Guarantees: None is the identity element for OR.
+    /// Scenario: from_predicate_result maps All directly.
+    /// Guarantees: Scalar true avoids bitmap allocation.
     #[test]
-    fn or_none_is_identity() {
-        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
-
-        let result = PolicyMatch::None.or(&some);
-        assert!(matches!(result, PolicyMatch::Some(_)));
-
-        let result = PolicyMatch::None.or(&PolicyMatch::All);
-        assert!(matches!(result, PolicyMatch::All));
-
-        let result = PolicyMatch::None.or(&PolicyMatch::None);
-        assert!(matches!(result, PolicyMatch::None));
-    }
-
-    /// Scenario: OR with All always returns All.
-    /// Guarantees: All is the absorbing element for OR.
-    #[test]
-    fn or_all_absorbs() {
-        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
-
-        let result = some.or(&PolicyMatch::All);
+    fn from_predicate_result_all() {
+        let result = PolicyMatch::from_predicate_result(PredicateResult::All);
         assert!(matches!(result, PolicyMatch::All));
     }
 
-    /// Scenario: OR of two bitmaps produces the bitwise union.
-    /// Guarantees: Rows set in either input are set in the result.
+    /// Scenario: from_predicate_result maps None directly.
+    /// Guarantees: Scalar false avoids bitmap allocation.
     #[test]
-    fn or_some_some() {
-        let a = PolicyMatch::Some(make_buffer(&[true, false, false]));
-        let b = PolicyMatch::Some(make_buffer(&[false, false, true]));
-
-        let result = a.or(&b);
-        match result {
-            PolicyMatch::Some(buf) => {
-                assert_eq!(buf.len(), 3);
-                assert!(buf.value(0));
-                assert!(!buf.value(1));
-                assert!(buf.value(2));
-            }
-            _ => panic!("expected Some"),
-        }
-    }
-
-    /// Scenario: and_not with None disqualified returns the original match.
-    /// Guarantees: No disqualification preserves all matches.
-    #[test]
-    fn and_not_none_disqualified() {
-        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
-
-        let result = some.and_not(&PolicyMatch::None);
-        assert!(matches!(result, PolicyMatch::Some(_)));
-
-        let result = PolicyMatch::All.and_not(&PolicyMatch::None);
-        assert!(matches!(result, PolicyMatch::All));
-    }
-
-    /// Scenario: and_not with All disqualified returns None.
-    /// Guarantees: Full disqualification removes all matches.
-    #[test]
-    fn and_not_all_disqualified() {
-        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
-
-        let result = some.and_not(&PolicyMatch::All);
-        assert!(matches!(result, PolicyMatch::None));
-
-        let result = PolicyMatch::All.and_not(&PolicyMatch::All);
+    fn from_predicate_result_none() {
+        let result = PolicyMatch::from_predicate_result(PredicateResult::None);
         assert!(matches!(result, PolicyMatch::None));
     }
 
-    /// Scenario: and_not with partial disqualification removes disqualified
-    /// rows from the match bitmap.
-    /// Guarantees: Only non-disqualified matched rows survive.
+    /// Scenario: from_predicate_result with a mixed array produces Some.
+    /// Guarantees: Array results are converted to bitmaps.
     #[test]
-    fn and_not_some_some() {
-        // matched:      [T, T, F, T]
-        // disqualified:  [F, T, F, F]
-        // result:        [T, F, F, T]
-        let m = PolicyMatch::Some(make_buffer(&[true, true, false, true]));
-        let d = PolicyMatch::Some(make_buffer(&[false, true, false, false]));
-
-        let result = m.and_not(&d);
-        match result {
-            PolicyMatch::Some(buf) => {
-                assert_eq!(buf.len(), 4);
-                assert!(buf.value(0));
-                assert!(!buf.value(1));
-                assert!(!buf.value(2));
-                assert!(buf.value(3));
-            }
-            _ => panic!("expected Some"),
-        }
-    }
-
-    /// Scenario: All AND NOT Some(d) inverts the disqualified bitmap.
-    /// Guarantees: All rows except disqualified ones survive.
-    #[test]
-    fn and_not_all_some() {
-        let d = PolicyMatch::Some(make_buffer(&[false, true, false]));
-
-        let result = PolicyMatch::All.and_not(&d);
+    fn from_predicate_result_array() {
+        let arr = BooleanArray::from(vec![true, false, true]);
+        let result = PolicyMatch::from_predicate_result(PredicateResult::Array(arr));
         match result {
             PolicyMatch::Some(buf) => {
                 assert_eq!(buf.len(), 3);
@@ -415,5 +338,107 @@ mod tests {
         let arr = BooleanArray::from(vec![Option::<bool>::None, None, None]);
         let result = PolicyMatch::from_boolean_array(&arr);
         assert!(matches!(result, PolicyMatch::None));
+    }
+
+    // -- OR tests --
+
+    /// Scenario: OR of None with any value returns that value.
+    /// Guarantees: None is the identity element for OR.
+    #[test]
+    fn or_none_is_identity() {
+        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
+
+        let result = PolicyMatch::None.or(&some);
+        assert!(matches!(result, PolicyMatch::Some(_)));
+
+        let result = PolicyMatch::None.or(&PolicyMatch::All);
+        assert!(matches!(result, PolicyMatch::All));
+
+        let result = PolicyMatch::None.or(&PolicyMatch::None);
+        assert!(matches!(result, PolicyMatch::None));
+    }
+
+    /// Scenario: OR with All always returns All.
+    /// Guarantees: All is the absorbing element for OR.
+    #[test]
+    fn or_all_absorbs() {
+        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
+        let result = some.or(&PolicyMatch::All);
+        assert!(matches!(result, PolicyMatch::All));
+    }
+
+    /// Scenario: OR of two bitmaps produces the bitwise union.
+    /// Guarantees: Rows set in either input are set in the result.
+    #[test]
+    fn or_some_some() {
+        let a = PolicyMatch::Some(make_buffer(&[true, false, false]));
+        let b = PolicyMatch::Some(make_buffer(&[false, false, true]));
+
+        let result = a.or(&b);
+        match result {
+            PolicyMatch::Some(buf) => {
+                assert_eq!(buf.len(), 3);
+                assert!(buf.value(0));
+                assert!(!buf.value(1));
+                assert!(buf.value(2));
+            }
+            _ => panic!("expected Some"),
+        }
+    }
+
+    // -- AND NOT tests --
+
+    /// Scenario: and_not with None subtracted returns the original.
+    /// Guarantees: Subtracting nothing preserves all rows.
+    #[test]
+    fn and_not_none_preserves() {
+        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
+        let result = some.and_not(&PolicyMatch::None);
+        assert!(matches!(result, PolicyMatch::Some(_)));
+
+        let result = PolicyMatch::All.and_not(&PolicyMatch::None);
+        assert!(matches!(result, PolicyMatch::All));
+    }
+
+    /// Scenario: and_not with All subtracted returns None.
+    /// Guarantees: Subtracting everything leaves nothing.
+    #[test]
+    fn and_not_all_clears() {
+        let some = PolicyMatch::Some(make_buffer(&[true, false, true]));
+        let result = some.and_not(&PolicyMatch::All);
+        assert!(matches!(result, PolicyMatch::None));
+    }
+
+    /// Scenario: and_not with partial subtraction removes the right rows.
+    /// Guarantees: Only non-subtracted matched rows survive.
+    #[test]
+    fn and_not_some_some() {
+        let m = PolicyMatch::Some(make_buffer(&[true, true, false, true]));
+        let d = PolicyMatch::Some(make_buffer(&[false, true, false, false]));
+
+        let result = m.and_not(&d);
+        match result {
+            PolicyMatch::Some(buf) => {
+                assert_eq!(buf.len(), 4);
+                assert!(buf.value(0));
+                assert!(!buf.value(1));
+                assert!(!buf.value(2));
+                assert!(buf.value(3));
+            }
+            _ => panic!("expected Some"),
+        }
+    }
+
+    // -- count_true tests --
+
+    /// Scenario: count_true returns correct counts for each variant.
+    /// Guarantees: Counts are consistent with the bitmap contents.
+    #[test]
+    fn count_true_variants() {
+        assert_eq!(PolicyMatch::All.count_true(100), 100);
+        assert_eq!(PolicyMatch::None.count_true(100), 0);
+
+        let some = PolicyMatch::Some(make_buffer(&[true, false, true, false, true]));
+        assert_eq!(some.count_true(5), 3);
     }
 }

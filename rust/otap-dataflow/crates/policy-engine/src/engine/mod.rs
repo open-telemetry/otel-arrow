@@ -25,9 +25,9 @@ mod translate;
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
-use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::{Predicate, PredicateResult};
+use otel_arrow_dfe_query_engine::pipeline::pipeline_expr::Predicate;
 use otel_arrow_dfe_query_engine::pipeline::{RecordType, SignalContext, SignalKind};
-use policy_rs::engine::{CompiledMatchers, LogSignal, Signal};
+use policy_rs::engine::{CompiledKeep, CompiledMatchers, CompiledPolicy, LogSignal, Signal};
 use policy_rs::{PolicyError, PolicySnapshot};
 
 use policy_match::PolicyMatch;
@@ -63,10 +63,23 @@ impl PolicyEngine {
                     // No log policies compiled -- pass through unmodified.
                     return Ok(otap_batch);
                 };
-                let _policy_matches =
+
+                let num_rows = otap_batch
+                    .root_record_batch()
+                    .map(|rb| rb.num_rows())
+                    .unwrap_or(0);
+
+                let policy_matches =
                     find_matching_policies(compiled_matchers, &otap_batch)?;
 
-                // TODO: apply keep resolution and transforms using the bitmaps
+                let _discard_bitmap = resolve_keep(
+                    &compiled_matchers.policies,
+                    &policy_matches,
+                    num_rows,
+                );
+
+                // TODO: filter the otap_batch using discard_bitmap
+                // TODO: apply transforms from matching keep:"all" policies
             }
             _ => {
                 // TODO: support other signal types
@@ -75,6 +88,108 @@ impl PolicyEngine {
 
         Ok(otap_batch)
     }
+}
+
+/// Resolve the keep decisions for all policies and record match statistics.
+///
+/// Processes policies in restrictiveness order (most restrictive first):
+/// 1. `keep: "none"` policies -- each one's newly-discarded rows are its hits;
+///    rows it matched that were already discarded by a higher-priority drop
+///    policy are its misses.
+/// 2. (Future: `keep: "N%"` sampling policies would be inserted here.)
+/// 3. `keep: "all"` policies -- rows matched and not discarded are hits;
+///    rows matched but discarded are misses.
+///
+/// Returns the accumulated discard bitmap (true = drop the row).
+///
+/// # Match tracking
+///
+/// Per the spec: if a record is kept, all matching policies record a hit.
+/// If a record is dropped, only the most restrictive policy (the "winner")
+/// records a hit; all other matching policies record a miss.
+///
+/// Since policies are processed in restrictiveness order, the first
+/// `keep: "none"` policy to claim a row is the winner for that row.
+/// Subsequent `keep: "none"` policies that also match record a miss.
+fn resolve_keep(
+    policies: &[CompiledPolicy<LogSignal>],
+    policy_matches: &[PolicyMatch],
+    num_rows: usize,
+) -> PolicyMatch {
+    // Accumulates all rows that have been discarded so far.
+    let mut already_discarded = PolicyMatch::None;
+
+    // Process keep:"none" policies first (most restrictive).
+    // Policies are already in alphabetical ID order from compilation,
+    // and all keep:"none" policies have equal restrictiveness, so
+    // iteration order is the tie-breaker.
+    for (idx, policy) in policies.iter().enumerate() {
+        if !matches!(policy.keep, CompiledKeep::None) {
+            continue;
+        }
+
+        let matched = &policy_matches[idx];
+
+        // Rows this policy wins: matched AND NOT already_discarded.
+        // These are the rows where this policy is the first drop policy to match.
+        let wins = matched.and_not(&already_discarded);
+        let hits = wins.count_true(num_rows);
+
+        // Rows this policy matched but a higher-priority drop policy already
+        // claimed: matched AND already_discarded.
+        let total_matched = matched.count_true(num_rows);
+        let misses = total_matched - hits;
+
+        // Record stats.
+        for _ in 0..hits {
+            policy.stats.record_hit();
+        }
+        for _ in 0..misses {
+            policy.stats.record_miss();
+        }
+
+        // Add this policy's matches to the discard pile.
+        already_discarded = already_discarded.or(matched);
+    }
+
+    // TODO: process keep:"N%" sampling policies here (in restrictiveness
+    // order). For each sampling policy:
+    //   1. effective = matched AND NOT already_discarded
+    //   2. make per-row sampling decision on effective rows
+    //   3. sampled_out rows: hit for this policy, added to already_discarded
+    //   4. surviving rows: no action (will be counted in keep:"all" pass)
+
+    // Process keep:"all" policies (least restrictive).
+    for (idx, policy) in policies.iter().enumerate() {
+        if !matches!(policy.keep, CompiledKeep::All) {
+            continue;
+        }
+
+        let matched = &policy_matches[idx];
+
+        // Total rows this policy matched.
+        let total_matched = matched.count_true(num_rows);
+        if total_matched == 0 {
+            continue;
+        }
+
+        // Rows this policy matched that were discarded by drop policies.
+        let overridden = matched.and(&already_discarded);
+        let misses = overridden.count_true(num_rows);
+
+        // Rows this policy matched that survived -- these are hits.
+        let hits = total_matched - misses;
+
+        // Record stats.
+        for _ in 0..hits {
+            policy.stats.record_hit();
+        }
+        for _ in 0..misses {
+            policy.stats.record_miss();
+        }
+    }
+
+    already_discarded
 }
 
 /// Returns a [`Vec`] of [`PolicyMatch`] indicating which rows matched each
@@ -88,11 +203,11 @@ impl PolicyEngine {
 /// 2. **Existence checks** -- field presence/absence tests.
 /// 3. **Typed checks** -- typed equality and numeric comparisons.
 ///
-/// For each matcher, the result is folded into the per-policy bitmap:
-/// - Non-negated matchers: AND into the "matched" bitmap (all must match).
-/// - Negated matchers: OR into the "disqualified" bitmap (any hit disqualifies).
+/// For existence and typed checks, negation is handled during expression
+/// translation (the `NOT` is baked into the `LogicalExpression`), so all
+/// results are AND'd into the per-policy `matched` bitmap.
 ///
-/// The final match for each policy is `matched AND NOT disqualified`.
+/// The final match for each policy is the `matched` bitmap.
 // TODO: generalize to other signal types (MetricSignal, TraceSignal)
 fn find_matching_policies(
     compiled: &CompiledMatchers<LogSignal>,
@@ -103,13 +218,25 @@ fn find_matching_policies(
         return Ok(Vec::new());
     }
 
-    // Two bitmaps per policy:
-    //   matched:      initialized to All, AND'd with each non-negated matcher result
-    //   disqualified: initialized to None, OR'd with each negated matcher result
+    // Per-policy bitmap: initialized to All, AND'd with each matcher result.
+    // Negation for existence and typed checks is baked into the translated
+    // LogicalExpression, so we always AND.
     let mut matched = vec![PolicyMatch::All; policy_count];
-    let mut disqualified = vec![PolicyMatch::None; policy_count];
 
-    // TODO: evaluate Vectorscan databases (string pattern matchers)
+    // TODO: evaluate Vectorscan databases (string pattern matchers).
+    //
+    // Vectorscan scans all patterns for a given (field, negated) group in one
+    // pass and returns which patterns matched. Unlike existence/typed checks,
+    // negation cannot be baked into the scan -- it must be tracked separately.
+    // When adding Vectorscan support:
+    //   - For non-negated databases: patterns that matched AND into `matched`.
+    //     Patterns in the database that did NOT match must also AND false into
+    //     `matched` for their respective policies.
+    //   - For negated databases: patterns that matched must set the
+    //     corresponding rows to not-matched for their policies. This may
+    //     require a separate `disqualified` bitmap (OR'd with negated hits)
+    //     and a final `matched AND NOT disqualified` step, or the negation
+    //     can be applied inline by AND'ing `NOT(hit)` into `matched`.
 
     // Evaluate existence checks.
     //
@@ -132,10 +259,6 @@ fn find_matching_policies(
             })?;
 
         let policy_match = PolicyMatch::from_predicate_result(result);
-
-        // Negation is already baked into the LogicalExpression by
-        // existence_check_to_logical, so we always AND here.
-        // The check's is_negated flag was handled during translation.
         matched[check.policy_index] = matched[check.policy_index].and(&policy_match);
     }
 
@@ -164,18 +287,8 @@ fn find_matching_policies(
             })?;
 
         let policy_match = PolicyMatch::from_predicate_result(result);
-
-        // Negation is already baked into the LogicalExpression by
-        // typed_check_to_logical, so we always AND here.
         matched[check.policy_index] = matched[check.policy_index].and(&policy_match);
     }
 
-    // Final result per policy: matched AND NOT disqualified
-    let mut results = Vec::with_capacity(policy_count);
-    for (m, d) in matched.into_iter().zip(disqualified.into_iter()) {
-        let result = m.and_not(&d);
-        results.push(result);
-    }
-
-    Ok(results)
+    Ok(matched)
 }
