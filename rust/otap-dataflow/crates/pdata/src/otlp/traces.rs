@@ -934,4 +934,43 @@ mod test {
         let decoded = TracesData::decode(result_buf.as_ref()).unwrap();
         assert!(decoded.resource_spans.is_empty());
     }
+
+    /// Scenario: a span link with a non-zero dropped_attributes_count is converted
+    /// OTLP -> OTAP -> OTLP bytes and decoded with prost.
+    /// Guarantees: the link's dropped_attributes_count survives the OTAP -> OTLP
+    /// encoder (it must be written as Span.Link field 5, not Span field 10).
+    #[test]
+    fn test_span_link_dropped_attributes_count_round_trips() {
+        use crate::proto::OtlpProtoMessage;
+        use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+
+        let input = TracesData::new(vec![ResourceSpans::new(
+            Resource::default(),
+            vec![ScopeSpans::new(
+                InstrumentationScope::default(),
+                vec![
+                    Span::build()
+                        .trace_id(1u128.to_le_bytes().to_vec())
+                        .span_id(2u64.to_le_bytes().to_vec())
+                        .name("span")
+                        .links(vec![
+                            Link::build()
+                                .trace_id(3u128.to_le_bytes().to_vec())
+                                .span_id(4u64.to_le_bytes().to_vec())
+                                .dropped_attributes_count(567u32)
+                                .finish(),
+                        ])
+                        .finish(),
+                ],
+            )],
+        )]);
+
+        let otap = otlp_to_otap(&OtlpProtoMessage::Traces(input));
+        let OtlpProtoMessage::Traces(output) = otap_to_otlp(&otap) else {
+            panic!("expected traces");
+        };
+
+        let link = &output.resource_spans[0].scope_spans[0].spans[0].links[0];
+        assert_eq!(link.dropped_attributes_count, 567);
+    }
 }

@@ -34,6 +34,9 @@ pub mod traces;
 mod batching_tests;
 
 #[cfg(test)]
+mod field_order_tests;
+
+#[cfg(test)]
 mod tests;
 
 /// Pipeline data represented as protobuf serialized OTLP request messages

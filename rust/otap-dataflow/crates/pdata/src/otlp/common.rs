@@ -58,6 +58,10 @@ impl ResourceArrays<'_> {
     }
 }
 
+/// Encodes a `Resource` message.
+///
+/// Fields are emitted in Go pdata order (reverse proto declaration order). See the
+/// "Field order" section of the module README.
 pub(crate) fn proto_encode_resource(
     index: usize,
     resource_arrays: &ResourceArrays<'_>,
@@ -65,7 +69,13 @@ pub(crate) fn proto_encode_resource(
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> PDataResult<()> {
-    // add attributes
+    if let Some(col) = resource_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
+    }
+
     if let Some(attrs_arrays) = resource_attrs_arrays
         && let Some(res_id) = resource_arrays.id.value_at(index)
     {
@@ -76,13 +86,6 @@ pub(crate) fn proto_encode_resource(
                 encode_key_value(attrs_arrays, attr_index, result_buf)
             })?;
         }
-    }
-
-    if let Some(col) = resource_arrays.dropped_attributes_count
-        && let Some(val) = col.value_at(index)
-    {
-        result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())
@@ -189,6 +192,10 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     }
 }
 
+/// Encodes an `InstrumentationScope` message.
+///
+/// Fields are emitted in Go pdata order (reverse proto declaration order). See the
+/// "Field order" section of the module README.
 pub(crate) fn proto_encode_instrumentation_scope(
     index: usize,
     scope_arrays: &ScopeArrays<'_>,
@@ -196,16 +203,12 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> PDataResult<()> {
-    if let Some(col) = &scope_arrays.name
-        && let Some(val) = col.str_at(index)
+    if let Some(col) = scope_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
     {
-        result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val)?;
-    }
-
-    if let Some(col) = &scope_arrays.version
-        && let Some(val) = col.str_at(index)
-    {
-        result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val)?;
+        result_buf
+            .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     if let Some(attr_arrays) = scope_attrs_arrays
@@ -219,12 +222,16 @@ pub(crate) fn proto_encode_instrumentation_scope(
         }
     }
 
-    if let Some(col) = scope_arrays.dropped_attributes_count
-        && let Some(val) = col.value_at(index)
+    if let Some(col) = &scope_arrays.version
+        && let Some(val) = col.str_at(index)
     {
-        result_buf
-            .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-        result_buf.encode_varint(val as u64)?;
+        result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val)?;
+    }
+
+    if let Some(col) = &scope_arrays.name
+        && let Some(val) = col.str_at(index)
+    {
+        result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val)?;
     }
 
     Ok(())

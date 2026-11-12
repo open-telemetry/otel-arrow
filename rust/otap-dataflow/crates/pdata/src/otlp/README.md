@@ -30,6 +30,30 @@ type distinguishes the oneof in its constructors (e.g., `new_string`,
 use the all use `build()` with oneof variants expressed through the
 particular field (e.g., `data_sum`, `data_gauge`, ...).
 
+## Field order
+
+The OTAP -> OTLP logs encoder (`LogsProtoBytesEncoder`) writes the fields of
+every message in the same order as the Go Collector's pdata marshaler. Go
+pdata marshals each message backwards, walking the struct in `.proto`
+declaration order. As a result:
+
+- Fields appear on the wire in **reverse `.proto` declaration order**. This
+  is not always descending field-number order. For example, `LogRecord`
+  ends with `observed_time_unix_nano` (11) then `time_unix_nano` (1).
+- `KeyValue` is written value first, then key.
+- Elements of repeated fields keep their original order.
+
+Any field order is valid protobuf, but for logs this one compresses
+noticeably better than forward order: low-entropy fields come first, and
+the per-record timestamps end up next to each other.
+
+The shared `Resource`, `InstrumentationScope` and `KeyValue` encoders use
+this order for every signal. The traces and metrics encoders keep forward
+order for their own messages: Go order made no measurable compression
+difference for them. `field_order_tests.rs` checks every message in the
+logs tree against the expected order. When you add or change a logs
+encoder, keep to this order and update those tests.
+
 ## List of types
 
 ### Simple types

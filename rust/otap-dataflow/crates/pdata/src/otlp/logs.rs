@@ -275,6 +275,10 @@ impl LogsProtoBytesEncoder {
         self.log_attrs_cursor.reset();
     }
 
+    /// Encodes a `ResourceLogs` message.
+    ///
+    /// Fields are emitted in Go pdata order (reverse proto declaration order). See
+    /// the "Field order" section of the module README.
     fn encode_resource_log(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
@@ -285,16 +289,12 @@ impl LogsProtoBytesEncoder {
             None => return Ok(()), // no more rows to visit
         };
 
-        // encode the `Resource`
-        result_buf.encode_len_delimited(LOGS_DATA_RESOURCE, |result_buf| {
-            proto_encode_resource(
-                index,
-                &logs_data_arrays.resource_arrays,
-                logs_data_arrays.resource_attrs.as_ref(),
-                &mut self.resource_attrs_cursor,
-                result_buf,
-            )
-        })?;
+        // encode schema url
+        if let Some(col) = &logs_data_arrays.resource_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val)?;
+        }
 
         // encode all `ScopeLog`s for this `ResourceLog`
         let resource_id = logs_data_arrays
@@ -323,16 +323,24 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        // encode schema url
-        if let Some(col) = &logs_data_arrays.resource_arrays.schema_url
-            && let Some(val) = col.str_at(index)
-        {
-            result_buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, val)?;
-        }
+        // encode the `Resource`
+        result_buf.encode_len_delimited(LOGS_DATA_RESOURCE, |result_buf| {
+            proto_encode_resource(
+                index,
+                &logs_data_arrays.resource_arrays,
+                logs_data_arrays.resource_attrs.as_ref(),
+                &mut self.resource_attrs_cursor,
+                result_buf,
+            )
+        })?;
 
         Ok(())
     }
 
+    /// Encodes a `ScopeLogs` message.
+    ///
+    /// Fields are emitted in Go pdata order (reverse proto declaration order). See
+    /// the "Field order" section of the module README.
     fn encode_scope_logs(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
@@ -342,16 +350,14 @@ impl LogsProtoBytesEncoder {
             Some(index) => index,
             None => return Ok(()), // no more rows to visit
         };
-        // encode the `InstrumentationScope`
-        result_buf.encode_len_delimited(SCOPE_LOG_SCOPE, |result_buf| {
-            proto_encode_instrumentation_scope(
-                index,
-                &logs_data_arrays.scope_arrays,
-                logs_data_arrays.scope_attrs.as_ref(),
-                &mut self.scope_attrs_cursor,
-                result_buf,
-            )
-        })?;
+
+        // encode schema url. This reads the first row of the scope, so it must happen
+        // before the loop below advances the root cursor.
+        if let Some(col) = &logs_data_arrays.log_arrays.schema_url
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val)?;
+        }
 
         // encode all `LogRecord`s for this `ScopeLog`
         let scope_id = logs_data_arrays
@@ -381,16 +387,25 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        // encode schema url
-        if let Some(col) = &logs_data_arrays.log_arrays.schema_url
-            && let Some(val) = col.str_at(index)
-        {
-            result_buf.encode_string(SCOPE_LOGS_SCHEMA_URL, val)?;
-        }
+        // encode the `InstrumentationScope`
+        result_buf.encode_len_delimited(SCOPE_LOG_SCOPE, |result_buf| {
+            proto_encode_instrumentation_scope(
+                index,
+                &logs_data_arrays.scope_arrays,
+                logs_data_arrays.scope_attrs.as_ref(),
+                &mut self.scope_attrs_cursor,
+                result_buf,
+            )
+        })?;
 
         Ok(())
     }
 
+    /// Encodes a `LogRecord` message.
+    ///
+    /// Fields are emitted in Go pdata order (reverse proto declaration order). Note
+    /// that observed_time_unix_nano (11) is declared second, so it is emitted just
+    /// before time_unix_nano (1). See the "Field order" section of the module README.
     fn encode_log_record(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
@@ -403,37 +418,36 @@ impl LogsProtoBytesEncoder {
 
         let log_arrays = &logs_data_arrays.log_arrays;
 
-        if let Some(col) = log_arrays.time_unix_nano
+        if let Some(col) = &log_arrays.event_name
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+        }
+
+        if let Some(col) = &log_arrays.span_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
+        }
+
+        if let Some(col) = &log_arrays.trace_id
+            && let Some(val) = col.slice_at(index)
+        {
+            result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val)?;
+        }
+
+        if let Some(col) = &log_arrays.flags
             && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
             result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(col) = &log_arrays.severity_number
+        if let Some(col) = log_arrays.dropped_attributes_count
             && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
+            result_buf.encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
             result_buf.encode_varint(val as u64)?;
-        }
-
-        if let Some(col) = &log_arrays.severity_text
-            && let Some(val) = col.str_at(index)
-        {
-            result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val)?;
-        }
-
-        if let Some(log_body_arrays) = &logs_data_arrays.log_arrays.body
-            && log_body_arrays.is_valid(index)
-        {
-            let anyval_arrays = &log_body_arrays.anyval_arrays;
-            if let Some(value_type) = anyval_arrays.attr_type.value_at(index)
-                && let Ok(value_type) = AttributeValueType::try_from(value_type)
-            {
-                result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
-                    encode_any_value(anyval_arrays, index, value_type, result_buf)
-                })?;
-            }
         }
 
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref()
@@ -449,30 +463,30 @@ impl LogsProtoBytesEncoder {
             }
         }
 
-        if let Some(col) = log_arrays.dropped_attributes_count
+        if let Some(log_body_arrays) = &logs_data_arrays.log_arrays.body
+            && log_body_arrays.is_valid(index)
+        {
+            let anyval_arrays = &log_body_arrays.anyval_arrays;
+            if let Some(value_type) = anyval_arrays.attr_type.value_at(index)
+                && let Ok(value_type) = AttributeValueType::try_from(value_type)
+            {
+                result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
+                    encode_any_value(anyval_arrays, index, value_type, result_buf)
+                })?;
+            }
+        }
+
+        if let Some(col) = &log_arrays.severity_text
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_SEVERITY_TEXT, val)?;
+        }
+
+        if let Some(col) = &log_arrays.severity_number
             && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_field_tag(LOG_RECORD_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+            result_buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT)?;
             result_buf.encode_varint(val as u64)?;
-        }
-
-        if let Some(col) = &log_arrays.flags
-            && let Some(val) = col.value_at(index)
-        {
-            result_buf.encode_field_tag(LOG_RECORD_FLAGS, wire_types::FIXED32)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-
-        if let Some(col) = &log_arrays.trace_id
-            && let Some(val) = col.slice_at(index)
-        {
-            result_buf.encode_bytes(LOG_RECORD_TRACE_ID, val)?;
-        }
-
-        if let Some(col) = &log_arrays.span_id
-            && let Some(val) = col.slice_at(index)
-        {
-            result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
         }
 
         if let Some(col) = log_arrays.observed_time_unix_nano
@@ -482,10 +496,11 @@ impl LogsProtoBytesEncoder {
             result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(col) = &log_arrays.event_name
-            && let Some(val) = col.str_at(index)
+        if let Some(col) = log_arrays.time_unix_nano
+            && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
         self.root_cursor.advance();
