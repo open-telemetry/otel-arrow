@@ -42,6 +42,13 @@ details.
 
 ## Admin HTTP endpoints
 
+The admin HTTP listener has no built-in authentication or TLS and also exposes
+control endpoints for [live reconfiguration](admin/live-reconfiguration.md),
+config reconciliation, and pipeline shutdown. Keep it bound to loopback or put
+it behind an authenticated reverse proxy. See the
+[Security and privacy guide](telemetry/security-privacy-guide.md) and
+[Admin security notes](../crates/admin/README.md#security).
+
 | Method and path | Description |
 | --- | --- |
 | `GET /`, `GET /dashboard` | Embedded browser debugging dashboard. |
@@ -64,7 +71,7 @@ details.
 | Endpoint | Parameter | Values | Default | Behavior |
 | --- | --- | --- | --- | --- |
 | `/metrics`, `/telemetry/metrics`, `/telemetry/metrics/aggregate` | `format` | `prometheus`, `json`, `json_compact`, `line_protocol` | `prometheus` | Response serialization format. |
-| `/metrics`, `/telemetry/metrics`, `/telemetry/metrics/aggregate` | `reset` | `true`, `false` | `false` | Resets synchronous counters and distributions after reading. Keep `false` for Prometheus scraping and UI polling. |
+| `/metrics`, `/telemetry/metrics`, `/telemetry/metrics/aggregate` | `reset` | `true`, `false` | `false` | Resets the shared admin accumulator for synchronous counters and distributions after reading, which affects all admin clients including Prometheus scrapers and the browser UI. Keep `false` for scraping and UI polling. |
 | `/metrics`, `/telemetry/metrics` | `keep_all_zeroes` | `true`, `false` | `false` | Retains all-zero metric sets in `json` and `json_compact` outputs. Ignored by `prometheus` and `line_protocol`. |
 | `/telemetry/metrics/aggregate` | `attrs` | Comma-separated entity attribute keys | empty | Groups by the listed entity attribute keys, such as `pipeline.id,node.id`. Wildcards like `*` and datapoint attributes like `signal` are not supported. When omitted, each `otel_scope_name` collapses into one group. |
 
