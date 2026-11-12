@@ -3,27 +3,34 @@
 
 //! Implementation of the columnar policy evaluation engine.
 //!
-//! This module evaluates compiled telemetry policies against OTAP Arrow
-//! record batches. Instead of the row-by-row evaluation in `policy-rs`,
-//! it operates on entire columns, using per-policy bitmaps to track which
-//! rows each policy matches.
+//! This module evaluates compiled telemetry policies against OTAP Arrow batches.
 //!
-//! # Performance optimizations (TODO)
+//! ---
 //!
-//! The following optimizations should be evaluated and implemented:
+//! TODO - This work is still experimental and there are various TODOs that should be completed,
+//! some of which are listed below.
 //!
-//! - **Short-circuit evaluation**: if all rows are discarded at any point
-//!   during keep resolution (i.e., the discard bitmap becomes `All`), skip
-//!   remaining policy evaluation and return an empty batch immediately.
+//! # Functionality (things that aren't yet supported)
 //!
-//! - **Predicate caching**: keep the planned [`Predicate`] instances between
-//!   batch evaluations instead of re-planning from `LogicalExpression` on
-//!   every call. The `Predicate` contains a compiled `ScopedExpr` and a
+//! - Metics/Traces
+//! - Sampling
+//! - Volume Tracking
+//!
+//! # Performance
+//!
+//! The following optimizations should be evaluated and implemented if they seem worthwhile:
+//!
+//! - **Short-circuit evaluation**: if all rows are discarded at any point during keep resolution
+//!   skip remaining policy transformation and return an empty batch immediately (note: hit/miss
+//!   statistics must still be updated)
+//!
+//! - **Predicate caching**: keep any planned expression evaluation instances from the query-engine
+//!   crate instances between OTAP batch policy engine evaluations instead of re-planning from
+//!   the expression eval on every call.  The `Predicate` contains a compiled `ScopedExpr` and a
 //!   `SessionContext` that can be reused across batches.
 //!
-//! - **Buffer pooling**: reuse `BooleanBuffer` heap allocations across
-//!   batches and across policies within a batch rather than allocating and
-//!   discarding them each time. The `PolicyMatch` bitmaps are prime
+//! - **Buffer pooling**: reuse `BooleanBuffer` heap allocations across batches and across policies
+//!   within a batch rather than allocating and discarding them each time. The `PolicyMatch` bitmaps are prime
 //!   candidates for pooling since they have predictable sizes.
 //!
 //! # Error handling
@@ -36,12 +43,17 @@
 //! - All categories must be fail-open: no telemetry loss on error.
 //! - Errors should be reported via `PolicySyncStatus` for observability.
 //!
+//! Currently this just returns CompileError everywhere, alongside very simple (some might say
+//! uninformative) error messages, which I doubt is correct according to what the spec suggests.
+//!
 //! See the "Error Handling" section of the policy specification.
 
 mod policy_match;
 mod transform;
 mod translate;
 
+use arrow::array::BooleanArray;
+use arrow::compute::not;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
@@ -56,9 +68,7 @@ use translate::{existence_check_to_logical, typed_check_to_logical};
 
 /// Columnar policy evaluation engine.
 ///
-/// Evaluates all policies in a [`PolicySnapshot`] against an OTAP Arrow
-/// batch, producing per-policy match bitmaps that drive the keep/transform
-/// stages.
+/// Evaluates all policies in a [`PolicySnapshot`] against an OTAP Arrow batch.
 pub struct PolicyEngine {}
 
 impl PolicyEngine {
@@ -67,8 +77,8 @@ impl PolicyEngine {
         Self {}
     }
 
-    /// Evaluate the policies in the snapshot on all the rows within the
-    /// OTAP batch, applying keep and transform actions.
+    /// Evaluate the policies in the snapshot on all the rows within the OTAP batch, applying keep
+    /// and transform modifications.
     pub fn evaluate_and_transform(
         &self,
         snapshot: &PolicySnapshot,
@@ -76,14 +86,7 @@ impl PolicyEngine {
     ) -> Result<OtapArrowRecords, PolicyError> {
         // TODO:
         // - volume tracking
-        // - metric signal type handling (MetricSignal, MetricFieldSelector)
-        // - trace signal type handling (TraceSignal, TraceFieldSelector)
-        //
-        // Adding a new signal type requires:
-        //   1. A find_matching_policies variant (or making it generic over S: Signal)
-        //   2. translate.rs equivalents for the signal's field selectors
-        //   3. transform.rs equivalents (classify_field, concat, etc.)
-        //   4. resolve_keep works generically already
+        // - handling of metrics & traces
 
         match otap_batch.signal_type() {
             SignalType::Logs => {
@@ -92,120 +95,119 @@ impl PolicyEngine {
                     return Ok(otap_batch);
                 };
 
-                let num_rows = otap_batch
-                    .root_record_batch()
-                    .map(|rb| rb.num_rows())
-                    .unwrap_or(0);
+                // keep track of how many rows we had in the incoming batch before any
+                // sampling/discards were applied
+                let input_num_rows = otap_batch.num_items();
 
-                if num_rows == 0 {
+                if input_num_rows == 0 {
+                    // nothing to do!
                     return Ok(otap_batch);
                 }
 
-                let policy_matches =
-                    find_matching_policies(compiled_matchers, &otap_batch)?;
+                let policy_matches = find_matching_policies(compiled_matchers, &otap_batch)?;
 
-                let discard_bitmap = resolve_keep(
+                let keep_mask = resolve_keep_and_record_stats(
                     &compiled_matchers.policies,
                     &policy_matches,
-                    num_rows,
+                    input_num_rows,
                 );
 
-                // Invert: filter_otap_batch expects true = keep.
-                let keep_mask = PolicyMatch::not(&discard_bitmap, num_rows);
-
-                // Short-circuit: if everything was discarded, return empty.
-                if matches!(keep_mask, PolicyMatch::None) {
-                    return Ok(OtapArrowRecords::Logs(
-                        otel_arrow_dfe_pdata::otap::Logs::default(),
-                    ));
-                }
-
-                // Filter the OTAP batch to remove discarded rows.
-                // If nothing was discarded, skip the filter entirely.
-                // TODO: keep id_bitmap_pool for reuse between invocations
-                // (similar to the Predicate caching optimization).
+                // TODO keep id_bitmap_pool for reuse between invocations
                 let mut id_bitmap_pool = IdBitmapPool::new();
-                let mut filtered_batch = if matches!(keep_mask, PolicyMatch::All) {
-                    otap_batch
-                } else {
-                    let keep_array = keep_mask.to_boolean_array(num_rows);
-                    filter_otap_batch(&keep_array, &otap_batch, &mut id_bitmap_pool)
+
+                let mut filtered_batch = match &keep_mask {
+                    PolicyMatch::None => {
+                        // short-circuit: everything discarded, just return empty
+                        return Ok(OtapArrowRecords::Logs(
+                            otel_arrow_dfe_pdata::otap::Logs::default(),
+                        ));
+                    }
+                    PolicyMatch::All => {
+                        // nothing filtered out
+                        otap_batch
+                    }
+                    PolicyMatch::Some(keep_selection) => {
+                        filter_otap_batch(
+                            // TODO Arc Arc Arc ??
+                            &BooleanArray::new(keep_selection.clone(), None),
+                            &otap_batch,
+                            &mut id_bitmap_pool,
+                        )
+                        // TODO - not a compile error
                         .map_err(|e| PolicyError::CompileError {
                             reason: format!("filter: {e}"),
                         })?
+                    }
                 };
 
                 // Apply transforms from matching keep:"all" policies.
                 // Policies are already in alphabetical ID order from compilation.
                 // Filtered match bitmaps are computed on the fly to avoid
                 // materializing a Vec of all filtered bitmaps up front.
-                let surviving_rows = filtered_batch
-                    .root_record_batch()
-                    .map(|rb| rb.num_rows())
-                    .unwrap_or(0);
+                let surviving_rows = filtered_batch.num_items();
 
                 for (idx, policy) in compiled_matchers.policies.iter().enumerate() {
-                    let Some(transform) = &policy.transform else {
-                        continue;
-                    };
+                    // TODO this should be policy matches != ALL (so we don't accidentally
+                    // evaluate unsupported "sampling" policies)?
+                    // TODO Do the transforms run on the rows that are not dropped in case of None?
                     if matches!(policy.keep, CompiledKeep::None) {
                         // Transforms never run on dropped rows.
                         continue;
                     }
+
+                    let Some(transform) = &policy.transform else {
+                        continue;
+                    };
                     if transform.is_empty() {
                         continue;
                     }
 
-                    let filtered_match =
-                        policy_matches[idx].filter_by(&keep_mask, num_rows);
+                    // Get the mask of non-dropped rows that are matched by this policy
+                    let filtered_match = policy_matches[idx].filter_by(&keep_mask);
 
                     match filtered_match {
                         PolicyMatch::None => continue,
                         PolicyMatch::All => {
                             // Transform all surviving rows in place.
-                            apply_policy_transforms(&mut filtered_batch, transform)
-                                .map_err(|e| PolicyError::CompileError {
+                            apply_policy_transforms(&mut filtered_batch, transform).map_err(
+                                |e| PolicyError::CompileError {
                                     reason: format!("transform: {e}"),
-                                })?;
+                                },
+                            )?;
                         }
                         PolicyMatch::Some(_) => {
-                            // Split: matched subset + unmatched remainder.
-                            let selection =
-                                filtered_match.to_boolean_array(surviving_rows);
-                            let not_selection =
-                                PolicyMatch::not(&filtered_match, surviving_rows)
-                                    .to_boolean_array(surviving_rows);
-
-                            let mut matched_batch = filter_otap_batch(
-                                &selection,
-                                &filtered_batch,
-                                &mut id_bitmap_pool,
-                            )
-                            .map_err(|e| PolicyError::CompileError {
+                            let map_transform_filter = |e| PolicyError::CompileError {
                                 reason: format!("transform filter: {e}"),
-                            })?;
+                            };
 
+                            // Apply transforms to matched subset.
+                            let selection = filtered_match.to_boolean_array(surviving_rows);
+                            let mut matched_batch =
+                                filter_otap_batch(&selection, &filtered_batch, &mut id_bitmap_pool)
+                                    .map_err(map_transform_filter)?;
+                            apply_policy_transforms(&mut matched_batch, transform).map_err(
+                                |e| PolicyError::CompileError {
+                                    reason: format!("transform: {e}"),
+                                },
+                            )?;
+
+                            // Get the non-matched rows
+                            let not_selection =
+                                not(&selection).map_err(|e| PolicyError::CompileError {
+                                    reason: format!("transform: {e}"),
+                                })?;
                             let unmatched_batch = filter_otap_batch(
                                 &not_selection,
                                 &filtered_batch,
                                 &mut id_bitmap_pool,
                             )
-                            .map_err(|e| PolicyError::CompileError {
-                                reason: format!("transform filter: {e}"),
-                            })?;
-
-                            // Apply transforms to matched subset.
-                            apply_policy_transforms(&mut matched_batch, transform)
-                                .map_err(|e| PolicyError::CompileError {
-                                    reason: format!("transform: {e}"),
-                                })?;
+                            .map_err(map_transform_filter)?;
 
                             // Concat back together.
-                            filtered_batch =
-                                concat_log_batches(matched_batch, unmatched_batch)
-                                    .map_err(|e| PolicyError::CompileError {
-                                        reason: format!("transform concat: {e}"),
-                                    })?;
+                            filtered_batch = concat_log_batches(matched_batch, unmatched_batch)
+                                .map_err(|e| PolicyError::CompileError {
+                                    reason: format!("transform concat: {e}"),
+                                })?;
                         }
                     }
                 }
@@ -223,55 +225,56 @@ impl PolicyEngine {
 
 /// Resolve the keep decisions for all policies and record match statistics.
 ///
-/// Processes policies in restrictiveness order (most restrictive first):
-/// 1. `keep: "none"` policies -- each one's newly-discarded rows are its hits;
-///    rows it matched that were already discarded by a higher-priority drop
-///    policy are its misses.
-/// 2. (Future: `keep: "N%"` sampling policies would be inserted here.)
-/// 3. `keep: "all"` policies -- rows matched and not discarded are hits;
-///    rows matched but discarded are misses.
+/// The policy spec says that the decision about whether to keep or discard some row must be made
+/// by the most restrictive policy (see the spec for the rules about how restrictiveness is
+/// determined).
 ///
-/// Returns the accumulated discard bitmap (true = drop the row).
+/// For each row, this will determine the most restrictive policy that matches it and then use the
+/// keep decision from this policy. This returns the [`PolicyMatch`] indicating which rows to keep.
 ///
-/// # Match tracking
-///
-/// Per the spec: if a record is kept, all matching policies record a hit.
-/// If a record is dropped, only the most restrictive policy (the "winner")
-/// records a hit; all other matching policies record a miss.
-///
-/// Since policies are processed in restrictiveness order, the first
-/// `keep: "none"` policy to claim a row is the winner for that row.
-/// Subsequent `keep: "none"` policies that also match record a miss.
-fn resolve_keep(
+/// This function also updates the policies' hit/miss statistics.
+fn resolve_keep_and_record_stats(
     policies: &[CompiledPolicy<LogSignal>],
     policy_matches: &[PolicyMatch],
     num_rows: usize,
 ) -> PolicyMatch {
-    // Accumulates all rows that have been discarded so far.
+    // Accumulates all rows that have been discarded. This will be updated as we iterate through
+    // policies in order of restrictiveness.
     let mut already_discarded = PolicyMatch::None;
 
     // Process keep:"none" policies first (most restrictive).
-    // Policies are already in alphabetical ID order from compilation,
-    // and all keep:"none" policies have equal restrictiveness, so
-    // iteration order is the tie-breaker.
+    //
+    // Note that the engine does not currently support any "keep" policy other than "all" (least
+    // restrictive) and "none" (most restrictive). We first need to determine the "most
+    // restrictive" that matches some row so given what is currently supported, this effectively
+    // means just look at all the "none" policies first.
+    //
+    // "tie-breaking": The spec also says that policies must be processed in a "consistent order",
+    // so we're being consistent here for all these policies with equal restrictiveness via the fact
+    // that Policies are already in alphabetical ID order from compilation.
+    //
     for (idx, policy) in policies.iter().enumerate() {
+        // skip the less restrictive policies ...
         if !matches!(policy.keep, CompiledKeep::None) {
             continue;
         }
 
         let matched = &policy_matches[idx];
 
-        // Rows this policy wins: matched AND NOT already_discarded.
-        // These are the rows where this policy is the first drop policy to match.
+        // Record Stats ...
+
+        // hits: these are the rows where this policy is the first drop policy to match. E.g. this
+        // is the policy which made the decision to drop the row.
         let wins = matched.and_not(&already_discarded);
         let hits = wins.count_true(num_rows);
 
-        // Rows this policy matched but a higher-priority drop policy already
-        // claimed: matched AND already_discarded.
+        // misses: rows this policy matched but a previous policy already matched
+        // already discarded.
         let total_matched = matched.count_true(num_rows);
         let misses = total_matched - hits;
 
-        // Record stats.
+        // TODO - we should get policy-rs to expose a method to increment these by some amount
+        // instead of iterating and incrementing by one each time.
         for _ in 0..hits {
             policy.stats.record_hit();
         }
@@ -279,24 +282,27 @@ fn resolve_keep(
             policy.stats.record_miss();
         }
 
-        // Add this policy's matches to the discard pile.
+        // Update the bitmask of discarded rows
         already_discarded = already_discarded.or(matched);
     }
 
-    // TODO: process keep:"N%" sampling policies here (in restrictiveness
-    // order). For each sampling policy:
-    //   1. effective = matched AND NOT already_discarded
-    //   2. make per-row sampling decision on effective rows
-    //   3. sampled_out rows: hit for this policy, added to already_discarded
-    //   4. surviving rows: no action (will be counted in keep:"all" pass)
+    // TODO: process keep: <sampling> policies
 
-    // Process keep:"all" policies (least restrictive).
+    // Process keep:"all" policies (least restrictive). Since these don't contribute to the
+    // drop decision, this is just updating statistics.
+    //
+    // TODO - DOUBLE CHECK the assumption that "keep" doesn't contribute to the drop decision.
+    // E.g. if no policy matched for some row, do we keep it? What does the go-collector policy
+    // processor do?
+    //
     for (idx, policy) in policies.iter().enumerate() {
         if !matches!(policy.keep, CompiledKeep::All) {
             continue;
         }
 
         let matched = &policy_matches[idx];
+
+        // Record stats ...
 
         // Total rows this policy matched.
         let total_matched = matched.count_true(num_rows);
@@ -305,13 +311,14 @@ fn resolve_keep(
         }
 
         // Rows this policy matched that were discarded by drop policies.
-        let overridden = matched.and(&already_discarded);
-        let misses = overridden.count_true(num_rows);
+        let matches_dropped = matched.and(&already_discarded);
+        let misses = matches_dropped.count_true(num_rows);
 
         // Rows this policy matched that survived -- these are hits.
         let hits = total_matched - misses;
 
-        // Record stats.
+        // TODO - we should get policy-rs to expose a method to increment these by some amount
+        // instead of iterating and incrementing by one each time.
         for _ in 0..hits {
             policy.stats.record_hit();
         }
@@ -320,7 +327,8 @@ fn resolve_keep(
         }
     }
 
-    already_discarded
+    // return the mask of which rows to keep
+    PolicyMatch::not(&already_discarded)
 }
 
 /// Returns a [`Vec`] of [`PolicyMatch`] indicating which rows matched each
@@ -378,9 +386,11 @@ fn find_matching_policies(
     for check in &compiled.existence_checks {
         let logical_expr = existence_check_to_logical(check);
 
-        let mut predicate = Predicate::try_new(&logical_expr, record_type.clone())
-            .map_err(|e| PolicyError::CompileError {
-                reason: format!("existence check: {e}"),
+        let mut predicate =
+            Predicate::try_new(&logical_expr, record_type.clone()).map_err(|e| {
+                PolicyError::CompileError {
+                    reason: format!("existence check: {e}"),
+                }
             })?;
 
         let result = predicate
@@ -406,9 +416,11 @@ fn find_matching_policies(
             continue;
         };
 
-        let mut predicate = Predicate::try_new(&logical_expr, record_type.clone())
-            .map_err(|e| PolicyError::CompileError {
-                reason: format!("typed check: {e}"),
+        let mut predicate =
+            Predicate::try_new(&logical_expr, record_type.clone()).map_err(|e| {
+                PolicyError::CompileError {
+                    reason: format!("typed check: {e}"),
+                }
             })?;
 
         let result = predicate

@@ -134,7 +134,7 @@ impl PolicyMatch {
     /// negation. Returns `All` if all bits become set, `None` if all
     /// become unset.
     #[must_use]
-    pub(crate) fn not(this: &PolicyMatch, num_rows: usize) -> PolicyMatch {
+    pub(crate) fn not(this: &PolicyMatch) -> PolicyMatch {
         match this {
             PolicyMatch::All => PolicyMatch::None,
             PolicyMatch::None => PolicyMatch::All,
@@ -152,12 +152,8 @@ impl PolicyMatch {
     }
 
     /// Filter this bitmap to keep only the rows indicated by `keep_mask`.
-    ///
-    /// The result has `keep_mask.count_true(num_rows)` rows -- one for each
-    /// `true` bit in `keep_mask`. Used to shrink per-policy match bitmaps
-    /// down to only the surviving rows after the discard filter is applied.
     #[must_use]
-    pub(crate) fn filter_by(&self, keep_mask: &PolicyMatch, num_rows: usize) -> PolicyMatch {
+    pub(crate) fn filter_by(&self, keep_mask: &PolicyMatch) -> PolicyMatch {
         match (self, keep_mask) {
             // If the mask keeps everything, the bitmap is unchanged.
             (x, PolicyMatch::All) => x.clone(),
