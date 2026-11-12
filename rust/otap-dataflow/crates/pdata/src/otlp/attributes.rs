@@ -80,10 +80,6 @@ where
     }
 }
 
-/// Encodes a `KeyValue` message.
-///
-/// Fields are emitted in Go pdata order (value, then key). See the "Field order"
-/// section of the module README.
 pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     attr_arrays: &AttributeArrays<'_, T>,
     index: usize,

@@ -30,29 +30,6 @@ type distinguishes the oneof in its constructors (e.g., `new_string`,
 use the all use `build()` with oneof variants expressed through the
 particular field (e.g., `data_sum`, `data_gauge`, ...).
 
-## Field order
-
-Protobuf allows fields in any order, and the order affects how well the
-encoded bytes compress. The OTAP -> OTLP encoder uses two layouts chosen
-for compression:
-
-- `KeyValue` is written value first, then key, as the Go Collector's pdata
-  marshaler does. This applies to attributes of every signal and to map
-  values in log bodies.
-- `LogRecord` keeps forward field order, except that
-  `observed_time_unix_nano` (11) and `time_unix_nano` (1) are written
-  last, in that order.
-
-On semantic-convention log data, these layouts make zstd-compressed
-OTLP logs about 20% smaller and gzip-compressed logs about 9% smaller.
-Fully reproducing Go's reverse declaration order for `LogRecord`, or
-reordering `ResourceLogs`, `ScopeLogs`, `Resource` or
-`InstrumentationScope`, added little or nothing on top of that and made
-encoding slower.
-
-`field_order_tests.rs` checks both layouts. If you change these encoders,
-keep these layouts and update those tests.
-
 ## List of types
 
 ### Simple types

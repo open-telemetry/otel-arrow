@@ -348,26 +348,23 @@ fn proto_encode_cbor_kv(
     value: &ciborium::Value,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    // Validate the key before writing anything so an invalid key fails early.
-    let key_str = match key {
-        ciborium::Value::Text(key_str) => Some(key_str),
-        // empty key
-        ciborium::Value::Null => None,
+    match key {
+        ciborium::Value::Text(key_str) => {
+            result_buf.encode_string(KEY_VALUE_KEY, key_str)?;
+        }
+        ciborium::Value::Null => {
+            // empty key
+        }
         other => {
             return Err(Error::InvalidSerializedMapKeyType {
                 actual: other.clone(),
             });
         }
-    };
+    }
 
-    // Fields are emitted in Go pdata order (value, then key).
     result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
         proto_encode_cbor_value(value, result_buf)
     })?;
-
-    if let Some(key_str) = key_str {
-        result_buf.encode_string(KEY_VALUE_KEY, key_str)?;
-    }
 
     Ok(())
 }

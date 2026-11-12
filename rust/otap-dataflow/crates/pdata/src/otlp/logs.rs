@@ -391,11 +391,6 @@ impl LogsProtoBytesEncoder {
         Ok(())
     }
 
-    /// Encodes a `LogRecord` message.
-    ///
-    /// Fields are emitted in forward order, except that observed_time_unix_nano and
-    /// time_unix_nano are written last, in that order. This compresses better. See the
-    /// "Field order" section of the module README.
     fn encode_log_record(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
