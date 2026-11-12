@@ -683,7 +683,7 @@ the following behaviours, and make the behaviour configurable:
 
 - _Config Error_: If we know that metadata is referenced that will not be
   present at runtime due to policy configuration, we should have the option to
-  consider the pipeline invalid.
+  consider the pipeline invalid. This should be the default
 - _Null at Runtime_: If we chose not to surface a configuration error, we can
   treat the metadata as missing at runtime. Interestingly in this mode, the
   planner may be able to convert function invocation expressions into static
