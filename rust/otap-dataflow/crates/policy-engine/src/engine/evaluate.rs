@@ -12,13 +12,23 @@
 //!   match a double column and vice versa.
 //!
 
+// TODO: non-exhaustive list of ways to make this code better:
+//
+// - I'm convinced there is a way for attributes that we can cache the attribute we select with
+//   some given key. Currently every time an attribute is accessed, we scan the key column and then
+//   possibly filter some other columns with the same key.
+//
+//
+
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, Datum, Float64Array, Int64Array, StringArray, UInt16Array,
+    Array, ArrayRef, BooleanArray, Datum, Float64Array, Int64Array, RecordBatch, StringArray,
+    UInt16Array, UInt8Array,
 };
 use arrow::compute::kernels::cmp;
 use arrow::datatypes::DataType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, build_native_selection_vec};
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 use policy_rs::engine::{
@@ -43,8 +53,8 @@ pub(crate) fn evaluate_typed_check(
     };
 
     let result = match target {
-        FieldTarget::Attribute(_, _) => {
-            todo!("attribute field typed check evaluation with parent_id join-back via IdBitmap")
+        FieldTarget::Attribute(key, payload_type) => {
+            evaluate_typed_check_on_attribute(otap_batch, key, payload_type, &check.matcher)
         }
         FieldTarget::SimpleField(column_name) => {
             evaluate_typed_check_on_root(otap_batch, column_name, &check.matcher)
@@ -349,12 +359,221 @@ fn evaluate_existence_on_attribute(
     }
 }
 
+/// Evaluate a typed comparison on an attribute child batch.
+///
+/// Filters the attribute batch by key, checks the type column for compatible
+/// types, applies the comparison on the typed value column, and joins the
+/// result back to root rows via parent_id/id.
+fn evaluate_typed_check_on_attribute(
+    otap_batch: &OtapArrowRecords,
+    attr_key: &str,
+    payload_type: ArrowPayloadType,
+    matcher: &CompiledTypedMatcher,
+) -> PolicyMatch {
+    let root_batch = match otap_batch.root_record_batch() {
+        Some(rb) => rb,
+        None => return PolicyMatch::None,
+    };
+
+    let Some(root_id_col) = get_root_id_column(root_batch, payload_type) else {
+        return PolicyMatch::None;
+    };
+
+    let Some(attrs_batch) = otap_batch.get(payload_type) else {
+        return PolicyMatch::None;
+    };
+
+    // Filter by key.
+    let Some(key_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_KEY) else {
+        return PolicyMatch::None;
+    };
+    let key_scalar = StringArray::new_scalar(attr_key);
+    let Ok(key_mask) = cmp::eq(key_col, &key_scalar) else {
+        return PolicyMatch::None;
+    };
+    if key_mask.true_count() == 0 {
+        return PolicyMatch::None;
+    }
+
+    // Get the parent_id column.
+    let Some(parent_id_col) = attrs_batch.column_by_name(consts::PARENT_ID) else {
+        return PolicyMatch::None;
+    };
+    let Some(parent_id_u16) = parent_id_col.as_any().downcast_ref::<UInt16Array>() else {
+        return PolicyMatch::None;
+    };
+
+    // Get the type column to check value type compatibility.
+    let Some(type_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_TYPE) else {
+        return PolicyMatch::None;
+    };
+    let Some(type_u8) = type_col.as_any().downcast_ref::<UInt8Array>() else {
+        return PolicyMatch::None;
+    };
+
+    // Determine which attribute value types and columns are relevant for
+    // this matcher, then attempt the comparison on each.
+    // TODO: use an IdBitmapPool for reuse between evaluations.
+    let mut id_bitmap = IdBitmap::new();
+
+    match matcher {
+        CompiledTypedMatcher::Equals(CompiledValue::Bool(val)) => {
+            collect_matching_attr_rows(
+                attrs_batch, &key_mask, type_u8, parent_id_u16,
+                consts::ATTRIBUTE_BOOL, AttributeValueType::Bool as u8,
+                &BooleanArray::new_scalar(*val), cmp::eq,
+                &mut id_bitmap,
+            );
+        }
+        CompiledTypedMatcher::Equals(CompiledValue::Int(val)) => {
+            collect_matching_attr_rows_numeric(
+                attrs_batch, &key_mask, type_u8, parent_id_u16,
+                &CompiledNumericValue::Int(*val), cmp::eq,
+                &mut id_bitmap,
+            );
+        }
+        CompiledTypedMatcher::Equals(CompiledValue::Double(val)) => {
+            collect_matching_attr_rows_numeric(
+                attrs_batch, &key_mask, type_u8, parent_id_u16,
+                &CompiledNumericValue::Double(*val), cmp::eq,
+                &mut id_bitmap,
+            );
+        }
+        CompiledTypedMatcher::Equals(CompiledValue::Bytes(_)) => {
+            todo!("Equals(Bytes) comparison on attribute values")
+        }
+        CompiledTypedMatcher::Gt(nv) => {
+            collect_matching_attr_rows_numeric(
+                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::gt,
+                &mut id_bitmap,
+            );
+        }
+        CompiledTypedMatcher::Gte(nv) => {
+            collect_matching_attr_rows_numeric(
+                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::gt_eq,
+                &mut id_bitmap,
+            );
+        }
+        CompiledTypedMatcher::Lt(nv) => {
+            collect_matching_attr_rows_numeric(
+                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::lt,
+                &mut id_bitmap,
+            );
+        }
+        CompiledTypedMatcher::Lte(nv) => {
+            collect_matching_attr_rows_numeric(
+                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::lt_eq,
+                &mut id_bitmap,
+            );
+        }
+    };
+
+    if id_bitmap.is_empty() {
+        return PolicyMatch::None;
+    }
+
+    let selection = build_native_selection_vec(root_id_col, &id_bitmap);
+    PolicyMatch::from_boolean_array(&selection)
+}
+
+/// Compare attribute values in a single typed column against a scalar, and
+/// insert the parent_ids of matching rows into the `id_bitmap`.
+///
+/// Only considers rows where `key_mask` is true and `type_col` matches
+/// `expected_type`.
+fn collect_matching_attr_rows<S: Datum, F>(
+    attrs_batch: &RecordBatch,
+    key_mask: &BooleanArray,
+    type_col: &UInt8Array,
+    parent_id_col: &UInt16Array,
+    value_col_name: &str,
+    expected_type: u8,
+    scalar: &S,
+    cmp_fn: F,
+    id_bitmap: &mut IdBitmap,
+) where
+    F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError>,
+{
+    let Some(value_col) = attrs_batch.column_by_name(value_col_name) else {
+        return;
+    };
+
+    // Compare the entire value column against the scalar.
+    // The kernel handles dictionary-encoded columns transparently.
+    //
+    // TODO - this will actually return an error for data types that were'd coerced properly
+    // which means comparisons that should pass, but just aren't supported correctly, will silently
+    // reject the rows. Consider proper error handling.
+    let Ok(cmp_result) = cmp_fn(value_col, scalar) else {
+        return;
+    };
+
+    // Scan: row must match key AND have the right type AND pass the comparison.
+    for i in 0..key_mask.len() {
+        if key_mask.value(i)
+            && type_col.value(i) == expected_type
+            && cmp_result.value(i)
+        {
+            id_bitmap.insert(u32::from(parent_id_col.value(i)));
+        }
+    }
+}
+
+/// Compare numeric attribute values against a numeric threshold, checking
+/// both `int` and `double` columns for cross-numeric domain matching per spec.
+fn collect_matching_attr_rows_numeric<F>(
+    attrs_batch: &RecordBatch,
+    key_mask: &BooleanArray,
+    type_col: &UInt8Array,
+    parent_id_col: &UInt16Array,
+    numeric_value: &CompiledNumericValue,
+    cmp_fn: F,
+    id_bitmap: &mut IdBitmap,
+) where
+    F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError> + Copy,
+{
+    // TODO - There are other coercions that probably need to be supported here...
+
+    match numeric_value {
+        CompiledNumericValue::Int(v) => {
+            // Check the int column directly.
+            collect_matching_attr_rows(
+                attrs_batch, key_mask, type_col, parent_id_col,
+                consts::ATTRIBUTE_INT, AttributeValueType::Int as u8,
+                &Int64Array::new_scalar(*v), cmp_fn, id_bitmap,
+            );
+            // Cross-numeric: also check the double column with promoted value.
+            collect_matching_attr_rows(
+                attrs_batch, key_mask, type_col, parent_id_col,
+                consts::ATTRIBUTE_DOUBLE, AttributeValueType::Double as u8,
+                &Float64Array::new_scalar(*v as f64), cmp_fn, id_bitmap,
+            );
+        }
+        CompiledNumericValue::Double(v) => {
+            // Check the double column directly.
+            collect_matching_attr_rows(
+                attrs_batch, key_mask, type_col, parent_id_col,
+                consts::ATTRIBUTE_DOUBLE, AttributeValueType::Double as u8,
+                &Float64Array::new_scalar(*v), cmp_fn, id_bitmap,
+            );
+            // Cross-numeric: also check the int column if the double is exact.
+            if v.fract() == 0.0 && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 {
+                collect_matching_attr_rows(
+                    attrs_batch, key_mask, type_col, parent_id_col,
+                    consts::ATTRIBUTE_INT, AttributeValueType::Int as u8,
+                    &Int64Array::new_scalar(*v as i64), cmp_fn, id_bitmap,
+                );
+            }
+        }
+    }
+}
+
 /// Get the root id column that corresponds to a given attribute payload type.
 ///
 /// For log/span/metric attributes, the id is a plain column on the root batch.
 /// For resource/scope attributes, the id is nested inside a struct column.
 fn get_root_id_column<'a>(
-    root_batch: &'a arrow::array::RecordBatch,
+    root_batch: &'a RecordBatch,
     attrs_payload_type: ArrowPayloadType,
 ) -> Option<&'a UInt16Array> {
     match attrs_payload_type {
