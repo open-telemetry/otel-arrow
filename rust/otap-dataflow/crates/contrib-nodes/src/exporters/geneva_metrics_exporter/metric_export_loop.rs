@@ -451,18 +451,19 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     }
                 }
                 Message::PData(mut data) => {
-                    if !accepting_pdata {
-                        // Closed admission only delivers pdata during shutdown.
-                        // The inbox hides the pipeline deadline until draining
-                        // completes, so share one local timeout across the drain.
+                    if let Some(inbox_deadline) = msg_chan.shutdown_deadline() {
+                        // Admission may still be open for the first drained input.
+                        // Bound the entire drain by both the pipeline deadline
+                        // and one shared publication timeout.
                         let deadline = *shutdown_drain_deadline.get_or_insert_with(|| {
-                            in_flight.as_ref().map_or_else(
+                            let local_deadline = in_flight.as_ref().map_or_else(
                                 || {
                                     (tokio::time::Instant::now() + self.publisher.timeout())
                                         .into_std()
                                 },
                                 |publication| publication.deadline.into_std(),
-                            )
+                            );
+                            inbox_deadline.min(local_deadline)
                         });
                         let at_capacity = has_in_flight || has_pending_completion;
                         if at_capacity {
@@ -514,6 +515,7 @@ mod tests {
     use otel_arrow_dfe_engine::capability::CapabilityError;
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
     use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TokenStream;
+    use otel_arrow_dfe_engine::clock::SimClock;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, PipelineCompletionMsgReceiver, pipeline_completion_msg_channel,
     };
@@ -939,7 +941,36 @@ mod tests {
     /// Guarantees: The shared drain deadline cancels the active packet and prevents later packets without waiting for another inbox message.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_split_publication_while_upstream_remains_open() {
-        let split_data = otlp_pdata(oversized_request());
+        assert_shutdown_bounds_split_publication(true, true, Duration::from_secs(60)).await;
+    }
+
+    /// Scenario: A split input is the first buffered input drained with ready auth and an engine clock ahead of paused Tokio time, with upstream open or closed and either a short or long shutdown grace period.
+    /// Guarantees: The first input shares one drain budget capped by the pipeline deadline, is retryably NACKed on expiry, and starts no further packets.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_bounds_first_buffered_split_publication() {
+        for upstream_open in [true, false] {
+            for grace_period in [Duration::from_secs(6), Duration::from_secs(60)] {
+                assert_shutdown_bounds_split_publication(false, upstream_open, grace_period).await;
+            }
+        }
+    }
+
+    async fn assert_shutdown_bounds_split_publication(
+        preliminary_input: bool,
+        upstream_open: bool,
+        grace_period: Duration,
+    ) {
+        let clock = SimClock::new();
+        let _clock_guard = clock.install();
+        let tokio_now = tokio::time::Instant::now();
+        // Model setup outlasting the grace period while Tokio time is paused.
+        clock.advance_to(tokio_now.into_std() + grace_period + Duration::from_secs(1));
+        // Preserve Tokio's timer alignment even if the system clock is further ahead.
+        let alignment = clock.now().duration_since(tokio_now.into_std());
+        tokio::time::advance(Duration::from_secs(alignment.as_secs() + 1)).await;
+        clock.advance_to(tokio::time::Instant::now().into_std());
+
+        let split_data = subscribe(otlp_pdata(oversized_request()), 2);
         assert!(
             prepare_publication(&split_data, &mapping_config())
                 .expect("split input should prepare")
@@ -962,19 +993,21 @@ mod tests {
                 Ok(())
             })
         });
-        let (effect_handler, _completions) = completion_harness();
+        let (effect_handler, mut completions) = completion_harness();
         let (control_tx, pdata_tx, msg_chan) = message_channel(4);
-        pdata_tx
-            .send_async(metrics_pdata(1))
-            .await
-            .expect("first input should be buffered");
+        if preliminary_input {
+            pdata_tx
+                .send_async(metrics_pdata(1))
+                .await
+                .expect("first input should be buffered");
+        }
         pdata_tx
             .send_async(split_data)
             .await
             .expect("split input should be buffered");
-        // Far ahead of the real clock the inbox checks.
-        let deadline = (tokio::time::Instant::now() + Duration::from_secs(60)).into_std();
+        let deadline = (tokio::time::Instant::now() + grace_period).into_std();
         send_shutdown(&control_tx, deadline).await;
+        let pdata_tx = upstream_open.then_some(pdata_tx);
 
         let driver = async {
             requests
@@ -985,27 +1018,38 @@ mod tests {
             requests
                 .next()
                 .await
-                .expect("the split input's first packet should start");
-            let collected = collect_telemetry(&control_tx).await;
-            // The split publication must expire before inbox processing resumes.
-            assert_metric(&collected, "failure", "messages", 1);
+                .expect("a second publication should start");
+            if preliminary_input {
+                expect_ack(&mut completions).await;
+            }
+            let nack = expect_nack(&mut completions).await;
+            assert!(!nack.permanent, "deadline expiry should allow retry");
             assert_eq!(
                 tokio::time::Instant::now(),
-                first_started_at + publisher_timeout,
+                first_started_at + publisher_timeout.min(grace_period),
                 "the split packet should be cancelled at the shared drain deadline"
             );
             drop(pdata_tx);
         };
 
-        let (terminal, ()) = run_exporter(
-            exporter,
-            msg_chan,
-            effect_handler,
-            Duration::from_secs(600),
-            driver,
-        )
-        .await;
+        let (terminal, ()) = {
+            let work = run_exporter(
+                exporter,
+                msg_chan,
+                effect_handler,
+                Duration::from_secs(600),
+                driver,
+            );
+            tokio::pin!(work);
+            poll_fn(|cx| {
+                clock.advance_to(tokio::time::Instant::now().into_std());
+                work.as_mut().poll(cx)
+            })
+            .await
+        };
         assert_eq!(terminal.deadline(), deadline);
+        assert_metric(terminal.metrics(), "success", "messages", 1);
+        assert_metric(terminal.metrics(), "failure", "messages", 1);
         assert!(
             requests.next().await.is_none(),
             "no later packet of the split input may start"
@@ -1262,10 +1306,10 @@ mod tests {
                         }
                     }
                 }
-                (deadline, request_started_at)
+                deadline
             };
 
-            let (terminal_state, (deadline, request_started_at)) = run_exporter(
+            let (terminal_state, deadline) = run_exporter(
                 exporter,
                 msg_chan,
                 effect_handler,
@@ -1276,7 +1320,7 @@ mod tests {
             assert_eq!(terminal_state.deadline(), deadline);
             assert_eq!(
                 tokio::time::Instant::now(),
-                request_started_at + publisher_timeout
+                tokio::time::Instant::from_std(deadline)
             );
             assert!(
                 requests.next().await.is_none(),

@@ -816,6 +816,15 @@ pub struct ExporterInbox<
 }
 
 impl<PData, ControlRx, PDataRx> ExporterInbox<PData, ControlRx, PDataRx> {
+    /// Returns the latched shutdown deadline while buffered pdata is draining.
+    ///
+    /// The shutdown control message is withheld until draining finishes, so
+    /// exporters can use this deadline to bound work on drained inputs.
+    #[must_use]
+    pub fn shutdown_deadline(&self) -> Option<Instant> {
+        self.core.shutting_down_deadline
+    }
+
     #[must_use]
     pub(crate) fn new_internal(
         control_rx: ControlRx,
