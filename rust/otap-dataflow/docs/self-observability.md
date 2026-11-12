@@ -157,9 +157,11 @@ boundary outcomes, and shared control-plane metrics:
 Per-node policies `messages`, `item_counts`, `size`, `completion_duration`, and
 `duration` enable those measurements at any `runtime_metrics` level.
 `duration_distribution` selects histogram fidelity separately and defaults to
-`normal`, which uses `HistogramNormal` at scale 3 with 32 buckets; `basic` uses
-bucketless `Mmsc` summaries and `detailed` uses `HistogramDetailed` at scale 5
-with 160 buckets. Configure processor range `flow_metrics` under
+`normal`. `basic` uses bucketless `Mmsc` summaries, while `normal` and
+`detailed` use `HistogramNormal` and `HistogramDetailed`, which are exponential
+histograms with adaptive resolution whose scale adjusts to fit the observed
+range. Check `details.relative_error` in the JSON metrics output to see the
+resulting precision. Configure processor range `flow_metrics` under
 `policies.telemetry.flow_metrics`. See
 [Node and flow metrics](node-and-flow-metrics.md).
 
