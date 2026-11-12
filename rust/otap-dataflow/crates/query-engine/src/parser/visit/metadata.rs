@@ -37,13 +37,10 @@ impl MetadataAccessDeclarationVisitor {
     ///
     /// # Invariant
     ///
-    /// The returned `entries` slice inside each `ContextConsumerSelector::Entries`
-    /// **must** be sorted and deduplicated. The engine's
-    /// `CompiledNodeState::declarations_match` compares declarations
-    /// structurally, so unsorted or duplicate entries would cause
-    /// `pipeline_context_compatible` to reject live-update candidates that are
-    /// semantically identical (e.g. a query that reorders header accesses or
-    /// references the same header in multiple branches).
+    /// The returned `entries` slice inside each `ContextConsumerSelector::Entries` **must** be
+    /// sorted and deduplicated. The otherwise DFE may to reject live-update candidates that are
+    /// semantically identical (e.g. a query that reorders header accesses or references the same
+    /// header in multiple branches).
     #[must_use]
     pub fn into_context_declarations(mut self) -> Vec<ContextDeclaration> {
         if self.entry_reads.is_empty() {
@@ -149,8 +146,7 @@ mod tests {
         }
     }
 
-    /// Scenario: a query references the same transport header in two branches
-    ///     of an if-expression.
+    /// Scenario: a query references the same transport header in two branches of an if-expression.
     /// Guarantees: duplicate entry reads are collapsed to a single selector.
     #[test]
     fn duplicate_header_references_are_deduped() {
@@ -166,11 +162,10 @@ mod tests {
         assert_eq!(entries[0], header_selector("foo"));
     }
 
-    /// Scenario: a query references two different transport headers in an
-    ///     order that differs from their natural sort order (z before a).
-    /// Guarantees: the resulting entry reads are sorted regardless of the
-    ///     order they appear in the query, so that structurally equal
-    ///     declarations are produced for semantically equivalent queries.
+    /// Scenario: a query references two different transport headers in an order that differs from
+    /// their natural sort order (z before a).
+    /// Guarantees: the resulting entry reads are sorted regardless of the order they appear in the
+    /// query, so that structurally equal declarations are produced for semantically equivalent queries.
     #[test]
     fn header_references_are_sorted() {
         let decl_z_first = declarations_for_query(
