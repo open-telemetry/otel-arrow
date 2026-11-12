@@ -7813,6 +7813,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "parquet",
  "pretty_assertions",
+ "prometheus-expfmt",
  "prost 0.14.4",
  "prost-types 0.14.4",
  "rand 0.10.3",
@@ -8144,6 +8145,7 @@ dependencies = [
  "otel-arrow-contrib-data-engine-kql-parser",
  "otel-arrow-contrib-data-engine-parser-abstractions",
  "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-query-engine-languages",
@@ -9127,6 +9129,18 @@ dependencies = [
  "bytesize",
  "human_format",
  "parking_lot 0.12.5",
+]
+
+[[package]]
+name = "prometheus-expfmt"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2f02ff140f587ba43154b8e64ff7a8b9cb4ccc22576ae22d78e4f7d99b6e29a"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
