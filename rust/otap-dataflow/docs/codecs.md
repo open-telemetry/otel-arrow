@@ -58,6 +58,8 @@ An inline binding may also specify `implementation` and implementation-owned
 `options`. Omitting the implementation uses the distribution default for that
 encoding. Supported `options` are implementation-specific; see the
 [syslog/CEF configuration and examples](../crates/pdata-codec/src/codecs/syslog/registry/README.md).
+The [syslog/CEF encoding behavior reference](../crates/pdata-codec/src/codecs/syslog/syslog-encoding-behavior.md)
+describes field selection, validation, and output limits.
 A distribution with multiple implementations for an encoding must declare a
 unique default or the user must select one explicitly. Link order never selects
 an implementation. Duplicate implementation IDs and conflicting defaults fail.

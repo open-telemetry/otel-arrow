@@ -185,8 +185,8 @@ struct Header<'a> {
     message_id: &'a str,
     facility: u8,
     severity: Option<u8>,
-    message: Option<&'a [u8]>,
-    content: Option<&'a [u8]>,
+    message: Option<OtapAnyValueView<'a>>,
+    content: Option<OtapAnyValueView<'a>>,
 }
 
 impl Default for Header<'_> {
@@ -260,23 +260,8 @@ impl<'a> Header<'a> {
             b"syslog.severity" => {
                 self.severity = Some(number(&value, "syslog.severity", 7)? as u8);
             }
-            b"syslog.message" | b"syslog.content" => {
-                let OtapAnyValueView::Str(message) = value else {
-                    return Err(error(
-                        "syslog message text must be a string of at most 16 KiB",
-                    ));
-                };
-                if message.len() > MAX_MESSAGE_SIZE {
-                    return Err(error(
-                        "syslog message text must be a string of at most 16 KiB",
-                    ));
-                }
-                if key == b"syslog.content" {
-                    self.content = Some(message);
-                } else {
-                    self.message = Some(message);
-                }
-            }
+            b"syslog.message" => self.message = Some(value),
+            b"syslog.content" => self.content = Some(value),
             b"syslog.structured_data" if value.as_string() != Some(b"-") => {
                 return Err(error(
                     "RFC 5424 structured data encoding is not supported by this prototype",
@@ -370,6 +355,7 @@ struct CefFields<'a> {
     version: u8,
     headers: [Option<FieldValue<'a>>; CEF_HEADERS.len()],
     extensions: [Option<FieldValue<'a>>; CEF_EXTENSIONS.len()],
+    message: Option<OtapAnyValueView<'a>>,
     custom_extensions: std::collections::HashMap<&'a [u8], FieldValue<'a>>,
     custom_size: usize,
 }
@@ -417,6 +403,8 @@ impl<'a> CefFields<'a> {
                 }
             }
             self.headers[index] = Some(value);
+        } else if key == b"msg" {
+            self.message = Some(value);
         } else if let Some(index) = CEF_EXTENSIONS.iter().position(|name| *name == key) {
             self.extensions[index] = Some(cef_value(value)?);
         } else if let Some(key) = key.strip_prefix(b"cef.extension.") {
@@ -464,10 +452,14 @@ impl<'a> CefFields<'a> {
         for (key, value) in CEF_EXTENSIONS.into_iter().zip(self.extensions) {
             // Empty generated bodies must not hide parsed message attributes.
             let value = if key == b"msg" {
-                body.filter(|body| !body.is_empty())
-                    .map(FieldValue::Text)
-                    .or(value)
-                    .or(body.map(FieldValue::Text))
+                if let Some(body) = body.filter(|body| !body.is_empty()) {
+                    Some(FieldValue::Text(body))
+                } else {
+                    self.message
+                        .map(cef_value)
+                        .transpose()?
+                        .or(body.map(FieldValue::Text))
+                }
             } else {
                 value
             };
@@ -712,13 +704,27 @@ impl SyslogEncoder {
                     };
                     let body = if format.is_cef() {
                         body
+                    } else if let Some(body) = body.filter(|body| !body.is_empty()) {
+                        Some(body)
                     } else {
                         let message = if format == Format::Rfc3164 {
                             header.content.or(header.message)
                         } else {
                             header.message.or(header.content)
                         };
-                        body.filter(|body| !body.is_empty()).or(message).or(body)
+                        message
+                            .map(|value| match value {
+                                OtapAnyValueView::Str(message)
+                                    if message.len() <= MAX_MESSAGE_SIZE =>
+                                {
+                                    Ok(message)
+                                }
+                                _ => Err(error(
+                                    "syslog message text must be a string of at most 16 KiB",
+                                )),
+                            })
+                            .transpose()?
+                            .or(body)
                     };
                     serialize_message(
                         &mut self.message,
@@ -1479,6 +1485,107 @@ mod tests {
                     let decoded = decode(encoder.encode(records(decoded, vec![])).unwrap());
                     assert!(decoded[0].body.is_none());
                     assert!(decoded[0].attributes.contains(&text(key, expected)));
+                }
+            }
+        }
+    }
+
+    /// Scenario: Message fallbacks have an invalid type or size while the body is present, empty, absent, or invalid.
+    /// Guarantees: Only nonempty string bodies override invalid fallbacks in every profile; selected invalid values still fail.
+    #[test]
+    fn syslog_encoder_validates_only_selected_messages() {
+        let oversized = "x".repeat(MAX_MESSAGE_SIZE + 1);
+        for format in ALL_FORMATS {
+            let keys: &[&str] = if format.is_cef() {
+                &["msg"]
+            } else {
+                &["syslog.message", "syslog.content"]
+            };
+            for key in keys {
+                for invalid in [AnyValue::new_bool(true), AnyValue::new_string(&oversized)] {
+                    for body in [
+                        None,
+                        Some(AnyValue::default()),
+                        Some(AnyValue::new_string("")),
+                        Some(AnyValue::new_string("ok")),
+                        Some(AnyValue::new_int(42)),
+                    ] {
+                        let mut attributes = cef_attributes();
+                        attributes.push(KeyValue::new(*key, invalid.clone()));
+                        let input = LogRecord {
+                            body: body.clone(),
+                            time_unix_nano: 1_704_164_645_000_000_000,
+                            attributes,
+                            ..Default::default()
+                        };
+                        let mut encoder =
+                            SyslogEncoder::for_format(EncodePolicy::default(), format);
+                        let result = encoder.encode(records(vec![input], vec![]));
+                        if body == Some(AnyValue::new_string("ok")) {
+                            let decoded = decode(result.unwrap());
+                            let output_key = match format {
+                                Format::Rfc3164 => "syslog.content",
+                                Format::Rfc5424 => "syslog.message",
+                                _ => "msg",
+                            };
+                            assert!(decoded[0].attributes.contains(&text(output_key, "ok")));
+                        } else {
+                            assert!(result.is_err(), "{key} with body {body:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scenario: A valid format-specific syslog message coexists with an invalid lower-priority fallback.
+    /// Guarantees: Fallback precedence is order-independent, and only the selected attribute is validated.
+    #[test]
+    fn syslog_encoder_validates_only_preferred_message_attribute() {
+        for (format, preferred, fallback) in [
+            (Format::Rfc3164, "syslog.content", "syslog.message"),
+            (Format::Rfc5424, "syslog.message", "syslog.content"),
+        ] {
+            for reverse in [false, true] {
+                for body in [None, Some(AnyValue::new_string(""))] {
+                    for invalid_preferred in [false, true] {
+                        let mut attributes = vec![
+                            text(
+                                if invalid_preferred {
+                                    fallback
+                                } else {
+                                    preferred
+                                },
+                                "ok",
+                            ),
+                            KeyValue::new(
+                                if invalid_preferred {
+                                    preferred
+                                } else {
+                                    fallback
+                                },
+                                AnyValue::new_bool(true),
+                            ),
+                        ];
+                        if reverse {
+                            attributes.reverse();
+                        }
+                        let input = LogRecord {
+                            body: body.clone(),
+                            time_unix_nano: 1_704_164_645_000_000_000,
+                            attributes,
+                            ..Default::default()
+                        };
+                        let mut encoder =
+                            SyslogEncoder::for_format(EncodePolicy::default(), format);
+                        let result = encoder.encode(records(vec![input], vec![]));
+                        if invalid_preferred {
+                            assert!(result.is_err());
+                        } else {
+                            let decoded = decode(result.unwrap());
+                            assert!(decoded[0].attributes.contains(&text(preferred, "ok")));
+                        }
+                    }
                 }
             }
         }

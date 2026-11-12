@@ -30,6 +30,8 @@ profile forces re-encoding instead of forwarding existing syslog bytes.
 A nonempty string body overrides the message attributes above. CEF requires its
 six `cef.*` header attributes. Unmapped fields are omitted, non-NIL structured
 data is unsupported, and escaped CEF headers are not byte-preserving.
+See [encoding behavior](../syslog-encoding-behavior.md) for message precedence,
+header defaults, validation, escaping, timestamps, and limits.
 
 The [console sample](../../../../../../configs/trafficgen-syslog-semconv-console.yaml)
 uses `all` to rotate the five formats per record across batches **when encoding
