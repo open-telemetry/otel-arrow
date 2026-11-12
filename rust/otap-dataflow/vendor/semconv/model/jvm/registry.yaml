@@ -8,7 +8,7 @@ groups:
       - id: jvm.gc.action
         annotations:
           traffic-generator:
-            values: [end of minor GC, end of major GC]
+            # No `values`: the weights apply to `examples` in order.
             weights: [9, 1]
         stability: stable
         type: string

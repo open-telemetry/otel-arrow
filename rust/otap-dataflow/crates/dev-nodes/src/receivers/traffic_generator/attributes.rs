@@ -181,7 +181,11 @@ impl AttributeGen {
     pub fn try_new(attribute: &Attribute) -> AnnotationResult<Self> {
         match annotation::lookup(attribute.annotations.as_ref())? {
             Some(map) => {
-                let spec = annotation::parse_attribute_spec(map, &attribute.r#type)?;
+                let spec = annotation::parse_attribute_spec(
+                    map,
+                    &attribute.r#type,
+                    attribute.examples.as_ref(),
+                )?;
                 Ok(Self::from_spec(attribute, &spec))
             }
             None => Ok(Self::fallback(attribute)),

@@ -140,6 +140,36 @@ fn attribute_value_falls_back_to_examples() {
     }
 }
 
+/// Scenario: A string attribute with two `examples` is annotated with
+/// `weights: [9, 1]` and no `values`, then compiled and sampled with a seed.
+/// Guarantees: Only the example values are generated and their frequencies
+/// follow the weights (the first example is drawn roughly 90% of the time).
+#[test]
+fn attribute_weights_apply_to_examples() {
+    let mut r = rng();
+    let mut attr = attribute(
+        "jvm.gc.action",
+        primitive(PrimitiveOrArrayTypeSpec::String),
+        Some("{ weights: [9, 1] }"),
+    );
+    attr.examples = Some(Examples::Strings(vec!["minor".into(), "major".into()]));
+    let g = AttributeGen::try_new(&attr).expect("weights over examples compile");
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    const N: usize = 10_000;
+    for _ in 0..N {
+        match kv_scalar(&g.sample(&mut r)) {
+            Scalar::String(s) => *counts.entry(s).or_default() += 1,
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        counts.keys().cloned().collect::<HashSet<_>>(),
+        HashSet::from(["minor".to_owned(), "major".to_owned()])
+    );
+    let share = counts["minor"] as f64 / N as f64;
+    assert!((0.87..=0.93).contains(&share), "minor share {share}");
+}
+
 /// Scenario: An attribute that has examples carries an invalid annotation (a
 /// continuous range on a string attribute) and is compiled.
 /// Guarantees: Compilation fails with the annotation key path instead of
@@ -333,7 +363,9 @@ fn assert_histogram_point_consistent(p: &HistogramDataPoint, name: &str) {
 /// Span group annotated with `duration` and `status`; its attributes
 /// carry the int, double, enum, string, array, and template annotations.
 const REPRESENTATIVE_SPAN: &str = "span.azure.cosmosdb.client";
-/// Histogram metric annotated with `value`, `bounds`, and `observations`.
+/// Histogram metric annotated with `value`, `bounds`, and `observations`;
+/// carries `jvm.gc.action`, whose annotation sets only `weights` over the
+/// attribute's `examples`.
 const REPRESENTATIVE_HISTOGRAM: &str = "jvm.gc.duration";
 /// Counter metric annotated with an exponential `value`.
 const REPRESENTATIVE_COUNTER: &str = "jvm.class.loaded";
@@ -373,6 +405,7 @@ const REPRESENTATIVE_ANNOTATIONS: &[(&str, Option<&str>)] = &[
     ),
     ("span.azure.cosmosdb.client", Some("db.query.parameter")),
     ("metric.jvm.gc.duration", None),
+    ("metric.jvm.gc.duration", Some("jvm.gc.action")),
     ("metric.jvm.class.loaded", None),
     ("metric.jvm.thread.count", None),
     ("metric.jvm.thread.count", Some("jvm.thread.daemon")),
@@ -589,7 +622,9 @@ fn representative_span_respects_annotations() {
 /// an annotated boolean attribute.
 /// Guarantees: The histogram uses the annotated `bounds`, per-point
 /// observation counts, value range, and delta `temporality` (with a start
-/// time no later than the point time), with one data point per metric; the
+/// time no later than the point time), with one data point per metric, and
+/// its `jvm.gc.action` attribute (weights only, no `values`) emits only the
+/// registry examples, favoring the first by its 9:1 weight; the
 /// counter and updowncounter, which have no `temporality` annotation, keep
 /// `Unspecified` temporality; the
 /// counter emits monotonic increments within its exponential range; the
@@ -611,6 +646,7 @@ fn representative_metrics_respect_annotations() {
     assert_eq!(metrics.len(), names.len() * ROUNDS);
 
     let mut histogram_points = HashSet::new();
+    let mut gc_actions: HashMap<String, usize> = HashMap::new();
     let mut daemon: HashMap<bool, usize> = HashMap::new();
     let mut gauge_values = HashSet::new();
     let mut counter_values = HashSet::new();
@@ -634,6 +670,9 @@ fn representative_metrics_respect_annotations() {
                     assert_eq!(p.explicit_bounds, vec![0.01, 0.1, 1.0, 10.0]);
                     assert!((10..=50).contains(&p.count), "observations {}", p.count);
                     assert!(p.min.expect("min") >= 0.0 && p.max.expect("max") <= 10.0);
+                    *gc_actions
+                        .entry(attr_string(&p.attributes, "jvm.gc.action"))
+                        .or_default() += 1;
                 }
             }
             (REPRESENTATIVE_COUNTER, Data::Sum(s)) => {
@@ -674,6 +713,15 @@ fn representative_metrics_respect_annotations() {
     }
 
     assert_eq!(histogram_points, HashSet::from([1]));
+    assert_eq!(
+        gc_actions.keys().cloned().collect::<HashSet<_>>(),
+        HashSet::from(["end of minor GC".to_owned(), "end of major GC".to_owned()]),
+        "jvm.gc.action draws only its examples"
+    );
+    assert!(
+        gc_actions["end of minor GC"] > gc_actions["end of major GC"],
+        "weights 9:1 favor the first example {gc_actions:?}"
+    );
     assert!(counter_values.len() > 5, "counter values should vary");
     assert!(
         daemon[&true] > daemon[&false],
