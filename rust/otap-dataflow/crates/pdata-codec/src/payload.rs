@@ -5,7 +5,7 @@
 
 use std::{borrow::Cow, future::Future};
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes};
@@ -649,19 +649,16 @@ impl TryFrom<OtlpProtoMessage> for PdataPayload {
     type Error = prost::EncodeError;
 
     fn try_from(message: OtlpProtoMessage) -> Result<Self, Self::Error> {
-        let mut bytes = BytesMut::new();
+        // Preallocate the encoded length, then transfer ownership without copying.
         Ok(match message {
             OtlpProtoMessage::Logs(logs) => {
-                logs.encode(&mut bytes)?;
-                OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into()
+                OtlpProtoBytes::ExportLogsRequest(logs.encode_to_vec().into()).into()
             }
             OtlpProtoMessage::Metrics(metrics) => {
-                metrics.encode(&mut bytes)?;
-                OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into()
+                OtlpProtoBytes::ExportMetricsRequest(metrics.encode_to_vec().into()).into()
             }
             OtlpProtoMessage::Traces(traces) => {
-                traces.encode(&mut bytes)?;
-                OtlpProtoBytes::ExportTracesRequest(bytes.freeze()).into()
+                OtlpProtoBytes::ExportTracesRequest(traces.encode_to_vec().into()).into()
             }
         })
     }
@@ -712,6 +709,45 @@ mod tests {
             _bytes: &Bytes,
         ) -> Result<OtapArrowRecords, CodecError> {
             unreachable!("item counting must not instantiate the decoder")
+        }
+    }
+
+    /// Scenario: Populated and empty protobuf requests for each signal become payloads.
+    /// Guarantees: Preallocated encoding preserves the previous wire bytes, signal,
+    /// OTLP encoding identity, and empty-message behavior.
+    #[test]
+    fn proto_message_conversion_preserves_wire_format() {
+        for message in [
+            OtlpProtoMessage::Logs(logs_with_full_resource_and_scope()),
+            OtlpProtoMessage::Metrics(metrics_sum_with_full_resource_and_scope()),
+            OtlpProtoMessage::Traces(traces_with_full_resource_and_scope()),
+            OtlpProtoMessage::Logs(Default::default()),
+            OtlpProtoMessage::Metrics(Default::default()),
+            OtlpProtoMessage::Traces(Default::default()),
+        ] {
+            let mut expected = bytes::BytesMut::new();
+            let signal = match &message {
+                OtlpProtoMessage::Logs(logs) => {
+                    logs.encode(&mut expected).unwrap();
+                    SignalType::Logs
+                }
+                OtlpProtoMessage::Metrics(metrics) => {
+                    metrics.encode(&mut expected).unwrap();
+                    SignalType::Metrics
+                }
+                OtlpProtoMessage::Traces(traces) => {
+                    traces.encode(&mut expected).unwrap();
+                    SignalType::Traces
+                }
+            };
+            let result: Result<PdataPayload, prost::EncodeError> = message.try_into();
+            let mut payload = result.unwrap();
+
+            assert_eq!(payload.signal_type(), signal);
+            assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+            assert_eq!(payload.encoded_bytes().unwrap().as_ref(), expected.as_ref());
+            assert_eq!(payload.is_empty(), expected.is_empty());
+            assert_eq!(payload.num_bytes(), Some(expected.len()));
         }
     }
 
