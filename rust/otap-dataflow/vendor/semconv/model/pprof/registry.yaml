@@ -7,26 +7,46 @@ groups:
       Attributes specific to pprof that help convert from pprof to Profiling signal.
     attributes:
       - id: pprof.mapping.has_functions
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [9, 1]
         brief: >
           Indicates that there are functions related to this mapping.
         type: boolean
         stability: development
       - id: pprof.mapping.has_filenames
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [8, 2]
         brief: >
           Indicates that there are filenames related to this mapping.
         type: boolean
         stability: development
       - id: pprof.mapping.has_line_numbers
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [7, 3]
         brief: >
           Indicates that there are line numbers related to this mapping.
         type: boolean
         stability: development
       - id: pprof.mapping.has_inline_frames
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [4, 6]
         brief: >
           Indicates that there are inline frames related to this mapping.
         type: boolean
         stability: development
       - id: pprof.location.is_folded
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [1, 19]
         brief: >
           Provides an indication that multiple symbols map to this location's
           address, for example due to identical code folding by the linker. In
@@ -36,6 +56,10 @@ groups:
         stability: development
         type: boolean
       - id: pprof.profile.comment
+        annotations:
+          traffic-generator:
+            length: { range: { min: 0, max: 3 } }
+            items: { values: [hello world, bazinga, "built from commit abc123", profile captured via net/http/pprof] }
         brief: >
           Free-form text associated with the profile. This field should not be
           used to store any machine-readable information, it is only for
@@ -45,6 +69,10 @@ groups:
           - ["hello world", "bazinga"]
         stability: development
       - id: pprof.profile.drop_frames
+        annotations:
+          traffic-generator:
+            values: [/foobar/, "runtime\\..*", "^testing\\."]
+            weights: [3, 5, 2]
         brief: >
           Frames with Function.function_name fully matching the regular expression will be
           dropped from the samples, along with their successors.
@@ -53,6 +81,10 @@ groups:
           - "/foobar/"
         stability: development
       - id: pprof.profile.keep_frames
+        annotations:
+          traffic-generator:
+            values: [/bazinga/, "main\\..*", "^myapp/"]
+            weights: [3, 4, 3]
         brief: >
           Frames with Function.function_name fully matching the regular expression will be
           kept, even if it matches drop_frames.
@@ -61,6 +93,10 @@ groups:
           - "/bazinga/"
         stability: development
       - id: pprof.profile.doc_url
+        annotations:
+          traffic-generator:
+            values: ["http://pprof.example.com/cpu-profile.html", "https://go.dev/doc/diagnostics#profiling", "https://pkg.go.dev/runtime/pprof"]
+            weights: [4, 3, 3]
         brief: >
           Documentation link for this profile type.
         type: string
@@ -71,6 +107,10 @@ groups:
           - "http://pprof.example.com/cpu-profile.html"
         stability: development
       - id: pprof.scope.default_sample_type
+        annotations:
+          traffic-generator:
+            values: [cpu, samples, alloc_space, inuse_space, contentions]
+            weights: [5, 3, 2, 2, 1]
         brief: >
           Records the pprof's default_sample_type in the original profile. Not set
           if the default sample type was missing.
@@ -82,6 +122,11 @@ groups:
           - "cpu"
         stability: development
       - id: pprof.scope.sample_type_order
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 4 } }
+            items:
+              range: { min: 0, max: 3 }
         brief: >
           Records the indexes of the sample types in the original profile.
         note: >

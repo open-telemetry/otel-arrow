@@ -1318,6 +1318,7 @@ dependencies = [
  "roaring",
  "serde_json",
  "serde_yaml",
+ "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "tokio-stream",
@@ -1326,6 +1327,7 @@ dependencies = [
  "tracing-subscriber",
  "unsync",
  "weaver_common",
+ "weaver_forge",
 ]
 
 [[package]]
@@ -7877,6 +7879,7 @@ version = "0.65.0"
 dependencies = [
  "async-trait",
  "humantime-serde",
+ "libm",
  "linkme",
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
@@ -7888,8 +7891,10 @@ dependencies = [
  "otel-arrow-dfe-telemetry-macros",
  "prost 0.14.4",
  "rand 0.10.3",
+ "rand_distr",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 2.0.21",
  "tokio",
  "weaver_common",
@@ -9491,6 +9496,16 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_distr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
+dependencies = [
+ "num-traits",
+ "rand 0.10.3",
+]
 
 [[package]]
 name = "rand_pcg"

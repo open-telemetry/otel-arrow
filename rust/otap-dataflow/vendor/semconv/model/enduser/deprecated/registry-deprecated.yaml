@@ -5,6 +5,10 @@ groups:
     brief: "Describes deprecated end user attributes."
     attributes:
       - id: enduser.role
+        annotations:
+          traffic-generator:
+            values: [admin, user, viewer, editor]
+            weights: [1, 6, 3, 2]
         type: string
         deprecated:
           reason: uncategorized
@@ -13,6 +17,10 @@ groups:
         brief: "Deprecated, use `user.roles` instead."
         examples: 'admin'
       - id: enduser.scope
+        annotations:
+          traffic-generator:
+            values: ["read:message, write:files", "read:message", "write:files", "read:profile"]
+            weights: [2, 4, 2, 3]
         type: string
         deprecated:
           reason: obsoleted

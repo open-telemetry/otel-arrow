@@ -6,12 +6,22 @@ groups:
       OpenShift resource attributes.
     attributes:
       - id: openshift.clusterquota.uid
+        annotations:
+          traffic-generator:
+            values:
+              - 275ecb36-5aa8-4c2a-9c47-d8bb681b9aff
+              - 8f3c2a1e-4b5d-4e6f-9a7b-0c1d2e3f4a5b
+              - c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f
         type: string
         stability: development
         brief: >
           The UID of the cluster quota.
         examples: [ '275ecb36-5aa8-4c2a-9c47-d8bb681b9aff' ]
       - id: openshift.clusterquota.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, team-a-quota, team-b-quota, default-quota]
+            weights: [4, 2, 2, 2]
         type: string
         stability: development
         brief: >

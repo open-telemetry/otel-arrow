@@ -6,6 +6,10 @@ groups:
       A service instance.
     attributes:
       - id: service.name
+        annotations:
+          traffic-generator:
+            values: [shoppingcart, checkout, frontend, payment, "unknown_service:bash", unknown_service]
+            weights: [5, 4, 6, 3, 1, 1]
         type: string
         brief: >
           Logical name of the service.
@@ -20,12 +24,20 @@ groups:
         examples: ["shoppingcart"]
         stability: stable
       - id: service.version
+        annotations:
+          traffic-generator:
+            values: [2.0.0, a01dbef8a, 1.4.2, 1.5.0, 3.1.0-rc1]
+            weights: [4, 2, 4, 3, 1]
         type: string
         brief: >
           The version string of the service component. The format is not defined by these conventions.
         examples: ["2.0.0", "a01dbef8a"]
         stability: stable
       - id: service.namespace
+        annotations:
+          traffic-generator:
+            values: [Shop, Payments, Platform, Analytics]
+            weights: [5, 3, 3, 1]
         type: string
         stability: stable
         brief: >
@@ -40,6 +52,9 @@ groups:
           Zero-length namespace string is assumed equal to unspecified namespace.
         examples: ["Shop"]
       - id: service.instance.id
+        annotations:
+          traffic-generator:
+            values: [627cc493-f310-47de-96bd-71410b7dec09, 0b5e2f0a-7c1d-4e8b-9a3f-2d6c8e1f4a70, 8f14e45f-ceea-467f-a0e6-8c1b2d3e4f50, d3b07384-d9a0-4c9b-8e1f-6a7b2c3d4e5f]
         type: string
         stability: stable
         brief: >
@@ -73,6 +88,9 @@ groups:
           port.
         examples: ["627cc493-f310-47de-96bd-71410b7dec09"]
       - id: service.criticality
+        annotations:
+          traffic-generator:
+            weights: [2, 3, 3, 2]
         type:
           members:
             - id: critical
@@ -119,6 +137,10 @@ groups:
       How to describe the service on the other side of a request.
     attributes:
       - id: service.peer.name
+        annotations:
+          traffic-generator:
+            values: [shoppingcart, checkout, inventory, payment, auth]
+            weights: [4, 3, 3, 2, 2]
         type: string
         stability: development
         brief: >
@@ -126,6 +148,10 @@ groups:
           SHOULD be equal to the actual [`service.name`](/docs/resource/README.md#service) resource attribute of the remote service if any.
         examples: ["shoppingcart"]
       - id: service.peer.namespace
+        annotations:
+          traffic-generator:
+            values: [Shop, Payments, Platform]
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: >

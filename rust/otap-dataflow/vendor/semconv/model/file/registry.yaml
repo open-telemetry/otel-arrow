@@ -5,6 +5,9 @@ groups:
     brief: "Describes file attributes."
     attributes:
       - id: file.accessed
+        annotations:
+          traffic-generator:
+            values: ["2021-01-01T12:00:00Z", "2026-11-10T08:15:30Z", "2026-11-11T09:42:07Z"]
         type: string
         brief: >
           Time when the file was last accessed, in ISO 8601 format.
@@ -13,6 +16,12 @@ groups:
         stability: development
         examples: ['2021-01-01T12:00:00Z']
       - id: file.attributes
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items:
+              values: [read, write, execute, readonly, hidden, archive, directory, system, compressed, encrypted, symbolic link, temporary]
+              weights: [10, 8, 4, 3, 2, 2, 3, 1, 1, 1, 1, 1]
         type: string[]
         brief: >
           Array of file attributes.
@@ -23,6 +32,9 @@ groups:
         examples:
           - ['readonly', 'hidden']
       - id: file.created
+        annotations:
+          traffic-generator:
+            values: ["2021-01-01T12:00:00Z", "2024-06-15T10:30:00Z", "2026-11-01T00:00:00Z"]
         type: string
         brief: >
           Time when the file was created, in ISO 8601 format.
@@ -31,6 +43,9 @@ groups:
         stability: development
         examples: ['2021-01-01T12:00:00Z']
       - id: file.changed
+        annotations:
+          traffic-generator:
+            values: ["2021-01-01T12:00:00Z", "2026-11-09T16:20:45Z", "2026-11-11T07:05:12Z"]
         type: string
         brief: >
           Time when the file attributes or metadata was last changed, in ISO 8601 format.
@@ -41,12 +56,20 @@ groups:
         stability: development
         examples: ['2021-01-01T12:00:00Z']
       - id: file.directory
+        annotations:
+          traffic-generator:
+            values: [/home/user, 'C:\Program Files\MyApp', /var/log, /tmp, /etc]
+            weights: [3, 2, 3, 1, 1]
         type: string
         brief: >
           Directory where the file is located. It should include the drive letter, when appropriate.
         stability: development
         examples: ['/home/user', 'C:\Program Files\MyApp']
       - id: file.extension
+        annotations:
+          traffic-generator:
+            values: [png, gz, log, txt, json, exe, yaml]
+            weights: [2, 1, 4, 2, 2, 1, 1]
         type: string
         brief: >
           File extension, excluding the leading dot.
@@ -56,6 +79,10 @@ groups:
           When the filename has multiple extensions (example.tar.gz), only the last one should
           be captured ("gz", not "tar.gz").
       - id: file.fork_name
+        annotations:
+          traffic-generator:
+            values: [Zone.Identifier, $DATA]
+            weights: [3, 1]
         type: string
         brief: >
           Name of the fork. A fork is additional data associated with a filesystem object.
@@ -71,65 +98,107 @@ groups:
         stability: development
         examples: ['Zone.Identifier']
       - id: file.group.id
+        annotations:
+          traffic-generator:
+            values: ["0", "1000", "100", "999"]
+            weights: [3, 4, 2, 1]
         type: string
         brief: >
           Primary Group ID (GID) of the file.
         stability: development
         examples: ["1000"]
       - id: file.group.name
+        annotations:
+          traffic-generator:
+            values: [users, root, staff, wheel, adm]
+            weights: [4, 3, 2, 1, 1]
         type: string
         brief: >
           Primary group name of the file.
         stability: development
         examples: ['users']
       - id: file.inode
+        annotations:
+          traffic-generator:
+            values: ["256383", "131074", "4194305", "918273"]
         type: string
         brief: >
           Inode representing the file in the filesystem.
         stability: development
         examples: ['256383']
       - id: file.mode
+        annotations:
+          traffic-generator:
+            values: ["0640", "0644", "0755", "0600", "0777"]
+            weights: [2, 5, 3, 2, 1]
         type: string
         brief: >
           Mode of the file in octal representation.
         stability: development
         examples: ['0640']
       - id: file.modified
+        annotations:
+          traffic-generator:
+            values: ["2021-01-01T12:00:00Z", "2026-11-10T22:48:03Z", "2026-11-11T06:59:59Z"]
         type: string
         brief: >
           Time when the file content was last modified, in ISO 8601 format.
         stability: development
         examples: ['2021-01-01T12:00:00Z']
       - id: file.name
+        annotations:
+          traffic-generator:
+            values: [example.png, app.log, config.yaml, myapp.exe, archive.tar.gz]
+            weights: [2, 4, 2, 1, 1]
         type: string
         brief: >
           Name of the file including the extension, without the directory.
         stability: development
         examples: ['example.png']
       - id: file.owner.id
+        annotations:
+          traffic-generator:
+            values: ["0", "1000", "1001", "S-1-5-21-3623811015-3361044348-30300820-1013"]
+            weights: [3, 4, 2, 1]
         type: string
         brief: >
           The user ID (UID) or security identifier (SID) of the file owner.
         stability: development
         examples: ["1000"]
       - id: file.owner.name
+        annotations:
+          traffic-generator:
+            values: [root, alice, www-data, Administrator]
+            weights: [4, 3, 2, 1]
         type: string
         brief: >
           Username of the file owner.
         stability: development
         examples: ['root']
       - id: file.path
+        annotations:
+          traffic-generator:
+            values: [/home/alice/example.png, 'C:\Program Files\MyApp\myapp.exe', /var/log/app.log, /etc/myapp/config.yaml]
+            weights: [2, 1, 4, 2]
         type: string
         brief: >
           Full path to the file, including the filename. It should include the drive letter, when appropriate.
         stability: development
         examples: ['/home/alice/example.png', 'C:\Program Files\MyApp\myapp.exe']
       - id: file.size
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 1073741824 }
+            distribution: { type: lognormal, mean: 65536, stddev: 1048576 }
         type: int
         brief: >
           File size in bytes.
         stability: development
       - id: file.symbolic_link.target_path
+        annotations:
+          traffic-generator:
+            values: [/usr/bin/python3, /usr/lib/libssl.so.3, /etc/alternatives/java]
+            weights: [3, 1, 1]
         type: string
         brief: >
           Path to the target of a symbolic link.
@@ -144,6 +213,10 @@ groups:
         These attributes may be used for any filesystem lock or related operation
     attributes:
       - id: file.lock.type
+        annotations:
+          traffic-generator:
+            values: [read, write]
+            weights: [7, 3]
         type:
           members:
             - id: read
@@ -156,11 +229,17 @@ groups:
         brief: "The lock type as represented by i.e. [POSIX](https://pubs.opengroup.org/onlinepubs/9699919799/functions/fcntl.html)'s l_type."
         examples: ["read"]
       - id: file.lock.mechanism
+        annotations:
+          traffic-generator:
+            weights: [6, 3, 1, 1]
         type: string
         brief: "The lock mechanism such as noted by [POSIX](https://pubs.opengroup.org/onlinepubs/9699919799/functions/fcntl.html)"
         stability: development
         examples: ["POSIX", "FLOCK", "DELEG", "LEASE"]
       - id: file.lock.mode
+        annotations:
+          traffic-generator:
+            weights: [6, 1, 1, 3, 1]
         type: string
         brief: >
           Mode of lock or operation such as documented by [POSIX](https://pubs.opengroup.org/onlinepubs/9699919799/functions/fcntl.html)

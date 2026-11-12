@@ -5,6 +5,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 86400.0 }
+          distribution: { type: lognormal, mean: 300.0, stddev: 1200.0 }
+        bounds: [0.5, 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 86400]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: stable
     brief: The duration of connections on the server.
     instrument: histogram
@@ -21,6 +28,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 5000 }
+          distribution: { type: lognormal, mean: 200, stddev: 400 }
     stability: stable
     brief: Number of connections that are currently active on the server.
     instrument: updowncounter

@@ -2,6 +2,10 @@
 file_format: definition/2
 attributes:
   - key: client.address
+    annotations:
+      traffic-generator:
+        values: [client.example.com, 10.1.2.80, /tmp/my.sock, 192.168.0.15, 172.16.4.21, "2001:db8::1"]
+        weights: [2, 5, 1, 4, 3, 1]
     stability: stable
     type: string
     brief: "Client address - domain name if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name."
@@ -10,6 +14,9 @@ attributes:
       the client address behind any intermediaries,  for example proxies, if it's available.
     examples: ['client.example.com', '10.1.2.80', '/tmp/my.sock']
   - key: client.port
+    annotations:
+      traffic-generator:
+        range: { min: 32768, max: 65535 }
     stability: stable
     type: int
     brief: Client port number.

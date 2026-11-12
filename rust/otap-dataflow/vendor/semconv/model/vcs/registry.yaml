@@ -7,6 +7,14 @@ groups:
       [Version Control Systems (VCS)](https://wikipedia.org/wiki/Version_control).
     attributes:
       - id: vcs.repository.url.full
+        annotations:
+          traffic-generator:
+            values:
+              - "https://github.com/opentelemetry/open-telemetry-collector-contrib"
+              - "https://gitlab.com/my-org/my-project/my-projects-project/repo"
+              - "https://github.com/open-telemetry/semantic-conventions"
+              - "https://github.com/my-org/my-cool-repo"
+            weights: [3, 2, 3, 2]
         type: string
         stability: release_candidate
         brief: >
@@ -21,6 +29,10 @@ groups:
             "https://gitlab.com/my-org/my-project/my-projects-project/repo",
           ]
       - id: vcs.repository.name
+        annotations:
+          traffic-generator:
+            values: [semantic-conventions, my-cool-repo, open-telemetry-collector-contrib, repo]
+            weights: [3, 3, 3, 1]
         type: string
         stability: release_candidate
         brief: >
@@ -37,6 +49,10 @@ groups:
             "my-cool-repo",
           ]
       - id: vcs.ref.base.name
+        annotations:
+          traffic-generator:
+            values: [main, master, develop, my-feature-branch, tag-1-test, release/v1.2]
+            weights: [50, 15, 15, 10, 5, 5]
         type: string
         stability: release_candidate
         brief: >
@@ -49,6 +65,9 @@ groups:
           reference of type branch from it and created new commits.
         examples: ["my-feature-branch", "tag-1-test"]
       - id: vcs.ref.base.type
+        annotations:
+          traffic-generator:
+            weights: [9, 1]
         type:
           members:
             - id: branch
@@ -68,6 +87,16 @@ groups:
           reference of type branch from it and created new commits.
         examples: ["branch", "tag"]
       - id: vcs.ref.base.revision
+        annotations:
+          traffic-generator:
+            values:
+              - 9d59409acf479dfa0df1aa568182e43e43df8bbe28d60fcf2bc52e30068802cc
+              - 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+              - e83c5163316f89bfbde7d9ab23ca2e25604af290
+              - main
+              - "123"
+              - HEAD
+            weights: [3, 4, 4, 2, 1, 1]
         type: string
         stability: release_candidate
         brief: >
@@ -95,6 +124,10 @@ groups:
             "HEAD",
           ]
       - id: vcs.ref.head.name
+        annotations:
+          traffic-generator:
+            values: [my-feature-branch, tag-1-test, fix/null-handling, feature/login, main, dependabot/cargo/serde-1.0.200]
+            weights: [25, 5, 20, 20, 15, 15]
         type: string
         stability: release_candidate
         brief: >
@@ -106,6 +139,9 @@ groups:
           given time.
         examples: ["my-feature-branch", "tag-1-test"]
       - id: vcs.ref.head.type
+        annotations:
+          traffic-generator:
+            weights: [9, 1]
         type:
           members:
             - id: branch
@@ -124,6 +160,16 @@ groups:
           given time.
         examples: ["branch", "tag"]
       - id: vcs.ref.head.revision
+        annotations:
+          traffic-generator:
+            values:
+              - 9d59409acf479dfa0df1aa568182e43e43df8bbe28d60fcf2bc52e30068802cc
+              - 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d
+              - f00dbabe0123456789abcdef0123456789abcdef
+              - main
+              - "123"
+              - HEAD
+            weights: [3, 4, 4, 2, 1, 1]
         type: string
         stability: release_candidate
         brief: >
@@ -149,6 +195,9 @@ groups:
             "HEAD",
           ]
       - id: vcs.ref.type
+        annotations:
+          traffic-generator:
+            weights: [85, 15]
         type:
           members:
             - id: branch
@@ -164,6 +213,9 @@ groups:
           The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.
         examples: ["branch", "tag"]
       - id: vcs.revision_delta.direction
+        annotations:
+          traffic-generator:
+            values: [behind, ahead]
         type:
           members:
             - id: behind
@@ -179,6 +231,9 @@ groups:
           The type of revision comparison.
         examples: ["ahead", "behind"]
       - id: vcs.line_change.type
+        annotations:
+          traffic-generator:
+            weights: [6, 4]
         type:
           members:
             - id: added
@@ -194,6 +249,15 @@ groups:
           The type of line change being measured on a branch or change.
         examples: ["added", "removed"]
       - id: vcs.change.title
+        annotations:
+          traffic-generator:
+            values:
+              - Fixes broken thing
+              - "feat: add my new feature"
+              - "[chore] update dependency"
+              - "fix: handle null values"
+              - "docs: update README"
+            weights: [2, 3, 3, 2, 1]
         type: string
         stability: release_candidate
         brief: >
@@ -207,6 +271,9 @@ groups:
             "[chore] update dependency",
           ]
       - id: vcs.change.id
+        annotations:
+          traffic-generator:
+            values: ["123", "456", "1024", "2048", "3141"]
         type: string
         stability: release_candidate
         brief: >
@@ -214,6 +281,10 @@ groups:
           is usually a unique (within repository) identifier generated by the VCS system.
         examples: ["123"]
       - id: vcs.change.state
+        annotations:
+          traffic-generator:
+            values: [open, wip, closed, merged]
+            weights: [40, 15, 10, 35]
         type:
           members:
             - id: open
@@ -239,6 +310,10 @@ groups:
           The state of the change (pull request/merge request/changelist).
         examples: ["open", "closed", "merged"]
       - id: vcs.owner.name
+        annotations:
+          traffic-generator:
+            values: [my-org, myteam, business-unit, open-telemetry]
+            weights: [4, 2, 1, 3]
         type: string
         stability: release_candidate
         brief: >
@@ -250,6 +325,9 @@ groups:
             "business-unit",
           ]
       - id: vcs.provider.name
+        annotations:
+          traffic-generator:
+            weights: [70, 20, 3, 7]
         type:
           members:
             - id: github

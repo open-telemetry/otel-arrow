@@ -7,12 +7,12 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use prost::EncodeError;
-use weaver_forge::v1::registry::ResolvedRegistry;
 
 use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
     build_rotation_table,
 };
+use super::semconv_model::SemconvModel;
 use super::{semconv_signal, synthetic_signal};
 
 /// A SignalProducer yields the signals that need to be exported in a given
@@ -48,11 +48,20 @@ impl TrafficProducer {
         // Build the concrete SignalGenerator based on the data source.
         let mut generator: Box<dyn SignalGenerator> = match config.data_source() {
             DataSource::SemanticConventions => {
-                let registry = config
-                    .get_registry()
-                    .map_err(GenerateError::Configuration)?
-                    .expect("SemanticConventions data source should return Some registry");
-                Box::new(WeaverGenerator { registry })
+                let model = config
+                    .semconv_model()
+                    .map_err(GenerateError::Configuration)?;
+                // Annotations were requested but the registry has none, so every
+                // value falls back to enum members, examples, and type defaults.
+                // This is the common mistake of using `annotations: true` with
+                // the default upstream registry (which carries no annotations).
+                if config.annotations() && model.annotation_count() == 0 {
+                    otel_warn!(
+                        "traffic_generator.annotations_enabled_but_none_found",
+                        message = "annotations: true but the registry has no traffic-generator annotations; values fall back to enum members, examples, and type defaults. Point registry_path at an annotated registry (such as vendor/semconv/model)."
+                    );
+                }
+                Box::new(WeaverGenerator { model })
             }
             DataSource::Synthetic => {
                 let entries = config.resource_attributes().to_vec();
@@ -77,7 +86,7 @@ impl TrafficProducer {
                 shape: shape.clone(),
             },
             GenerationStrategy::PreGenerated => {
-                let payloads = create_fresh_payloads(&mut *generator, &shape)?;
+                let payloads = generate_payloads(&mut *generator, &shape)?;
                 ProductionStrategy::Replay { payloads }
             }
         };
@@ -242,6 +251,21 @@ impl<'a> ExactSizeIterator for TrafficRun<'a> {
     }
 }
 
+/// Build the full set of pre-generated payloads for a `pre_generated` run.
+///
+/// This is the exact sequence `from_config` uses to populate the replay
+/// strategy: derive the per-second [`TrafficShape`] from `cfg` (interleaving
+/// signal types by weight and splitting into `max_batch_size` batches), then
+/// generate and encode one payload per batch. Exposed so benchmarks can
+/// measure the real startup workload without duplicating the shape logic.
+pub fn pregenerate_payloads(
+    generator: &mut dyn SignalGenerator,
+    cfg: &TrafficConfig,
+) -> Result<Vec<OtapPayload>, GenerateError> {
+    let shape = create_shape(cfg);
+    generate_payloads(generator, &shape)
+}
+
 fn create_shape(cfg: &TrafficConfig) -> TrafficShape {
     let total_weight = cfg.log_weight + cfg.trace_weight + cfg.metric_weight;
     assert!(total_weight > 0);
@@ -356,7 +380,7 @@ fn signal_percent(signal_weight: u32, total_weight: u32) -> f32 {
     signal_weight as f32 / total_weight as f32
 }
 
-fn create_fresh_payloads(
+fn generate_payloads(
     generator: &mut dyn SignalGenerator,
     shape: &TrafficShape,
 ) -> Result<Vec<OtapPayload>, GenerateError> {
@@ -450,26 +474,40 @@ pub trait SignalGenerator {
 /// Signal generator backed by the Weaver semantic conventions registry.
 ///
 /// Produces signals whose attributes are derived from the resolved registry,
-/// giving realistic cardinality and naming.
+/// giving realistic cardinality and naming. Values are driven by the
+/// registry's `traffic-generator` annotations where present. The registry is
+/// compiled once at startup ([`SemconvModel`]), so generation never re-parses
+/// annotations or rebuilds samplers.
 pub struct WeaverGenerator {
-    registry: ResolvedRegistry,
+    model: SemconvModel,
+}
+
+impl WeaverGenerator {
+    /// Build a generator backed by an already-compiled [`SemconvModel`].
+    ///
+    /// Exposed so benchmarks can drive signal generation directly without
+    /// constructing a full [`TrafficProducer`].
+    #[must_use]
+    pub fn new(model: SemconvModel) -> Self {
+        Self { model }
+    }
 }
 
 impl SignalGenerator for WeaverGenerator {
     fn generate_logs(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_logs(count, &self.registry);
+        let payload = semconv_signal::semconv_otlp_logs(count, &self.model);
         let payload = OtlpProtoMessage::Logs(payload);
         Ok(payload.try_into()?)
     }
 
     fn generate_metrics(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_metrics(count, &self.registry);
+        let payload = semconv_signal::semconv_otlp_metrics(count, &self.model);
         let payload = OtlpProtoMessage::Metrics(payload);
         Ok(payload.try_into()?)
     }
 
     fn generate_traces(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_traces(count, &self.registry);
+        let payload = semconv_signal::semconv_otlp_traces(count, &self.model);
         let payload = OtlpProtoMessage::Traces(payload);
         Ok(payload.try_into()?)
     }
@@ -724,7 +762,7 @@ mod tests {
         let shape = create_shape(&cfg);
         let mut generator = synthetic_generator();
         let mut payloads =
-            create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
+            generate_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
 
         let mut strategy = ProductionStrategy::Replay {
@@ -983,6 +1021,73 @@ mod tests {
             .expect("should get a run");
         let items: Vec<usize> = run.map(|r| r.unwrap().num_items()).collect();
         assert_eq!(items, vec![5, 2]);
+    }
+
+    /// Drain `producer` run by run until `max_signal_count` stops it, and
+    /// return the item count (data points for metrics) of every payload.
+    fn drain_items(producer: &mut TrafficProducer) -> Vec<usize> {
+        let mut items = Vec::new();
+        while let Some(run) = producer.next_run().expect("generation should succeed") {
+            let run_items: Vec<usize> = run.map(|r| r.expect("payload").num_items()).collect();
+            producer.record_production(run_items.iter().sum::<usize>() as u64);
+            items.extend(run_items);
+        }
+        items
+    }
+
+    /// Scenario: Semantic-convention metrics are produced from the vendored,
+    /// annotated registry (whose histogram has 10-50 observations per point)
+    /// with `max_signal_count: 1` and `max_batch_size: 1`, using both `fresh`
+    /// and `pre_generated` strategies.
+    /// Guarantees: Exactly one metric data point is emitted in total, in a
+    /// single batch, so neither strategy can exceed `max_batch_size` or
+    /// `max_signal_count` by emitting several data points per requested
+    /// metric.
+    #[test]
+    fn test_semconv_metrics_respect_single_signal_limit() {
+        for strategy in [GenerationStrategy::Fresh, GenerationStrategy::PreGenerated] {
+            let cfg = TrafficConfig::new(Some(1), Some(1), 1, 1, 0, 0);
+            let config = Config::new(cfg, super::super::config::vendored_registry_path())
+                .with_annotations(true)
+                .with_generation_strategy(strategy.clone());
+            let mut producer = TrafficProducer::from_config(&config).expect("valid config");
+            assert_eq!(drain_items(&mut producer), vec![1], "{strategy:?}");
+        }
+    }
+
+    /// Scenario: Pre-generated semantic-convention metric batches (2 batches
+    /// of 2 metrics) are capped by `max_signal_count: 3`, so replay keeps the
+    /// first batch and regenerates a partial batch for the remainder.
+    /// Guarantees: The regenerated partial batch holds exactly the remaining
+    /// one data point, so the total never exceeds `max_signal_count` and no
+    /// batch exceeds `max_batch_size`.
+    #[test]
+    fn test_semconv_metrics_replay_partial_batch_respects_limit() {
+        let cfg = TrafficConfig::new(Some(4), Some(3), 2, 1, 0, 0);
+        let config = Config::new(cfg, super::super::config::vendored_registry_path())
+            .with_annotations(true)
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
+        let mut producer = TrafficProducer::from_config(&config).expect("valid config");
+        assert_eq!(drain_items(&mut producer), vec![2, 1]);
+    }
+
+    /// Scenario: Semantic-convention metrics are produced from the vendored,
+    /// annotated registry with `annotations` left at its default (disabled),
+    /// `max_signal_count: 3`, and `max_batch_size: 2`, using both `fresh` and
+    /// `pre_generated` strategies.
+    /// Guarantees: The receiver starts without reading annotations and emits
+    /// exactly three data points in batches of at most two, so disabling
+    /// annotations keeps one data point per requested metric.
+    #[test]
+    fn test_semconv_metrics_without_annotations_respect_limits() {
+        for strategy in [GenerationStrategy::Fresh, GenerationStrategy::PreGenerated] {
+            let cfg = TrafficConfig::new(Some(4), Some(3), 2, 1, 0, 0);
+            let config = Config::new(cfg, super::super::config::vendored_registry_path())
+                .with_generation_strategy(strategy.clone());
+            assert!(!config.annotations());
+            let mut producer = TrafficProducer::from_config(&config).expect("valid config");
+            assert_eq!(drain_items(&mut producer), vec![2, 1], "{strategy:?}");
+        }
     }
 
     #[test]

@@ -6,6 +6,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 1.0, max: 2592000.0 }
+          distribution: { type: lognormal, mean: 86400.0, stddev: 259200.0 }
     stability: development
     entity_associations:
       - container
@@ -22,6 +26,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 2.0, stddev: 4.0 }
+        temporality: delta
     stability: release_candidate
     brief: "Total CPU time consumed."
     note: >
@@ -64,6 +73,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 8.0 }
+          distribution: { type: exponential, mean: 0.5 }
     stability: development
     brief: "Container's CPU usage, measured in CPUs. Range from 0 to the number of allocatable CPUs."
     note: >
@@ -90,6 +103,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 1048576, max: 17179869184 }
+          distribution: { type: lognormal, mean: 268435456, stddev: 536870912 }
     stability: release_candidate
     brief: "Memory usage of the container."
     instrument: updowncounter
@@ -114,6 +131,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 17179869184 }
+          distribution: { type: lognormal, mean: 536870912, stddev: 1073741824 }
     entity_associations:
       - container
     brief: "Container memory available."
@@ -142,6 +163,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 1048576, max: 17179869184 }
+          distribution: { type: lognormal, mean: 201326592, stddev: 402653184 }
     note: >
       In general, this metric can be derived from
       [cadvisor](https://github.com/google/cadvisor/blob/v0.53.0/docs/storage/prometheus.md#prometheus-container-metrics)
@@ -160,6 +185,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 1048576, max: 17179869184 }
+          distribution: { type: lognormal, mean: 234881024, stddev: 469762048 }
     entity_associations:
       - container
     brief: "Container memory working set."
@@ -181,6 +210,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     entity_associations:
       - container
     brief: "Container memory paging faults."
@@ -207,6 +241,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1073741824 }
+          distribution: { type: lognormal, mean: 4194304, stddev: 16777216 }
+        temporality: delta
     stability: development
     brief: "Disk bytes for the container."
     note: >
@@ -227,6 +266,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1073741824 }
+          distribution: { type: lognormal, mean: 1048576, stddev: 4194304 }
+        temporality: delta
     stability: development
     brief: "Network bytes for the container."
     note: >
@@ -252,6 +296,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 107374182400 }
+          distribution: { type: lognormal, mean: 10737418240, stddev: 10737418240 }
     entity_associations:
       - container
     note: |
@@ -269,6 +317,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [10737418240, 21474836480, 53687091200, 107374182400], weights: [3, 4, 2, 1] }
     entity_associations:
       - container
     note: |
@@ -286,6 +336,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 107374182400 }
+          distribution: { type: lognormal, mean: 2147483648, stddev: 4294967296 }
     entity_associations:
       - container
     note: |

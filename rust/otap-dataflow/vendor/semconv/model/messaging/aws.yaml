@@ -12,6 +12,14 @@ span_refinements:
   - id: span.messaging.aws.sqs.send.producer
     ref: messaging.send.producer
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 10000.0 }
+          distribution: { type: lognormal, mean: 25.0, stddev: 50.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 7, 3]
     brief: Describes a producer sending one or more messages to Amazon SQS.
     attributes:
       - ref: messaging.system
@@ -26,6 +34,14 @@ span_refinements:
   - id: span.messaging.aws.sqs.receive.client
     ref: messaging.receive.client
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 20000.0 }
+          distribution: { type: lognormal, mean: 200.0, stddev: 600.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 7, 3]
     brief: Describes a consumer receiving one or more messages from Amazon SQS (pull-based).
     attributes:
       - ref: messaging.system
@@ -40,6 +56,14 @@ span_refinements:
   - id: span.messaging.aws.sqs.process.consumer
     ref: messaging.process.consumer
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 60000.0 }
+          distribution: { type: lognormal, mean: 30.0, stddev: 100.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 6, 4]
     brief: Describes a consumer processing one or more messages from Amazon SQS (push-based).
     attributes:
       - ref: messaging.system
@@ -55,6 +79,14 @@ span_refinements:
   - id: span.messaging.aws.sns.send.producer
     ref: messaging.send.producer
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 10000.0 }
+          distribution: { type: lognormal, mean: 30.0, stddev: 60.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 7, 3]
     brief: Describes a producer publishing one or more messages to Amazon SNS.
     attributes:
       - ref: messaging.system

@@ -10,6 +10,9 @@ groups:
       model.
     attributes:
       - id: artifact.filename
+        annotations:
+          traffic-generator:
+            weights: [4, 3, 2, 1]
         type: string
         stability: development
         brief: >
@@ -29,12 +32,24 @@ groups:
             "file-name-package.tar.gz",
           ]
       - id: artifact.version
+        annotations:
+          traffic-generator:
+            values: [v0.1.0, "1.2.1", 122691-build, v2.0.3, "1.0.0"]
+            weights: [3, 3, 1, 2, 2]
         type: string
         stability: development
         brief: >
           The version of the artifact.
         examples: ["v0.1.0", "1.2.1", "122691-build"]
       - id: artifact.purl
+        annotations:
+          traffic-generator:
+            values:
+              - "pkg:github/package-url/purl-spec@1209109710924"
+              - "pkg:npm/foo@12.12.3"
+              - "pkg:pypi/requests@2.31.0"
+              - "pkg:maven/org.apache.commons/commons-lang3@3.12.0"
+            weights: [2, 4, 3, 1]
         type: string
         stability: development
         brief: >
@@ -47,6 +62,12 @@ groups:
             "pkg:npm/foo@12.12.3",
           ]
       - id: artifact.hash
+        annotations:
+          traffic-generator:
+            values:
+              - 9ff4c52759e2c4ac70b7d517bc7fcdc1cda631ca0045271ddd1b192544f8a3e9
+              - 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae
+              - fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9
         type: string
         stability: development
         brief: >
@@ -65,12 +86,18 @@ groups:
         examples:
           ["9ff4c52759e2c4ac70b7d517bc7fcdc1cda631ca0045271ddd1b192544f8a3e9"]
       - id: artifact.attestation.id
+        annotations:
+          traffic-generator:
+            values: ["123", "456", "789", "1024"]
         type: string
         stability: development
         brief: >
           The ID of the build [software attestation](https://slsa.dev/attestation-model).
         examples: ["123"]
       - id: artifact.attestation.filename
+        annotations:
+          traffic-generator:
+            weights: [4, 3, 2, 1]
         type: string
         stability: development
         brief: >
@@ -87,6 +114,12 @@ groups:
             "file-name-package.tar.gz.intoto.json1",
           ]
       - id: artifact.attestation.hash
+        annotations:
+          traffic-generator:
+            values:
+              - 1b31dfcd5b7f9267bf2ff47651df1cfb9147b9e4df1f335accf65b4cda498408
+              - 3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7
+              - b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c
         type: string
         stability: development
         brief: >

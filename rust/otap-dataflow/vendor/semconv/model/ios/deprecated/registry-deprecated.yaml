@@ -6,6 +6,10 @@ groups:
         The iOS platform on which the iOS application is running.
     attributes:
       - id: ios.state
+        annotations:
+          traffic-generator:
+            values: [active, inactive, background, foreground, terminate]
+            weights: [5, 2, 3, 3, 1]
         stability: development
         brief: >
           Deprecated. Use the `ios.app.state` attribute.

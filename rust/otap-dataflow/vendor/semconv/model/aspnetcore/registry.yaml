@@ -5,11 +5,19 @@ groups:
     brief: ASP.NET Core attributes
     attributes:
       - id: aspnetcore.rate_limiting.policy
+        annotations:
+          traffic-generator:
+            values: [fixed, sliding, token, concurrency]
+            weights: [4, 3, 2, 1]
         type: string
         brief: Rate limiting policy name.
         stability: stable
         examples: ["fixed", "sliding", "token"]
       - id: aspnetcore.rate_limiting.result
+        annotations:
+          traffic-generator:
+            values: [acquired, endpoint_limiter, global_limiter, request_canceled]
+            weights: [90, 5, 3, 2]
         type:
           members:
             - id: acquired
@@ -32,22 +40,37 @@ groups:
         brief: Rate-limiting result, shows whether the lease was acquired or contains a rejection reason
         examples: ["acquired", "request_canceled"]
       - id: aspnetcore.routing.is_fallback
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [1, 9]
         type: boolean
         stability: stable
         brief: A value that indicates whether the matched route is a fallback route.
         examples: [true]
       - id: aspnetcore.diagnostics.handler.type
+        annotations:
+          traffic-generator:
+            values: [Contoso.MyHandler, Contoso.GlobalExceptionHandler, Contoso.ValidationExceptionHandler]
+            weights: [5, 3, 2]
         type: string
         stability: stable
         brief: Full type name of the [`IExceptionHandler`](https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.diagnostics.iexceptionhandler)
           implementation that handled the exception.
         examples: ["Contoso.MyHandler"]
       - id: aspnetcore.request.is_unhandled
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [1, 19]
         type: boolean
         stability: stable
         brief: Flag indicating if request was handled by the application pipeline.
         examples: [true]
       - id: aspnetcore.routing.match_status
+        annotations:
+          traffic-generator:
+            weights: [95, 5]
         type:
           members:
             - id: success
@@ -62,6 +85,10 @@ groups:
         brief: Match result - success or failure
         examples: ["success", "failure"]
       - id: aspnetcore.diagnostics.exception.result
+        annotations:
+          traffic-generator:
+            values: [handled, unhandled, skipped, aborted]
+            weights: [70, 20, 5, 5]
         type:
           members:
             - id: handled
@@ -84,16 +111,28 @@ groups:
         brief: ASP.NET Core exception middleware handling result.
         examples: ["handled", "unhandled"]
       - id: aspnetcore.memory_pool.owner
+        annotations:
+          traffic-generator:
+            values: [kestrel, iis, sockets, signalr]
+            weights: [6, 2, 1, 1]
         type: string
         stability: development
         brief: The name of the library or subsystem using the memory pool instance.
         examples: ["kestrel", "iis"]
       - id: aspnetcore.identity.user_type
+        annotations:
+          traffic-generator:
+            values: [Contoso.ContosoUser, Microsoft.AspNetCore.Identity.IdentityUser]
+            weights: [3, 7]
         type: string
         brief: The full name of the identity user type.
         stability: development
         examples: ["Contoso.ContosoUser"]
       - id: aspnetcore.authentication.result
+        annotations:
+          traffic-generator:
+            values: [success, failure, none]
+            weights: [80, 5, 15]
         type:
           members:
             - id: success
@@ -112,21 +151,35 @@ groups:
         brief: The result of the authentication operation.
         examples: ["success", "failure"]
       - id: aspnetcore.authentication.scheme
+        annotations:
+          traffic-generator:
+            weights: [4, 4, 2]
         type: string
         stability: development
         brief: The identifier that names a particular authentication handler.
         examples: ["Cookies", "Bearer", "Identity.Application"]
       - id: aspnetcore.user.is_authenticated
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [7, 3]
         type: boolean
         stability: stable
         brief: A value that indicates whether the user is authenticated.
         examples: [true]
       - id: aspnetcore.authorization.policy
+        annotations:
+          traffic-generator:
+            values: [RequireAdminRole, RequireAuthenticatedUser, RequireEmployee, CanEditOrders]
+            weights: [2, 5, 2, 1]
         type: string
         stability: development
         brief: The name of the authorization policy.
         examples: ["RequireAdminRole"]
       - id: aspnetcore.authorization.result
+        annotations:
+          traffic-generator:
+            weights: [92, 8]
         type:
           members:
             - id: success
@@ -141,6 +194,9 @@ groups:
         brief: The result of calling the authorization service.
         examples: ["success", "failure"]
       - id: aspnetcore.identity.result
+        annotations:
+          traffic-generator:
+            weights: [9, 1]
         type:
           members:
             - id: success
@@ -155,11 +211,45 @@ groups:
         brief: The result of the identity operation.
         examples: ["success", "failure"]
       - id: aspnetcore.identity.error_code
+        annotations:
+          traffic-generator:
+            values: [DefaultError, PasswordMismatch, DuplicateUserName, InvalidToken, PasswordTooShort, DuplicateEmail]
+            weights: [1, 5, 2, 2, 2, 1]
         type: string
         stability: development
         brief: The error code for a failed identity operation.
         examples: ["DefaultError", "PasswordMismatch"]
       - id: aspnetcore.identity.user.update_type
+        annotations:
+          traffic-generator:
+            values:
+              [
+                update, user_name, add_password, change_password, security_stamp,
+                reset_password, remove_login, add_login, add_claims, replace_claim,
+                remove_claims, add_to_roles, remove_from_roles, set_email,
+                confirm_email, password_rehash, remove_password, change_email,
+                set_phone_number, change_phone_number, set_two_factor_enabled,
+                set_lockout_enabled, set_lockout_end_date, access_failed,
+                reset_access_failed_count, set_authentication_token,
+                remove_authentication_token, reset_authenticator_key,
+                generate_new_two_factor_recovery_codes,
+                redeem_two_factor_recovery_code, set_passkey, remove_passkey,
+                _OTHER,
+              ]
+            weights:
+              [
+                20, 2, 1, 3, 8,
+                3, 1, 2, 2, 1,
+                1, 2, 1, 2,
+                3, 1, 1, 1,
+                1, 1, 1,
+                1, 2, 10,
+                8, 3,
+                1, 1,
+                1,
+                1, 1, 1,
+                1,
+              ]
         type:
           members:
             - id: update
@@ -298,6 +388,10 @@ groups:
         brief: The user update type.
         examples: ["update", "user_name", "reset_password"]
       - id: aspnetcore.identity.password_check_result
+        annotations:
+          traffic-generator:
+            values: [success, success_rehash_needed, failure, password_missing, user_missing]
+            weights: [80, 2, 15, 1, 2]
         type:
           members:
             - id: success
@@ -324,6 +418,10 @@ groups:
         brief: The result from checking the password.
         examples: ["success", "failure"]
       - id: aspnetcore.identity.token_purpose
+        annotations:
+          traffic-generator:
+            values: [reset_password, change_phone_number, email_confirmation, change_email, two_factor, _OTHER]
+            weights: [25, 5, 30, 5, 30, 5]
         type:
           members:
             - id: reset_password
@@ -354,6 +452,9 @@ groups:
         brief: What the token will be used for.
         examples: ["success", "failure"]
       - id: aspnetcore.identity.token_verified
+        annotations:
+          traffic-generator:
+            weights: [9, 1]
         type:
           members:
             - id: success
@@ -368,6 +469,10 @@ groups:
         brief: The result of token verification.
         examples: ["success", "failure"]
       - id: aspnetcore.identity.sign_in.type
+        annotations:
+          traffic-generator:
+            values: [password, two_factor_recovery_code, two_factor_authenticator, two_factor, external, passkey]
+            weights: [60, 1, 10, 9, 15, 5]
         type:
           members:
             - id: password
@@ -398,10 +503,18 @@ groups:
         brief: The authentication type.
         examples: ["password", "two_factor"]
       - id: aspnetcore.sign_in.is_persistent
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [4, 6]
         type: boolean
         stability: development
         brief: A flag indicating whether the sign in is persistent.
       - id: aspnetcore.identity.sign_in.result
+        annotations:
+          traffic-generator:
+            values: [success, locked_out, not_allowed, requires_two_factor, failure]
+            weights: [75, 2, 3, 8, 12]
         type:
           members:
             - id: success

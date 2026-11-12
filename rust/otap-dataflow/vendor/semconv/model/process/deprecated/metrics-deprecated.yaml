@@ -1,6 +1,11 @@
 groups:
   - id: metric.process.open_file_descriptor.count
     type: metric
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 3, max: 65536 }
+          distribution: { type: lognormal, mean: 64, stddev: 200 }
     metric_name: process.open_file_descriptor.count
     stability: development
     deprecated:

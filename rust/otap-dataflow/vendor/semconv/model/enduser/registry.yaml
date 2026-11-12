@@ -6,6 +6,10 @@ groups:
       Describes the end user.
     attributes:
       - id: enduser.id
+        annotations:
+          traffic-generator:
+            values: [username, alice, bob, jdoe, alice@example.com, svc-batch]
+            weights: [3, 4, 3, 2, 2, 1]
         type: string
         brief: "Unique identifier of an end user in the system. It maybe a username, email address, or other identifier."
         note: |
@@ -16,6 +20,9 @@ groups:
         examples: [ 'username' ]
         stability: development
       - id: enduser.pseudo.id
+        annotations:
+          traffic-generator:
+            values: [QdH5CAWJgqVT4rOr0qtumf, 7Fk2LmQpRz8XwYv3NtB1cd, Zr9aWq4EoTp6YhLs2KdMnu, b3VxJ8cNe5RgHt1QpLw0zy]
         type: string
         stability: development
         brief: >

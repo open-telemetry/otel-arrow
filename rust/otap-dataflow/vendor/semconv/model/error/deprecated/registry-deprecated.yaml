@@ -6,6 +6,10 @@ groups:
       This document defines deprecated attributes used to report an error.
     attributes:
       - id: error.message
+        annotations:
+          traffic-generator:
+            values: ["Unexpected input type: string", "The user has exceeded their storage quota", "Connection reset by peer", "Request timed out after 30s"]
+            weights: [4, 2, 2, 2]
         type: string
         stability: development
         examples: ["Unexpected input type: string", "The user has exceeded their storage quota"]

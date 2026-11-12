@@ -21,6 +21,14 @@ spans:
     stability: development
     brief: >
       This span represents the server (incoming) side of a FaaS invocation.
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 900000.0 }
+          distribution: { type: lognormal, mean: 150.0, stddev: 400.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [85, 10, 5]
     name:
       note: &faas_span_name >
         Span name SHOULD be set to the function name being executed, see
@@ -35,6 +43,14 @@ spans:
     brief: >
       This span represents the server side of a FaaS invocation triggered in response
       to some data source operation such as a database or filesystem read/write.
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 900000.0 }
+          distribution: { type: lognormal, mean: 200.0, stddev: 500.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [85, 10, 5]
     name:
       note: *faas_span_name
     attributes:
@@ -55,6 +71,14 @@ spans:
     stability: development
     brief: >
       This span represents the server side of a FaaS invocation triggered by a timer.
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 900000.0 }
+          distribution: { type: lognormal, mean: 1000.0, stddev: 3000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [85, 10, 5]
     name:
       note: *faas_span_name
     attributes:
@@ -71,6 +95,14 @@ spans:
     stability: development
     brief: >
       This span represents an outgoing call to a FaaS service.
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 900000.0 }
+          distribution: { type: lognormal, mean: 200.0, stddev: 500.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [85, 10, 5]
     name:
       note: >
         Span name SHOULD be set to the name of the invoked function

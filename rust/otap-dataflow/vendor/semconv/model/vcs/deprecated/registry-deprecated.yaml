@@ -5,6 +5,10 @@ groups:
       Describes deprecated vcs attributes.
     attributes:
       - id: vcs.repository.ref.name
+        annotations:
+          traffic-generator:
+            values: [my-feature-branch, tag-1-test, main, feature/login]
+            weights: [4, 1, 3, 2]
         type: string
         stability: development
         deprecated:
@@ -14,6 +18,9 @@ groups:
           Deprecated, use `vcs.ref.head.name` instead.
         examples: ["my-feature-branch", "tag-1-test"]
       - id: vcs.repository.ref.type
+        annotations:
+          traffic-generator:
+            weights: [9, 1]
         type:
           members:
             - id: branch
@@ -32,6 +39,15 @@ groups:
           Deprecated, use `vcs.ref.head.type` instead.
         examples: ["branch", "tag"]
       - id: vcs.repository.ref.revision
+        annotations:
+          traffic-generator:
+            values:
+              - 9d59409acf479dfa0df1aa568182e43e43df8bbe28d60fcf2bc52e30068802cc
+              - 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+              - main
+              - "123"
+              - HEAD
+            weights: [4, 4, 2, 1, 1]
         type: string
         stability: development
         deprecated:
@@ -47,6 +63,9 @@ groups:
             "HEAD",
           ]
       - id: vcs.repository.change.title
+        annotations:
+          traffic-generator:
+            weights: [3, 4, 3]
         type: string
         stability: development
         deprecated:
@@ -61,6 +80,9 @@ groups:
             "[chore] update dependency",
           ]
       - id: vcs.repository.change.id
+        annotations:
+          traffic-generator:
+            values: ["123", "456", "1024", "2048"]
         type: string
         stability: development
         deprecated:

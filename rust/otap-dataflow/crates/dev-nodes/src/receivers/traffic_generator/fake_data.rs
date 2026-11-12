@@ -19,6 +19,15 @@ const SCOPE_VERSION: &str = "1.0.0";
 const TRACE_ID_LENGTH: usize = 16;
 const SPAN_ID_LENGTH: usize = 8;
 
+/// OTel SDK default explicit bucket histogram boundaries. Shared by the
+/// synthetic generator and the semantic-conventions generator (as the default
+/// when a histogram annotation omits `bounds`).
+/// See <https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation>
+pub(crate) const HISTOGRAM_BOUNDS: &[f64] = &[
+    0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
+    10000.0,
+];
+
 /// provide data for scope_name field
 #[must_use]
 pub fn get_scope_name() -> String {

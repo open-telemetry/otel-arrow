@@ -5,6 +5,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [2, 4, 8, 16, 32], weights: [3, 4, 4, 2, 1] }
     brief: "The number of processors available to the process."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -20,6 +22,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 10.0 }
+          distribution: { type: lognormal, mean: 0.5, stddev: 1.0 }
+        temporality: delta
       stability:
         # TODO https://github.com/open-telemetry/semantic-conventions/issues/1616
         policy_exceptions:
@@ -43,6 +50,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 20000000, max: 8000000000 }
+          distribution: { type: lognormal, mean: 300000000, stddev: 400000000 }
     brief: "The number of bytes of physical memory mapped to the process context."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -58,6 +69,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50 }
+          distribution: { type: exponential, mean: 3 }
+        temporality: delta
     brief: "The number of garbage collections that have occurred since the process has started."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -77,6 +93,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2000000000 }
+          distribution: { type: lognormal, mean: 50000000, stddev: 100000000 }
+        temporality: delta
     brief: >
       The _approximate_ number of bytes allocated on the managed GC heap since the process has
       started. The returned value does not include any native allocations.
@@ -94,6 +115,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 10000000, max: 8000000000 }
+          distribution: { type: lognormal, mean: 250000000, stddev: 300000000 }
     brief: >
       The amount of committed virtual memory in use by the .NET GC, as
       observed during the latest garbage collection.
@@ -116,6 +141,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 100000, max: 4000000000 }
+          distribution: { type: lognormal, mean: 80000000, stddev: 150000000 }
     brief: >
       The managed GC heap size (including fragmentation), as observed during the
       latest garbage collection.
@@ -137,6 +166,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 500000000 }
+          distribution: { type: lognormal, mean: 5000000, stddev: 10000000 }
     brief: >
       The heap fragmentation, as observed during the latest garbage collection.
     note: >
@@ -157,6 +190,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 5.0 }
+          distribution: { type: lognormal, mean: 0.02, stddev: 0.05 }
+        temporality: delta
     brief: "The total amount of time paused in GC since the process has started."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -172,6 +210,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 10000000 }
+          distribution: { type: lognormal, mean: 50000, stddev: 200000 }
+        temporality: delta
     brief: "Count of bytes of intermediate language that have been compiled since the process has started."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -188,6 +231,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 5000 }
+          distribution: { type: exponential, mean: 100 }
+        temporality: delta
     brief: >
       The number of times the JIT compiler (re)compiled methods since the
       process has started.
@@ -206,6 +254,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 5.0 }
+          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
+        temporality: delta
     brief: >
       The amount of time the JIT compiler has spent compiling methods since the
       process has started.
@@ -224,6 +277,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000 }
+          distribution: { type: exponential, mean: 10 }
+        temporality: delta
     brief: >
       The number of times there was contention when trying to acquire a monitor
       lock since the process has started.
@@ -242,6 +300,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 2, max: 100 } }
     brief: "The number of thread pool threads that currently exist."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -257,6 +317,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     brief: >
       The number of work items that the thread pool has completed since
       the process has started.
@@ -275,6 +340,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000 }
+          distribution: { type: exponential, mean: 5 }
     brief: >
       The number of work items that are currently queued to be processed by the
       thread pool.
@@ -293,6 +362,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 0, max: 200 } }
     brief: "The number of timer instances that are currently active."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -308,6 +379,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 20, max: 400 } }
     brief: "The number of .NET assemblies that are currently loaded."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.
@@ -324,6 +397,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 2 }
+        temporality: delta
     brief: "The number of exceptions that have been thrown in managed code."
     note: >
       Meter name: `System.Runtime`; Added in: .NET 9.0.

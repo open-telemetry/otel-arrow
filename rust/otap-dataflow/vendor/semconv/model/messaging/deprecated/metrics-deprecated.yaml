@@ -5,6 +5,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.02, stddev: 0.06 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     brief: "Deprecated. Use `messaging.client.operation.duration` instead."
     deprecated:
       reason: renamed
@@ -20,6 +27,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.05, stddev: 0.2 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     brief: "Deprecated. Use `messaging.client.operation.duration` instead."
     deprecated:
       reason: renamed
@@ -35,6 +49,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000 }
+          distribution: { type: exponential, mean: 50 }
+        temporality: delta
     brief: "Deprecated. Use `messaging.client.consumed.messages` instead."
     deprecated:
       reason: renamed
@@ -50,6 +69,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000 }
+          distribution: { type: exponential, mean: 50 }
+        temporality: delta
     brief: "Deprecated. Use `messaging.client.sent.messages` instead."
     deprecated:
       reason: renamed
@@ -65,6 +89,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000 }
+          distribution: { type: exponential, mean: 50 }
+        temporality: delta
     brief: "Deprecated. Use `messaging.client.consumed.messages` instead."
     deprecated:
       reason: renamed
@@ -80,6 +109,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1000 }
+          distribution: { type: exponential, mean: 50 }
+        temporality: delta
     brief: "Deprecated. Use `messaging.client.sent.messages` instead."
     deprecated:
       reason: renamed

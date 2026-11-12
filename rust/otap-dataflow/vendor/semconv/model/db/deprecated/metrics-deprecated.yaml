@@ -5,6 +5,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 0, max: 50 } }
     stability: development
     deprecated:
       reason: renamed
@@ -24,6 +26,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [8, 10, 16, 20, 32], weights: [3, 5, 2, 2, 1] }
     stability: development
     deprecated:
       reason: renamed
@@ -41,6 +45,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [0, 1, 2, 5, 10], weights: [3, 2, 3, 3, 2] }
     stability: development
     deprecated:
       reason: renamed
@@ -58,6 +64,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [10, 20, 50, 100], weights: [5, 3, 2, 1] }
     stability: development
     deprecated:
       reason: renamed
@@ -75,6 +83,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 3 }
     stability: development
     deprecated:
       reason: renamed
@@ -92,6 +104,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20 }
+          distribution: { type: exponential, mean: 0.5 }
+        temporality: delta
     stability: development
     deprecated:
       reason: renamed
@@ -109,6 +126,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 1.0, max: 30000.0 }
+          distribution: { type: lognormal, mean: 50.0, stddev: 100.0 }
+        bounds: [5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]
+        observations: { range: { min: 1, max: 10 } }
+        temporality: delta
     stability: development
     deprecated:
       reason: uncategorized
@@ -126,6 +150,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30000.0 }
+          distribution: { type: lognormal, mean: 5.0, stddev: 20.0 }
+        bounds: [0.5, 1, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     deprecated:
       reason: uncategorized
@@ -143,6 +174,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.5, max: 60000.0 }
+          distribution: { type: lognormal, mean: 50.0, stddev: 150.0 }
+        bounds: [5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     deprecated:
       reason: uncategorized
@@ -160,6 +198,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 1.0, max: 1000.0 }
+          distribution: { type: lognormal, mean: 10.0, stddev: 25.0 }
+        bounds: [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     brief: "Deprecated, use `azure.cosmosdb.client.operation.request_charge` instead."
     deprecated:
       reason: renamed
@@ -198,6 +243,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 1, max: 5 } }
     brief: "Deprecated, use `azure.cosmosdb.client.active_instance.count` instead."
     deprecated:
       reason: renamed

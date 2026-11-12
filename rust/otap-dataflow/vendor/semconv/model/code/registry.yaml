@@ -7,6 +7,10 @@ groups:
     attributes:
       - id: code.function.name
         type: string
+        annotations:
+          traffic-generator:
+            values: ['com.example.MyHttpService.serveRequest', 'GuzzleHttp\Client::transfer', 'fopen', 'github.com/my/repo/pkg.foo.func5', 'OpenTelemetry.Ctx.new', 'playground::my_module::my_cool_func', 'com.mycompany.Main$1.myMethod']
+            weights: [4, 2, 1, 3, 1, 2, 1]
         stability: stable
         brief: >
           The method or function fully-qualified name without arguments. The value should fit the natural representation of the language
@@ -34,6 +38,9 @@ groups:
           * C function: `fopen`
       - id: code.file.path
         type: string
+        annotations:
+          traffic-generator:
+            values: [/usr/local/MyApplication/content_root/app/index.php, /app/src/main/java/com/example/MyHttpService.java, /home/user/repo/pkg/foo/handler.go, /srv/app/src/server.rs, /opt/app/lib/client.py]
         stability: stable
         brief: >
           The source code filename that identifies the code unit as uniquely as possible (preferably an absolute file path).
@@ -41,6 +48,10 @@ groups:
         examples: /usr/local/MyApplication/content_root/app/index.php
       - id: code.line.number
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 5000 }
+            distribution: { type: lognormal, mean: 200, stddev: 300 }
         stability: stable
         brief: >
           The line number in `code.file.path` best representing the operation. It SHOULD point within the code unit named in `code.function.name`.
@@ -48,6 +59,10 @@ groups:
         examples: 42
       - id: code.column.number
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 120 }
+            distribution: { type: lognormal, mean: 16, stddev: 12 }
         stability: stable
         brief: >
           The column number in `code.file.path` best representing the operation. It SHOULD point within the code unit named in `code.function.name`.
@@ -55,6 +70,12 @@ groups:
         examples: 16
       - id: code.stacktrace
         type: string
+        annotations:
+          traffic-generator:
+            values:
+              - "at com.example.GenerateTrace.methodB(GenerateTrace.java:13)\nat com.example.GenerateTrace.methodA(GenerateTrace.java:9)\nat com.example.GenerateTrace.main(GenerateTrace.java:5)"
+              - "at com.example.MyHttpService.serveRequest(MyHttpService.java:42)\nat com.example.Server.handle(Server.java:118)"
+              - "goroutine 1 [running]:\nmain.handler()\n\t/app/main.go:27 +0x1d\nmain.main()\n\t/app/main.go:12 +0x25"
         stability: stable
         brief: >
           A stacktrace as a string in the natural representation for the language runtime.

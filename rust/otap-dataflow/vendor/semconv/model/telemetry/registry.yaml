@@ -6,6 +6,10 @@ groups:
         This document defines attributes for telemetry SDK.
     attributes:
       - id: telemetry.sdk.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry, com.example.CustomSdk, vendor-otel-fork]
+            weights: [95, 3, 2]
         type: string
         stability: stable
         brief: >
@@ -19,6 +23,10 @@ groups:
           All custom identifiers SHOULD be stable across different versions of an implementation.
         examples: ["opentelemetry"]
       - id: telemetry.sdk.language
+        annotations:
+          traffic-generator:
+            values: [cpp, dotnet, erlang, go, java, kotlin, nodejs, php, python, ruby, rust, swift, webjs]
+            weights: [3, 12, 1, 15, 25, 2, 15, 3, 15, 2, 3, 1, 3]
         type:
           members:
             - id: cpp
@@ -77,12 +85,20 @@ groups:
         brief: >
           The language of the telemetry SDK.
       - id: telemetry.sdk.version
+        annotations:
+          traffic-generator:
+            values: ["1.2.3", "1.27.0", "1.38.0", "0.29.0", "1.9.0"]
+            weights: [1, 3, 3, 2, 2]
         type: string
         stability: stable
         brief: >
           The version string of the telemetry SDK.
         examples: ["1.2.3"]
       - id: telemetry.distro.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry-java-instrumentation, opentelemetry-dotnet-instrumentation, opentelemetry-python-instrumentation, parts-unlimited-java]
+            weights: [4, 2, 3, 1]
         type: string
         stability: stable
         brief: >
@@ -92,6 +108,10 @@ groups:
           a string starting with `opentelemetry-`, e.g. `opentelemetry-java-instrumentation`.
         examples: ["parts-unlimited-java"]
       - id: telemetry.distro.version
+        annotations:
+          traffic-generator:
+            values: ["1.2.3", "2.10.0", "1.11.0", "0.50b0"]
+            weights: [2, 4, 3, 1]
         type: string
         stability: stable
         brief: >

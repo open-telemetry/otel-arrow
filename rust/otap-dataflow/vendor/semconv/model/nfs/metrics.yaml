@@ -3,6 +3,12 @@ groups:
   - id: metric.nfs.client.net.count
     type: metric
     metric_name: nfs.client.net.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100000 }
+          distribution: { type: exponential, mean: 5000 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS client TCP segments and UDP datagrams handled."
     note: |
@@ -17,6 +23,12 @@ groups:
   - id: metric.nfs.client.net.tcp.connection.accepted
     type: metric
     metric_name: nfs.client.net.tcp.connection.accepted
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50 }
+          distribution: { type: exponential, mean: 2 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS client TCP connections accepted."
     note: |
@@ -29,6 +41,12 @@ groups:
   - id: metric.nfs.client.rpc.count
     type: metric
     metric_name: nfs.client.rpc.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS client RPCs sent, regardless of whether they're accepted/rejected by the server."
     note: |
@@ -41,6 +59,12 @@ groups:
   - id: metric.nfs.client.rpc.retransmit.count
     type: metric
     metric_name: nfs.client.rpc.retransmit.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 3 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS client RPC retransmits."
     note: |
@@ -53,6 +77,12 @@ groups:
   - id: metric.nfs.client.rpc.authrefresh.count
     type: metric
     metric_name: nfs.client.rpc.authrefresh.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20 }
+          distribution: { type: exponential, mean: 1 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS client RPC authentication refreshes."
     note: |
@@ -65,6 +95,12 @@ groups:
   - id: metric.nfs.client.operation.count
     type: metric
     metric_name: nfs.client.operation.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20000 }
+          distribution: { type: exponential, mean: 800 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFSv4+ client operations."
     instrument: counter
@@ -78,6 +114,12 @@ groups:
   - id: metric.nfs.client.procedure.count
     type: metric
     metric_name: nfs.client.procedure.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20000 }
+          distribution: { type: exponential, mean: 800 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS client procedures."
     instrument: counter
@@ -92,6 +134,12 @@ groups:
   - id: metric.nfs.server.repcache.requests
     type: metric
     metric_name: nfs.server.repcache.requests
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     stability: development
     brief: "Reports the kernel NFS server reply cache request count by cache hit status."
     instrument: counter
@@ -104,6 +152,12 @@ groups:
   - id: metric.nfs.server.fh.stale.count
     type: metric
     metric_name: nfs.server.fh.stale.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20 }
+          distribution: { type: exponential, mean: 0.5 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS server stale file handles."
     note: |
@@ -116,6 +170,12 @@ groups:
   - id: metric.nfs.server.io
     type: metric
     metric_name: nfs.server.io
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 10737418240 }
+          distribution: { type: lognormal, mean: 104857600, stddev: 268435456 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS server bytes returned to receive and transmit (read and write) requests."
     note: |
@@ -130,6 +190,9 @@ groups:
   - id: metric.nfs.server.thread.count
     type: metric
     metric_name: nfs.server.thread.count
+    annotations:
+      traffic-generator:
+        value: { values: [8, 16, 32, 64], weights: [5, 2, 2, 1] }
     stability: development
     brief: "Reports the count of kernel NFS server available threads."
     note: |
@@ -142,6 +205,12 @@ groups:
   - id: metric.nfs.server.net.count
     type: metric
     metric_name: nfs.server.net.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 200000 }
+          distribution: { type: exponential, mean: 10000 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS server TCP segments and UDP datagrams handled."
     note: |
@@ -156,6 +225,12 @@ groups:
   - id: metric.nfs.server.net.tcp.connection.accepted
     type: metric
     metric_name: nfs.server.net.tcp.connection.accepted
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 4 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS server TCP connections accepted."
     note: |
@@ -168,6 +243,12 @@ groups:
   - id: metric.nfs.server.rpc.count
     type: metric
     metric_name: nfs.server.rpc.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100000 }
+          distribution: { type: exponential, mean: 5000 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS server RPCs handled."
     note: |
@@ -183,6 +264,12 @@ groups:
   - id: metric.nfs.server.operation.count
     type: metric
     metric_name: nfs.server.operation.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFSv4+ server operations."
     instrument: counter
@@ -196,6 +283,12 @@ groups:
   - id: metric.nfs.server.procedure.count
     type: metric
     metric_name: nfs.server.procedure.count
+    annotations:
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50000 }
+          distribution: { type: exponential, mean: 2000 }
+        temporality: delta
     stability: development
     brief: "Reports the count of kernel NFS server procedures."
     instrument: counter

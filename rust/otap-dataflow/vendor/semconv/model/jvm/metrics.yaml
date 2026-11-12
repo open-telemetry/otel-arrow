@@ -15,6 +15,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 1048576, max: 8589934592 }
+          distribution: { type: lognormal, mean: 268435456, stddev: 536870912 }
     extends: attributes.jvm.memory
     brief: "Measure of memory used."
     instrument: updowncounter
@@ -27,6 +31,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 2097152, max: 8589934592 }
+          distribution: { type: lognormal, mean: 402653184, stddev: 536870912 }
     extends: attributes.jvm.memory
     brief: "Measure of memory committed."
     instrument: updowncounter
@@ -39,6 +47,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [251658240, 1073741824, 2147483648, 4294967296, 8589934592], weights: [2, 2, 3, 3, 1] }
     extends: attributes.jvm.memory
     brief: "Measure of max obtainable memory."
     instrument: updowncounter
@@ -51,6 +61,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 8589934592 }
+          distribution: { type: lognormal, mean: 134217728, stddev: 268435456 }
     extends: attributes.jvm.memory
     brief: "Measure of memory used, as measured after the most recent garbage collection event on this pool."
     instrument: updowncounter
@@ -63,6 +77,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 10.0 }
+          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
+        bounds: [0.01, 0.1, 1, 10]
+        observations: { range: { min: 10, max: 50 } }
+        temporality: delta
     brief: "Duration of JVM garbage collection actions."
     instrument: histogram
     unit: "s"
@@ -81,6 +102,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 10, max: 200 } }
     brief: "Number of executing platform threads."
     instrument: updowncounter
     unit: "{thread}"
@@ -97,6 +120,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 5 }
     brief: "Number of classes loaded since JVM start."
     instrument: counter
     unit: "{class}"
@@ -108,6 +135,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50 }
+          distribution: { type: exponential, mean: 1 }
+        temporality: delta
     brief: "Number of classes unloaded since JVM start."
     instrument: counter
     unit: "{class}"
@@ -119,6 +151,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 1000, max: 60000 }
+          distribution: { type: normal, mean: 12000, stddev: 6000 }
     brief: "Number of classes currently loaded."
     instrument: updowncounter
     unit: "{class}"
@@ -130,6 +166,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [1, 2, 4, 8, 16, 32, 64], weights: [2, 4, 5, 4, 2, 1, 1] }
     brief: "Number of processors available to the Java virtual machine."
     instrument: updowncounter
     unit: "{cpu}"
@@ -141,6 +179,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 2.0, stddev: 3.0 }
+        temporality: delta
     brief: "CPU time used by the process as reported by the JVM."
     instrument: counter
     unit: "s"
@@ -152,6 +195,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value: { values: [0.25, 0.5, 0.75] }
     brief: "Recent CPU utilization for the process as reported by the JVM."
     note: >
       The value range is [0.0,1.0].

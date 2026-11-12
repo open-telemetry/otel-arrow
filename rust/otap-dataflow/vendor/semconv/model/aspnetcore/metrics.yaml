@@ -40,6 +40,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 5000 }
+          distribution: { type: exponential, mean: 200 }
+        temporality: delta
     stability: stable
     brief: Number of requests that were attempted to be matched to an endpoint.
     instrument: counter
@@ -63,6 +68,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 3 }
+        temporality: delta
     stability: stable
     brief: Number of exceptions caught by exception handling middleware.
     instrument: counter
@@ -88,6 +98,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 0, max: 200 } }
     stability: stable
     brief: Number of requests that are currently active on the server that hold a rate limiting lease.
     instrument: updowncounter
@@ -102,6 +114,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60.0 }
+          distribution: { type: lognormal, mean: 0.1, stddev: 0.3 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: stable
     brief: The duration of rate limiting lease held by requests on the server.
     instrument: histogram
@@ -116,6 +135,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.02, stddev: 0.1 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: stable
     brief: The time the request spent in a queue waiting to acquire a rate limiting lease.
     instrument: histogram
@@ -133,6 +159,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 5 }
     stability: stable
     brief: Number of requests that are currently queued, waiting to acquire a rate limiting lease.
     instrument: updowncounter
@@ -147,6 +177,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 5000 }
+          distribution: { type: exponential, mean: 150 }
+        temporality: delta
     stability: stable
     brief: Number of requests that tried to acquire a rate limiting lease.
     instrument: counter
@@ -170,6 +205,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 268435456 }
+          distribution: { type: lognormal, mean: 8388608, stddev: 16777216 }
     stability: development
     brief: Number of bytes currently pooled and available for reuse.
     instrument: updowncounter
@@ -184,6 +223,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 67108864 }
+          distribution: { type: lognormal, mean: 524288, stddev: 2097152 }
+        temporality: delta
     stability: development
     brief: Total number of bytes allocated by the memory pool. Allocation occurs when a memory rental request exceeds the available pooled memory.
     instrument: counter
@@ -198,6 +242,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 67108864 }
+          distribution: { type: lognormal, mean: 262144, stddev: 1048576 }
+        temporality: delta
     stability: development
     brief: Total number of bytes evicted from the memory pool. Eviction occurs when idle pooled memory is reclaimed.
     instrument: counter
@@ -212,6 +261,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 536870912 }
+          distribution: { type: lognormal, mean: 4194304, stddev: 16777216 }
+        temporality: delta
     stability: development
     brief: Total number of bytes rented from the memory pool.
     instrument: counter
@@ -227,6 +281,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 10.0 }
+          distribution: { type: lognormal, mean: 0.005, stddev: 0.02 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: The authentication duration for a request.
     instrument: histogram
@@ -244,6 +305,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 200 }
+          distribution: { type: exponential, mean: 10 }
+        temporality: delta
     stability: development
     brief: The total number of times a scheme is challenged.
     instrument: counter
@@ -258,6 +324,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50 }
+          distribution: { type: exponential, mean: 2 }
+        temporality: delta
     stability: development
     brief: The total number of times an authenticated user attempts to access a resource they are not permitted to access.
     instrument: counter
@@ -272,6 +343,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 200 }
+          distribution: { type: exponential, mean: 8 }
+        temporality: delta
     stability: development
     brief: The total number of times a principal is signed in with a scheme.
     instrument: counter
@@ -286,6 +362,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 4 }
+        temporality: delta
     stability: development
     brief: The total number of times a principal is signed out with a scheme.
     instrument: counter
@@ -301,6 +382,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 2000 }
+          distribution: { type: exponential, mean: 100 }
+        temporality: delta
     stability: development
     brief: The total number of authorization attempts.
     instrument: counter
@@ -330,6 +416,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.15, stddev: 0.2 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: The duration of user creation operations.
     instrument: histogram
@@ -357,6 +450,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: The duration of user update operations.
     instrument: histogram
@@ -386,6 +486,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.04, stddev: 0.08 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: The duration of user deletion operations.
     instrument: histogram
@@ -413,6 +520,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 200 }
+          distribution: { type: exponential, mean: 10 }
+        temporality: delta
     stability: development
     brief: The number of check password attempts. Only checks whether the password is valid and not whether the user account is in a state that can log in.
     instrument: counter
@@ -437,6 +549,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 5 }
+        temporality: delta
     stability: development
     brief: The total number of token verification attempts.
     instrument: counter
@@ -463,6 +580,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 5 }
+        temporality: delta
     stability: development
     brief: The total number of token generations.
     instrument: counter
@@ -486,6 +608,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 30.0 }
+          distribution: { type: lognormal, mean: 0.2, stddev: 0.3 }
+        bounds: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: The duration of authenticate attempts. The authenticate metrics is recorded by sign in methods such as PasswordSignInAsync and TwoFactorSignInAsync.
     instrument: histogram
@@ -517,6 +646,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 50 }
+          distribution: { type: exponential, mean: 2 }
+        temporality: delta
     stability: development
     brief: The total number of two factor clients remembered.
     instrument: counter
@@ -540,6 +674,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20 }
+          distribution: { type: exponential, mean: 1 }
+        temporality: delta
     stability: development
     brief: The total number of two factor clients forgotten.
     instrument: counter
@@ -563,6 +702,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 200 }
+          distribution: { type: exponential, mean: 10 }
+        temporality: delta
     stability: development
     brief: The total number of check password attempts. Checks that the account is in a state that can log in and that the password is valid using the UserManager.CheckPasswordAsync method.
     instrument: counter
@@ -587,6 +731,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 200 }
+          distribution: { type: exponential, mean: 8 }
+        temporality: delta
     stability: development
     brief: The total number of calls to sign in user principals.
     instrument: counter
@@ -613,6 +762,11 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 4 }
+        temporality: delta
     stability: development
     brief: The total number of calls to sign out user principals.
     instrument: counter

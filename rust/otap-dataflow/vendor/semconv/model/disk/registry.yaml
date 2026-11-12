@@ -6,6 +6,10 @@ groups:
         These attributes may be used for any disk related operation.
     attributes:
       - id: disk.io.direction
+        annotations:
+          traffic-generator:
+            values: [read, write]
+            weights: [6, 4]
         type:
           members:
             - id: read

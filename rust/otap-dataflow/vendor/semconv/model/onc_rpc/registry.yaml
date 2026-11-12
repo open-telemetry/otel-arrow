@@ -5,19 +5,35 @@ groups:
     display_name: ONC RPC (Sun RPC) attributes
     attributes:
       - id: onc_rpc.version
+        annotations:
+          traffic-generator:
+            values: [2, 3, 4]
+            weights: [2, 5, 3]
         type: int
         brief: "ONC/Sun RPC program version."
         stability: development
       - id: onc_rpc.procedure.number
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 21 }
+            distribution: { type: zipf, exponent: 1.2 }
         type: int
         stability: development
         brief: "ONC/Sun RPC procedure number."
       - id: onc_rpc.procedure.name
+        annotations:
+          traffic-generator:
+            values: [OPEN, READ, GETATTR, WRITE, LOOKUP, ACCESS, "NULL"]
+            weights: [3, 6, 8, 4, 5, 3, 1]
         type: string
         stability: development
         brief: "ONC/Sun RPC procedure name."
         examples: ['OPEN', 'READ', 'GETATTR']
       - id: onc_rpc.program.name
+        annotations:
+          traffic-generator:
+            values: [portmapper, nfs, mountd, nlockmgr, status]
+            weights: [2, 6, 1, 1, 1]
         type: string
         stability: development
         brief: "ONC/Sun RPC program name."

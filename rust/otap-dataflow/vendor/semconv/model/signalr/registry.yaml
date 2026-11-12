@@ -5,6 +5,10 @@ groups:
     brief: SignalR attributes
     attributes:
       - id: signalr.connection.status
+        annotations:
+          traffic-generator:
+            values: [normal_closure, timeout, app_shutdown]
+            weights: [85, 12, 3]
         type:
           members:
             - id: normal_closure
@@ -23,6 +27,10 @@ groups:
         brief: SignalR HTTP connection closure status.
         examples: ["app_shutdown", "timeout"]
       - id: signalr.transport
+        annotations:
+          traffic-generator:
+            values: [web_sockets, server_sent_events, long_polling]
+            weights: [85, 8, 7]
         brief: "[SignalR transport type](https://github.com/dotnet/aspnetcore/blob/main/src/SignalR/docs/specs/TransportProtocols.md)"
         type:
           members:

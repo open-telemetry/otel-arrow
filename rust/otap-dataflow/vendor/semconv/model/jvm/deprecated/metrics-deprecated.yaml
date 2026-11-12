@@ -5,6 +5,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 1073741824 }
+          distribution: { type: lognormal, mean: 8388608, stddev: 33554432 }
     stability: development
     deprecated:
       reason: renamed

@@ -6,6 +6,10 @@ groups:
       This document defines Java Virtual machine related attributes.
     attributes:
       - id: jvm.gc.action
+        annotations:
+          traffic-generator:
+            # No `values`: the weights apply to `examples` in order.
+            weights: [9, 1]
         stability: stable
         type: string
         brief: Name of the garbage collector action.
@@ -14,6 +18,10 @@ groups:
           Garbage collector action is generally obtained via
           [GarbageCollectionNotificationInfo#getGcAction()](https://docs.oracle.com/en/java/javase/11/docs/api/jdk.management/com/sun/management/GarbageCollectionNotificationInfo.html#getGcAction()).
       - id: jvm.gc.cause
+        annotations:
+          traffic-generator:
+            values: [Allocation Failure, G1 Evacuation Pause, System.gc(), Metadata GC Threshold, G1 Humongous Allocation]
+            weights: [6, 6, 1, 1, 1]
         stability: development
         type: string
         brief: Name of the garbage collector cause.
@@ -22,6 +30,10 @@ groups:
           Garbage collector cause is generally obtained via
           [GarbageCollectionNotificationInfo#getGcCause()](https://docs.oracle.com/en/java/javase/11/docs/api/jdk.management/com/sun/management/GarbageCollectionNotificationInfo.html#getGcCause()).
       - id: jvm.gc.name
+        annotations:
+          traffic-generator:
+            values: [G1 Young Generation, G1 Old Generation, G1 Concurrent GC, ZGC Cycles, PS Scavenge, PS MarkSweep]
+            weights: [8, 1, 2, 1, 2, 1]
         stability: stable
         type: string
         brief: Name of the garbage collector.
@@ -30,6 +42,9 @@ groups:
           Garbage collector name is generally obtained via
           [GarbageCollectionNotificationInfo#getGcName()](https://docs.oracle.com/en/java/javase/11/docs/api/jdk.management/com/sun/management/GarbageCollectionNotificationInfo.html#getGcName()).
       - id: jvm.memory.type
+        annotations:
+          traffic-generator:
+            weights: [1, 1]
         stability: stable
         type:
           members:
@@ -44,6 +59,10 @@ groups:
         brief: The type of memory.
         examples: ["heap", "non_heap"]
       - id: jvm.memory.pool.name
+        annotations:
+          traffic-generator:
+            values: [G1 Old Gen, G1 Eden Space, G1 Survivor Space, Metaspace, CodeHeap 'non-nmethods', Compressed Class Space]
+            weights: [3, 3, 2, 2, 1, 1]
         stability: stable
         type: string
         brief: Name of the memory pool.
@@ -52,10 +71,18 @@ groups:
           Pool names are generally obtained via
           [MemoryPoolMXBean#getName()](https://docs.oracle.com/en/java/javase/11/docs/api/java.management/java/lang/management/MemoryPoolMXBean.html#getName()).
       - id: jvm.thread.daemon
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [3, 1]
         stability: stable
         type: boolean
         brief: "Whether the thread is daemon or not."
       - id: jvm.thread.state
+        annotations:
+          traffic-generator:
+            values: [new, runnable, blocked, waiting, timed_waiting, terminated]
+            weights: [1, 30, 5, 30, 30, 1]
         stability: stable
         brief: "State of the thread."
         examples: ["runnable", "blocked"]
@@ -86,6 +113,10 @@ groups:
               brief: 'A thread that has exited is in this state.'
               stability: stable
       - id: jvm.buffer.pool.name
+        annotations:
+          traffic-generator:
+            values: [direct, mapped, "mapped - 'non-volatile memory'"]
+            weights: [6, 3, 1]
         type: string
         stability: development
         brief: Name of the buffer pool.

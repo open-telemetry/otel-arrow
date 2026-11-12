@@ -6,6 +6,10 @@ groups:
       This section defines attributes for Elasticsearch.
     attributes:
       - id: elasticsearch.node.name
+        annotations:
+          traffic-generator:
+            values: [instance-0000000001, instance-0000000002, instance-0000000003]
+            weights: [4, 3, 3]
         type: string
         stability: development
         brief: >

@@ -1,5 +1,10 @@
 groups:
   - id: event.browser.web_vital
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG, WARN]
+          weights: [8, 1, 1]
     stability: development
     type: event
     name: browser.web_vital

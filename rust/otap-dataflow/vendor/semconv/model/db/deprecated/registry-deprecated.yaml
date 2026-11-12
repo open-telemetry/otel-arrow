@@ -7,6 +7,13 @@ groups:
     stability: development
     attributes:
       - id: db.connection_string
+        annotations:
+          traffic-generator:
+            values:
+              - 'Server=(localdb)\v11.0;Integrated Security=true;'
+              - 'Host=db.example.com;Port=5432;Database=appdb;'
+              - 'Server=sql01.example.com,1433;Database=orders;'
+            weights: [2, 3, 2]
         type: string
         brief: 'Deprecated, use `server.address`, `server.port` attributes instead.'
         stability: development
@@ -16,6 +23,10 @@ groups:
             Replaced by `server.address` and `server.port`.
         examples: Server=(localdb)\v11.0;Integrated Security=true;
       - id: db.jdbc.driver_classname
+        annotations:
+          traffic-generator:
+            values: [org.postgresql.Driver, com.microsoft.sqlserver.jdbc.SQLServerDriver, com.mysql.cj.jdbc.Driver, oracle.jdbc.OracleDriver]
+            weights: [4, 2, 3, 1]
         type: string
         brief: 'Removed, no replacement at this time.'
         stability: development
@@ -25,6 +36,10 @@ groups:
             Removed, no replacement at this time.
         examples: ['org.postgresql.Driver', 'com.microsoft.sqlserver.jdbc.SQLServerDriver']
       - id: db.operation
+        annotations:
+          traffic-generator:
+            values: [SELECT, INSERT, UPDATE, DELETE, findAndModify, HMSET, GET]
+            weights: [10, 4, 3, 1, 1, 1, 3]
         type: string
         brief: 'Deprecated, use `db.operation.name` instead.'
         stability: development
@@ -33,6 +48,10 @@ groups:
           renamed_to: db.operation.name
         examples: ['findAndModify', 'HMSET', 'SELECT']
       - id: db.user
+        annotations:
+          traffic-generator:
+            values: [readonly_user, reporting_user, app_user, admin]
+            weights: [3, 1, 5, 1]
         type: string
         brief: 'Deprecated, no replacement at this time.'
         deprecated:
@@ -41,6 +60,14 @@ groups:
         stability: development
         examples: ['readonly_user', 'reporting_user']
       - id: db.statement
+        annotations:
+          traffic-generator:
+            values:
+              - "SELECT * FROM wuser_table"
+              - 'SET mykey "WuValue"'
+              - "SELECT id, name FROM customers WHERE id = 42"
+              - "INSERT INTO orders (id, total) VALUES (1001, 19.99)"
+            weights: [3, 2, 4, 2]
         type: string
         brief: The database statement being executed.
         deprecated:
@@ -49,6 +76,10 @@ groups:
         stability: development
         examples: ['SELECT * FROM wuser_table', 'SET mykey "WuValue"']
       - id: db.cassandra.table
+        annotations:
+          traffic-generator:
+            values: [mytable, users, events, sensor_readings]
+            weights: [3, 3, 2, 1]
         type: string
         stability: development
         brief: 'Deprecated, use `db.collection.name` instead.'
@@ -57,6 +88,10 @@ groups:
           renamed_to: db.collection.name
         examples: 'mytable'
       - id: db.cosmosdb.container
+        annotations:
+          traffic-generator:
+            values: [mytable, users, orders, products]
+            weights: [3, 3, 2, 1]
         type: string
         stability: development
         brief: 'Deprecated, use `db.collection.name` instead.'
@@ -65,6 +100,10 @@ groups:
           renamed_to: db.collection.name
         examples: 'mytable'
       - id: db.mongodb.collection
+        annotations:
+          traffic-generator:
+            values: [mytable, users, orders, sessions]
+            weights: [3, 3, 2, 1]
         type: string
         stability: development
         brief: 'Deprecated, use `db.collection.name` instead.'
@@ -73,6 +112,10 @@ groups:
           renamed_to: db.collection.name
         examples: 'mytable'
       - id: db.sql.table
+        annotations:
+          traffic-generator:
+            values: [mytable, users, orders, customers, products]
+            weights: [2, 4, 3, 3, 2]
         type: string
         stability: development
         brief: 'Deprecated, use `db.collection.name` instead.'
@@ -81,6 +124,10 @@ groups:
           note: "Replaced by `db.collection.name`, but only if not extracting the value from `db.query.text`."
         examples: 'mytable'
       - id: db.redis.database_index
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 15 }
+            distribution: { type: zipf, exponent: 1.5 }
         type: int
         stability: development
         brief: 'Deprecated, use `db.namespace` instead.'
@@ -89,6 +136,10 @@ groups:
           note: Replaced by `db.namespace` (string).
         examples: [0, 1, 15]
       - id: db.name
+        annotations:
+          traffic-generator:
+            values: [customers, main, appdb, orders]
+            weights: [3, 2, 4, 2]
         type: string
         stability: development
         brief: 'Deprecated, use `db.namespace` instead.'
@@ -97,6 +148,10 @@ groups:
           renamed_to: db.namespace
         examples: [ 'customers', 'main' ]
       - id: db.mssql.instance_name
+        annotations:
+          traffic-generator:
+            values: [MSSQLSERVER, SQLEXPRESS, REPORTING]
+            weights: [7, 2, 1]
         type: string
         stability: development
         brief: 'Deprecated, SQL Server instance is now populated as a part of `db.namespace` attribute.'
@@ -105,6 +160,9 @@ groups:
           note: Removed, no replacement at this time.
         examples: 'MSSQLSERVER'
       - id: db.instance.id
+        annotations:
+          traffic-generator:
+            values: [mysql-e26b99z.example.com, mysql-a13c42k.example.com, pg-primary-0.example.com, instance-0000000001]
         type: string
         stability: development
         brief: 'Deprecated, no general replacement at this time. For Elasticsearch, use `db.elasticsearch.node.name` instead.'
@@ -114,6 +172,9 @@ groups:
             Removed, no general replacement at this time. For Elasticsearch, use `db.elasticsearch.node.name` instead.
         examples: 'mysql-e26b99z.example.com'
       - id: db.elasticsearch.cluster.name
+        annotations:
+          traffic-generator:
+            values: [e9106fc68e3044f0b1475b04bf4ffd5f, prod-logs-cluster, search-cluster-01]
         type: string
         stability: development
         deprecated:
@@ -123,6 +184,10 @@ groups:
           Deprecated, use `db.namespace` instead.
         examples: ["e9106fc68e3044f0b1475b04bf4ffd5f"]
       - id: db.cosmosdb.status_code
+        annotations:
+          traffic-generator:
+            values: [200, 201, 204, 304, 400, 404, 409, 412, 429, 500, 503]
+            weights: [60, 15, 5, 2, 2, 5, 2, 1, 5, 1, 2]
         type: int
         stability: development
         deprecated:
@@ -131,6 +196,10 @@ groups:
         brief: 'Deprecated, use `db.response.status_code` instead.'
         examples: [200, 201]
       - id: db.cosmosdb.operation_type
+        annotations:
+          traffic-generator:
+            values: [read, query, create, upsert, replace, delete, patch, batch, read_feed, query_plan, execute, execute_javascript, head, head_feed, invalid]
+            weights: [30, 20, 10, 10, 5, 4, 4, 3, 3, 2, 2, 1, 2, 1, 1]
         type:
           members:
             - id: batch
@@ -186,6 +255,10 @@ groups:
         brief: Deprecated, no replacement at this time.
 
       - id: db.cassandra.coordinator.dc
+        annotations:
+          traffic-generator:
+            values: [us-west-2, us-east-1, eu-west-1, dc1]
+            weights: [4, 4, 2, 1]
         type: string
         stability: development
         brief: "Deprecated, use `cassandra.coordinator.dc` instead."
@@ -194,6 +267,9 @@ groups:
           renamed_to: cassandra.coordinator.dc
         examples: "us-west-2"
       - id: db.cassandra.coordinator.id
+        annotations:
+          traffic-generator:
+            values: [be13faa2-8574-4d71-926d-27f16cf8a7af, 4f2c9a1e-3b7d-4e8a-9c21-6d5e0f1a2b3c, a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d]
         type: string
         stability: development
         brief: "Deprecated, use `cassandra.coordinator.id` instead."
@@ -202,6 +278,10 @@ groups:
           renamed_to: cassandra.coordinator.id
         examples: "be13faa2-8574-4d71-926d-27f16cf8a7af"
       - id: db.cassandra.consistency_level
+        annotations:
+          traffic-generator:
+            values: [local_quorum, one, quorum, local_one, all, each_quorum, two, three, any, serial, local_serial]
+            weights: [35, 20, 15, 15, 3, 2, 2, 1, 1, 3, 3]
         brief: "Deprecated, use `cassandra.consistency.level` instead."
         deprecated:
           reason: renamed
@@ -243,6 +323,10 @@ groups:
               stability: development
         stability: development
       - id: db.cassandra.idempotence
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [60, 40]
         type: boolean
         stability: development
         brief: "Deprecated, use `cassandra.query.idempotent` instead."
@@ -250,6 +334,10 @@ groups:
           reason: renamed
           renamed_to: cassandra.query.idempotent
       - id: db.cassandra.page_size
+        annotations:
+          traffic-generator:
+            values: [100, 1000, 5000, 10000]
+            weights: [1, 2, 6, 1]
         type: int
         stability: development
         brief: "Deprecated, use `cassandra.page.size` instead."
@@ -258,6 +346,10 @@ groups:
           renamed_to: cassandra.page.size
         examples: [5000]
       - id: db.cassandra.speculative_execution_count
+        annotations:
+          traffic-generator:
+            values: [0, 1, 2, 3]
+            weights: [85, 9, 4, 2]
         type: int
         stability: development
         brief: "Deprecated, use `cassandra.speculative_execution.count` instead."
@@ -266,6 +358,9 @@ groups:
           renamed_to: cassandra.speculative_execution.count
         examples: [0, 2]
       - id: db.cosmosdb.client_id
+        annotations:
+          traffic-generator:
+            values: [3ba4827d-4422-483f-b59f-85b74211c11d, 7c1e9f02-5d3a-4b8e-a6f1-2e9d0c4b7a35, d4e5f6a7-b8c9-4d0e-8f1a-2b3c4d5e6f70]
         type: string
         stability: development
         brief: "Deprecated, use `azure.client.id` instead."
@@ -274,6 +369,10 @@ groups:
           renamed_to: azure.client.id
         examples: "3ba4827d-4422-483f-b59f-85b74211c11d"
       - id: db.cosmosdb.connection_mode
+        annotations:
+          traffic-generator:
+            values: [gateway, direct]
+            weights: [35, 65]
         type:
           members:
             - id: gateway
@@ -290,6 +389,10 @@ groups:
           reason: renamed
           renamed_to: azure.cosmosdb.connection.mode
       - id: db.cosmosdb.request_charge
+        annotations:
+          traffic-generator:
+            range: { min: 1.0, max: 1000.0 }
+            distribution: { type: lognormal, mean: 10.0, stddev: 25.0 }
         type: double
         stability: development
         brief: "Deprecated, use `azure.cosmosdb.operation.request_charge` instead."
@@ -298,6 +401,10 @@ groups:
           renamed_to: azure.cosmosdb.operation.request_charge
         examples: [46.18, 1.0]
       - id: db.cosmosdb.request_content_length
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 2097152 }
+            distribution: { type: lognormal, mean: 1024, stddev: 4096 }
         type: int
         stability: development
         brief: "Deprecated, use `azure.cosmosdb.request.body.size` instead."
@@ -305,6 +412,10 @@ groups:
           reason: renamed
           renamed_to: azure.cosmosdb.request.body.size
       - id: db.cosmosdb.sub_status_code
+        annotations:
+          traffic-generator:
+            values: [0, 1000, 1002, 1003, 3200]
+            weights: [80, 5, 5, 3, 7]
         type: int
         stability: development
         brief: "Deprecated, use `azure.cosmosdb.response.sub_status_code` instead."
@@ -313,6 +424,9 @@ groups:
           renamed_to: azure.cosmosdb.response.sub_status_code
         examples: [1000, 1002]
       - id: db.cosmosdb.consistency_level
+        annotations:
+          traffic-generator:
+            weights: [15, 8, 10, 7, 60]
         type:
           members:
             - id: strong
@@ -337,6 +451,10 @@ groups:
           renamed_to: azure.cosmosdb.consistency.level
         examples: ["Eventual", "ConsistentPrefix", "BoundedStaleness", "Strong", "Session"]
       - id: db.cosmosdb.regions_contacted
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 }, distribution: { type: zipf, exponent: 1.5 } }
+            items: { values: [North Central US, Australia East, Australia Southeast, West US 2, East US], weights: [3, 2, 1, 3, 4] }
         type: string[]
         stability: development
         brief: "Deprecated, use `azure.cosmosdb.operation.contacted_regions` instead."
@@ -346,6 +464,9 @@ groups:
         examples:
           - ["North Central US", "Australia East", "Australia Southeast"]
       - id: db.elasticsearch.node.name
+        annotations:
+          traffic-generator:
+            values: [instance-0000000001, instance-0000000002, instance-0000000003]
         type: string
         stability: development
         brief: >
@@ -355,6 +476,10 @@ groups:
           renamed_to: elasticsearch.node.name
         examples: ["instance-0000000001"]
       - id: db.elasticsearch.path_parts
+        annotations:
+          traffic-generator:
+            keys: { values: [index, id, name], weights: [6, 3, 1] }
+            value: { values: [test-index, "123", logs-2024.01.01, my-alias] }
         type: template[string]
         stability: development
         brief: >
@@ -368,6 +493,10 @@ groups:
             "123",
           ]
       - id: db.system
+        annotations:
+          traffic-generator:
+            values: [postgresql, mysql, mssql, oracle, redis, mongodb, mariadb, elasticsearch, cassandra, dynamodb, sqlite, cosmosdb, clickhouse, other_sql]
+            weights: [25, 18, 10, 6, 12, 8, 4, 4, 3, 3, 2, 2, 2, 1]
         brief: "Deprecated, use `db.system.name` instead."
         deprecated:
           reason: renamed
@@ -614,6 +743,10 @@ groups:
     stability: development
     attributes:
       - id: state
+        annotations:
+          traffic-generator:
+            values: [idle, used]
+            weights: [60, 40]
         stability: development
         type:
           members:
@@ -629,6 +762,10 @@ groups:
           renamed_to: db.client.connection.state
         examples: ["idle"]
       - id: pool.name
+        annotations:
+          traffic-generator:
+            values: [myDataSource, HikariPool-1, readReplicaPool]
+            weights: [5, 3, 1]
         type: string
         stability: development
         brief: "Deprecated, use `db.client.connection.pool.name` instead."
@@ -637,6 +774,10 @@ groups:
           renamed_to: db.client.connection.pool.name
         examples: ["myDataSource"]
       - id: db.client.connections.state
+        annotations:
+          traffic-generator:
+            values: [idle, used]
+            weights: [60, 40]
         stability: development
         type:
           members:
@@ -652,6 +793,10 @@ groups:
           renamed_to: db.client.connection.state
         examples: ["idle"]
       - id: db.client.connections.pool.name
+        annotations:
+          traffic-generator:
+            values: [myDataSource, HikariPool-1, readReplicaPool]
+            weights: [5, 3, 1]
         type: string
         stability: development
         brief: "Deprecated, use `db.client.connection.pool.name` instead."
