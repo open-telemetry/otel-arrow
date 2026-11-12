@@ -75,8 +75,8 @@ impl AttributeSetHandler for EngineEntityAttributeSet {
         &ENGINE_ENTITY_DESCRIPTOR
     }
 
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &[]
+    fn attribute_values(&self) -> Cow<'_, [AttributeValue]> {
+        Cow::Borrowed(&[])
     }
 }
 
@@ -276,8 +276,8 @@ impl AttributeSetHandler for CustomAttributeSet {
         &CUSTOM_ATTRIBUTES_DESCRIPTOR
     }
 
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &self.values
+    fn attribute_values(&self) -> Cow<'_, [AttributeValue]> {
+        Cow::Borrowed(&self.values)
     }
 }
 

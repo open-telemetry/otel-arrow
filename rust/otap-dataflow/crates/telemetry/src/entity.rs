@@ -44,15 +44,15 @@ impl AttributeSetHandler for EntityAttributeSet {
         self.descriptor
     }
 
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &self.values
+    fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+        std::borrow::Cow::Borrowed(&self.values)
     }
 }
 
 impl EntityAttributeSet {
     fn new(attrs: impl AttributeSetHandler) -> Self {
         let descriptor = attrs.descriptor();
-        let values: Arc<[AttributeValue]> = attrs.attribute_values().to_vec().into();
+        let values: Arc<[AttributeValue]> = attrs.attribute_values().into_owned().into();
         debug_assert_eq!(
             descriptor.fields.len(),
             values.len(),
@@ -326,8 +326,8 @@ mod tests {
             &MOCK_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.values)
         }
     }
 
@@ -393,8 +393,8 @@ mod tests {
                 &DESCRIPTOR_A
             }
 
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
+            fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+                std::borrow::Cow::Borrowed(&self.values)
             }
         }
 
@@ -403,8 +403,8 @@ mod tests {
                 &DESCRIPTOR_B
             }
 
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
+            fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+                std::borrow::Cow::Borrowed(&self.values)
             }
         }
 

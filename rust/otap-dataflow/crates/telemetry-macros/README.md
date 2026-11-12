@@ -48,6 +48,21 @@ source for metric and attribute-set design:
 - The macro also derives the required handler to integrate with the metrics
   registry.
 
+## Attribute value ownership
+
+`AttributeSetHandler::attribute_values()` returns `Cow<'_, [AttributeValue]>`.
+Derived sets create owned snapshots, so callers may retain values or interleave
+iterators from the same type without one call overwriting another's storage.
+Composition preserves local fields followed by composed fields in declaration
+order. Each nonempty derived snapshot allocates a vector; composed snapshots
+preallocate their full field count and move owned child values without cloning
+them. Borrowed child values are cloned into the composed snapshot.
+
+Handwritten sets with stored values should return `Cow::Borrowed`, preserving
+allocation-free, zero-copy iteration (including registered entity attributes).
+`iter_attributes()` yields `Cow<'_, AttributeValue>` values: use `as_ref()` or
+`&value` to borrow them, and `into_owned()` when retaining owned values.
+
 ## Usage
 
 ```sh
