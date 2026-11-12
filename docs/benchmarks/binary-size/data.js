@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794446020336,
+  "lastUpdate": 1794497446227,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -83889,6 +83889,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 108.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "bwplotka@gmail.com",
+            "name": "Bartlomiej Plotka",
+            "username": "bwplotka"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "51bcec17fd7104eaf11dba52ca15c4502d42ce89",
+          "message": "feat(core-nodes): add experimental Prometheus scrape receiver (urn:otel:receiver:prometheus) (#4630)\n\nTowards\n[open-telemetry/otel-arrow#3277](https://github.com/open-telemetry/otel-arrow/issues/3277).\n\nAdds an experimental Prometheus scrape receiver\n`urn:otel:receiver:prometheus` in `otel-arrow-dfe-core-nodes`, backed by\n[prometheus/scrape.rs](https://github.com/prometheus/scrape.rs).\n\n- Runs as a `!Send` `local::Receiver<OtapPdata>` in a one-core source\npipeline, keeping target discovery separate from local HTTP scraping so\ndownstream processing can fan out via `exporter:topic` today and adopt\nshared work coordination later.\n- Negotiates OpenMetrics 1.0\n`application/openmetrics-text;version=1.0.0` or Prometheus text `0.0.4`\nand `1.0.0` via HTTP `Accept` and `Content-Type` headers.\n- Decodes scraped counters, gauges, classic histograms, summaries,\nexemplars, `info`, `stateset`, and `_created` `start_time_unix_nano`\nseries directly into OTAP Arrow record batches\n`OtapArrowRecords::Metrics` via `expfmt::arrow::ArrowDecoder` without\nintermediate protobuf materialization.\n- Adds an example pipeline configuration in\n`rust/otap-dataflow/configs/prometheus-otlp.yaml`.\n\nCommits in order:\n1. `0ca40d08a`: `feat(core-nodes): add experimental Prometheus scrape\nreceiver (urn:otel:receiver:prometheus)`\n2. `9bd1565c6`: `fix(prometheus-receiver): require one-core source\npipeline and decouple discovery`\n3. `909851555`: `fix(prometheus-receiver): await downstream channel\ncapacity during chunk sends`\n4. `cbcffca0c`: `fix(prometheus-receiver): apply honor_timestamps=false\nto decoded data points`\n5. `37de77ec6`: `docs(prometheus-receiver): link scrape.rs upstreaming\nissues in TODOs`\n\n---------\n\nSigned-off-by: Bartek Plotka <bwplotka@gmail.com>\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-11-12T14:51:54Z",
+          "tree_id": "1e25d67fdaec56d853837e8bb66e560449b49899",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/51bcec17fd7104eaf11dba52ca15c4502d42ce89"
+        },
+        "date": 1794497421542,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.27,
             "unit": "MB"
           }
         ]
