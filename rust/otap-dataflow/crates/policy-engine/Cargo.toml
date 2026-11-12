@@ -12,6 +12,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+arrow.workspace = true
+otel-arrow-contrib-data-engine-expressions.workspace = true
 otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-query-engine.workspace = true
 otel-arrow-dfe-pdata.workspace = true
