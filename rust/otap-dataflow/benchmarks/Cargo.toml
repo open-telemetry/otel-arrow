@@ -50,10 +50,12 @@ unsync.workspace = true
 otel-arrow-dfe-test-net.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
+weaver_forge.workspace = true
 bytes.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true
+tikv-jemalloc-ctl.workspace = true
 
 [lints]
 workspace = true
@@ -96,6 +98,10 @@ harness = false
 
 [[bench]]
 name = "transport_optimize"
+harness = false
+
+[[bench]]
+name = "traffic_generator"
 harness = false
 
 [[bench]]
