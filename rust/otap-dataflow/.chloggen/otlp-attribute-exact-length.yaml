@@ -1,0 +1,8 @@
+change_type: enhancement
+component: pdata
+note: OTLP produced from OTAP data now uses minimal length prefixes for attributes and log bodies.
+issues: [4722]
+subtext: |
+  Attribute key/value pairs and log bodies used to have 4-byte padded length prefixes. They now
+  get minimal-width prefixes, except map and array values. Raw and compressed OTLP payloads are
+  smaller. The data itself is unchanged.

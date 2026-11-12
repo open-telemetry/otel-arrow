@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::attributes::{Attribute32Arrays, encode_attribute};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::proto::consts::field_num::metrics::{
@@ -123,9 +123,7 @@ pub(crate) fn proto_encode_summary_data_point(
     {
         let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attrs_index_iter {
-            result_buf.encode_len_delimited(SUMMARY_DP_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(SUMMARY_DP_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 

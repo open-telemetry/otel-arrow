@@ -10,7 +10,7 @@ use crate::arrays::{
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 use crate::error::{Error, Result as PDataResult};
-use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_attribute};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -72,9 +72,7 @@ pub(crate) fn proto_encode_resource(
         for attr_index in
             ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
         {
-            result_buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs_arrays, attr_index, result_buf)
-            })?;
+            encode_attribute(RESOURCE_ATTRIBUTES, attrs_arrays, attr_index, result_buf)?;
         }
     }
 
@@ -213,9 +211,12 @@ pub(crate) fn proto_encode_instrumentation_scope(
     {
         for attr_index in ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
         {
-            result_buf.encode_len_delimited(INSTRUMENTATION_SCOPE_ATTRIBUTES, |result_buf| {
-                encode_key_value(attr_arrays, attr_index, result_buf)
-            })?;
+            encode_attribute(
+                INSTRUMENTATION_SCOPE_ATTRIBUTES,
+                attr_arrays,
+                attr_index,
+                result_buf,
+            )?;
         }
     }
 

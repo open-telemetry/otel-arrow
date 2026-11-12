@@ -6,7 +6,7 @@ use crate::arrays::{
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::attributes::{Attribute32Arrays, encode_attribute};
 use crate::otlp::common::{BoundedBuf, ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::data_points::histogram::ListValueAccessor;
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
@@ -178,9 +178,7 @@ pub(crate) fn proto_encode_exp_hist_data_point(
     {
         let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attrs_index_iter {
-            result_buf.encode_len_delimited(EXP_HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(EXP_HISTOGRAM_DP_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 
