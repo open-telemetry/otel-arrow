@@ -12,12 +12,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-query-engine.workspace = true
 otel-arrow-dfe-pdata.workspace = true
-# TODO: policy-rs requires vectorscan-rs-sys (Boost headers + CMake) to build.
-# Either gate vectorscan behind a feature in policy-rs, or vendor just the
-# proto/type definitions we need. Uncomment once resolved:
-# policy-rs = { workspace = true }
+policy-rs.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

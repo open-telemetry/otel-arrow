@@ -85,7 +85,7 @@ otel-arrow-contrib-data-engine-expressions = "0.1.1"
 otel-arrow-contrib-data-engine-kql-parser = "0.1.1"
 otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
 otel-arrow-contrib-data-engine-recordset = "0.1.1"
-policy-rs = { path = "../../../policy-rs", default-features = false }
+policy-rs = { version = "1.8.2", default-features = false }
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
