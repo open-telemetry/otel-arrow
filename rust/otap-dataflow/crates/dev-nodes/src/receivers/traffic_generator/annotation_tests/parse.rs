@@ -683,6 +683,203 @@ fn parse_int_enum_membership() {
     );
 }
 
+// ===========================================================================
+// Parsing: `weights` over attribute `examples`
+// ===========================================================================
+
+/// Parse a YAML list fixture into registry `Examples`.
+fn examples(src: &str) -> Examples {
+    serde_json::from_value(yaml_from_str(src)).expect("valid examples")
+}
+
+/// Scenario: Scalar attributes of every primitive kind carry `weights`
+/// without `values` and have list or single `examples`.
+/// Guarantees: The discrete form is selected with the examples, in order, as
+/// `values` and the annotation weights unchanged; a single example becomes a
+/// one-element list.
+#[test]
+fn parse_weights_use_examples_as_values() {
+    let cases = [
+        (
+            PrimitiveOrArrayTypeSpec::String,
+            Examples::Strings(vec!["a".into(), "b".into()]),
+            "weights: [3, 1]",
+            vec![Scalar::String("a".into()), Scalar::String("b".into())],
+            vec![3.0, 1.0],
+        ),
+        (
+            PrimitiveOrArrayTypeSpec::Int,
+            Examples::Ints(vec![7, 9, 11]),
+            "weights: [1, 2, 3]",
+            vec![Scalar::Int(7), Scalar::Int(9), Scalar::Int(11)],
+            vec![1.0, 2.0, 3.0],
+        ),
+        (
+            PrimitiveOrArrayTypeSpec::Double,
+            examples("[1.5, 2]"),
+            "weights: [1, 1]",
+            vec![Scalar::Double(1.5), Scalar::Double(2.0)],
+            vec![1.0, 1.0],
+        ),
+        (
+            PrimitiveOrArrayTypeSpec::Boolean,
+            Examples::Bools(vec![true, false]),
+            "weights: [9, 1]",
+            vec![Scalar::Bool(true), Scalar::Bool(false)],
+            vec![9.0, 1.0],
+        ),
+        (
+            PrimitiveOrArrayTypeSpec::Any,
+            examples(r##"["#ff0000", true, 3]"##),
+            "weights: [4, 3, 2]",
+            vec![
+                Scalar::String("#ff0000".into()),
+                Scalar::Bool(true),
+                Scalar::Int(3),
+            ],
+            vec![4.0, 3.0, 2.0],
+        ),
+        (
+            PrimitiveOrArrayTypeSpec::Int,
+            Examples::Int(42),
+            "weights: [1]",
+            vec![Scalar::Int(42)],
+            vec![1.0],
+        ),
+    ];
+    for (p, ex, src, values, weights) in cases {
+        let spec = parse_attr_with_examples(src, &primitive(p.clone()), &ex)
+            .unwrap_or_else(|e| panic!("{p:?}: {e}"));
+        assert_eq!(
+            spec,
+            AttributeSpec::Scalar(ValueSpec::Discrete {
+                values,
+                weights: Some(weights),
+            }),
+            "{p:?}"
+        );
+    }
+}
+
+/// Scenario: An enum attribute carries `weights` without `values` and its
+/// `examples` are member values, or include a non-member.
+/// Guarantees: Member examples are accepted as `values`; a non-member example
+/// is rejected at its index and the message says the values came from the
+/// attribute examples.
+#[test]
+fn parse_enum_weights_use_examples_as_values() {
+    let ty = enum_type(&["heap", "non_heap"]);
+    let spec = parse_attr_with_examples(
+        "weights: [4, 1]",
+        &ty,
+        &Examples::Strings(vec!["heap".into(), "non_heap".into()]),
+    )
+    .expect("member examples are valid");
+    assert_eq!(
+        spec,
+        AttributeSpec::Scalar(ValueSpec::Discrete {
+            values: vec![
+                Scalar::String("heap".into()),
+                Scalar::String("non_heap".into())
+            ],
+            weights: Some(vec![4.0, 1.0]),
+        })
+    );
+    let err = parse_attr_with_examples(
+        "weights: [4, 1]",
+        &ty,
+        &Examples::Strings(vec!["heap".into(), "stack".into()]),
+    )
+    .expect_err("non-member example");
+    assert_eq!(err.path, format!("{}.values[1]", annotation::NAMESPACE));
+    assert!(err.message.contains("not an enum member"), "{err}");
+    assert!(err.message.contains("attribute `examples`"), "{err}");
+}
+
+/// Scenario: Weights-only annotations are parsed where examples are missing,
+/// mismatched, or not applicable.
+/// Guarantees: Missing examples, a weights length that differs from the
+/// examples length, and examples that do not match the attribute type are
+/// rejected with the key path (noting the examples origin); explicit
+/// `values` take precedence over examples; array `items` and template `keys`
+/// still require `values`.
+#[test]
+fn parse_weights_with_examples_rejections() {
+    let ns = annotation::NAMESPACE;
+    let string = primitive(PrimitiveOrArrayTypeSpec::String);
+    expect_err(
+        parse_attr("weights: [1, 1]", &string),
+        ns,
+        "`weights` without `values` requires attribute `examples`",
+    );
+    expect_err(
+        parse_attr("weights: [1]", &enum_type(&["a"])),
+        ns,
+        "`weights` without `values` requires attribute `examples`",
+    );
+
+    let ab = Examples::Strings(vec!["a".into(), "b".into()]);
+    let err = parse_attr_with_examples("weights: [1, 2, 3]", &string, &ab)
+        .expect_err("weights length mismatch");
+    assert_eq!(err.path, format!("{ns}.weights"));
+    assert!(
+        err.message.contains("does not match `values` length 2"),
+        "{err}"
+    );
+    assert!(err.message.contains("attribute `examples`"), "{err}");
+
+    let err = parse_attr_with_examples(
+        "weights: [1, 1]",
+        &primitive(PrimitiveOrArrayTypeSpec::Int),
+        &ab,
+    )
+    .expect_err("string examples on an int attribute");
+    assert_eq!(err.path, format!("{ns}.values[0]"));
+    assert!(
+        err.message.contains("does not match attribute type int"),
+        "{err}"
+    );
+
+    let spec = parse_attr_with_examples("values: [x]\nweights: [1]", &string, &ab)
+        .expect("explicit values win");
+    assert_eq!(
+        spec,
+        AttributeSpec::Scalar(ValueSpec::Discrete {
+            values: vec![Scalar::String("x".into())],
+            weights: Some(vec![1.0]),
+        })
+    );
+    // `range` keeps its meaning: examples are not injected next to it.
+    expect_err(
+        parse_attr_with_examples(
+            "range: { min: 0, max: 1 }\nweights: [1]",
+            &primitive(PrimitiveOrArrayTypeSpec::Int),
+            &Examples::Ints(vec![0]),
+        ),
+        ns,
+        "`weights` requires `values`",
+    );
+
+    expect_err(
+        parse_attr_with_examples(
+            "length: { values: [1] }\nitems: { weights: [1, 1] }",
+            &primitive(PrimitiveOrArrayTypeSpec::Strings),
+            &Examples::Strings(vec!["a".into(), "b".into()]),
+        ),
+        &format!("{ns}.items"),
+        "a value spec requires `values` or `range`",
+    );
+    expect_err(
+        parse_attr_with_examples(
+            "keys: { weights: [1] }\nvalue: { values: [v] }",
+            &AttributeType::Template(TemplateTypeSpec::String),
+            &ab,
+        ),
+        &format!("{ns}.keys"),
+        "a value spec requires `values` or `range`",
+    );
+}
+
 /// Scenario: The `traffic-generator` namespace is absent, null, or not a map.
 /// Guarantees: Absent and null mean "no annotation"; a non-map is an error.
 #[test]

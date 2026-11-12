@@ -6,6 +6,10 @@ groups:
       This document defines Java Virtual machine related attributes.
     attributes:
       - id: jvm.gc.action
+        annotations:
+          traffic-generator:
+            # No `values`: the weights apply to `examples` in order.
+            weights: [9, 1]
         stability: stable
         type: string
         brief: Name of the garbage collector action.

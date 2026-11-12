@@ -81,7 +81,15 @@ fn primitive(p: PrimitiveOrArrayTypeSpec) -> AttributeType {
 }
 
 fn parse_attr(src: &str, ty: &AttributeType) -> Result<AttributeSpec, AnnotationError> {
-    annotation::parse_attribute_spec(&yaml_map(src), ty)
+    annotation::parse_attribute_spec(&yaml_map(src), ty, None)
+}
+
+fn parse_attr_with_examples(
+    src: &str,
+    ty: &AttributeType,
+    examples: &Examples,
+) -> Result<AttributeSpec, AnnotationError> {
+    annotation::parse_attribute_spec(&yaml_map(src), ty, Some(examples))
 }
 
 fn expect_err(result: Result<impl std::fmt::Debug, AnnotationError>, path: &str, needle: &str) {

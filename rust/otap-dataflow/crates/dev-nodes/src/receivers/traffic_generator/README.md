@@ -166,6 +166,22 @@ Every generated value is described by a value spec in one of two forms:
 `values` and `range` are mutually exclusive, `weights` requires `values`, and
 `distribution` requires `range`.
 
+On scalar and enum attributes, `weights` may be given without `values`: the
+attribute's registry `examples` are then used as `values`, in order, so they do
+not have to be repeated in the annotation. The examples are validated like
+`values` (type, enum membership, at most 128), and `weights` must match their
+count. An attribute without `examples` is rejected. Array `items`, template
+`keys` and `value`, and signal keys still require `values`.
+
+```yaml
+- id: jvm.gc.action
+  type: string
+  examples: ["end of minor GC", "end of major GC"]
+  annotations:
+    traffic-generator:
+      weights: [9, 1]
+```
+
 | `distribution.type` | Parameters | Notes |
 | --- | --- | --- |
 | `uniform` | none | Default |
@@ -291,8 +307,10 @@ of `weights`), keys used in the wrong context (`observations` or
 attribute type, invalid distribution parameters, unknown status, severity,
 and temporality names, bounds that are not strictly increasing, lists above
 their size caps (`values` 128, `bounds` 32), counts above their limits
-(`observations` 50, array `length` 32), int ranges beyond +/-(2^52 - 1), and
-weights whose sum is not finite.
+(`observations` 50, array `length` 32), int ranges beyond +/-(2^52 - 1),
+weights whose sum is not finite, and `weights` without `values` on an
+attribute that has no `examples`. Errors on values taken from `examples` say
+so in the message.
 
 These caps bound both the memory a compiled sampler retains and the per-batch
 sampling work. The `observations` limit bounds the sampling work per histogram

@@ -14,6 +14,9 @@
 //!
 //! - `values` (+ optional `weights`) selects the discrete form.
 //! - `range` (+ optional `distribution`) selects the continuous form.
+//! - On scalar and enum attributes, `weights` without `values` selects the
+//!   discrete form over the attribute's registry `examples`, so the examples
+//!   do not have to be repeated as `values`.
 //!
 //! Every map has a fixed set of allowed keys for its context; any other key is
 //! rejected so typos do not silently fall back to uniform sampling.
@@ -27,7 +30,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::status::StatusCode;
 use serde_json::{Map, Value};
 use weaver_semconv::YamlValue;
 use weaver_semconv::v1::attribute::{
-    AttributeType, EnumEntriesSpec, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
+    AttributeType, EnumEntriesSpec, Examples, PrimitiveOrArrayTypeSpec, TemplateTypeSpec,
     ValueSpec as SemconvValueSpec,
 };
 use weaver_semconv::v1::group::InstrumentSpec;
@@ -331,13 +334,35 @@ fn scalar_or_array(
 }
 
 /// Parse an attribute annotation for the given semconv attribute type.
-pub fn parse_attribute_spec(map: &Mapping, ty: &AttributeType) -> AnnotationResult<AttributeSpec> {
+///
+/// `examples` are the attribute's registry examples. On scalar and enum
+/// attributes, an annotation with `weights` but no `values` (and no `range`)
+/// uses them as its `values`; see [`with_example_values`].
+pub fn parse_attribute_spec(
+    map: &Mapping,
+    ty: &AttributeType,
+    examples: Option<&Examples>,
+) -> AnnotationResult<AttributeSpec> {
     let path = NAMESPACE;
     match ty {
-        AttributeType::PrimitiveOrArray(p) => scalar_or_array(map, path, primitive_shape(p)),
+        AttributeType::PrimitiveOrArray(p) => {
+            let shape = primitive_shape(p);
+            if shape.1 {
+                scalar_or_array(map, path, shape)
+            } else {
+                let augmented = with_example_values(map, path, examples)?;
+                let from_examples = augmented.is_some();
+                let map = augmented.as_ref().unwrap_or(map);
+                scalar(map, path, shape.0).map_err(|e| example_error(e, path, from_examples))
+            }
+        }
         AttributeType::Enum { members } => {
-            let spec = parse_value_spec(map, path, enum_kind(members))?;
-            check_enum_members(&spec, members, path)?;
+            let augmented = with_example_values(map, path, examples)?;
+            let from_examples = augmented.is_some();
+            let map = augmented.as_ref().unwrap_or(map);
+            let spec = parse_value_spec(map, path, enum_kind(members))
+                .and_then(|spec| check_enum_members(&spec, members, path).map(|()| spec))
+                .map_err(|e| example_error(e, path, from_examples))?;
             Ok(AttributeSpec::Scalar(spec))
         }
         AttributeType::Template(t) => {
@@ -353,6 +378,61 @@ pub fn parse_attribute_spec(map: &Mapping, ty: &AttributeType) -> AnnotationResu
             })
         }
     }
+}
+
+/// Resolve `weights` without `values` against the attribute's `examples`.
+///
+/// When the annotation has `weights` but neither `values` nor `range`, the
+/// examples become its `values`, so registry authors can weight the examples
+/// without repeating them. A single example becomes a one-element list. The
+/// result is then validated like any other discrete spec (types, size cap,
+/// weights length, enum membership).
+///
+/// Returns a copy of `map` with `values` inserted, or `None` when the
+/// annotation does not use the examples. The copy is a small mapping made
+/// once at startup. Errors when `weights` needs examples but the attribute
+/// has none.
+fn with_example_values(
+    map: &Mapping,
+    path: &str,
+    examples: Option<&Examples>,
+) -> AnnotationResult<Option<Mapping>> {
+    if !map.contains_key("weights") || map.contains_key("values") || map.contains_key("range") {
+        return Ok(None);
+    }
+    let Some(examples) = examples else {
+        return Err(AnnotationError::new(
+            path,
+            "`weights` without `values` requires attribute `examples`",
+        ));
+    };
+    let values = match serde_json::to_value(examples) {
+        Ok(Value::Array(items)) => Value::Array(items),
+        Ok(single) => Value::Array(vec![single]),
+        Err(e) => {
+            return Err(AnnotationError::new(
+                path,
+                format!("attribute `examples` cannot be used as `values`: {e}"),
+            ));
+        }
+    };
+    let mut augmented = map.clone();
+    let _ = augmented.insert("values".to_owned(), values);
+    Ok(Some(augmented))
+}
+
+/// Note on errors about `values` or `weights` that the values came from
+/// `examples`, since the annotation author never wrote a `values` key.
+fn example_error(mut error: AnnotationError, path: &str, from_examples: bool) -> AnnotationError {
+    if from_examples
+        && (error.path.starts_with(&format!("{path}.values"))
+            || error.path.starts_with(&format!("{path}.weights")))
+    {
+        error
+            .message
+            .push_str(" (values taken from attribute `examples`)");
+    }
+    error
 }
 
 fn scalar(map: &Mapping, path: &str, kind: ScalarKind) -> AnnotationResult<AttributeSpec> {
