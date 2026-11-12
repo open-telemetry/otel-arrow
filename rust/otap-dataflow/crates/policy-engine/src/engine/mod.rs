@@ -60,7 +60,7 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use policy_rs::engine::{CompiledKeep, CompiledMatchers, CompiledPolicy, LogSignal, Signal};
 use policy_rs::{PolicyError, PolicySnapshot};
 
-use evaluate::{evaluate_existence_check, evaluate_typed_check};
+use evaluate::{evaluate_existence_check, evaluate_typed_check, evaluate_vectorscan_databases};
 use policy_match::PolicyMatch;
 use transform::{apply_policy_transforms, concat_log_batches};
 
@@ -346,20 +346,11 @@ fn find_matching_policies(
     // as we evaluate each policy's matchers.
     let mut matched = vec![PolicyMatch::All; policy_count];
 
-    // TODO: evaluate Vectorscan databases (string pattern matchers).
-    //
-    // Vectorscan scans all patterns for a given (field, negated) group in one pass and returns
-    // which patterns matched. Unlike existence/typed checks, negation cannot be baked into the
-    // scan -- it'll have to be tracked separately when we support this. When adding Vectorscan
-    // support:
-    // - For non-negated databases: patterns that matched AND into `matched`. Patterns in the
-    //   database that did NOT match must also AND false into `matched` for their respective
-    //   policies.
-    // - For negated databases: patterns that matched must set the corresponding rows to
-    //   not-matched for their policies. This may require a separate `disqualified` bitmap (OR'd
-    //   with negated hits) and a final `matched AND NOT disqualified` step, or the negation can be
-    //   applied inline by AND'ing `NOT(hit)` into `matched`. For reference re: 'disqualified', see
-    //   how this is done in the policy-rs crate.
+    // Evaluate Vectorscan databases (string pattern matchers: exact, regex,
+    // starts_with, ends_with, contains). Each database groups patterns by
+    // (field, negated) and scans string column values through the compiled
+    // Vectorscan DFA.
+    evaluate_vectorscan_databases(compiled, otap_batch, &mut matched)?;
 
     // Evaluate existence checks.
     for check in &compiled.existence_checks {

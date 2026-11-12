@@ -8190,9 +8190,11 @@ name = "otel-arrow-dfe-policy-engine"
 version = "0.65.0"
 dependencies = [
  "arrow",
+ "criterion",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
  "policy-rs",
+ "prost 0.14.4",
  "thiserror 2.0.21",
  "tokio",
 ]

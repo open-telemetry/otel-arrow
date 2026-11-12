@@ -19,7 +19,17 @@ policy-rs.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+prost.workspace = true
 tokio.workspace = true
+
+[[example]]
+name = "basic_usage"
+
+[[bench]]
+name = "engine"
+harness = false
 
 [lints]
 workspace = true
