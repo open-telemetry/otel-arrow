@@ -53,7 +53,8 @@ use super::transformer::Transformer;
 const COMPRESSION_YIELD_BYTES: usize = 64 * 1024;
 const COMPRESSION_TASK_WORK: usize = 4 * COMPRESSION_YIELD_BYTES;
 const MAX_DECODE_ALLOCATION: usize = 16 * 1024 * 1024;
-const MAX_DECODE_WORK: usize = 65_536;
+// Protobuf counts envelopes, keys, and scalar fields separately from transformed values.
+const MAX_DECODE_WORK: usize = 256 * 1024;
 const AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
     validate_header_name: |name| {
         if *name == http::header::AUTHORIZATION {
@@ -1061,7 +1062,7 @@ mod tests {
         logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
         trace::v1::ExportTraceServiceRequest,
     };
-    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, any_value};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, ResourceLogs, ScopeLogs,
     };
@@ -1698,6 +1699,124 @@ mod tests {
             ],
         )
         .await;
+    }
+
+    /// Scenario: 1000 logs contain bodies and 16 or 32 short string attributes in raw OTLP and native OTAP.
+    /// Guarantees: every source is ACKed after exporting all rows and attributes within the default byte limits.
+    #[tokio::test]
+    async fn protobuf_admission_accepts_attribute_rich_log_batches() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/rest/ingest/oteldb/OTELLogs"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(4)
+            .mount(&server)
+            .await;
+        let (exporter, tokens) = exporter(config(&server.uri()));
+        let max_row_bytes = exporter.config.max_row_bytes;
+        let max_bytes = exporter.config.network_requests.max_bytes;
+        tokens
+            .send(BearerToken::without_expiry("token".to_string()))
+            .await
+            .expect("token");
+        let terminal = run(exporter, async move |mut driver| {
+            for attributes in [16, 32] {
+                let log = LogRecord {
+                    time_unix_nano: 1,
+                    observed_time_unix_nano: 2,
+                    severity_number: 9,
+                    severity_text: "INFO".to_string(),
+                    body: Some(AnyValue {
+                        value: Some(any_value::Value::StringValue("hello".to_string())),
+                    }),
+                    attributes: (0..attributes)
+                        .map(|index| KeyValue {
+                            key: format!("k{index:02}"),
+                            value: Some(AnyValue {
+                                value: Some(any_value::Value::StringValue("v".to_string())),
+                            }),
+                        })
+                        .collect(),
+                    ..Default::default()
+                };
+                let bytes = Bytes::from(
+                    LogsData {
+                        resource_logs: vec![ResourceLogs {
+                            scope_logs: vec![ScopeLogs {
+                                log_records: vec![log; 1000],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }],
+                    }
+                    .encode_to_vec(),
+                );
+                let native = to_arrow(pdata(OtlpProtoBytes::ExportLogsRequest(bytes.clone())));
+                for input in [pdata(OtlpProtoBytes::ExportLogsRequest(bytes)), native] {
+                    driver.data.send(input).await.expect("input");
+                    assert!(matches!(
+                        driver.completion().await,
+                        PipelineCompletionMsg::DeliverAck { .. }
+                    ));
+                }
+            }
+            driver.shutdown().await;
+        })
+        .await;
+        assert_eq!(
+            measurement(
+                terminal.metrics(),
+                "exporter.attempted",
+                "logs",
+                "success",
+                "items"
+            ),
+            4000
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 4);
+        for (request, attributes) in requests.iter().zip([16, 16, 32, 32]) {
+            let mut json = String::new();
+            let _ = GzDecoder::new(request.body.as_slice())
+                .read_to_string(&mut json)
+                .expect("gzip");
+            assert!(json.len() <= max_bytes);
+            assert_eq!(json.lines().count(), 1000);
+            for line in json.lines() {
+                assert!(line.len() < max_row_bytes);
+                let row: serde_json::Value = serde_json::from_str(line).expect("JSON row");
+                assert_eq!(row["Body"], "hello");
+                let exported = row["LogsAttributes"].as_object().expect("attributes");
+                assert_eq!(exported.len(), attributes);
+                for index in 0..attributes {
+                    assert_eq!(exported[&format!("k{index:02}")], "v");
+                }
+            }
+        }
+    }
+
+    /// Scenario: unknown scalar fields reach the production decode work limit without allocating messages.
+    /// Guarantees: admission yields, accepts the exact budget, and permanently refuses one additional field.
+    #[tokio::test]
+    async fn protobuf_admission_enforces_work_limit() {
+        let mut bytes = [0xa0, 0x06, 0].repeat(MAX_DECODE_WORK);
+        {
+            let mut decode = Box::pin(AzureDataExplorerExporter::decode::<LogsData>(&bytes));
+            assert!(futures::poll!(&mut decode).is_pending());
+            assert_eq!(decode.await.expect("exact work limit"), LogsData::default());
+        }
+        bytes.extend_from_slice(&[0xa0, 0x06, 0]);
+        let error = AzureDataExplorerExporter::decode::<LogsData>(&bytes)
+            .await
+            .expect_err("one field beyond the work limit");
+        assert!(matches!(
+            error,
+            Error::DecodeLimit {
+                resource: "fields_or_elements",
+                limit: MAX_DECODE_WORK,
+            }
+        ));
+        assert!(error.is_permanent_refusal());
     }
 
     /// Scenario: small protobuf sources contain a million empty records or data points.
