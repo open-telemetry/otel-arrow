@@ -1037,11 +1037,8 @@ fn observed_phase(
         .map(|instance| instance.phase())
 }
 
-/// Waits until a deployed instance has exited, or has been pruned after exit.
-///
-/// Exited records are compacted away once no controller operation retains
-/// them, so absence after a shutdown request also means the thread reported its
-/// terminal exit. Uses the controller condvar rather than polling.
+/// Waits for an actual successful terminal exit. Cleanup keeps shutdown
+/// ownership, so pruning cannot erase the result before it is inspected.
 fn try_wait_for_runtime_instance_stopped(
     runtime: &ControllerRuntime<()>,
     deployed_key: &DeployedPipelineKey,
@@ -1052,14 +1049,23 @@ fn try_wait_for_runtime_instance_stopped(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     loop {
-        let stopped = state
-            .runtime_instances
-            .get(deployed_key)
-            .is_none_or(|instance| {
-                matches!(instance.lifecycle, RuntimeInstanceLifecycle::Exited(_))
-            });
-        if stopped {
-            return Ok(());
+        match state.runtime_instances.get(deployed_key) {
+            Some(instance) => match &instance.lifecycle {
+                RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Success) => return Ok(()),
+                RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(error)) => {
+                    return Err(format!(
+                        "core {} generation {} exited with error: {}",
+                        deployed_key.core_id, deployed_key.deployment_generation, error.message
+                    ));
+                }
+                RuntimeInstanceLifecycle::Active => {}
+            },
+            None => {
+                return Err(format!(
+                    "core {} generation {} lost its terminal result before cleanup",
+                    deployed_key.core_id, deployed_key.deployment_generation
+                ));
+            }
         }
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return Err(format!(
@@ -1075,26 +1081,6 @@ fn try_wait_for_runtime_instance_stopped(
     }
 }
 
-/// Panicking form of [`try_wait_for_runtime_instance_stopped`] for test steps.
-fn wait_for_runtime_instance_stopped(
-    runtime: &ControllerRuntime<()>,
-    deployed_key: &DeployedPipelineKey,
-) {
-    if let Err(error) = try_wait_for_runtime_instance_stopped(
-        runtime,
-        deployed_key,
-        Instant::now() + Duration::from_secs(5),
-    ) {
-        let pipeline_key = PipelineKey::new(
-            deployed_key.pipeline_group_id.clone(),
-            deployed_key.pipeline_id.clone(),
-        );
-        panic!(
-            "{error}\n{}",
-            describe_pipeline_recovery_state(runtime, &pipeline_key)
-        );
-    }
-}
 
 /// Stops the background work a recovery test caused for one pipeline and
 /// waits for it to complete.
@@ -1114,6 +1100,23 @@ fn stop_pipeline_background_work(
 ) -> Vec<String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut errors = Vec::new();
+
+    // Mark this pipeline as shutting down *before* inspecting or cancelling
+    // workers. This is the same ownership gate schedule_runtime_recovery checks,
+    // including after an exit callback drops the mutex. Leave it in place until
+    // the test runtime is destroyed so even late exit callbacks cannot restart.
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = state
+            .active_shutdowns
+            .entry(pipeline_key.clone())
+            .or_insert_with(|| "recovery-test-cleanup".to_owned());
+    }
+    runtime.state_changed.notify_all();
+
     loop {
         let mut state = runtime
             .state
@@ -1140,21 +1143,39 @@ fn stop_pipeline_background_work(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
+
+        // Keep terminal results until they have been checked. An error is not
+        // evidence of successful cleanup, even if the instance has stopped.
+        let same_pipeline = |key: &DeployedPipelineKey| {
+            key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                && key.pipeline_id == *pipeline_key.pipeline_id()
+                && !test_registered.contains(key)
+        };
         let active: Vec<_> = state
             .runtime_instances
             .iter()
             .filter(|(key, instance)| {
-                key.pipeline_group_id == *pipeline_key.pipeline_group_id()
-                    && key.pipeline_id == *pipeline_key.pipeline_id()
-                    && !test_registered.contains(key)
-                    && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                same_pipeline(key) && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
             })
             .map(|(key, instance)| (key.clone(), instance.control_sender.is_some()))
             .collect();
-        drop(state);
         if active.is_empty() {
+            for (key, instance) in &state.runtime_instances {
+                if same_pipeline(key)
+                    && let RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(error)) =
+                        &instance.lifecycle
+                {
+                    errors.push(format!(
+                        "core {} generation {} exited with error: {}",
+                        key.core_id, key.deployment_generation, error.message
+                    ));
+                }
+            }
+            errors.sort();
+            errors.dedup();
             return errors;
         }
+        drop(state);
         for (key, needs_signal) in &active {
             if *needs_signal
                 && let Err(error) =
@@ -1169,11 +1190,14 @@ fn stop_pipeline_background_work(
         for (key, _) in &active {
             if let Err(error) = try_wait_for_runtime_instance_stopped(runtime, key, deadline) {
                 errors.push(error);
-                return errors;
+                if Instant::now() >= deadline {
+                    return errors;
+                }
             }
         }
     }
 }
+
 
 /// Runs [`stop_pipeline_background_work`] when a recovery test ends, on both
 /// the success path and while unwinding from a failed assertion.
@@ -9930,21 +9954,14 @@ fn runtime_error_during_rollout_handoff_is_deferred_until_finish() {
         Some(&core1_generation)
     );
 
-    for (core_id, generation) in [(0, core0_generation), (1, core1_generation)] {
-        let replacement = deployed_key("g1", "p1", core_id, generation);
-        runtime
-            .request_instance_shutdown(&replacement, 2, "runtime recovery handoff test cleanup")
-            .expect("recovered runtime should accept shutdown");
-        wait_for_runtime_instance_stopped(&runtime, &replacement);
-    }
+    // RecoveryTestCleanup holds shutdown ownership and verifies that both
+    // replacement runtimes exit successfully, including on test failure.
 }
 
-/// Scenario: two cores recover concurrently and both workers promote their
-/// ready replacements before either worker reaches its post-promotion prune,
-/// which then compacts observed instances to the selected generations.
-/// Guarantees: promotion publishes each core's serving generation atomically
-/// with releasing worker ownership, so a sibling's compaction never discards an
-/// already-ready replacement and status keeps reporting both cores running.
+/// Scenario: two cores recover concurrently while a sibling attempts pruning
+/// at the exact boundary between recovery ownership release and publication.
+/// Guarantees: a sibling cannot acquire the controller lock until the serving
+/// overlay is published, so status retains both ready replacement cores.
 #[test]
 fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
     let config = engine_config_with_pipeline(
@@ -10025,21 +10042,52 @@ fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
         })
     });
 
-    // Replay the losing interleaving deterministically: both workers promote
-    // under the controller lock, then the last one to release ownership prunes
-    // while the other has not yet run its own post-promotion steps.
-    for (core_id, generation, worker_id) in replacements {
-        assert_eq!(
-            runtime.promote_runtime_recovery_candidate(
-                &pipeline_key,
-                core_id,
-                worker_id,
-                &deployed_key("g1", "p1", core_id, generation),
-            ),
-            Some(true)
-        );
-    }
-    runtime.prune_pipeline_runtime_and_history(&pipeline_key);
+    // First publish core 1, then force a sibling to attempt pruning exactly
+    // after core 0 releases worker ownership but before it publishes its overlay.
+    // The sibling must not obtain the controller lock at that boundary.
+    let (core_id, generation, worker_id) = replacements[1];
+    assert_eq!(
+        runtime.promote_runtime_recovery_candidate(
+            &pipeline_key,
+            core_id,
+            worker_id,
+            &deployed_key("g1", "p1", core_id, generation),
+        ),
+        Some(true)
+    );
+    let (go_tx, go_rx) = std::sync::mpsc::sync_channel::<()>(0);
+    let (lock_tx, lock_rx) = std::sync::mpsc::sync_channel::<bool>(0);
+    let sibling_runtime = Arc::clone(&runtime);
+    let sibling_key = pipeline_key.clone();
+    let sibling = thread::spawn(move || {
+        go_rx.recv().expect("promotion should release pruning probe");
+        let could_prune = sibling_runtime.state.try_lock().is_ok();
+        lock_tx
+            .send(could_prune)
+            .expect("promotion should receive pruning probe");
+        sibling_runtime.prune_pipeline_runtime_and_history(&sibling_key);
+    });
+
+    let (core_id, generation, worker_id) = replacements[0];
+    assert_eq!(
+        runtime.promote_runtime_recovery_candidate_with_hook(
+            &pipeline_key,
+            core_id,
+            worker_id,
+            &deployed_key("g1", "p1", core_id, generation),
+            || {
+                go_tx.send(()).expect("pruning probe should start");
+                assert!(
+                    !lock_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("pruning probe should report lock availability"),
+                    "sibling could prune after worker ownership release but before publication"
+                );
+            },
+        ),
+        Some(true)
+    );
+    sibling.join().expect("sibling pruning thread should finish");
 
     let status = runtime
         .observed_state_handle
@@ -10080,6 +10128,73 @@ fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
         assert!(recovery.candidate_generation.is_none());
         assert!(recovery.ready_since.is_some());
     }
+}
+
+/// Scenario: recovery-test cleanup finishes before an exit callback reports a
+/// runtime failure, and an already-stopped replacement has an error exit.
+/// Guarantees: shutdown ownership prevents a late recovery worker, and cleanup
+/// reports the replacement failure instead of counting it as success.
+#[test]
+fn recovery_cleanup_reports_errors_and_fences_late_exits() {
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let original = deployed_key("g1", "p1", 0, 0);
+    let _original_rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    // The original is a threadless fixture. No replacements are running yet.
+    assert!(stop_pipeline_background_work(&runtime, &pipeline_key, &[original.clone()]).is_empty());
+    let replacement = deployed_key("g1", "p1", 0, 1);
+    let _replacement_rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 1, RuntimeInstanceLifecycle::Active);
+    runtime.note_instance_exit(
+        replacement.clone(),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+            "injected replacement failure".to_owned(),
+        )),
+    );
+    let errors = stop_pipeline_background_work(&runtime, &pipeline_key, &[original.clone()]);
+    assert!(
+        errors.iter().any(|error| error.contains("injected replacement failure")),
+        "replacement error was lost: {errors:?}"
+    );
+    assert!(
+        try_wait_for_runtime_instance_stopped(
+            &runtime,
+            &replacement,
+            Instant::now() + Duration::from_secs(1)
+        )
+        .is_err()
+    );
+
+    // This exit arrives after cleanup found no active worker. A new recovery
+    // must still be fenced by shutdown ownership until the runtime is dropped.
+    runtime.note_instance_exit(
+        original,
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("late exit".to_owned())),
+    );
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.active_shutdowns.contains_key(&pipeline_key));
+    assert!(state.runtime_recoveries.is_empty());
+    assert!(state.deferred_runtime_recoveries.is_empty());
 }
 
 /// Scenario: a failed core already has a recovery worker in long backoff when
