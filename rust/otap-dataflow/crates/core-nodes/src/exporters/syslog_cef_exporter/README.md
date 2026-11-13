@@ -25,8 +25,10 @@ type: exporter:syslog_cef
 config:
   protocol:
     tcp:
-      endpoint: "127.0.0.1:514"
+      endpoint: "syslog.example.com:514"
       framing: newline
+  io_timeout: "5s"
+  batch_timeout: "30s"
 ```
 
 Set `framing: octet_counting` for RFC 6587 length-prefixed TCP messages. For
@@ -38,18 +40,22 @@ config:
   protocol:
     udp:
       endpoint: "127.0.0.1:514"
+  io_timeout: "5s"
+  batch_timeout: "30s"
 ```
 
-Exactly one transport and a numeric IP address and port are required. TLS is
-not part of this phase.
+The destination `endpoint` is formatted as `host:port` and accepts numeric IP
+addresses and DNS hostnames. Timeouts (`io_timeout` and `batch_timeout`) are
+optional human-readable durations that default to 5 seconds and 30 seconds
+respectively. TLS is not part of this phase.
 
 ## Send semantics
 
 The exporter sends messages sequentially with one pipeline-local connection
 and no extra queue, so slow sends backpressure the upstream channel. Network
-operations time out after five seconds, and a whole batch after 30 seconds.
-TCP connects on the first batch and
-reconnects after a failed write. UDP sends one message per datagram.
+operations time out after `io_timeout`, and an entire batch after `batch_timeout`.
+TCP connects on the first batch and reconnects after a failed write. UDP sends
+one message per datagram.
 
 The exporter rejects empty messages. Newline framing rejects messages that
 contain LF or exceed the receiver's 16 KiB frame limit including the delimiter.
@@ -65,15 +71,10 @@ confirmation, and UDP may drop datagrams after a successful local send.
 
 ## Telemetry
 
-The exporter emits the standard `exporter.attempted` boundary metrics:
+The exporter emits the standard `exporter.attempted` boundary metrics for each
+external message submission:
 
 - `exporter.attempted.messages`: delivery attempts with an `outcome` attribute (`success`, `failure`, or `refused`).
-- `exporter.attempted.duration`: duration of export attempts, including backend latency.
-- `exporter.attempted.payload.size`: total application payload bytes submitted across attempts.
-- `exporter.attempted.items`: number of signal items handled across attempts.
-
-It also emits node-specific diagnostics under the `exporter.syslog_cef` scope:
-
-- `exporter.syslog_cef.messages`: original syslog messages with an `outcome` attribute (`success` or `failure`).
-- `exporter.syslog_cef.bytes`: payload bytes with an `outcome` attribute (`success` or `failure`).
-- `exporter.syslog_cef.rejected.batches`: count of unsupported, malformed, or incompatible input batches rejected before transport.
+- `exporter.attempted.duration`: duration of each export attempt, including backend latency.
+- `exporter.attempted.payload.size`: application payload bytes submitted per attempt.
+- `exporter.attempted.items`: number of signal items handled per attempt (1 item per submitted message).

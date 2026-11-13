@@ -8,11 +8,13 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.exporter.syslog_cef",
 );
 
+/// Syslog/CEF exporter configuration.
+pub mod config;
+pub use config::*;
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::error::Error as ConfigError;
-use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -28,14 +30,9 @@ use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use otel_arrow_dfe_pdata_codec::builtins::syslog::{MAX_MESSAGE_SIZE, validated_messages};
-use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
-use serde::Deserialize;
-use serde_json::Value;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
@@ -48,118 +45,25 @@ use tokio::time::timeout;
 /// Component URN for the syslog CEF exporter.
 pub const SYSLOG_CEF_EXPORTER_URN: &str = "urn:otel:exporter:syslog_cef";
 const SYSLOG_BATCH: PdataEncoding = PdataEncoding::new("syslog-batch");
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const BATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TcpFraming {
-    #[default]
-    Newline,
-    OctetCounting,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TcpConfig {
-    endpoint: SocketAddr,
-    #[serde(default)]
-    framing: TcpFraming,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UdpConfig {
-    endpoint: SocketAddr,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Protocol {
-    Tcp(TcpConfig),
-    Udp(UdpConfig),
-}
-
-/// Configuration for a single TCP or UDP syslog/CEF destination.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SyslogCefExporterConfig {
-    protocol: Protocol,
-}
-
-impl SyslogCefExporterConfig {
-    fn parse(value: &Value) -> Result<Self, ConfigError> {
-        serde_json::from_value(value.clone()).map_err(|error| ConfigError::InvalidUserConfig {
-            error: format!("Invalid syslog_cef exporter config: {error}"),
-        })
-    }
-}
-
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-struct SyslogCefMessageAttributes {
-    outcome: Outcome,
-}
-
-/// Sent and failed syslog messages and their original payload bytes.
-#[metric_set(
-    name = "exporter.syslog_cef",
-    measurement_attributes = SyslogCefMessageAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct SyslogCefMessageMetrics {
-    #[metric(unit = "{message}")]
-    messages: Counter<u64>,
-    #[metric(unit = "By")]
-    bytes: Counter<u64>,
-}
-
-#[metric_set(name = "exporter.syslog_cef")]
-#[derive(Debug, Default, Clone)]
-struct SyslogCefBatchMetrics {
-    #[metric(unit = "{batch}")]
-    rejected_batches: Counter<u64>,
-}
-
-/// Metrics emitted by a syslog CEF exporter: standard boundary metrics and node diagnostics.
+/// Metrics emitted by a syslog CEF exporter: standard boundary metrics.
 pub struct SyslogCefExporterMetrics {
     boundary: ExporterMetrics,
-    messages: MeasurementMetricSet<SyslogCefMessageMetrics>,
-    batches: MetricSet<SyslogCefBatchMetrics>,
 }
 
 impl SyslogCefExporterMetrics {
     fn register(pipeline: &PipelineContext) -> Self {
         Self {
             boundary: ExporterMetrics::register(pipeline),
-            messages: SyslogCefMessageMetrics::register(pipeline),
-            batches: SyslogCefBatchMetrics::register(pipeline),
         }
     }
 
-    fn record_messages(&mut self, count: u64, bytes: u64, outcome: Outcome) {
-        let attributes = SyslogCefMessageAttributes { outcome };
-        let handle = self.messages.with(attributes);
-        handle.messages.add(count);
-        handle.bytes.add(bytes);
-    }
-
-    fn record_rejected_batch(&mut self) {
-        self.batches.rejected_batches.add(1);
-    }
-
     fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        self.boundary.report(reporter)?;
-        reporter.report_measurement(&mut self.messages)?;
-        reporter.report(&mut self.batches)?;
-        Ok(())
+        self.boundary.report(reporter)
     }
 
     fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.boundary.terminal_snapshots();
-        snapshots.extend(self.messages.terminal_snapshots());
-        snapshots.extend(self.batches.terminal_snapshots());
-        snapshots
+        self.boundary.terminal_snapshots()
     }
 }
 
@@ -179,7 +83,7 @@ pub static SYSLOG_CEF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create:
         |pipeline: PipelineContext,
          node: NodeId,
-         node_config: Arc<NodeUserConfig>,
+         node_config: Arc<otel_arrow_dfe_config::node::NodeUserConfig>,
          exporter_config: &ExporterConfig,
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             let config = SyslogCefExporterConfig::parse(&node_config.config)?;
@@ -222,7 +126,6 @@ impl Exporter<OtapPdata> for SyslogCefExporter {
                     _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
-                    // Dropping the connection closes it; there is no background send task.
                     return Ok(TerminalState::new(
                         deadline,
                         self.metrics.terminal_snapshots(),
@@ -256,7 +159,7 @@ impl SyslogCefExporter {
             }
             _ => None,
         };
-        let mut attempt = self.metrics.boundary.attempt(SignalType::Logs);
+
         let messages = match raw_bytes.as_deref() {
             Some(bytes) => {
                 validated_messages(bytes).map_err(|error| format!("invalid syslog-batch: {error}"))
@@ -266,7 +169,7 @@ impl SyslogCefExporter {
         let messages = match messages {
             Ok(messages) => messages,
             Err(reason) => {
-                self.metrics.record_rejected_batch();
+                let attempt = self.metrics.boundary.attempt(SignalType::Logs);
                 let refused = attempt.refused(&reason);
                 _ = self
                     .metrics
@@ -278,8 +181,9 @@ impl SyslogCefExporter {
                 return Ok(None);
             }
         };
+
         if let Err(reason) = self.validate_transport(&messages) {
-            self.metrics.record_rejected_batch();
+            let attempt = self.metrics.boundary.attempt(SignalType::Logs);
             let refused = attempt.refused(&reason);
             _ = self
                 .metrics
@@ -291,24 +195,22 @@ impl SyslogCefExporter {
             return Ok(None);
         }
 
-        let total_bytes: usize = messages.iter().map(|m| m.len()).sum();
-        attempt.set_item_count_with(|| messages.len() as u64);
-        attempt.set_payload_size_with(|| total_bytes);
-
-        let batch_deadline = tokio::time::Instant::now() + BATCH_TIMEOUT;
+        let batch_deadline = tokio::time::Instant::now() + self.config.batch_timeout;
         let mut shutdown_deadline: Option<tokio::time::Instant> = None;
         let mut shutdown_std_deadline: Option<std::time::Instant> = None;
 
-        let mut sent = 0;
-        let mut sent_bytes: usize = 0;
-
         for message in &messages {
+            let mut attempt = self.metrics.boundary.attempt(SignalType::Logs);
+            attempt.set_item_count_with(|| 1);
+            attempt.set_payload_size_with(|| message.len());
+
             let message_result = {
                 let mut send_fut = std::pin::pin!(Self::send_message_stream(
                     &self.config.protocol,
                     &mut self.tcp,
                     &mut self.udp,
                     message,
+                    self.config.io_timeout,
                 ));
 
                 loop {
@@ -362,25 +264,13 @@ impl SyslogCefExporter {
 
             match message_result {
                 Ok(()) => {
-                    sent += 1;
-                    sent_bytes += message.len();
+                    _ = self
+                        .metrics
+                        .boundary
+                        .record(attempt.complete::<(), io::Error>(Ok(())));
                 }
                 Err(error) => {
                     self.tcp = None;
-                    if sent > 0 {
-                        self.metrics.record_messages(
-                            sent as u64,
-                            sent_bytes as u64,
-                            Outcome::Success,
-                        );
-                    }
-                    let remaining_count = messages.len() - sent;
-                    let remaining_bytes = total_bytes - sent_bytes;
-                    self.metrics.record_messages(
-                        remaining_count as u64,
-                        remaining_bytes as u64,
-                        Outcome::Failure,
-                    );
                     let failed = attempt.failed(&error);
                     _ = self
                         .metrics
@@ -403,12 +293,6 @@ impl SyslogCefExporter {
             }
         }
 
-        self.metrics
-            .record_messages(messages.len() as u64, total_bytes as u64, Outcome::Success);
-        _ = self
-            .metrics
-            .boundary
-            .record(attempt.complete::<(), io::Error>(Ok(())));
         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
         if let Some(deadline) = shutdown_std_deadline {
@@ -450,8 +334,14 @@ impl SyslogCefExporter {
 
     #[allow(dead_code)]
     async fn send_message(&mut self, message: &[u8]) -> io::Result<()> {
-        Self::send_message_stream(&self.config.protocol, &mut self.tcp, &mut self.udp, message)
-            .await
+        Self::send_message_stream(
+            &self.config.protocol,
+            &mut self.tcp,
+            &mut self.udp,
+            message,
+            self.config.io_timeout,
+        )
+        .await
     }
 
     async fn send_message_stream(
@@ -459,38 +349,56 @@ impl SyslogCefExporter {
         tcp: &mut Option<TcpStream>,
         udp: &mut Option<UdpSocket>,
         message: &[u8],
+        io_duration: Duration,
     ) -> io::Result<()> {
         match protocol {
             Protocol::Tcp(config) => {
                 if tcp.is_none() {
-                    *tcp = Some(io_timeout(TcpStream::connect(config.endpoint)).await?);
+                    *tcp =
+                        Some(io_timeout(TcpStream::connect(&config.endpoint), io_duration).await?);
                 }
                 let stream = tcp.as_mut().expect("connected TCP stream");
                 match config.framing {
                     TcpFraming::Newline => {
-                        io_timeout(stream.write_all(message)).await?;
-                        io_timeout(stream.write_all(b"\n")).await?;
+                        io_timeout(stream.write_all(message), io_duration).await?;
+                        io_timeout(stream.write_all(b"\n"), io_duration).await?;
                     }
                     TcpFraming::OctetCounting => {
                         let prefix = format!("{} ", message.len());
-                        io_timeout(stream.write_all(prefix.as_bytes())).await?;
-                        io_timeout(stream.write_all(message)).await?;
+                        io_timeout(stream.write_all(prefix.as_bytes()), io_duration).await?;
+                        io_timeout(stream.write_all(message), io_duration).await?;
                     }
                 }
             }
             Protocol::Udp(config) => {
                 if udp.is_none() {
-                    let bind: SocketAddr = if config.endpoint.is_ipv4() {
+                    let addr = io_timeout(
+                        async {
+                            let mut addrs = tokio::net::lookup_host(&config.endpoint).await?;
+                            addrs.next().ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::NotFound,
+                                    format!("no addresses found for {}", config.endpoint),
+                                )
+                            })
+                        },
+                        io_duration,
+                    )
+                    .await?;
+                    let bind: SocketAddr = if addr.is_ipv4() {
                         "0.0.0.0:0".parse().expect("static IPv4 bind address")
                     } else {
                         "[::]:0".parse().expect("static IPv6 bind address")
                     };
-                    let socket = io_timeout(UdpSocket::bind(bind)).await?;
-                    io_timeout(socket.connect(config.endpoint)).await?;
+                    let socket = io_timeout(UdpSocket::bind(bind), io_duration).await?;
+                    io_timeout(socket.connect(addr), io_duration).await?;
                     *udp = Some(socket);
                 }
-                let sent =
-                    io_timeout(udp.as_ref().expect("connected UDP socket").send(message)).await?;
+                let sent = io_timeout(
+                    udp.as_ref().expect("connected UDP socket").send(message),
+                    io_duration,
+                )
+                .await?;
                 if sent != message.len() {
                     return Err(io::Error::new(
                         io::ErrorKind::WriteZero,
@@ -503,8 +411,11 @@ impl SyslogCefExporter {
     }
 }
 
-async fn io_timeout<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
-    timeout(IO_TIMEOUT, future).await.map_err(|_| {
+async fn io_timeout<T>(
+    future: impl Future<Output = io::Result<T>>,
+    duration: Duration,
+) -> io::Result<T> {
+    timeout(duration, future).await.map_err(|_| {
         io::Error::new(
             io::ErrorKind::TimedOut,
             "syslog transport operation timed out",
@@ -536,7 +447,11 @@ mod tests {
         let controller = ControllerContext::new(registry);
         let pipeline = controller.pipeline_context_with("grp".into(), "syslog_cef".into(), 0, 1, 0);
         SyslogCefExporter {
-            config: SyslogCefExporterConfig { protocol },
+            config: SyslogCefExporterConfig {
+                protocol,
+                io_timeout: DEFAULT_IO_TIMEOUT,
+                batch_timeout: DEFAULT_BATCH_TIMEOUT,
+            },
             tcp: None,
             udp: None,
             metrics: SyslogCefExporterMetrics::register(&pipeline),
@@ -605,7 +520,7 @@ mod tests {
             bytes
         });
         let mut exporter = exporter(Protocol::Tcp(TcpConfig {
-            endpoint,
+            endpoint: endpoint.to_string(),
             framing: TcpFraming::Newline,
         }));
         exporter.send_message(b"<13>first").await.unwrap();
@@ -631,7 +546,7 @@ mod tests {
             bytes
         });
         let mut exporter = exporter(Protocol::Tcp(TcpConfig {
-            endpoint,
+            endpoint: endpoint.to_string(),
             framing: TcpFraming::OctetCounting,
         }));
         exporter.send_message(b"a\nb").await.unwrap();
@@ -649,7 +564,9 @@ mod tests {
     async fn udp_sends_one_message_per_datagram() {
         let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let endpoint = receiver.local_addr().unwrap();
-        let mut exporter = exporter(Protocol::Udp(UdpConfig { endpoint }));
+        let mut exporter = exporter(Protocol::Udp(UdpConfig {
+            endpoint: endpoint.to_string(),
+        }));
         let mut buffer = [0; 128];
         for expected in [b"<13>first".as_slice(), b"CEF:0|second".as_slice()] {
             exporter.send_message(expected).await.unwrap();
@@ -665,9 +582,9 @@ mod tests {
     /// Guarantees: Incompatible content is rejected before any network send.
     #[test]
     fn validates_transport_compatibility() {
-        let endpoint = "127.0.0.1:514".parse().unwrap();
+        let endpoint = "127.0.0.1:514".to_string();
         let newline = exporter(Protocol::Tcp(TcpConfig {
-            endpoint,
+            endpoint: endpoint.clone(),
             framing: TcpFraming::Newline,
         }));
         assert!(newline.validate_transport(&[b"a\nb"]).is_err());
@@ -684,19 +601,44 @@ mod tests {
         );
     }
 
-    /// Scenario: Config selects supported transports and rejects invalid fields.
-    /// Guarantees: Only a single explicit destination and known framing mode are accepted.
+    /// Scenario: Config selects supported transports, accepts DNS hostnames and custom durations, and rejects invalid fields.
+    /// Guarantees: Valid configurations pass validation while malformed endpoints or timeouts are rejected.
     #[test]
     fn validates_config() {
         assert!(
             SyslogCefExporterConfig::parse(&json!({
-                "protocol": {"tcp": {"endpoint": "127.0.0.1:514", "framing": "octet_counting"}}
+                "protocol": {"tcp": {"endpoint": "syslog.example.com:514", "framing": "octet_counting"}},
+                "io_timeout": "10s",
+                "batch_timeout": "1m"
             }))
             .is_ok()
         );
+        // Invalid protocol option
         assert!(
             SyslogCefExporterConfig::parse(&json!({
                 "protocol": {"udp": {"endpoint": "127.0.0.1:514", "framing": "newline"}}
+            }))
+            .is_err()
+        );
+        // Missing port in endpoint
+        assert!(
+            SyslogCefExporterConfig::parse(&json!({
+                "protocol": {"tcp": {"endpoint": "127.0.0.1"}}
+            }))
+            .is_err()
+        );
+        // Invalid port in endpoint
+        assert!(
+            SyslogCefExporterConfig::parse(&json!({
+                "protocol": {"tcp": {"endpoint": "127.0.0.1:invalid"}}
+            }))
+            .is_err()
+        );
+        // Zero duration rejected
+        assert!(
+            SyslogCefExporterConfig::parse(&json!({
+                "protocol": {"tcp": {"endpoint": "127.0.0.1:514"}},
+                "io_timeout": "0s"
             }))
             .is_err()
         );
@@ -739,7 +681,7 @@ mod tests {
     }
 
     /// Scenario: Non-syslog-batch payload (e.g. empty test pdata) is delivered to the exporter.
-    /// Guarantees: Exporter permanently rejects with a NACK and records rejected_batches and refused attempt.
+    /// Guarantees: Exporter permanently rejects with a NACK and records refused attempt.
     #[test]
     fn unsupported_input_permanently_nacked() {
         let endpoint = "127.0.0.1:514";
@@ -774,7 +716,7 @@ mod tests {
     }
 
     /// Scenario: TCP connection fails (destination connection refused / closed immediately).
-    /// Guarantees: Exporter emits a retryable NACK, records exporter.syslog failure metrics and exporter.attempted failure.
+    /// Guarantees: Exporter emits a retryable NACK and records exporter.attempted failure.
     #[test]
     fn transport_failure_retryable_nack_and_failed_metrics() {
         let endpoint = {
@@ -807,7 +749,7 @@ mod tests {
     }
 
     /// Scenario: TCP export succeeds for two valid syslog messages.
-    /// Guarantees: Destination receives both messages framed, exporter ACKs, and records success metrics.
+    /// Guarantees: Destination receives both messages framed, exporter ACKs, and records success metrics for both messages.
     #[test]
     fn successful_export_acks_and_records_success_metrics() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -848,7 +790,7 @@ mod tests {
     }
 
     /// Scenario: Metrics are recorded for successful sends, failed sends, and rejected batches.
-    /// Guarantees: Both node-diagnostic `exporter.syslog_cef` and boundary `exporter.attempted` metrics are emitted with correct outcomes.
+    /// Guarantees: Boundary `exporter.attempted` metrics are emitted with correct outcomes, counts, and sizes.
     #[test]
     fn metrics_record_outcomes_and_boundary() {
         let (pipeline, _registry) = test_pipeline_ctx_with_interests(
@@ -859,18 +801,16 @@ mod tests {
         );
         let mut metrics = SyslogCefExporterMetrics::register(&pipeline);
 
-        metrics.record_messages(5, 100, Outcome::Success);
-        metrics.record_messages(2, 40, Outcome::Failure);
-        metrics.record_rejected_batch();
-
         let mut attempt_ok = metrics.boundary.attempt(SignalType::Logs);
-        attempt_ok.set_item_count_with(|| 5);
-        attempt_ok.set_payload_size_with(|| 100);
+        attempt_ok.set_item_count_with(|| 1);
+        attempt_ok.set_payload_size_with(|| 20);
         _ = metrics
             .boundary
             .record(attempt_ok.complete::<(), &str>(Ok(())));
 
-        let attempt_fail = metrics.boundary.attempt(SignalType::Logs);
+        let mut attempt_fail = metrics.boundary.attempt(SignalType::Logs);
+        attempt_fail.set_item_count_with(|| 1);
+        attempt_fail.set_payload_size_with(|| 20);
         let failed = attempt_fail.failed("test failure");
         _ = metrics
             .boundary
@@ -884,21 +824,6 @@ mod tests {
 
         let snapshots = metrics.terminal_snapshots();
 
-        assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "exporter.syslog_cef"
-                && s.measurement_attribute_value("outcome") == Some("success")
-        }));
-        assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "exporter.syslog_cef"
-                && s.measurement_attribute_value("outcome") == Some("failure")
-        }));
-        assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "exporter.syslog_cef"
-                && s.descriptor()
-                    .metrics
-                    .iter()
-                    .any(|f| f.name == "rejected.batches")
-        }));
         assert!(snapshots.iter().any(|s| {
             s.descriptor().name == "exporter.attempted"
                 && s.measurement_attribute_value("outcome") == Some("success")
