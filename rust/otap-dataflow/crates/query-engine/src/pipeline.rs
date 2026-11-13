@@ -560,7 +560,7 @@ mod test {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otel_arrow_dfe_pdata::testing::round_trip::{
-        otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics,
+        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics,
     };
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
@@ -884,5 +884,79 @@ mod test {
     fn test_infer_signal_context_exact_token_match() {
         let pipeline_expr = KqlParser::parse("logsfoo | where true").unwrap().pipeline;
         assert!(SignalContext::try_infer(&pipeline_expr).is_err());
+    }
+
+    // -- BatchEval expression planning regression tests (issue #4716) --
+    //
+    // BatchEval nodes (signal-type predicates, metadata functions) produce
+    // scalar values at runtime but are not DataFusion expressions. The
+    // expression planner must route them through JoinAndEval rather than
+    // inlining them in a combined DataFusion Eval node.
+
+    /// Scenario: a batch-level predicate (is Log) is passed as an argument
+    /// to a scalar function (coalesce)
+    /// Guarantees: the BatchEval argument is materialised through the join
+    /// path so the function receives the correct value
+    #[tokio::test]
+    async fn test_batch_eval_as_function_argument() {
+        // coalesce(is Log, false) should return true for a logs batch
+        let logs_data = exec_logs_pipeline::<OplParser>(
+            "logs | where coalesce(is Log, false)",
+            to_logs_data(vec![
+                LogRecord::build().event_name("a").finish(),
+                LogRecord::build().event_name("b").finish(),
+            ]),
+        )
+        .await;
+
+        // both records should pass the filter
+        assert_eq!(
+            logs_data.resource_logs[0].scope_logs[0].log_records.len(),
+            2
+        );
+    }
+
+    /// Scenario: a batch-level predicate (is Log) is used in a binary
+    /// comparison with a literal (== true)
+    /// Guarantees: the BatchEval result is correctly compared via the
+    /// JoinAndEval path, and the boolean result broadcasts across all rows
+    #[tokio::test]
+    async fn test_batch_eval_in_binary_comparison_multi_record() {
+        // `(is Log) == true` should keep all rows in a multi-record batch
+        let logs_data = exec_logs_pipeline::<OplParser>(
+            "logs | where (is Log) == true",
+            to_logs_data(vec![
+                LogRecord::build().event_name("a").finish(),
+                LogRecord::build().event_name("b").finish(),
+                LogRecord::build().event_name("c").finish(),
+            ]),
+        )
+        .await;
+
+        assert_eq!(
+            logs_data.resource_logs[0].scope_logs[0].log_records.len(),
+            3
+        );
+    }
+
+    /// Scenario: a batch-level predicate (is Log) is negated inside coalesce
+    /// to verify false-path correctness
+    /// Guarantees: coalesce(is Span, false) returns false for a logs batch
+    /// and all rows are filtered out
+    #[tokio::test]
+    async fn test_batch_eval_false_path_in_function_argument() {
+        let logs_data = exec_logs_pipeline::<OplParser>(
+            "logs | where coalesce(is Span, false)",
+            to_logs_data(vec![LogRecord::build().event_name("a").finish()]),
+        )
+        .await;
+
+        // no records should pass -- coalesce(false, false) == false
+        assert!(
+            logs_data.resource_logs.is_empty()
+                || logs_data.resource_logs[0].scope_logs[0]
+                    .log_records
+                    .is_empty()
+        );
     }
 }

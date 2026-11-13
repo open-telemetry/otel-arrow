@@ -494,11 +494,28 @@ pub(super) fn join_and_eval_value(
         )?
     };
 
-    let result = ScopedValue::new(
-        coerce_nulls_for_predicate(result_vals, *missing_data_passes),
-        DataScope::clone(&result_scope),
-        &joined_rb,
-    );
+    let result_vals = coerce_nulls_for_predicate(result_vals, *missing_data_passes);
+
+    // When the join produced a single-row result in StaticScalar scope (e.g.
+    // a BatchEval scalar compared to a literal), unwrap the 1-element array
+    // back to a ColumnarValue::Scalar so downstream consumers (filters,
+    // assignments) broadcast the value correctly across multi-record batches.
+    let result_vals = if *result_scope == DataScope::StaticScalar {
+        match &result_vals {
+            ColumnarValue::Array(arr) if arr.len() == 1 => {
+                ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0).map_err(|e| {
+                    Error::ExecutionError {
+                        cause: format!("failed to extract scalar from 1-element join result: {e}"),
+                    }
+                })?)
+            }
+            _ => result_vals,
+        }
+    } else {
+        result_vals
+    };
+
+    let result = ScopedValue::new(result_vals, DataScope::clone(&result_scope), &joined_rb);
 
     Ok(Some(result))
 }

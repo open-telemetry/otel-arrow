@@ -870,18 +870,14 @@ impl JoinExec for EqualScopeJoin {
         right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
-        let right_values = match &right.values {
-            ColumnarValue::Array(arr) => Arc::clone(arr),
-            ColumnarValue::Scalar(_) => {
-                // Note: given how the current expression planner works, this shouldn't happen
-                // because scalars exprs should always be included directly in the expression of
-                // one side without any need for join
-                return Err(Error::ExecutionError {
-                    cause: "JoinExec expected right-side values to be Array but found Scalar"
-                        .into(),
-                });
-            }
+        // Determine the target length from whichever side is an array; if both
+        // sides are scalars (e.g. two BatchEval results or a BatchEval paired
+        // with a literal) use a single row.
+        let left_len = match &left.values {
+            ColumnarValue::Array(a) => a.len(),
+            ColumnarValue::Scalar(_) => 1,
         };
+        let right_values = right.values.to_array(left_len)?;
 
         to_join_result(left, right_values)
     }

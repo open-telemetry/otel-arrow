@@ -937,7 +937,16 @@ impl<'a> ExprPlanner<'a> {
             };
         }
 
-        if all_combinable {
+        // Even when scopes are combinable, all arguments must be expressible
+        // as DataFusion expressions to use the Combined path. BatchEval nodes
+        // (e.g. signal-type predicates, metadata functions) produce scalar
+        // values at runtime but cannot be inlined into a DataFusion Expr.
+        // Using filter_map would silently drop them, so force the Join path.
+        let all_are_df_exprs = planned_args
+            .iter()
+            .all(|a| a.expr.as_df_eval_expr_ref().is_some());
+
+        if all_combinable && all_are_df_exprs {
             let scope = combined_scope.unwrap_or(DataScope::StaticScalar);
             let df_exprs = planned_args
                 .into_iter()
@@ -1974,7 +1983,17 @@ impl<'a> ExprPlanner<'a> {
     ) -> Result<ScopedExpr> {
         let possible_scope = try_combine_scopes(&left, &right);
 
-        if let Some(scope) = possible_scope {
+        // Only use the combined-scope path when both children can be expressed
+        // as DataFusion expressions. BatchEval nodes (e.g. metadata functions,
+        // signal-type predicates) produce scalar values at runtime but cannot
+        // be inlined into a DataFusion Expr, so they must go through the
+        // JoinAndEval materialisation path instead.
+        let both_are_df_exprs =
+            left.expr.as_df_eval_expr_ref().is_some() && right.expr.as_df_eval_expr_ref().is_some();
+
+        if let Some(scope) = possible_scope
+            && both_are_df_exprs
+        {
             let left_expr = left
                 .expr
                 .into_df_eval_expr()
