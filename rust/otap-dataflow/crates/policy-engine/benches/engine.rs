@@ -1,12 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Benchmarks comparing the columnar policy engine against policy-rs's
-//! row-by-row engine.
+//! Benchmarks comparing the OTAP policy engine against policy-rs's (row-oriented) engine.
 //!
-//! Both engines evaluate the same policies against the same logical data.
-//! The columnar engine operates on a single OTAP Arrow batch while
-//! policy-rs iterates records one at a time.
+//! This bench evaluates the same policies using both engines on the same logical data.
+//! The columnar engine operates on a single OTAP Arrow batch while policy-rs is invoked for
+//! one records one at a time.
 //!
 //! Run with: cargo bench -p otel-arrow-dfe-policy-engine
 
@@ -37,7 +36,7 @@ const SEVERITIES: [&str; 4] = ["DEBUG", "INFO", "WARN", "ERROR"];
 /// Each log has:
 /// - severity_text cycling through DEBUG/INFO/WARN/ERROR
 /// - body = "Log message {i}"
-/// - 2-5 attributes depending on the row, including:
+/// - 2-4 attributes including:
 ///   - "service" = one of ["api", "web", "worker", "db"]
 ///   - "status_code" = cycling int (200, 404, 500, 503)
 ///   - optionally "old_key" = "value_to_rename" (on ~25% of rows)
@@ -89,7 +88,7 @@ fn generate_otap_batch(batch_size: usize) -> OtapArrowRecords {
 }
 
 /// Generate adapter LogRecords for policy-rs row-by-row evaluation.
-/// Same logical data as `generate_otap_batch`.
+/// Same logical data as [`generate_otap_batch`] wrt to log content
 fn generate_adapter_logs(batch_size: usize) -> Vec<AdapterLogRecord> {
     (0..batch_size)
         .map(|i| {
@@ -173,10 +172,10 @@ fn create_log_policy(
     })
 }
 
-/// Create the standard set of policies for throughput benchmarks:
+/// Create the some policies for throughput benchmarks:
 /// - drop-debug: drop logs with severity_text == "DEBUG"
 /// - rename-on-error: rename old_key -> new_key on ERROR logs
-fn create_standard_policies() -> PolicySnapshot {
+fn create_root_match_policies() -> PolicySnapshot {
     let registry = PolicyRegistry::new();
     let handle = registry.register_provider();
 
@@ -262,13 +261,10 @@ fn create_scaling_policies(count: usize) -> PolicySnapshot {
 // Benchmarks
 // ---------------------------------------------------------------------------
 
-/// Benchmark: full pipeline throughput with string matching + transforms.
-///
-/// Compares columnar engine (single batch call) against policy-rs
-/// (per-record iteration).
+/// Benchmark: full pipeline throughput with string matching + transforms for comparing engines
 fn bench_throughput_matching(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let snapshot = create_standard_policies();
+    let snapshot = create_root_match_policies();
 
     let mut group = c.benchmark_group("throughput_matching");
 
@@ -278,9 +274,9 @@ fn bench_throughput_matching(c: &mut Criterion) {
 
         let _ = group.throughput(Throughput::Elements(batch_size as u64));
 
-        // Columnar engine
+        // OTAP engine
         let _ = group.bench_with_input(
-            BenchmarkId::new("columnar", batch_size),
+            BenchmarkId::new("otap", batch_size),
             &batch_size,
             |b, _| {
                 let engine = PolicyEngine::new();
@@ -297,7 +293,7 @@ fn bench_throughput_matching(c: &mut Criterion) {
             },
         );
 
-        // policy-rs row-by-row
+        // policy-rs engine
         let _ = group.bench_with_input(
             BenchmarkId::new("policy_rs", batch_size),
             &batch_size,
@@ -321,7 +317,7 @@ fn bench_throughput_matching(c: &mut Criterion) {
 /// Includes drop (keep:"none") and rename transforms.
 fn bench_throughput_transforms(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let snapshot = create_standard_policies();
+    let snapshot = create_root_match_policies();
 
     let mut group = c.benchmark_group("throughput_transforms");
 
@@ -333,7 +329,7 @@ fn bench_throughput_transforms(c: &mut Criterion) {
 
         // Columnar engine
         let _ = group.bench_with_input(
-            BenchmarkId::new("columnar", batch_size),
+            BenchmarkId::new("otap", batch_size),
             &batch_size,
             |b, _| {
                 let engine = PolicyEngine::new();
@@ -389,7 +385,7 @@ fn bench_throughput_attribute_matching(c: &mut Criterion) {
 
         // Columnar engine
         let _ = group.bench_with_input(
-            BenchmarkId::new("columnar", batch_size),
+            BenchmarkId::new("otap", batch_size),
             &batch_size,
             |b, _| {
                 let engine = PolicyEngine::new();
@@ -427,9 +423,8 @@ fn bench_throughput_attribute_matching(c: &mut Criterion) {
 
 /// Benchmark: scaling with number of policies.
 ///
-/// Tests how throughput changes as more policies are added. Each policy
-/// has a unique regex pattern that matches nothing -- worst case for
-/// Vectorscan (all patterns scanned, no matches).
+/// Tests how throughput changes as more policies are added. Each policy has a unique regex pattern
+/// that matches nothing -- worst case for Vectorscan (all patterns scanned, no matches).
 fn bench_scaling_policies(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let batch_size = 1000;
@@ -444,7 +439,7 @@ fn bench_scaling_policies(c: &mut Criterion) {
 
         // Columnar engine
         let _ = group.bench_with_input(
-            BenchmarkId::new("columnar", policy_count),
+            BenchmarkId::new("otap", policy_count),
             &policy_count,
             |b, _| {
                 let engine = PolicyEngine::new();

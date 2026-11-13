@@ -28,7 +28,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::expr::{DataScope, LeafEval, RecordScope, ScopedExpr};
-use crate::pipeline::planner::PipelinePlanner;
+use crate::pipeline::planner::{PipelinePlanner, RecordType};
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
@@ -51,7 +51,7 @@ pub mod routing;
 pub mod state;
 
 // Re-export planner types that callers need for configuring pipeline options.
-pub use planner::{MetricTypeContext, RecordType, SignalContext, SignalKind};
+pub use planner::{MetricTypeContext, SignalContext, SignalKind};
 
 #[cfg(feature = "bench")]
 #[doc(hidden)]

@@ -177,12 +177,10 @@ pub enum RecordType {
 }
 
 impl RecordType {
-    /// Returns `true` if this record type is [`Attributes`](Self::Attributes).
     pub fn is_attribute(&self) -> bool {
         matches!(self, Self::Attributes)
     }
 
-    /// Returns `true` if this record type is [`DataPoint`](Self::DataPoint).
     pub fn is_data_point(&self) -> bool {
         matches!(self, Self::DataPoint(_))
     }
