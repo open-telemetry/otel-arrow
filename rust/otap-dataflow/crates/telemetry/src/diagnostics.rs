@@ -3,25 +3,21 @@
 
 //! Bounded diagnostics for repeated operation failures and confirmed recovery.
 //!
-//! Each tracker observes one operation in a bounded scope local to a node/core.
-//! Call [`DiagnosticTracker::failure`] and [`DiagnosticTracker::success`] when
-//! successful completions provide meaningful recovery evidence for that scope.
-//! Call only `failure` for bounded summaries without recovery, as for payload
-//! rejection or notification errors. These observers retain their episode
-//! totals for the lifetime of the tracker.
+//! [`EpisodeSampler::observe`] processes completions before independently filtered
+//! WARN and INFO callsites. [`IntervalSampler`] only observes recurring failures
+//! and never retains a record. Both use [`DiagnosticTracker`] for bounded counts.
 //!
 //! Integrations own event names, error classifications, and observation
 //! boundaries. Keep distinct operations in separate trackers; a successful
 //! enqueue, for example, cannot establish recovery of a failing storage write.
-//! [`SignalSet`] optionally groups state by telemetry signal, and
-//! [`SignalDiagnostics`] specializes it for diagnostic trackers.
+//! [`SignalSet`] optionally groups state by telemetry signal.
 //!
-//! A tracker has no timers, locks, or metric-interest dependency. Only emitted
-//! reports allocate or format diagnostic text after an episode has started.
+//! A tracker has no timers, locks, or metric-interest dependency. Selected
+//! observations snapshot counters; only emitted warnings encode failure fields.
 
 use crate::attributes::AttributeEnum;
 use otel_arrow_dfe_config::SignalType;
-use std::fmt::{self, Write};
+use std::fmt;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
@@ -29,8 +25,9 @@ use std::time::{Duration, Instant};
 pub const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 /// Failure-free interval required before fresh success clears an episode.
 pub const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
-/// Maximum retained diagnostic text, in UTF-8 bytes.
-const MAX_DETAIL_BYTES: usize = 1024;
+
+mod samplers;
+pub use samplers::{DiagnosticEmission, EpisodeSampler, IntervalSampler};
 
 /// Common operation failure classifications for callers without a more specific enum.
 #[derive(Clone, Copy, Debug, otel_arrow_dfe_telemetry_macros::AttributeEnum)]
@@ -72,6 +69,18 @@ pub enum ReportKind {
     Summary,
     /// Fresh operation success after the failure-free confirmation interval.
     Recovered,
+}
+
+impl ReportKind {
+    /// Diagnostic annotation for this reporting decision.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Degraded => "first_failure",
+            Self::Summary => "summary",
+            Self::Recovered => "recovery",
+        }
+    }
 }
 
 /// Counts for an interval or a complete episode. Counts represent attempts at
@@ -129,7 +138,7 @@ impl<E: AttributeEnum> fmt::Display for Counts<E> {
     }
 }
 
-/// Snapshot to emit through `otel_diagnostic_report!` at the component callsite.
+/// Counter snapshot selected independently of log level/filter decisions.
 #[derive(Debug)]
 pub struct DiagnosticReport<E> {
     /// Transition or summary.
@@ -142,10 +151,6 @@ pub struct DiagnosticReport<E> {
     pub interval: Counts<E>,
     /// Counts since the episode began, including this observation.
     pub total: Counts<E>,
-    /// Bounded representative failure detail, captured only when reporting.
-    pub detail: String,
-    /// Age of the representative detail; success-triggered reports reuse it.
-    pub detail_age: Duration,
 }
 
 #[derive(Debug)]
@@ -155,8 +160,6 @@ struct Episode<E> {
     last_report: Instant,
     interval: Counts<E>,
     total: Counts<E>,
-    detail: String,
-    detail_at: Instant,
 }
 
 impl<E: AttributeEnum> Episode<E> {
@@ -167,8 +170,6 @@ impl<E: AttributeEnum> Episode<E> {
             interval_duration: now.saturating_duration_since(self.last_report),
             interval: self.interval.clone(),
             total: self.total.clone(),
-            detail: self.detail.clone(),
-            detail_age: now.saturating_duration_since(self.detail_at),
         };
         self.interval.reset();
         self.last_report = now;
@@ -194,14 +195,8 @@ impl<E> Default for DiagnosticTracker<E> {
 }
 
 impl<E: AttributeEnum> DiagnosticTracker<E> {
-    /// Observe a failure. `detail` is evaluated only for an emitted report.
-    /// Callers retain responsibility for redacting secrets from diagnostics.
-    pub fn failure<D: fmt::Display>(
-        &mut self,
-        now: Instant,
-        category: E,
-        detail: impl FnOnce() -> D,
-    ) -> Option<DiagnosticReport<E>> {
+    /// Observe a failure and select a first warning or interval summary.
+    pub fn failure(&mut self, now: Instant, category: E) -> Option<DiagnosticReport<E>> {
         let first = self.episode.is_none();
         let episode = self.episode.get_or_insert_with(|| Episode {
             started_at: now,
@@ -209,8 +204,6 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
             last_report: now,
             interval: Counts::default(),
             total: Counts::default(),
-            detail: String::new(),
-            detail_at: now,
         });
         let emit = first || now.saturating_duration_since(episode.last_report) >= SUMMARY_INTERVAL;
         episode.last_failure = now;
@@ -219,8 +212,6 @@ impl<E: AttributeEnum> DiagnosticTracker<E> {
         if !emit {
             return None;
         }
-        episode.detail = bounded_detail(detail());
-        episode.detail_at = now;
         Some(episode.report(
             if first {
                 ReportKind::Degraded
@@ -275,6 +266,13 @@ impl<T: Default> Default for SignalSet<T> {
 }
 
 impl<T> SignalSet<T> {
+    /// Initializes the fixed set without a dynamic map.
+    pub fn new(mut init: impl FnMut() -> T) -> Self {
+        Self {
+            signals: std::array::from_fn(|_| init()),
+        }
+    }
+
     /// Selects one signal's state.
     pub fn signal(&mut self, signal: SignalType) -> &mut T {
         &mut self.signals[match signal {
@@ -291,54 +289,6 @@ impl<T> SignalSet<T> {
 /// directly. This alias adds a fixed set of scopes without dynamic keys.
 pub type SignalDiagnostics<E> = SignalSet<DiagnosticTracker<E>>;
 
-fn bounded_detail(detail: impl fmt::Display) -> String {
-    struct Bounded(String);
-    impl Write for Bounded {
-        fn write_str(&mut self, text: &str) -> fmt::Result {
-            for c in text.chars() {
-                // Escape control characters to keep console output on one line.
-                for escaped in c.escape_debug() {
-                    if self.0.len() + escaped.len_utf8() > MAX_DETAIL_BYTES {
-                        return Err(fmt::Error);
-                    }
-                    self.0.push(escaped);
-                }
-            }
-            Ok(())
-        }
-    }
-    let mut output = Bounded(String::new());
-    let _ = write!(&mut output, "{detail}");
-    output.0
-}
-
-/// Emit priority operation fields followed by common fields for a selected report.
-///
-/// The caller selects the literal event name and emitter macro (`otel_warn` or
-/// `otel_info`). Operation-specific fields are encoded first so bounded ITS
-/// encoding preserves the actionable error detail before lower-priority counts.
-/// Pass a report reference so its representative detail can also be used in fields.
-#[macro_export]
-macro_rules! otel_diagnostic_report {
-    (target: $target:expr, emit: $emit:ident, name: $name:literal, report: $report:expr, $($fields:tt)+) => {{
-        let diagnostic_report = $report;
-        $crate::$emit!(target: $target, $name,
-            $($fields)+,
-            episode_seconds = diagnostic_report.episode_duration.as_secs_f64(),
-            interval_seconds = diagnostic_report.interval_duration.as_secs_f64(),
-            successful_attempts = diagnostic_report.interval.successes,
-            failed_attempts = diagnostic_report.interval.failures,
-            suppressed_diagnostics = diagnostic_report.interval.suppressed,
-            total_successful_attempts = diagnostic_report.total.successes,
-            total_failed_attempts = diagnostic_report.total.failures,
-            total_suppressed_diagnostics = diagnostic_report.total.suppressed,
-            error_counts = %diagnostic_report.interval,
-            total_error_counts = %diagnostic_report.total,
-            error_sample_age_seconds = diagnostic_report.detail_age.as_secs_f64()
-        );
-    }};
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +300,7 @@ mod tests {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
         let first = tracker
-            .failure(start, DiagnosticErrorKind::Transport, || "DNS unavailable")
+            .failure(start, DiagnosticErrorKind::Transport)
             .unwrap();
         assert_eq!(first.kind, ReportKind::Degraded);
         assert_eq!(first.total.failures, 1);
@@ -360,26 +310,18 @@ mod tests {
                     .failure(
                         start + Duration::from_secs(1),
                         DiagnosticErrorKind::Transport,
-                        || -> &'static str {
-                            panic!("suppressed diagnostics must not be formatted")
-                        }
                     )
                     .is_none()
             );
         }
         let summary = tracker
-            .failure(
-                start + SUMMARY_INTERVAL,
-                DiagnosticErrorKind::Rejected,
-                || "503",
-            )
+            .failure(start + SUMMARY_INTERVAL, DiagnosticErrorKind::Rejected)
             .unwrap();
         assert_eq!(summary.kind, ReportKind::Summary);
         assert_eq!(summary.interval.failures, 100_001);
         assert_eq!(summary.total.failures, 100_002);
         assert_eq!(summary.interval.suppressed, 100_000);
         assert_eq!(summary.interval.to_string(), "transport=100000,rejected=1");
-        assert_eq!(summary.detail, "503");
         assert_eq!(summary.interval_duration, SUMMARY_INTERVAL);
     }
 
@@ -392,7 +334,7 @@ mod tests {
         assert!(tracker.success(start, start).is_none());
         assert!(
             tracker
-                .failure(start, DiagnosticErrorKind::Transport, || "offline")
+                .failure(start, DiagnosticErrorKind::Transport)
                 .is_some()
         );
         assert!(
@@ -409,7 +351,7 @@ mod tests {
         assert!(tracker.success(fresh, fresh).is_none());
         assert_eq!(
             tracker
-                .failure(fresh, DiagnosticErrorKind::Transport, || "offline again")
+                .failure(fresh, DiagnosticErrorKind::Transport)
                 .unwrap()
                 .kind,
             ReportKind::Degraded
@@ -422,13 +364,13 @@ mod tests {
     fn intermittent_delivery_does_not_flap() {
         let mut tracker = DiagnosticTracker::default();
         let start = Instant::now();
-        let _ = tracker.failure(start, DiagnosticErrorKind::Transport, || "offline");
+        let _ = tracker.failure(start, DiagnosticErrorKind::Transport);
         for second in 1..60 {
             let now = start + Duration::from_secs(second);
             assert!(tracker.success(now, now).is_none());
             assert!(
                 tracker
-                    .failure(now, DiagnosticErrorKind::Rejected, || "rejected")
+                    .failure(now, DiagnosticErrorKind::Rejected)
                     .is_none()
             );
         }
@@ -436,7 +378,6 @@ mod tests {
         assert_eq!(summary.kind, ReportKind::Summary);
         assert_eq!(summary.interval.successes, 60);
         assert_eq!(summary.interval.failures, 59);
-        assert_eq!(summary.detail_age, SUMMARY_INTERVAL);
         let last_failure = start + Duration::from_secs(59);
         assert!(
             tracker
@@ -470,7 +411,7 @@ mod tests {
                 assert_eq!(
                     instance
                         .signal(signal)
-                        .failure(now, DiagnosticErrorKind::Rejected, || "denied")
+                        .failure(now, DiagnosticErrorKind::Rejected)
                         .unwrap()
                         .kind,
                     ReportKind::Degraded
@@ -489,30 +430,15 @@ mod tests {
         assert!(
             instances[1]
                 .signal(SignalType::Logs)
-                .failure(now, DiagnosticErrorKind::Rejected, || "denied")
+                .failure(now, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
         assert!(
             instances[0]
                 .signal(SignalType::Metrics)
-                .failure(now, DiagnosticErrorKind::Rejected, || "denied")
+                .failure(now, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
-    }
-
-    /// Scenario: A failure supplies oversized Unicode text and embedded control characters.
-    /// Guarantees: Retained diagnostics are bounded, valid UTF-8, and safe for single-line display.
-    #[test]
-    fn representative_details_are_bounded() {
-        let mut tracker = DiagnosticTracker::default();
-        let text = format!("line\n\u{1b}[2J{}", "\u{e9}".repeat(2000));
-        let report = tracker
-            .failure(Instant::now(), DiagnosticErrorKind::Other, || text)
-            .unwrap();
-        assert!(report.detail.len() <= MAX_DETAIL_BYTES);
-        assert!(!report.detail.contains('\n'));
-        assert!(!report.detail.contains('\u{1b}'));
-        assert!(report.detail.starts_with("line\\n"));
     }
 
     /// Scenario: A new failure occurs exactly when recovery could otherwise be confirmed.
@@ -521,11 +447,11 @@ mod tests {
     fn failure_restarts_recovery_confirmation() {
         let start = Instant::now();
         let mut tracker = DiagnosticTracker::default();
-        let _ = tracker.failure(start, DiagnosticErrorKind::Transport, || "offline");
+        let _ = tracker.failure(start, DiagnosticErrorKind::Transport);
         let later = start + RECOVERY_INTERVAL;
         assert!(
             tracker
-                .failure(later, DiagnosticErrorKind::Rejected, || "denied")
+                .failure(later, DiagnosticErrorKind::Rejected)
                 .is_none()
         );
         assert!(

@@ -115,6 +115,7 @@ impl<
             pipeline_key.deployment_generation,
             core_placement.numa_node_id,
         );
+        pipeline_ctx.set_structured_log_emitter(tracing_setup.log_emitter());
         let topic_set = Controller::<PData>::build_pipeline_topic_set(
             &self.declared_topics,
             &deployment.resolved.topic_scope,

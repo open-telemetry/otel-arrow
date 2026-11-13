@@ -385,13 +385,21 @@ Export, preparation, and notification diagnostics include `diagnostic_kind`
 Existing export and notification error event names are preserved. Export errors
 retain a string `message` and boolean `retryable` describing the representative
 failure, which may differ from other failures counted in the summary. Recovery
-events retain that error sample and its age but omit `retryable`. Notification
+events contain the first failure as a map-valued `episode.start_event`, rather
+than an `error` string, and omit top-level `retryable`. The map includes the
+original body, typed attributes, event name, severity, scope, and dropped count.
+Success-triggered WARN summaries reuse that first failure. Notification
 errors retain a lowercase `operation` (`ack` or `nack`) and the representative
 `error` sample. Preparation errors retain their representative `error` sample.
 
 Operation-specific fields are encoded before interval and episode counters so
 the bounded ITS record preserves actionable error details. Oversized details
-are truncated with an explicit suffix instead of being dropped.
+are truncated with an explicit suffix. A partial nested snapshot increments
+the end record's dropped-attribute count.
+
+Episode state observes every completion, even when INFO recovery is filtered.
+WARN-only logging therefore still starts a new episode after recovery. If the
+first warning was filtered, no start snapshot is available for its recovery.
 
 Diagnostic frequency is bounded before logs reach subscribers. No reports are
 emitted during idle periods, and silence does not establish recovery. Use

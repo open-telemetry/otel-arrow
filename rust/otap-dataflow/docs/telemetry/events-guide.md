@@ -335,11 +335,6 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Repeated operation failures
 
-> [!NOTE]
-> This feature is being re-implemented using the logs sampler API, after
-> which diagnostic events will appear as ordinary logging events, e.g.,
-> `otel_warn!(logger: &mut failure_sampler, "failure.name", ...)`.
-
 This shared policy supports recurring operation failures across exporters,
 receivers, and processors. Each integration documents its concrete event
 contract alongside the component that owns it.
@@ -363,9 +358,9 @@ provides meaningful evidence about the operation that failed.
   summaries, because other valid payloads do not establish recovery.
 - Ack/Nack notification failures: independent bounded failure summaries.
 
-`DiagnosticTracker` supports both patterns. Observe successes and failures for
-episodes with recovery; observe only failures when recovery has no useful
-meaning. With failure-only observations, episode totals span the tracker's
+`EpisodeSampler` observes successes and failures before the WARN/INFO callsites.
+`IntervalSampler` observes failures without retaining a log record when recovery
+has no useful meaning. With failure-only observations, totals span the tracker's
 lifetime and successful-attempt counts remain zero. For example, host metrics
 scrapes and journald checkpoint commits could use recovery reporting, while
 repeated payload conversion errors could use summaries alone. These are future
@@ -421,9 +416,15 @@ stateDiagram-v2
 Each tracker observes one operation in a bounded scope local to a node/core.
 Keep distinct operations separate: a successful enqueue cannot clear failing
 storage writes. Signal and configured destination are additional dimensions
-where relevant. Use `DiagnosticTracker` directly for operations without a
-telemetry signal, or `SignalDiagnostics` for a fixed set of signal scopes.
+where relevant. Use one sampler for an operation without telemetry signals,
+or `SignalSet` for a fixed set of signal scopes.
 Never create unbounded state keyed by client, payload, tenant, or error text.
+
+For a `SignalSet<IntervalSampler<_>>`, use `logger(signal, category)` as the
+logging macro's `logger:` argument. For a `SignalSet<EpisodeSampler<_>>`, call
+`observe(signal, result, started_at)` before choosing WARN or INFO. These helpers
+supply the current time and carry the signal into the record; do not repeat
+`signal` as an event field.
 
 Integrations SHOULD identify the operation boundary with stable, bounded
 attributes such as `stage` or `signal` when relevant. Preparation, delivery,
@@ -433,8 +434,9 @@ trackers; success at one boundary must not mark another boundary recovered.
 ### Report fields
 
 Selected reports keep the component's instrumentation target and pipeline/node
-context. `otel_diagnostic_report!` emits common interval and episode fields;
-each integration supplies its event names and operation-specific attributes.
+context. Ordinary `otel_warn!` and `otel_info!` calls pass the selected observation
+as `logger:`; the sampler appends common interval and episode fields. Each
+integration supplies its event names and operation-specific attributes.
 Counts describe attempts at the observed operation boundary, not unique batches
 or data loss:
 
@@ -448,25 +450,42 @@ or data loss:
 | `total_successful_attempts`, `total_failed_attempts` | Episode counts |
 | `total_suppressed_diagnostics` | Suppressed failures for the episode |
 | `error_counts`, `total_error_counts` | Bounded `category=count` lists |
-| `error_sample_age_seconds` | Age of the representative failure |
+| `episode.start_event` | First failure as a map, when available on recovery |
 
 Integrations may add bounded fields such as `signal`, `stage`, `message`, or a
 retry decision. Component documentation must define whether those fields
-describe the representative failure or the whole interval. Recovery reports
-retain the representative error sample and its age.
+describe the selected failure or the whole interval.
 
 The first report includes its triggering failure. Later reports include the
 current observation and exclude observations already covered by earlier
-reports. Error text is formatted only when a failure report is selected,
-escaped for single-line display, and retained up to 1024 UTF-8 bytes.
-Success-triggered summaries reuse the previous representative error, its
-integration-specific metadata, and its age. Recovery reuses the error and its
-age.
+reports. Error fields are evaluated only when a warning is selected and enabled.
+The first warning's encoded body and attributes are retained without formatting
+the record into a string. Later warnings do not replace this start snapshot.
+Success-triggered summaries reuse it; recovery is a separate INFO statement.
+
+The recovery attribute `episode.start_event` contains `event_name`,
+`severity_number`, `scope`, `body`, `attributes`, and `dropped_attributes_count`.
+It is an OTLP map-valued AnyValue, converted to CBOR by the ordinary OTAP map
+encoding. The body's and attributes' values are read through borrowed views
+and encoded with per-item budgets, not escaped as log text.
+
+Each diagnostic is bounded to 2048 encoded body/attribute bytes. Ordinary
+fields get at most half; counters and the nested snapshot share the remainder.
+Nested values use the usual half-remaining-space budget and at most 16 recursive
+container levels. A partial snapshot counts as one dropped top-level attribute;
+its own `dropped_attributes_count` describes losses in the original warning.
+Encoding never emits a partial protobuf field or invalid UTF-8 string.
+
+Observe delivery completions before choosing either log statement. INFO filtering
+must not prevent episode recovery or release of the snapshot. Runtime filtering
+can suppress either record independently; if the first warning was filtered out,
+no snapshot is invented later. A compile-time guard may skip observation when
+both WARN and INFO are compiled out.
 Callers must still redact sensitive data before supplying diagnostic text.
 
 Log frequency intentionally decreases; use component attempt and failure
-metrics for rates and impact. The shared emission helper emits common fields
-with the event name and severity chosen by the integration. Component-owned
+metrics for rates and impact. The sampler emits common fields with the event
+name and severity chosen by the integration. Component-owned
 error categories, metric counts, and retry/permanent decisions remain
 unchanged. One process may emit several reports for an incident because
 operation scopes and cores are independent.
