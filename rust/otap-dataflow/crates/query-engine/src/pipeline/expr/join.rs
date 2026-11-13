@@ -132,14 +132,31 @@ pub fn join<'a>(
     right: &'a JoinInput,
     otap_batch: &'a OtapArrowRecords,
 ) -> Result<(RecordBatch, Rc<DataScope>)> {
-    // handle special case where both sides have same source/row order
-    if left.data_scope == right.data_scope {
-        let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
-        return Ok((join_result, left.data_scope.clone()));
-    }
-
     // determine the join strategy from the source of the data
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
+        // If either side is a scalar,  handle first by simply broadcasting the scalar to the
+        // length of the other side (this also effectively produces a unit length record batch
+        // if both sides are scalar)
+        (_, DataScope::StaticScalar) => {
+            let join_exec = ScalarJoin {
+                left_is_scalar: false,
+            };
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_scope.clone()))
+        }
+        (DataScope::StaticScalar, _) => {
+            let join_exec = ScalarJoin {
+                left_is_scalar: true,
+            };
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, right.data_scope.clone()))
+        }
+
+        // handle special case where both sides have same source/row order
+        (left_scope, right_scope) if left_scope == right_scope => {
+            let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
+            return Ok((join_result, left.data_scope.clone()));
+        }
         (
             DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
             DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),
@@ -156,20 +173,6 @@ pub fn join<'a>(
             let join_exec = ChildRecordToRootJoin;
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
-        }
-        (_, DataScope::StaticScalar) => {
-            let join_exec = ScalarJoin {
-                left_is_scalar: false,
-            };
-            let join_result = join_exec.join(left, right, otap_batch)?;
-            Ok((join_result, left.data_scope.clone()))
-        }
-        (DataScope::StaticScalar, _) => {
-            let join_exec = ScalarJoin {
-                left_is_scalar: true,
-            };
-            let join_result = join_exec.join(left, right, otap_batch)?;
-            Ok((join_result, right.data_scope.clone()))
         }
 
         (DataScope::Attribute(left_attrs_id, _, _), DataScope::Attribute(right_attrs_id, _, _)) => {
@@ -441,6 +444,7 @@ pub fn multi_join(
         let (alignment, new_scope) = compute_join_alignment(&accum_result, result, otap_batch)?;
 
         match alignment {
+            // TODO - need a test that executes this for  scalars?
             JoinAlignment::EqualScope => {
                 if accum_scope.is_scalar() && !result.data_scope.is_scalar() {
                     // Transitioning from scalar to non-scalar. Adopt the new result's
@@ -873,9 +877,7 @@ impl JoinExec for EqualScopeJoin {
         let right_values = match &right.values {
             ColumnarValue::Array(arr) => Arc::clone(arr),
             ColumnarValue::Scalar(_) => {
-                // Note: given how the current expression planner works, this shouldn't happen
-                // because scalars exprs should always be included directly in the expression of
-                // one side without any need for join
+                // ScalarJoin should have been the chosen strategy instead
                 return Err(Error::ExecutionError {
                     cause: "JoinExec expected right-side values to be Array but found Scalar"
                         .into(),
