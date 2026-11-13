@@ -444,18 +444,20 @@ pub fn multi_join(
         let (alignment, new_scope) = compute_join_alignment(&accum_result, result, otap_batch)?;
 
         match alignment {
-            // TODO - need a test that executes this for  scalars?
             JoinAlignment::EqualScope => {
                 if accum_scope.is_scalar() && !result.data_scope.is_scalar() {
-                    // Transitioning from scalar to non-scalar. Adopt the new result's
-                    // IDs and re-broadcast any previously accumulated scalar values to
+                    // Transitioning from scalar to non-scalar. Adopt the new result array's
+                    // length and re-broadcast any previously accumulated scalar values to
                     // match the new result's row count.
-                    let new_len = result
-                        .parent_ids
-                        .as_ref()
-                        .map(|a| a.len())
-                        .or_else(|| result.ids.as_ref().map(|a| a.len()))
-                        .unwrap_or(1);
+                    let new_len = match &result.values {
+                        ColumnarValue::Array(arr) => arr.len(),
+                        ColumnarValue::Scalar(_) => result
+                            .parent_ids
+                            .as_ref()
+                            .map(|a| a.len())
+                            .or_else(|| result.ids.as_ref().map(|a| a.len()))
+                            .unwrap_or(1),
+                    };
                     for arr in accumulated_values.iter_mut() {
                         *arr = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?)
                             .to_array(new_len)?;

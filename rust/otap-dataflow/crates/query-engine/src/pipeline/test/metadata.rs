@@ -32,14 +32,22 @@ use crate::parser::default_parser_options;
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{Pipeline, PipelineOptions, SignalKind};
 
-/// create a simple logs batch
-fn create_logs_batch(attributes: Vec<KeyValue>) -> OtapArrowRecords {
+/// create a simple logs batch with one record
+fn create_single_row_log_batch(attributes: Vec<KeyValue>) -> OtapArrowRecords {
     otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
         LogRecord::build()
             .event_name("hello.world")
             .attributes(attributes)
             .finish(),
     ])))
+}
+
+/// create a logs batch with multiple records
+fn create_multi_row_log_batch(num_records: usize) -> OtapArrowRecords {
+    let records: Vec<LogRecord> = (0..num_records)
+        .map(|i| LogRecord::build().event_name(format!("event.{i}")).finish())
+        .collect();
+    otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(records)))
 }
 
 /// create node bindings with a selector for the given header name
@@ -110,7 +118,7 @@ async fn test_simple_filter_batches_having_transport_header() {
     let mut metadata = Metadata::default();
     add_transport_header(&mut metadata, header_name, header_val);
 
-    let input_batch = create_logs_batch(Default::default());
+    let input_batch = create_single_row_log_batch(Default::default());
     let query = "signals | where has_transport_header(\"foo\")";
     let result = execute_pipeline(
         query,
@@ -144,7 +152,7 @@ async fn test_filter_batches_not_having_transport_header() {
     let mut metadata = Metadata::default();
     add_transport_header(&mut metadata, header_name, header_val);
 
-    let input_batch = create_logs_batch(Default::default());
+    let input_batch = create_single_row_log_batch(Default::default());
     let query = "signals | where not(has_transport_header(\"foo\"))";
     let result = execute_pipeline(
         query,
@@ -183,7 +191,7 @@ async fn test_complex_filter_batches_by_metadata() {
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
-        create_logs_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("no"))]),
+        create_single_row_log_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("no"))]),
         metadata,
     )
     .await;
@@ -194,7 +202,7 @@ async fn test_complex_filter_batches_by_metadata() {
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
-        create_logs_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("val"))]),
+        create_single_row_log_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("val"))]),
         metadata,
     )
     .await;
@@ -205,7 +213,7 @@ async fn test_complex_filter_batches_by_metadata() {
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
-        create_logs_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("no"))]),
+        create_single_row_log_batch(vec![KeyValue::new("attr.1", AnyValue::new_string("no"))]),
         metadata,
     )
     .await;
@@ -230,7 +238,7 @@ async fn test_simple_assign_transport_header_presence_as_property() {
     let result = execute_pipeline(
         "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
         pipeline_options.clone(),
-        create_logs_batch(Default::default()),
+        create_single_row_log_batch(Default::default()),
         metadata,
     )
     .await;
@@ -245,7 +253,7 @@ async fn test_simple_assign_transport_header_presence_as_property() {
     let result = execute_pipeline(
         "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
         pipeline_options,
-        create_logs_batch(Default::default()),
+        create_single_row_log_batch(Default::default()),
         Metadata::default(),
     )
     .await;
@@ -278,13 +286,13 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
-        create_logs_batch(Default::default()),
+        create_multi_row_log_batch(3),
         metadata,
     )
     .await;
 
     // assert we kept all the rows:
-    assert_eq!(result.num_items(), 1);
+    assert_eq!(result.num_items(), 3);
 
     // do the same test, this time with more args... body should be null on the input batch,
     // so the first arg will resolve to null and the from coalesce will be the "true" from the
@@ -296,11 +304,29 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
     let result = execute_pipeline(
         query,
         pipeline_options.clone(),
-        create_logs_batch(Default::default()),
+        create_multi_row_log_batch(3),
         metadata,
     )
     .await;
 
     // assert we kept all the rows:
-    assert_eq!(result.num_items(), 1);
+    assert_eq!(result.num_items(), 3);
+
+    // same test as above, but just with a different argument order. The arguments
+    // it will have to "join" to call the function are swapped, but it should stil
+    // evaluate correctly
+    let query = "logs | where coalesce(has_transport_header(\"foo\"), body, false)";
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_multi_row_log_batch(3),
+        metadata,
+    )
+    .await;
+
+    // assert we kept all the rows:
+    assert_eq!(result.num_items(), 3);
 }
