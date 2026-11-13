@@ -253,6 +253,73 @@ jobs:
             echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
           done
           exit "$fail"
+      - name: Assert emitted metrics pass Weaver live-check
+        if: always()
+        working-directory: ${{ github.workspace }}
+        env:
+          REPORT_PATH: ${{ steps.weaver-stop.outputs['report-path'] }}
+        run: |
+          set -euo pipefail
+          REPORT="${REPORT_PATH:-}"
+          if [ -z "$REPORT" ] || [ ! -s "$REPORT" ]; then
+            echo "::error::No live-check report found (path='$REPORT')"
+            exit 1
+          fi
+
+          {
+            echo
+            echo "## df_engine metrics live-check"
+            echo
+            echo "| Metric | Samples | Worst metric/datapoint advice |"
+            echo "| --- | ---: | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          mapfile -t expected_metrics < <(
+            yq eval-all '.groups[] | select(.type == "metric") | .metric_name' \
+              rust/otap-dataflow/semconv/groups/*.yaml \
+              | grep -Ev '^(---|null)$' | sort -u
+          )
+          if [ "${#expected_metrics[@]}" -eq 0 ]; then
+            echo "::error::No metrics discovered under semconv/groups/"
+            exit 1
+          fi
+
+          observed_declared=0
+          fail=0
+          for name in "${expected_metrics[@]}"; do
+            read -r count worst < <(jq -r --arg n "$name" '
+              [.samples[].metric // empty | select(.name == $n)] as $metrics
+              | [
+                  ($metrics | length),
+                  (
+                    [
+                      ($metrics[].live_check_result.highest_advice_level // empty),
+                      ($metrics[].data_points[]?.live_check_result.highest_advice_level // empty),
+                      ($metrics[].data_points[]?.attributes[]?.live_check_result.highest_advice_level // empty)
+                    ]
+                    | if   any(. == "violation")   then "violation"
+                      elif any(. == "improvement") then "improvement"
+                      elif any(. == "information") then "information"
+                      elif ($metrics | length) > 0 then "ok"
+                      else "n/a" end
+                  )
+                ]
+              | @tsv' "$REPORT")
+            if [ "$count" != "0" ]; then
+              observed_declared=$((observed_declared + 1))
+              if [ "$worst" = "violation" ]; then
+                echo "::error::metric \`$name\` has live-check violations"
+                fail=1
+              fi
+              echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          if [ "$observed_declared" -eq 0 ]; then
+            echo "::error::Zero declared metrics were observed in the live-check report"
+            fail=1
+          fi
+          exit "$fail"
       - name: Bundle live-check artifacts
         if: always()
         env:
