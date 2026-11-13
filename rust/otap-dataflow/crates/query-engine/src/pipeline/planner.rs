@@ -16,6 +16,7 @@ use otel_arrow_contrib_data_engine_expressions::{
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
+use otel_arrow_dfe_engine::pdata_context::NodeBindings;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, RenameTransform,
@@ -200,20 +201,25 @@ impl RecordType {
 /// - Which operations can be handled by DataFusion stages
 /// - Which operations need custom stages (e.g., cross-table filters)
 /// - Optimizing by group operations into efficient stages
-pub struct PipelinePlanner {
+pub struct PipelinePlanner<'a> {
     /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
     filter_attribute_keys_case_sensitive: bool,
 
     /// Which type within the OTel type hierarchy will be treated as the root record for
     /// the pipeline that is being planned.
     record_type: RecordType,
+
+    /// Context bindings associated with the DFE component invoking the pipeline being planned
+    /// by this instance of the planner.
+    node_bindings: &'a NodeBindings,
 }
 
-impl PipelinePlanner {
-    pub const fn new(record_type: RecordType) -> Self {
+impl<'a> PipelinePlanner<'a> {
+    pub const fn new(record_type: RecordType, node_bindings: &'a NodeBindings) -> Self {
         Self {
             filter_attribute_keys_case_sensitive: true,
             record_type,
+            node_bindings,
         }
     }
 
@@ -295,10 +301,10 @@ impl PipelinePlanner {
         }
     }
 
-    fn collect_consecutive_sets<'a>(
-        data_exprs: &'a [DataExpression],
-        first_set: &'a SetTransformExpression,
-    ) -> Vec<&'a SetTransformExpression> {
+    fn collect_consecutive_sets<'args>(
+        data_exprs: &'args [DataExpression],
+        first_set: &'args SetTransformExpression,
+    ) -> Vec<&'args SetTransformExpression> {
         let mut set_exprs = vec![first_set];
 
         for expr in &data_exprs[1..] {
@@ -430,6 +436,7 @@ impl PipelinePlanner {
                     let expr_planner = ExprPlanner::new(
                         self.filter_attribute_keys_case_sensitive,
                         self.record_type.clone(),
+                        self.node_bindings,
                     );
                     let mut default_branch = None;
                     let mut pipeline_branches = vec![];
@@ -441,7 +448,7 @@ impl PipelinePlanner {
                             Some(condition) => self.try_narrow_record_type(condition),
                             None => self.record_type.clone(),
                         };
-                        let branch_planner = Self::new(narrowed_record_type)
+                        let branch_planner = Self::new(narrowed_record_type, self.node_bindings)
                             .with_filter_attribute_keys_case_sensitive(
                                 self.filter_attribute_keys_case_sensitive,
                             );
@@ -502,6 +509,7 @@ impl PipelinePlanner {
         let planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
             self.record_type.clone(),
+            self.node_bindings,
         );
 
         let scoped_op = planner.plan_logical(logical_expr, functions)?;
@@ -812,6 +820,7 @@ impl PipelinePlanner {
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
             self.record_type.clone(),
+            self.node_bindings,
         );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
@@ -1089,7 +1098,7 @@ impl PipelinePlanner {
                         }
                     };
 
-                    let planner = Self::new(nested_pipeline_record_type);
+                    let planner = Self::new(nested_pipeline_record_type, self.node_bindings);
 
                     let child_pipeline = planner.plan_data_exprs(
                         &inner_pipeline_data_exprs,
@@ -1460,7 +1469,10 @@ pub enum AttributesIdentifier {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use otel_arrow_contrib_data_engine_kql_parser::Parser;
+    use otel_arrow_dfe_engine::pdata_context::NodeBindings;
     use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs, otlp::metrics::MetricType};
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
@@ -1469,8 +1481,12 @@ mod test {
     use super::{RecordType, SignalContext, SignalKind};
 
     /// Create a planner for log signal pipelines (used in tests).
-    fn logs_planner() -> PipelinePlanner {
-        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    fn logs_planner() -> PipelinePlanner<'static> {
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> = LazyLock::new(NodeBindings::default);
+        PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &DEFAULT_NODE_BINDINGS,
+        )
     }
 
     #[test]
@@ -1635,7 +1651,11 @@ mod test {
     /// Helper to assert that a query fails planning with an expected substring in the error
     fn assert_planning_error_contains(query: &str, signal: SignalKind, expected_substr: &str) {
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::Single(signal)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(signal)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(
             &pipeline_expr,
             &Pipeline::create_session_context(),
@@ -1656,7 +1676,11 @@ mod test {
     /// Helper to assert that a query succeeds during planning
     fn assert_planning_ok(query: &str, signal: SignalKind) {
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let planner = PipelinePlanner::new(RecordType::Signal(SignalContext::Single(signal)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(signal)),
+            &node_bindings,
+        );
         let _stages = planner
             .plan_stages(
                 &pipeline_expr,
@@ -1726,7 +1750,8 @@ mod test {
     /// Helper to assert that a query succeeds during planning with a given signal context.
     fn assert_planning_ok_with_context(query: &str, context: SignalContext) {
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let planner = PipelinePlanner::new(RecordType::Signal(context));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(RecordType::Signal(context), &node_bindings);
         let result = planner.plan_stages(
             &pipeline_expr,
             &Pipeline::create_session_context(),
@@ -1766,7 +1791,8 @@ mod test {
         expected_substr: &str,
     ) {
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
-        let planner = PipelinePlanner::new(RecordType::Signal(context));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(RecordType::Signal(context), &node_bindings);
         let result = planner.plan_stages(
             &pipeline_expr,
             &Pipeline::create_session_context(),

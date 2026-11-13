@@ -1,0 +1,43 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        # prometheus_receiver -> OTLP/gRPC exporter pipeline.
+        #
+        # Scrapes Prometheus text (0.0.4 / 1.0.0) and OpenMetrics 1.0 endpoints
+        # and decodes them directly into OTAP Arrow record batches via `prometheus-expfmt`.
+        #
+        # The prometheus_receiver requires a single-core source pipeline, so
+        # this config is meant to be run as:
+        #
+        #   df_engine --config configs/prometheus-otlp.yaml --num-cores 1
+
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: urn:otel:receiver:prometheus
+            config:
+              job_name: avalanche
+              scrape_interval: 15s
+              scrape_timeout: 10s
+              metrics_path: /metrics
+              enable_open_metrics: true
+              targets:
+                - "127.0.0.1:9001"
+
+          exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+
+        connections:
+          - from: receiver
+            to: exporter

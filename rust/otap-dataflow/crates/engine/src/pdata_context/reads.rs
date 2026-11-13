@@ -89,6 +89,18 @@ impl ValueRead {
         })
     }
 
+    /// Compiles a `ValueRead` from a selector and materialization plan.
+    ///
+    /// This is the same as the internal `compile` method, exposed for use in
+    /// external crate tests that need a populated `NodeBindings`.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn compile_for_test(
+        selector: &ContextEntrySelector,
+        plan: &ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
+        Self::compile(selector, plan)
+    }
+
     /// Returns the declared selector this read was compiled from.
     #[must_use]
     pub fn selector(&self) -> &ContextEntrySelector {

@@ -112,6 +112,50 @@ pub trait ColumnarEngineDiagnosticReceiver<'a> {
         F: FnOnce() -> String;
 
     fn add_diagnostic(&self, diagnostic: ColumnarEngineDiagnostic<'a>);
+
+    fn bind(
+        &self,
+        expression: &'a dyn Expression,
+    ) -> ColumnarEngineBoundDiagnosticReceiver<'a, '_, Self>
+    where
+        Self: Sized,
+    {
+        ColumnarEngineBoundDiagnosticReceiver {
+            receiver: self,
+            expression,
+        }
+    }
+}
+
+/// A diagnostic receiver that attributes messages to a single expression.
+pub struct ColumnarEngineBoundDiagnosticReceiver<'a, 'b, R: ColumnarEngineDiagnosticReceiver<'a>> {
+    receiver: &'b R,
+    expression: &'a dyn Expression,
+}
+
+impl<'a, 'b, R: ColumnarEngineDiagnosticReceiver<'a>>
+    ColumnarEngineBoundDiagnosticReceiver<'a, 'b, R>
+{
+    pub fn is_diagnostic_level_enabled(
+        &self,
+        diagnostic_level: ColumnarEngineDiagnosticLevel,
+    ) -> bool {
+        self.receiver.is_diagnostic_level_enabled(diagnostic_level)
+    }
+
+    pub fn add_diagnostic_if_enabled<F>(
+        &self,
+        diagnostic_level: ColumnarEngineDiagnosticLevel,
+        generate_message: F,
+    ) where
+        F: FnOnce() -> String,
+    {
+        self.receiver.add_diagnostic_if_enabled(
+            diagnostic_level,
+            self.expression,
+            generate_message,
+        );
+    }
 }
 
 pub(crate) struct ColumnarEngineDiagnosticReceiverImpl<'a, 'pipeline> {
@@ -157,5 +201,49 @@ impl<'a> ColumnarEngineDiagnosticReceiver<'a> for ColumnarEngineDiagnosticReceiv
 
     fn add_diagnostic(&self, diagnostic: ColumnarEngineDiagnostic<'a>) {
         self.diagnostics.borrow_mut().push(diagnostic);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_helpers::run_bound_diagnostic_test_with_level;
+
+    use super::*;
+
+    /// Scenario: An expression-bound receiver filters warnings at each configured diagnostic level.
+    /// Guarantees: Disabled messages are never generated, and enabled warnings retain their level, message, and exact expression.
+    #[test]
+    fn bound_receiver_filters_and_attributes_warnings() {
+        for level in [
+            ColumnarEngineDiagnosticLevel::Verbose,
+            ColumnarEngineDiagnosticLevel::Info,
+            ColumnarEngineDiagnosticLevel::Warn,
+            ColumnarEngineDiagnosticLevel::Error,
+        ] {
+            let enabled = level <= ColumnarEngineDiagnosticLevel::Warn;
+            run_bound_diagnostic_test_with_level(
+                level,
+                |bound| {
+                    assert_eq!(
+                        bound.is_diagnostic_level_enabled(ColumnarEngineDiagnosticLevel::Warn),
+                        enabled
+                    );
+                    bound.add_diagnostic_if_enabled(ColumnarEngineDiagnosticLevel::Warn, || {
+                        assert!(enabled, "disabled diagnostic must not generate a message");
+                        "warning".into()
+                    });
+                },
+                |diagnostics| {
+                    assert_eq!(diagnostics.len(), usize::from(enabled));
+                    if enabled {
+                        assert_eq!(
+                            diagnostics[0].get_diagnostic_level(),
+                            ColumnarEngineDiagnosticLevel::Warn
+                        );
+                        assert_eq!(diagnostics[0].get_message(), "warning");
+                    }
+                },
+            );
+        }
     }
 }

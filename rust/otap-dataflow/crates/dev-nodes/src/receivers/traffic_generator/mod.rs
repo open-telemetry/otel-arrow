@@ -805,15 +805,18 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
 }
 
 impl ConfigNodeContextDeclaration for Config {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        self.transport_headers()
+    fn context_declarations(
+        &self,
+    ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+        Ok(self
+            .transport_headers()
             .keys()
             .cloned()
             .map(|entry| ContextDeclaration::Produces {
                 domain: ContextDomain::TransportHeader,
                 entry,
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -878,7 +881,7 @@ mod tests {
     #[test]
     fn test_drain_ingress_waits_for_pending_ack() {
         let test_runtime = TestRuntime::new();
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
         let traffic_config = TrafficConfig::new(None, Some(1), 1, 0, 0, 1);
         let config = Config::new(traffic_config, registry_path)
             .with_data_source(DataSource::Synthetic)
@@ -1142,12 +1145,9 @@ mod tests {
 
     #[test]
     fn test_traffic_generator_receiver() {
-        // weaver fetches remote registries over rustls without choosing a crypto
-        // provider. Production installs one at startup; tests must do it here.
-        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path);
@@ -1225,12 +1225,9 @@ mod tests {
 
     #[test]
     fn test_traffic_generator_receiver_message_rate_only() {
-        // weaver fetches remote registries over rustls without choosing a crypto
-        // provider. Production installs one at startup; tests must do it here.
-        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 0, 0);
         let config = Config::new(traffic_config, registry_path);
@@ -1301,11 +1298,8 @@ mod tests {
     }
     #[test]
     fn test_traffic_generator_receiver_max_signal_count_only() {
-        // weaver fetches remote registries over rustls without choosing a crypto
-        // provider. Production installs one at startup; tests must do it here.
-        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(None, Some(MAX_SIGNALS), MAX_BATCH, 1, 0, 0);
         let config = Config::new(traffic_config, registry_path);
@@ -1380,7 +1374,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // Use Synthetic data source with PreGenerated strategy
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path)
@@ -1418,7 +1412,7 @@ mod tests {
     fn test_drain_ingress_exits_promptly() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         // signals_per_second=1 means the receiver sleeps ~1s between sends.
         // DrainIngress must interrupt that sleep and exit promptly.
@@ -1475,7 +1469,7 @@ mod tests {
     fn test_drain_ingress_exits_promptly_during_high_throughput_send_loop() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(Some(1000), None, 1, 0, 0, 1);
         let config = Config::new(traffic_config, registry_path)
@@ -1529,7 +1523,7 @@ mod tests {
     fn test_non_terminal_ctrl_msg_does_not_break_rate_limit_sleep() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         // signals_per_second=1 with a single log per iteration means the
         // receiver will sleep ~1s between sends. If the non-terminal control
@@ -1608,7 +1602,7 @@ mod tests {
     fn test_fake_data_transport_headers_fixed_value() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(
             Some(MESSAGE_PER_SECOND),
@@ -1683,7 +1677,7 @@ mod tests {
     fn test_fake_data_transport_headers_random_value() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(
             Some(MESSAGE_PER_SECOND),
@@ -1765,7 +1759,7 @@ mod tests {
     fn test_fake_data_transport_headers_binary_random_value() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(
             Some(MESSAGE_PER_SECOND),
@@ -1842,7 +1836,7 @@ mod tests {
     fn test_fake_data_transport_headers_empty_by_default() {
         let test_runtime = TestRuntime::new();
 
-        let registry_path = config::default_registry_path();
+        let registry_path = config::vendored_registry_path();
 
         let traffic_config = TrafficConfig::new(
             Some(MESSAGE_PER_SECOND),

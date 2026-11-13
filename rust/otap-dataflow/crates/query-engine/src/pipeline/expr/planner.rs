@@ -11,13 +11,7 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::functions::core::coalesce::CoalesceFunc;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::{md5, sha256, sha512};
-use datafusion::functions::datetime::to_char;
-use datafusion::functions::encoding::encode;
-use datafusion::functions::math::log10;
-use datafusion::functions::string::{
-    concat, concat_ws, ends_with, lower, ltrim, replace, rtrim, starts_with, upper, uuid,
-};
+use datafusion::functions::string::{concat, concat_ws, replace};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
@@ -33,44 +27,37 @@ use otel_arrow_contrib_data_engine_expressions::{
     StringValue, TextScalarExpression, ValueType,
 };
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::pdata_context::NodeBindings;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::{UTC_TIME_ZONE, consts};
 use regex::Regex;
 
-#[cfg(feature = "sha1-hash")]
-use crate::consts::SHA1_FUNC_NAME;
-use crate::consts::{
-    ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
-    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
-    STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
-    XXH128_FUNC_NAME,
-};
 use crate::error::{Error, Result};
+use crate::pipeline::expr::batch::SignalTypePredicate;
 use crate::pipeline::expr::join::is_one_to_many;
+use crate::pipeline::expr::planner::func::{
+    BatchEvalFuncDef, DataFusionFunctionDef, FunctionDefinition,
+};
 use crate::pipeline::expr::types::{
     ExprLogicalType, attribute_field_type, cast_expr, coerce_arithmetic, data_point_field_type,
     nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{
     ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr,
-    ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
+    ShortCircuitStrategy, VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
 use crate::pipeline::functions::regex_match::RegexMatchFunc;
-#[cfg(feature = "sha1-hash")]
-use crate::pipeline::functions::sha1_hash;
-use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, now, regexp_substr, substring, uuidv7, xxh3_hash,
-    xxh128_hash,
-};
+use crate::pipeline::functions::{arity_range, regexp_substr, substring};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
+pub(crate) mod func;
+
 /// Planner that converts AST expressions into `ScopedExpr` execution trees.
-pub(crate) struct ExprPlanner {
+pub(crate) struct ExprPlanner<'a> {
     /// Whether attribute key matching should be case-sensitive. Defaults to `true`.
     /// When `false`, attribute key filtering uses case-insensitive comparison.
     attr_key_case_sensitive: bool,
@@ -78,6 +65,10 @@ pub(crate) struct ExprPlanner {
     /// Which type within the OTel data-model hierarchy should be treated as the root record
     /// the expression that is being planned.
     record_type: RecordType,
+
+    /// Context bindings associated the the DFE component instance that will evaluate the
+    /// query-engine pipeline containing the expression being planned.
+    node_bindings: &'a NodeBindings,
 }
 
 /// Intermediate planning result that carries type information alongside the `ScopedExpr`
@@ -87,12 +78,17 @@ pub(crate) struct PlannedOp {
     pub requires_dict_downcast: bool,
 }
 
-impl ExprPlanner {
+impl<'a> ExprPlanner<'a> {
     /// Creates a new `ExprPlanner`
-    pub fn new(attr_key_case_sensitive: bool, record_type: RecordType) -> Self {
+    pub fn new(
+        attr_key_case_sensitive: bool,
+        record_type: RecordType,
+        node_bindings: &'a NodeBindings,
+    ) -> Self {
         Self {
             attr_key_case_sensitive,
             record_type,
+            node_bindings,
         }
     }
 
@@ -778,13 +774,48 @@ impl ExprPlanner {
             });
         };
 
-        let df_udf = DataFusionFunctionDef::from_func_name(func_name).ok_or_else(|| {
-            Error::InvalidPipelineError {
+        match FunctionDefinition::from_func_name(func_name) {
+            Some(FunctionDefinition::BatchEval(batch_eval_func_def)) => {
+                self.plan_batch_eval_function_invocation(invoke_expr, batch_eval_func_def)
+            }
+            Some(FunctionDefinition::DataFusion(df_udf)) => {
+                self.plan_df_function_invocation(invoke_expr, functions, func_name, df_udf)
+            }
+            None => Err(Error::InvalidPipelineError {
                 cause: format!("Unknown function '{func_name}"),
                 query_location: Some(invoke_expr.get_query_location().clone()),
-            }
-        })?;
+            }),
+        }
+    }
 
+    fn plan_batch_eval_function_invocation(
+        &self,
+        invoke_expr: &InvokeFunctionScalarExpression,
+        batch_eval_func_def: BatchEvalFuncDef,
+    ) -> Result<PlannedOp> {
+        let batch_eval = batch_eval_func_def.create(
+            self.node_bindings,
+            invoke_expr.get_arguments(),
+            Some(invoke_expr.get_query_location()),
+        )?;
+
+        Ok(PlannedOp {
+            expr: ScopedExpr::Eval {
+                scope: DataScope::Record(RecordScope::Signal),
+                eval: LeafEval::BatchEval(batch_eval),
+            },
+            expr_type: batch_eval_func_def.logical_type().clone(),
+            requires_dict_downcast: false,
+        })
+    }
+
+    fn plan_df_function_invocation(
+        &self,
+        invoke_expr: &InvokeFunctionScalarExpression,
+        functions: &[PipelineFunction],
+        func_name: &str,
+        df_udf: DataFusionFunctionDef,
+    ) -> Result<PlannedOp> {
         let invoke_arg_exprs = invoke_expr.get_arguments();
         let num_args = invoke_arg_exprs.len();
 
@@ -855,9 +886,9 @@ impl ExprPlanner {
     ///   col("arg_N") references for multi-join)
     /// - `FunctionArgScope`: whether all args share a scope or require multi-join
     /// - `bool`: dict_downcast
-    fn plan_function_args<'a>(
+    fn plan_function_args<'expr>(
         &self,
-        arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
+        arg_exprs: impl Iterator<Item = &'expr ScalarExpression>,
         functions: &[PipelineFunction],
     ) -> Result<(Vec<Expr>, FunctionArgScope, Option<DataScope>, bool)> {
         let planned_args: Vec<PlannedOp> = arg_exprs
@@ -1696,7 +1727,7 @@ impl ExprPlanner {
 
                 Ok(Some(ScopedExpr::Eval {
                     scope: DataScope::Record(RecordScope::Signal),
-                    eval: LeafEval::BatchPredicate(Box::new(SignalTypePredicate::new(signal_type))),
+                    eval: LeafEval::BatchEval(Box::new(SignalTypePredicate::new(signal_type))),
                 }))
             }
 
@@ -1897,11 +1928,13 @@ impl ExprPlanner {
 
                     Ok(())
                 }
-                LeafEval::BatchPredicate(_) => {
+                LeafEval::BatchEval(_) => {
                     // TODO add support for expressions such as `is Log as String` which would
                     // produce "true" for log batches, and false otherwise
+                    //
+                    // See https://github.com/open-telemetry/otel-arrow/issues/4708
                     Err(Error::NotYetSupportedError {
-                        message: "casting result of batch predicate not yet supported".into(),
+                        message: "casting result of batch expr eval not yet supported".into(),
                     })
                 }
             }
@@ -2015,65 +2048,6 @@ enum FunctionArgScope {
     Combined(DataScope),
     /// Args require a joining data with different scopes.
     Join(Vec<ScopedExpr>),
-}
-
-struct DataFusionFunctionDef {
-    scalar_udf: Arc<ScalarUDF>,
-    return_type: ExprLogicalType,
-    requires_dict_downcast: bool,
-    cast_result_to: Option<DataType>,
-}
-
-impl DataFusionFunctionDef {
-    fn new(
-        scalar_udf: Arc<ScalarUDF>,
-        return_type: ExprLogicalType,
-        requires_dict_downcast: bool,
-        cast_result_to: Option<DataType>,
-    ) -> Self {
-        Self {
-            scalar_udf,
-            return_type,
-            requires_dict_downcast,
-            cast_result_to,
-        }
-    }
-
-    fn from_func_name(func_name: &str) -> Option<Self> {
-        // TODO: some functions may produce different result types depending on the input type.
-        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
-        // to compute the return type from the types of the input expressions.
-        // TODO: some of these functions that involve expanding to dictionary, we may wish to
-        // implement our own versions that can operate directly on dictionary arrays (or fix this
-        // upstream in datafusion_functions)
-        Some(match func_name {
-            ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
-            ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
-            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
-            LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
-            NOW_FUNC_NAME => Self::new(now(), ExprLogicalType::TimestampNanosecond, false, None),
-            REGEXP_SUBSTR_FUNC_NAME => {
-                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
-            }
-            FORMAT_DATETIME_FUNC_NAME => Self::new(to_char(), ExprLogicalType::String, false, None),
-            RTRIM_FUNC_NAME => Self::new(rtrim(), ExprLogicalType::String, true, None),
-            SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
-            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::String, true, Some(DataType::Utf8)),
-            FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
-            MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
-            #[cfg(feature = "sha1-hash")]
-            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
-            SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
-            STARTS_WITH_FUNC_NAME => Self::new(starts_with(), ExprLogicalType::Boolean, true, None),
-            XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),
-            XXH128_FUNC_NAME => Self::new(xxh128_hash(), ExprLogicalType::Binary, true, None),
-            UUID_FUNC_NAME => Self::new(uuid(), ExprLogicalType::String, false, None),
-            UUIDV7_FUNC_NAME => Self::new(uuidv7(), ExprLogicalType::String, false, None),
-            UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
-            LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
-            _ => return None,
-        })
-    }
 }
 
 impl ScopedExpr {
@@ -2515,6 +2489,8 @@ pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use super::*;
 
     use datafusion::common::cast::as_boolean_array;
@@ -2535,6 +2511,7 @@ mod test {
     use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::{AttributesIdentifier, SignalContext};
+    use crate::pipeline::state::ExecutionState;
     use crate::pipeline::{Pipeline, SignalKind};
 
     fn ql() -> QueryLocation {
@@ -2577,6 +2554,14 @@ mod test {
         )))
     }
 
+    fn make_expr_planner(
+        attr_key_case_sensitive: bool,
+        record_type: RecordType,
+    ) -> ExprPlanner<'static> {
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> = LazyLock::new(NodeBindings::default);
+        ExprPlanner::new(attr_key_case_sensitive, record_type, &DEFAULT_NODE_BINDINGS)
+    }
+
     /// Test OTAP batch: 3 log records with severity fields and attributes.
     fn test_otap() -> otel_arrow_dfe_pdata::OtapArrowRecords {
         let logs = to_logs_data(vec![
@@ -2604,7 +2589,7 @@ mod test {
 
     #[test]
     fn test_plan_column_reference() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2624,11 +2609,10 @@ mod test {
         // execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
 
         // should have 3 string values
@@ -2640,7 +2624,7 @@ mod test {
 
     #[test]
     fn test_plan_attribute_access() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
         let expr = make_attr_expr("x");
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2660,11 +2644,10 @@ mod test {
         // execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         assert!(matches!(
             result.scope,
             DataScope::Attribute(AttributesIdentifier::Record(RecordScope::Signal), _, _)
@@ -2678,7 +2661,7 @@ mod test {
 
     #[test]
     fn test_plan_static_literal() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
         let expr = make_int_literal(42);
         let planned = planner.plan_scalar(&expr, &[]).unwrap();
 
@@ -2693,11 +2676,10 @@ mod test {
 
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(42))) => {}
             other => panic!("expected Int64(42), got {other:?}"),
@@ -2710,7 +2692,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2733,11 +2715,10 @@ mod test {
         // execute and verify: severity_numbers are [13, 17, 13], +2 = [15, 19, 15]
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         match &result.values {
             ColumnarValue::Array(arr) => {
                 assert_eq!(arr.len(), 3);
@@ -2756,7 +2737,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2773,7 +2754,7 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_comparison() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2797,11 +2778,10 @@ mod test {
         // execute and verify: rows 0 and 2 have severity_text="WARN"
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = op;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
         let bool_arr = as_boolean_array(match &result.values {
             ColumnarValue::Array(arr) => arr,
             other => panic!("expected array, got {other:?}"),
@@ -2814,7 +2794,7 @@ mod test {
 
     #[test]
     fn test_plan_and_two_root_predicates() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2848,11 +2828,11 @@ mod test {
         // -> rows 0 and 2 pass (row 1 has severity_text="ERROR")
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -2866,7 +2846,7 @@ mod test {
 
     #[test]
     fn test_plan_signal_type_check() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         let get_record_type =
             ScalarExpression::GetRecordType(GetRecordTypeScalarExpression::new(ql()));
@@ -2880,7 +2860,7 @@ mod test {
         assert!(matches!(
             op,
             ScopedExpr::Eval {
-                eval: LeafEval::BatchPredicate(_),
+                eval: LeafEval::BatchEval(_),
                 ..
             }
         ));
@@ -2888,17 +2868,17 @@ mod test {
         // on a logs batch -> IdMask::All
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
         assert_eq!(result.mask, IdMask::All);
     }
 
     #[test]
     fn test_plan_scalar_logical() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2918,11 +2898,10 @@ mod test {
         // execute and verify it produces a boolean result
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut op = planned.expr;
-        let result = op
-            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
-            .unwrap()
-            .unwrap();
+        let result = op.execute_as_value(&otap, &eval_ctx).unwrap().unwrap();
 
         // the value should be a boolean array
         let bool_arr = as_boolean_array(match &result.values {
@@ -2937,7 +2916,7 @@ mod test {
 
     #[test]
     fn test_plan_not() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             false,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -2958,11 +2937,11 @@ mod test {
         // execute: NOT(WARN) should match row 1 (ERROR)
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         // not(Some({0, 2})) = matches everything except 0 and 2 = matches 1
         match &result.mask {
@@ -2977,7 +2956,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_string() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // attributes["x"] == "a"
         let attr_expr = make_attr_expr("x");
@@ -2999,11 +2978,11 @@ mod test {
         // Execute and verify: rows 0 and 2 have x="a", row 1 has x="b"
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3017,7 +2996,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_eq_literal_on_left() {
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // "a" == attributes["x"] (literal on left)
         let literal_expr = make_string_literal("a");
@@ -3039,11 +3018,11 @@ mod test {
         // Execute and verify
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3076,7 +3055,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // attributes["count"] > 7
         let attr_expr = make_attr_expr("count");
@@ -3096,11 +3075,11 @@ mod test {
         ));
 
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3117,7 +3096,7 @@ mod test {
         // attributes["x"] == "a" AND attributes["x"] == "a" (same key, same value)
         // Both should use fused paths and then BitmapAnd combines them
 
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         let left = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             ql(),
@@ -3146,11 +3125,11 @@ mod test {
 
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         match &result.mask {
             IdMask::Some(bitmap) => {
@@ -3179,7 +3158,7 @@ mod test {
         ]);
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
 
-        let planner = ExprPlanner::new(false, RecordType::Signal(SignalContext::All));
+        let planner = make_expr_planner(false, RecordType::Signal(SignalContext::All));
 
         // attributes["num"] + 2 > 5
         let attr_expr = make_attr_expr("num");
@@ -3209,11 +3188,11 @@ mod test {
 
         // Still should execute correctly
         let session_ctx = Pipeline::create_session_context();
+        let exec_state = ExecutionState::default();
+        let eval_ctx = EvalContext::new(&session_ctx, &exec_state);
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let result = op
-            .execute_as_id_mask(&otap, &EvalContext::new(&session_ctx), &mut pool)
-            .unwrap();
+        let result = op.execute_as_id_mask(&otap, &eval_ctx, &mut pool).unwrap();
 
         // 10 + 2 = 12 > 5 -> should pass
         match &result.mask {
@@ -3232,7 +3211,7 @@ mod test {
     /// the left child is all-false.
     #[test]
     fn test_plan_cross_scope_and_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             true,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -3279,7 +3258,7 @@ mod test {
     /// the left child is all-true.
     #[test]
     fn test_plan_cross_scope_or_has_short_circuit_strategy() {
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             true,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
@@ -3329,7 +3308,7 @@ mod test {
             BinaryMathematicalScalarExpression, MathScalarExpression,
         };
 
-        let planner = ExprPlanner::new(
+        let planner = make_expr_planner(
             true,
             RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
         );
