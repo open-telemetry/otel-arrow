@@ -181,7 +181,7 @@ impl MetadataFunction for HasTransportHeaderPredicate {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Option<ContextEntrySelector>> {
-        parse_header_name_arg(
+        context_entry_selector_for_header_name_arg(
             Self::function_name(),
             args,
             ContextEntryTake::First,
@@ -195,7 +195,7 @@ impl MetadataFunction for HasTransportHeaderPredicate {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Self> {
-        let entry_selector = parse_header_name_arg(
+        let entry_selector = context_entry_selector_for_header_name_arg(
             Self::function_name(),
             args,
             ContextEntryTake::First,
@@ -229,11 +229,13 @@ impl BatchEval for HasTransportHeaderPredicate {
     }
 }
 
-/// Validate that the function arguments contain a single static string argument identifying a
-/// transport header name, and create a [`ContextEntrySelector`] for that header.
+/// Create a [`ContextEntrySelector`] for the transport header identified by the function's
+/// first argument.
 ///
-/// This is the shared argument-parsing logic used by all transport header metadata functions.
-fn parse_header_name_arg(
+/// Validates that `args` contains exactly one static string literal, extracts the header name,
+/// and builds the selector. This is the shared argument-validation logic used by all transport
+/// header metadata functions.
+fn context_entry_selector_for_header_name_arg(
     function_name: &str,
     args: &[InvokeFunctionArgument],
     take: ContextEntryTake,
@@ -326,7 +328,7 @@ impl MetadataFunction for IsTransportHeaderStringPredicate {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Option<ContextEntrySelector>> {
-        parse_header_name_arg(
+        context_entry_selector_for_header_name_arg(
             Self::function_name(),
             args,
             ContextEntryTake::All,
@@ -340,7 +342,7 @@ impl MetadataFunction for IsTransportHeaderStringPredicate {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Self> {
-        let entry_selector = parse_header_name_arg(
+        let entry_selector = context_entry_selector_for_header_name_arg(
             Self::function_name(),
             args,
             ContextEntryTake::All,
@@ -408,7 +410,7 @@ impl MetadataFunction for TransportHeaderStringValue {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Option<ContextEntrySelector>> {
-        parse_header_name_arg(
+        context_entry_selector_for_header_name_arg(
             Self::function_name(),
             args,
             ContextEntryTake::All,
@@ -422,7 +424,7 @@ impl MetadataFunction for TransportHeaderStringValue {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Self> {
-        let entry_selector = parse_header_name_arg(
+        let entry_selector = context_entry_selector_for_header_name_arg(
             Self::function_name(),
             args,
             ContextEntryTake::All,
