@@ -694,7 +694,6 @@ removed by an upstream processor (such as the batch processor case mentioned
 above), we could consider this a pipeline lint error (lints described in RFC
 0008).
 
-
 ## Rationale and alternatives
 
 ### Alternative 1: Do it with Processors
