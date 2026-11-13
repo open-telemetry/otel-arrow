@@ -231,6 +231,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:processor:metric_start_time",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:processor:partition",
     "category": "Processor",
     "description": null,

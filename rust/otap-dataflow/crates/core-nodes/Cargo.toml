@@ -188,6 +188,12 @@ weaver_resolver.workspace = true
 weaver_semconv.workspace = true
 
 [[bench]]
+name = "metric_start_time_processor"
+harness = false
+path = "benches/metric_start_time_processor/main.rs"
+required-features = ["bench"]
+
+[[bench]]
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
