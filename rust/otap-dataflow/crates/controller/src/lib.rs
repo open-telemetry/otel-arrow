@@ -1795,7 +1795,9 @@ impl<
                 engine_reporter,
                 engine_metrics_memory_pressure_state,
                 console_baseline,
-            );
+            )
+            .with_observed_state(obs_state_handle.clone())
+            .with_log_tap(log_tap_handle.clone());
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",
             admin_tracing_setup.clone(),

@@ -132,6 +132,19 @@ pub struct LogQueryResult {
     pub logs: Vec<RetainedLogEvent>,
 }
 
+/// Lightweight retention and drop counters for the internal log tap.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LogTapStats {
+    /// Number of log entries currently retained in memory.
+    pub retained_entries: u64,
+    /// Estimated memory in bytes currently used by retained log entries.
+    pub retained_bytes: u64,
+    /// Cumulative number of logs dropped before entering retention.
+    pub dropped_on_ingest: u64,
+    /// Cumulative number of retained logs evicted due to retention limits.
+    pub dropped_on_retention: u64,
+}
+
 /// Shared query/update handle for the retained internal log ring buffer.
 ///
 /// Cloning the handle is cheap: all clones share the same ring buffer,
@@ -176,6 +189,18 @@ impl InternalLogTapHandle {
     #[must_use]
     pub fn ingest_drop_counter(&self) -> InternalLogTapDropCounter {
         self.dropped_on_ingest.clone()
+    }
+
+    /// Returns current retention and drop statistics without cloning retained log entries.
+    #[must_use]
+    pub fn stats(&self) -> LogTapStats {
+        let state = self.state.read();
+        LogTapStats {
+            retained_entries: state.entries.len() as u64,
+            retained_bytes: state.retained_bytes as u64,
+            dropped_on_ingest: self.dropped_on_ingest.load(),
+            dropped_on_retention: state.dropped_on_retention,
+        }
     }
 
     /// Subscribe to the live stream of newly recorded log events.
@@ -565,5 +590,29 @@ mod tests {
         let seqs: Vec<u64> = result.logs.into_iter().map(|log| log.seq).collect();
         assert_eq!(seqs, vec![3, 4]);
         assert_eq!(result.next_seq, 4);
+    }
+
+    /// Scenario: Log events are recorded and evicted while an ingest drop also occurs.
+    /// Guarantees: `stats()` reports current retained entries/bytes and cumulative
+    /// ingest and retention drop counts without cloning the retained entries.
+    #[test]
+    fn stats_reports_retention_and_drop_counters() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 2,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+        handle.ingest_drop_counter().increment();
+
+        handle.record(event_with_message("1"));
+        handle.record(event_with_message("2"));
+        handle.record(event_with_message("3"));
+
+        let stats = handle.stats();
+        assert_eq!(stats.retained_entries, 2);
+        assert!(stats.retained_bytes > 0);
+        assert_eq!(stats.dropped_on_ingest, 1);
+        assert_eq!(stats.dropped_on_retention, 1);
     }
 }
