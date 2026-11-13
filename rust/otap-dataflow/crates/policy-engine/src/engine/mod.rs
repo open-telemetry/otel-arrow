@@ -138,10 +138,11 @@ impl PolicyEngine {
                     }
                 };
 
-                // Build an indices vector mapping current row position to
-                // original row position. This is needed because split/concat
-                // during transforms changes the row order, but policy match
-                // bitmaps are computed against the original row order.
+                // Build an indices vector mapping current row position to original row position.
+                // This is needed because split/concat during transforms changes the row order, but
+                // policy match bitmaps are computed against the original row order, so for each
+                // policy apply below we need to re-order these match selection vecs based on row
+                // order after the previous transforms were applied.
                 let mut indices: Vec<usize> = match &keep_mask {
                     PolicyMatch::All => (0..input_num_rows).collect(),
                     PolicyMatch::None => Vec::new(), // unreachable: we returned early above
@@ -171,8 +172,8 @@ impl PolicyEngine {
                         continue;
                     }
 
-                    // Remap the policy's match bitmap from original row order
-                    // to current row order using the indices vector.
+                    // Remap the policy's match bitmap from original row order to current row
+                    // order using the indices vector.
                     let current_match = policy_matches[idx].take(&indices);
 
                     match current_match {
@@ -191,7 +192,8 @@ impl PolicyEngine {
                                 reason: format!("transform filter: {e}"),
                             };
 
-                            // Split indices into matched and unmatched.
+                            // Split indices into matched and unmatched...
+                            // TODO - preallocate, optimize bitmap scan, reuse allocations, etc.
                             let mut matched_indices = Vec::new();
                             let mut unmatched_indices = Vec::new();
                             for (i, &orig) in indices.iter().enumerate() {
