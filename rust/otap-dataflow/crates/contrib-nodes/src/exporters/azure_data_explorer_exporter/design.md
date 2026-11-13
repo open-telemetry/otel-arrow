@@ -220,6 +220,13 @@ levels and 65536 visited values per source message. Nesting-depth and
 traversal-work refusals report their own actual and configured limits rather
 than using row-byte errors.
 
+Before materializing encoded OTLP, cooperative resource admission caps the
+decoded allocation estimate at 16 MiB and processing at 262144 protobuf fields
+or packed scalar elements per source. Its field budget accommodates protobuf
+envelopes, attribute keys, and metadata separately from transformation visits.
+Admission steps process at most 256 fields or elements with a 64 KiB wire-byte
+target, yielding between steps.
+
 Encoded OTLP is decoded completely using the existing generated Prost
 messages before any rows are transformed. This reuses schema definitions and
 protobuf decoding semantics, including unknown groups, merged message fields,

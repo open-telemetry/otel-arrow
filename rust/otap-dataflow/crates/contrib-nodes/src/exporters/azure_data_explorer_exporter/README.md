@@ -164,11 +164,16 @@ complexity limit permanently refuses the source message and emits
 `transformation_limit_exceeded` with the observed and allowed values.
 
 Encoded OTLP also undergoes exporter-private resource admission before decoding:
-the decoded allocation estimate must not exceed 16 MiB, and at most 65536
-fields or packed scalar elements may be processed. Estimates conservatively
-include vector growth, strings, bytes, nested messages, and overwritten fields.
+the decoded allocation estimate must not exceed 16 MiB, and at most 262144
+fields or packed scalar elements may be processed. This work budget counts
+message envelopes, attribute keys, and scalar fields separately from
+transformation visits, allowing ordinary attribute-rich batches. Estimates
+conservatively include vector growth, strings, bytes, nested messages, and
+overwritten fields.
 These are per-source safety limits, not process memory limits or raw-input byte
 limits. Sources exceeding either are permanently refused in their entirety.
+Admission scans cooperatively in steps of at most 256 fields or elements,
+with a 64 KiB wire-byte target per step.
 The admission layouts reuse the existing OTLP field constants and Rust field
 types, with tests comparing every field and oneof case against Prost encodings.
 Prost still performs complete nested validation and applies protobuf merging,
