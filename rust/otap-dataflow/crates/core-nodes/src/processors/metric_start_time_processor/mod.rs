@@ -71,7 +71,7 @@ mod state;
 use self::config::Config;
 use self::metrics::{MetricStartTimeMetrics, MetricStartTimeRegistrationAttributes};
 use self::state::{
-    AttrHasher, CountSumState, ExpBucketsState, ExpHistogramState, HistogramState, NumberState,
+    AttrHash, AttrHasher, CountSumState, ExpHistogramState, HistogramState, NumberState,
     ResourceSeriesMap, SeriesEntry, SeriesTable, SubtractInitialCache,
 };
 
@@ -106,7 +106,7 @@ impl BatchAdjustStats {
 
 #[derive(Debug, Clone, Copy)]
 struct EligibleMetricSlot {
-    resource_hash: u128,
+    resource_hash: AttrHash,
     metric_row: usize,
     metric_type: u8,
 }
@@ -562,7 +562,7 @@ impl SubtractInitialEngine {
             {
                 self.res_attr_hasher.get(u32::from(r_ids.value(row)))
             } else {
-                0
+                [0, 0]
             };
 
             let idx = metric_id as usize;
@@ -624,7 +624,7 @@ impl SubtractInitialEngine {
 
             let mut active: Option<ActiveState> = None;
             let mut active_parent_id: Option<Option<u16>> = None;
-            let mut active_map: Option<&mut HashMap<u128, SeriesEntry<A::State>>> = None;
+            let mut active_map: Option<&mut HashMap<AttrHash, SeriesEntry<A::State>>> = None;
 
             for row in 0..num_rows {
                 let orig_start_opt = common.start_times.and_then(|c| c.get(row));
@@ -678,15 +678,12 @@ impl SubtractInitialEngine {
                 let dp_attr_hash = common
                     .ids
                     .and_then(|c| c.get(row))
-                    .map_or(0, |id| self.dp_attr_hasher.get(id));
+                    .map_or([0, 0], |id| self.dp_attr_hasher.get(id));
 
                 match series_map.entry(dp_attr_hash) {
                     Entry::Vacant(vacant) => {
-                        let _ = vacant.insert(SeriesEntry {
-                            mark: true,
-                            start_time_ns: time_ns,
-                            data: A::seed_initial(&table, row),
-                        });
+                        let _ =
+                            vacant.insert(SeriesEntry::new(time_ns, A::seed_initial(&table, row)));
                         let kf = act.keep_flags.get_or_insert_with(|| {
                             let mut kb = BooleanBufferBuilder::new(num_rows);
                             kb.append_n(row, true);
@@ -697,7 +694,7 @@ impl SubtractInitialEngine {
                     }
                     Entry::Occupied(mut occupied) => {
                         let entry = occupied.get_mut();
-                        entry.mark = true;
+                        entry.mark();
                         if let Some(kf) = act.keep_flags.as_mut() {
                             kf.append(true);
                         }
@@ -707,11 +704,12 @@ impl SubtractInitialEngine {
                         if common.is_no_recorded_value(row) {
                             A::append_passthrough(&mut table, row);
                         } else if A::adjust_occupied(&mut table, row, &mut entry.data) {
-                            entry.start_time_ns =
-                                time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS);
+                            entry.set_start_time_ns(
+                                time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS),
+                            );
                             stats.resets_detected += 1;
                         }
-                        act.start_times.push_val(entry.start_time_ns);
+                        act.start_times.push_val(entry.start_time_ns());
                     }
                 }
             }
@@ -1062,6 +1060,11 @@ impl<'a, A: ArrowPrimitiveType> OptValCol<'a, A> {
     }
 
     #[inline]
+    fn get_opt(&self, row: usize) -> Option<A::Native> {
+        self.src.and_then(|c| c.get(row))
+    }
+
+    #[inline]
     fn push_passthrough(&mut self, row: usize) {
         if let Some(c) = self.src {
             self.out.push(c.values[row]);
@@ -1340,31 +1343,42 @@ impl DpAdjuster for NumberAdjuster {
 
     #[inline]
     fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
-        let (ci, cd) = (t.ints.read(row), t.doubles.read(row));
+        let bits = match t.ints.get_opt(row) {
+            Some(ci) => ci as u64,
+            None => t.doubles.read(row).to_bits(),
+        };
         NumberState {
-            ref_double: cd,
-            ref_int: ci,
-            prev_double: cd,
-            prev_int: ci,
+            ref_bits: bits,
+            prev_bits: bits,
         }
     }
 
     #[inline]
     fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
-        let (ci, cd) = (t.ints.read(row), t.doubles.read(row));
-        let reset = cd < s.prev_double || ci < s.prev_int;
-        if reset {
-            s.ref_double = 0.0;
-            s.ref_int = 0;
-            t.ints.push(ci);
-            t.doubles.push(cd);
+        if let Some(ci) = t.ints.get_opt(row) {
+            let reset = ci < (s.prev_bits as i64);
+            if reset {
+                s.ref_bits = 0;
+                t.ints.push(ci);
+            } else {
+                t.ints.push(ci.wrapping_sub(s.ref_bits as i64));
+            }
+            t.doubles.push(0.0);
+            s.prev_bits = ci as u64;
+            reset
         } else {
-            t.ints.push(ci.wrapping_sub(s.ref_int));
-            t.doubles.push(cd - s.ref_double);
+            let cd = t.doubles.read(row);
+            let reset = cd < f64::from_bits(s.prev_bits);
+            if reset {
+                s.ref_bits = 0.0f64.to_bits();
+                t.doubles.push(cd);
+            } else {
+                t.doubles.push(cd - f64::from_bits(s.ref_bits));
+            }
+            t.ints.push(0);
+            s.prev_bits = cd.to_bits();
+            reset
         }
-        s.prev_double = cd;
-        s.prev_int = ci;
-        reset
     }
 
     fn finish_replacements(
@@ -1496,12 +1510,7 @@ impl DpAdjuster for HistogramAdjuster {
             .as_ref()
             .and_then(|a| a.slice_at(row))
             .unwrap_or(&[]);
-        HistogramState {
-            cs: CountSumState::new(c, s),
-            explicit_bounds_bits: cur_bounds.iter().map(|v| v.to_bits()).collect(),
-            ref_buckets: cur_b.to_vec(),
-            prev_buckets: cur_b.to_vec(),
-        }
+        HistogramState::new(c, s, hash_bounds(cur_bounds), cur_b)
     }
 
     #[inline]
@@ -1515,27 +1524,35 @@ impl DpAdjuster for HistogramAdjuster {
             .and_then(|a| a.slice_at(row))
             .unwrap_or(&[]);
 
+        let half = s.buckets.len() / 2;
+        let cur_bounds_hash = hash_bounds(cur_bounds);
         let reset = s.cs.decreased(cur_c, cur_s)
-            || !bounds_eq_bits(cur_bounds, &s.explicit_bounds_bits)
-            || cur_b.len() != s.prev_buckets.len()
-            || cur_b.iter().zip(&s.prev_buckets).any(|(&cb, &pb)| cb < pb);
+            || cur_bounds_hash != s.bounds_hash
+            || cur_b.len() != half
+            || cur_b
+                .iter()
+                .zip(&s.buckets[half..])
+                .any(|(&cb, &pb)| cb < pb);
 
         if reset {
             s.cs.reset(cur_c, cur_s);
-            s.explicit_bounds_bits.clear();
-            s.explicit_bounds_bits
-                .extend(cur_bounds.iter().map(|v| v.to_bits()));
-            s.ref_buckets.clear();
-            s.ref_buckets.resize(cur_b.len(), 0);
+            s.bounds_hash = cur_bounds_hash;
+            if cur_b.len() != half {
+                let mut buf = vec![0u64; cur_b.len() * 2].into_boxed_slice();
+                buf[cur_b.len()..].copy_from_slice(cur_b);
+                s.buckets = buf;
+            } else {
+                s.buckets[..half].fill(0);
+                s.buckets[half..].copy_from_slice(cur_b);
+            }
             t.cs.push_raw(cur_c, cur_s);
             t.buckets.push_raw(cur_b_opt);
         } else {
             s.cs.advance(cur_c, cur_s);
             t.cs.push_sub(cur_c, cur_s, &s.cs);
-            t.buckets.push_subtracted(cur_b_opt, &s.ref_buckets);
+            t.buckets.push_subtracted(cur_b_opt, &s.buckets[..half]);
+            s.buckets[half..].copy_from_slice(cur_b);
         }
-        s.prev_buckets.clear();
-        s.prev_buckets.extend_from_slice(cur_b);
         reset
     }
 
@@ -1625,16 +1642,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
             .neg
             .as_ref()
             .map_or((0, &[][..]), |a| a.read_or_empty(row));
-        ExpHistogramState {
-            scale,
-            cs: CountSumState::new(c, s),
-            ref_zero_count: zc,
-            prev_zero_count: zc,
-            ref_positive: ExpBucketsState::new(po, pc),
-            prev_positive: ExpBucketsState::new(po, pc),
-            ref_negative: ExpBucketsState::new(no, nc),
-            prev_negative: ExpBucketsState::new(no, nc),
-        }
+        ExpHistogramState::new(scale, c, s, zc, po, pc, no, nc)
     }
 
     #[inline]
@@ -1646,18 +1654,16 @@ impl DpAdjuster for ExpHistogramAdjuster {
         let (no, n_opt) = t.neg.as_ref().map_or((0, None), |a| a.row_at(row));
         let (pc, nc) = (p_opt.unwrap_or(&[]), n_opt.unwrap_or(&[]));
 
+        let (prev_po, prev_pc) = s.prev_pos();
+        let (prev_no, prev_nc) = s.prev_neg();
         let reset = s.cs.decreased(cur_c, cur_s)
             || cur_z < s.prev_zero_count
-            || cur_scale != s.scale
-            || exp_buckets_decreased(po, pc, &s.prev_positive)
-            || exp_buckets_decreased(no, nc, &s.prev_negative);
+            || cur_scale != i32::from(s.scale)
+            || exp_buckets_decreased(po, pc, prev_po, prev_pc)
+            || exp_buckets_decreased(no, nc, prev_no, prev_nc);
 
         if reset {
-            s.scale = cur_scale;
-            s.cs.reset(cur_c, cur_s);
-            s.ref_zero_count = 0;
-            s.ref_positive.reset_zero(po, pc.len());
-            s.ref_negative.reset_zero(no, nc.len());
+            s.reset_and_update_prev(cur_scale, cur_c, cur_s, cur_z, po, pc, no, nc);
             t.cs.push_raw(cur_c, cur_s);
             t.zero_counts.push(cur_z);
             if let Some(p) = t.pos.as_mut() {
@@ -1670,16 +1676,16 @@ impl DpAdjuster for ExpHistogramAdjuster {
             s.cs.advance(cur_c, cur_s);
             t.cs.push_sub(cur_c, cur_s, &s.cs);
             t.zero_counts.push(cur_z.saturating_sub(s.ref_zero_count));
+            let (ref_po, ref_pc) = s.ref_pos();
+            let (ref_no, ref_nc) = s.ref_neg();
             if let Some(p) = t.pos.as_mut() {
-                p.push_exp_sub(po, p_opt, &s.ref_positive);
+                p.push_exp_sub(po, p_opt, ref_po, ref_pc);
             }
             if let Some(n) = t.neg.as_mut() {
-                n.push_exp_sub(no, n_opt, &s.ref_negative);
+                n.push_exp_sub(no, n_opt, ref_no, ref_nc);
             }
+            s.update_prev(cur_z, po, pc, no, nc);
         }
-        s.prev_zero_count = cur_z;
-        s.prev_positive.update(po, pc);
-        s.prev_negative.update(no, nc);
         reset
     }
 
@@ -1701,21 +1707,24 @@ impl DpAdjuster for ExpHistogramAdjuster {
 }
 
 #[inline]
-fn bounds_eq_bits(bounds: &[f64], expected_bits: &[u64]) -> bool {
-    if bounds.len() != expected_bits.len() {
-        return false;
+fn hash_bounds(bounds: &[f64]) -> u64 {
+    let mut h = (bounds.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for &b in bounds {
+        let k = b.to_bits().wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h = (h ^ k).rotate_left(27).wrapping_mul(0x94D0_49BB_1331_11EB);
     }
-    let mut diff = 0u64;
-    for (&b, &bits) in bounds.iter().zip(expected_bits.iter()) {
-        diff |= b.to_bits() ^ bits;
-    }
-    diff == 0
+    h ^ (h >> 31)
 }
 
 #[inline]
-fn exp_buckets_decreased(cur_offset: i32, cur_counts: &[u64], prev: &ExpBucketsState) -> bool {
-    let offset_diff = (prev.offset as isize) - (cur_offset as isize);
-    for (prev_idx, &prev_val) in prev.counts.iter().enumerate() {
+fn exp_buckets_decreased(
+    cur_offset: i32,
+    cur_counts: &[u64],
+    prev_offset: i32,
+    prev_counts: &[u64],
+) -> bool {
+    let offset_diff = (prev_offset as isize) - (cur_offset as isize);
+    for (prev_idx, &prev_val) in prev_counts.iter().enumerate() {
         let cur_idx = (prev_idx as isize) + offset_diff;
         let cur_val = if cur_idx >= 0 && (cur_idx as usize) < cur_counts.len() {
             cur_counts[cur_idx as usize]
@@ -1782,16 +1791,22 @@ impl<'a> ExpBucketsCol<'a> {
     }
 
     #[inline]
-    fn push_exp_sub(&mut self, cur_off: i32, cur_opt: Option<&[u64]>, ref_s: &ExpBucketsState) {
+    fn push_exp_sub(
+        &mut self,
+        cur_off: i32,
+        cur_opt: Option<&[u64]>,
+        ref_off: i32,
+        ref_counts: &[u64],
+    ) {
         if self.buckets.src.is_none() {
             return;
         }
         if let Some(cur_counts) = cur_opt {
-            let offset_diff = (cur_off as isize) - (ref_s.offset as isize);
+            let offset_diff = (cur_off as isize) - (ref_off as isize);
             for (i, &cur_val) in cur_counts.iter().enumerate() {
                 let ref_idx = (i as isize) + offset_diff;
-                let adjusted = if ref_idx >= 0 && (ref_idx as usize) < ref_s.counts.len() {
-                    cur_val.saturating_sub(ref_s.counts[ref_idx as usize])
+                let adjusted = if ref_idx >= 0 && (ref_idx as usize) < ref_counts.len() {
+                    cur_val.saturating_sub(ref_counts[ref_idx as usize])
                 } else {
                     cur_val
                 };

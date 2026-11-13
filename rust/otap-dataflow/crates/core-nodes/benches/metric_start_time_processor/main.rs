@@ -5,7 +5,8 @@
 //!
 //! Recommended CLI invocation (produces Go `benchstat`-compatible output via `benchfmt`):
 //! ```sh
-//! cargo bench -p otel-arrow-dfe-core-nodes --features bench --bench metric_start_time_processor
+//! cargo bench -p otel-arrow-dfe-core-nodes --no-default-features --features bench \
+//!   --bench metric_start_time_processor
 //! benchfmt criterion target/criterion \
 //!   --pkg otel_arrow_dfe_core_nodes::metric_start_time --cpu 2 | tee ${bench}.txt
 //! ```
