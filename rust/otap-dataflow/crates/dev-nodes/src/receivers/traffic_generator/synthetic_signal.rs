@@ -456,7 +456,7 @@ fn append_attribute<T>(
 }
 
 /// Set every non-empty record batch into the OTAP batch.
-fn set_payloads<const N: usize>(
+pub(super) fn set_payloads<const N: usize>(
     records: &mut OtapArrowRecords,
     payloads: [(RecordBatch, ArrowPayloadType); N],
 ) -> Result<()> {

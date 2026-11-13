@@ -5,9 +5,7 @@ use std::collections::HashMap;
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-use prost::EncodeError;
 use weaver_forge::v1::registry::ResolvedRegistry;
 
 use super::config::{
@@ -54,7 +52,10 @@ impl TrafficProducer {
                     .get_registry()
                     .map_err(GenerateError::Configuration)?
                     .expect("SemanticConventions data source should return Some registry");
-                Box::new(WeaverGenerator { registry })
+                Box::new(WeaverGenerator {
+                    registry,
+                    encoder: OtlpEncoder::new(),
+                })
             }
             DataSource::Synthetic => {
                 let entries = config.resource_attributes().to_vec();
@@ -423,13 +424,6 @@ pub type GenerateResult = Result<OtapPayload, GenerateError>;
 /// Errors that can occur during signal generation.
 #[derive(thiserror::Error, Debug)]
 pub enum GenerateError {
-    /// Failed to encode the generated signal into the OTAP payload format.
-    #[error("Failed to encode: {source:?}")]
-    Encoding {
-        /// The underlying encoding error.
-        #[from]
-        source: EncodeError,
-    },
     /// A configuration error prevented producer construction.
     #[error("Configuration error: {0}")]
     Configuration(String),
@@ -470,25 +464,24 @@ pub trait SignalGenerator {
 /// giving realistic cardinality and naming.
 pub struct WeaverGenerator {
     registry: ResolvedRegistry,
+    /// Reusable OTAP->OTLP encoder state.
+    encoder: OtlpEncoder,
 }
 
 impl SignalGenerator for WeaverGenerator {
     fn generate_logs(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_logs(count, &self.registry);
-        let payload = OtlpProtoMessage::Logs(payload);
-        Ok(payload.try_into()?)
+        let records = semconv_signal::semconv_otap_logs(count, &self.registry)?;
+        Ok(self.encoder.encode(records)?.into())
     }
 
     fn generate_metrics(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_metrics(count, &self.registry);
-        let payload = OtlpProtoMessage::Metrics(payload);
-        Ok(payload.try_into()?)
+        let records = semconv_signal::semconv_otap_metrics(count, &self.registry)?;
+        Ok(self.encoder.encode(records)?.into())
     }
 
     fn generate_traces(&mut self, count: usize) -> GenerateResult {
-        let payload = semconv_signal::semconv_otlp_traces(count, &self.registry);
-        let payload = OtlpProtoMessage::Traces(payload);
-        Ok(payload.try_into()?)
+        let records = semconv_signal::semconv_otap_traces(count, &self.registry)?;
+        Ok(self.encoder.encode(records)?.into())
     }
 }
 

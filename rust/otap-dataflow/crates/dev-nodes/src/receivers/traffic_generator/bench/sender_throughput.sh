@@ -53,7 +53,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# name|sink|signal|strategy|signals_per_second|max_batch_size|extra traffic_config lines (';' separated)
+# name|sink|source|signal|strategy|signals_per_second|max_batch_size|extra traffic_config lines (';' separated)
 #
 # sink=noop: the sender's exporter is an in-process noop and production is
 #   unpaced (production_mode: open), so the scenario measures the traffic
@@ -61,20 +61,24 @@ trap cleanup EXIT
 # sink=grpc: the sender exports OTLP gRPC to the noop backend, so the scenario
 #   measures realistic sender CPU including encoding size effects on export.
 ALL_SCENARIOS=(
-  "sat-logs-1k-b50|noop|logs|fresh|$SATURATION_RATE|50|production_mode: open;log_body_size_bytes: 1024"
-  "sat-logs-1k-b512|noop|logs|fresh|$SATURATION_RATE|512|production_mode: open;log_body_size_bytes: 1024"
-  "sat-logs-attrs10-b512|noop|logs|fresh|$SATURATION_RATE|512|production_mode: open;num_log_attributes: 10"
-  "sat-traces-b512|noop|traces|fresh|$SATURATION_RATE|512|production_mode: open"
-  "sat-metrics-6x3-b512|noop|metrics|fresh|$SATURATION_RATE|512|production_mode: open;num_metric_attributes: 6;num_data_points_per_metric: 3"
-  "sat-logs-1k-b512-pregen|noop|logs|pre_generated|$PREGEN_RATE|512|production_mode: open;log_body_size_bytes: 1024"
-  "grpc-logs-1k-b512-100k|grpc|logs|fresh|100000|512|log_body_size_bytes: 1024"
-  "grpc-logs-1k-b50-50k|grpc|logs|fresh|50000|50|log_body_size_bytes: 1024"
-  "grpc-traces-b512-100k|grpc|traces|fresh|100000|512|"
-  "grpc-metrics-6x3-b512-50k|grpc|metrics|fresh|50000|512|num_metric_attributes: 6;num_data_points_per_metric: 3"
+  "sat-logs-1k-b50|noop|synthetic|logs|fresh|$SATURATION_RATE|50|production_mode: open;log_body_size_bytes: 1024"
+  "sat-logs-1k-b512|noop|synthetic|logs|fresh|$SATURATION_RATE|512|production_mode: open;log_body_size_bytes: 1024"
+  "sat-logs-attrs10-b512|noop|synthetic|logs|fresh|$SATURATION_RATE|512|production_mode: open;num_log_attributes: 10"
+  "sat-traces-b512|noop|synthetic|traces|fresh|$SATURATION_RATE|512|production_mode: open"
+  "sat-metrics-6x3-b512|noop|synthetic|metrics|fresh|$SATURATION_RATE|512|production_mode: open;num_metric_attributes: 6;num_data_points_per_metric: 3"
+  "sat-logs-1k-b512-pregen|noop|synthetic|logs|pre_generated|$PREGEN_RATE|512|production_mode: open;log_body_size_bytes: 1024"
+  "grpc-logs-1k-b512-100k|grpc|synthetic|logs|fresh|100000|512|log_body_size_bytes: 1024"
+  "grpc-logs-1k-b50-50k|grpc|synthetic|logs|fresh|50000|50|log_body_size_bytes: 1024"
+  "grpc-traces-b512-100k|grpc|synthetic|traces|fresh|100000|512|"
+  "grpc-metrics-6x3-b512-50k|grpc|synthetic|metrics|fresh|50000|512|num_metric_attributes: 6;num_data_points_per_metric: 3"
+  "sat-semconv-logs-b512|noop|semantic_conventions|logs|fresh|$SATURATION_RATE|512|production_mode: open"
+  "sat-semconv-traces-b512|noop|semantic_conventions|traces|fresh|$SATURATION_RATE|512|production_mode: open"
+  "sat-semconv-metrics-b512|noop|semantic_conventions|metrics|fresh|$SATURATION_RATE|512|production_mode: open"
+  "grpc-semconv-logs-b512-100k|grpc|semantic_conventions|logs|fresh|100000|512|"
 )
 
 write_sender_config() {
-  local file=$1 sink=$2 signal=$3 strategy=$4 rate=$5 batch=$6 extra=$7
+  local file=$1 sink=$2 source=$3 signal=$4 strategy=$5 rate=$6 batch=$7 extra=$8
   local log_w=0 trace_w=0 metric_w=0
   case $signal in
     logs) log_w=1 ;;
@@ -105,7 +109,7 @@ groups:
               telemetry:
                 item_counts: true
             config:
-              data_source: synthetic
+              data_source: $source
               generation_strategy: $strategy
               traffic_config:
                 signals_per_second: $rate
@@ -158,9 +162,9 @@ cpu_ticks() {
 
 run_one() {
   local scenario=$1 run=$2
-  IFS='|' read -r name sink signal strategy rate batch extra <<<"$scenario"
+  IFS='|' read -r name sink source signal strategy rate batch extra <<<"$scenario"
   local cfg="$WORK_DIR/$name.yaml"
-  write_sender_config "$cfg" "$sink" "$signal" "$strategy" "$rate" "$batch" "$extra"
+  write_sender_config "$cfg" "$sink" "$source" "$signal" "$strategy" "$rate" "$batch" "$extra"
 
   "$BIN" --config "$BENCH_DIR/backend-noop.yaml" --num-cores "$BACKEND_CORES" >/dev/null 2>&1 &
   BACKEND=$!

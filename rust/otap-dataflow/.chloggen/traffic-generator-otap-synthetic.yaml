@@ -1,6 +1,6 @@
 change_type: enhancement
 component: pipeline
-note: The traffic generator's synthetic data source now builds OTAP record batches and encodes them to OTLP with the engine's OTAP->OTLP encoder.
+note: The traffic generator now builds its synthetic and semantic-conventions data as OTAP record batches and encodes them to OTLP with the engine's OTAP->OTLP encoder.
 issues: [4721]
 subtext: |
   Generated OTLP payloads now have the same wire layout as OTLP produced by the
