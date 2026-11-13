@@ -1326,6 +1326,7 @@ dependencies = [
  "tracing-subscriber",
  "unsync",
  "weaver_common",
+ "weaver_semconv",
 ]
 
 [[package]]
