@@ -275,10 +275,8 @@ fn bench_throughput_matching(c: &mut Criterion) {
         let _ = group.throughput(Throughput::Elements(batch_size as u64));
 
         // OTAP engine
-        let _ = group.bench_with_input(
-            BenchmarkId::new("otap", batch_size),
-            &batch_size,
-            |b, _| {
+        let _ =
+            group.bench_with_input(BenchmarkId::new("otap", batch_size), &batch_size, |b, _| {
                 let engine = PolicyEngine::new();
                 b.iter_custom(|iters| {
                     let start = Instant::now();
@@ -290,8 +288,7 @@ fn bench_throughput_matching(c: &mut Criterion) {
                     }
                     start.elapsed()
                 });
-            },
-        );
+            });
 
         // policy-rs engine
         let _ = group.bench_with_input(
@@ -328,10 +325,8 @@ fn bench_throughput_transforms(c: &mut Criterion) {
         let _ = group.throughput(Throughput::Elements(batch_size as u64));
 
         // Columnar engine
-        let _ = group.bench_with_input(
-            BenchmarkId::new("otap", batch_size),
-            &batch_size,
-            |b, _| {
+        let _ =
+            group.bench_with_input(BenchmarkId::new("otap", batch_size), &batch_size, |b, _| {
                 let engine = PolicyEngine::new();
                 b.iter_custom(|iters| {
                     let start = Instant::now();
@@ -343,8 +338,7 @@ fn bench_throughput_transforms(c: &mut Criterion) {
                     }
                     start.elapsed()
                 });
-            },
-        );
+            });
 
         // policy-rs row-by-row with transforms
         let _ = group.bench_with_input(
@@ -384,10 +378,8 @@ fn bench_throughput_attribute_matching(c: &mut Criterion) {
         let _ = group.throughput(Throughput::Elements(batch_size as u64));
 
         // Columnar engine
-        let _ = group.bench_with_input(
-            BenchmarkId::new("otap", batch_size),
-            &batch_size,
-            |b, _| {
+        let _ =
+            group.bench_with_input(BenchmarkId::new("otap", batch_size), &batch_size, |b, _| {
                 let engine = PolicyEngine::new();
                 b.iter_custom(|iters| {
                     let start = Instant::now();
@@ -399,8 +391,7 @@ fn bench_throughput_attribute_matching(c: &mut Criterion) {
                     }
                     start.elapsed()
                 });
-            },
-        );
+            });
 
         // policy-rs row-by-row
         let _ = group.bench_with_input(

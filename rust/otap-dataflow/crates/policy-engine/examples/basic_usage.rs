@@ -2,18 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Basic usage example: evaluate policies against an OTAP log batch.
-//!
-//! Demonstrates:
-//! - Dropping logs matching an attribute existence check (keep: "none")
-//! - Renaming attributes on matching logs (keep: "all" + transform)
-//! - Match statistics tracking
-//!
-//! This example uses existence and typed matchers on log attributes, which
-//! are evaluated directly via Arrow compute kernels. String pattern matchers
-//! (exact, regex, starts_with, etc.) go through the Vectorscan path which
-//! is not yet implemented.
-//!
-//! Run with: cargo run -p otel-arrow-dfe-policy-engine --example basic_usage
 
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
@@ -205,18 +193,6 @@ fn attr_exists_matcher(key: &str) -> LogMatcher {
     LogMatcher {
         field: Some(log_matcher::Field::LogAttribute(attr_path(key))),
         r#match: Some(log_matcher::Match::Exists(true)),
-        negate: false,
-        case_insensitive: false,
-    }
-}
-
-/// Matcher: log_attribute["key"] >= int_value (typed gte check).
-fn attr_gte_int_matcher(key: &str, value: i64) -> LogMatcher {
-    LogMatcher {
-        field: Some(log_matcher::Field::LogAttribute(attr_path(key))),
-        r#match: Some(log_matcher::Match::Gte(NumericValue {
-            value: Some(policy_rs::proto::tero::policy::v1::numeric_value::Value::IntValue(value)),
-        })),
         negate: false,
         case_insensitive: false,
     }
