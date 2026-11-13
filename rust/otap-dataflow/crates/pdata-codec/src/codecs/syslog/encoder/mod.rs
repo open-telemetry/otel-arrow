@@ -21,7 +21,7 @@ use crate::{
     CodecError, CodecOperation, EncodeOutput, EncodePolicy, PdataEncoder, PreparedCodecFactory,
     ResolvedCodec,
 };
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use super::codec::{BATCH_HEADER_LEN, FRAME_HEADER_LEN, MAGIC, RUN_HEADER_LEN};
 use super::{MAX_BATCH_BYTES, MAX_BATCH_ITEMS, MAX_MESSAGE_SIZE};
@@ -168,7 +168,7 @@ fn prepare_local_timezone(profile: Profile) -> Result<Option<Tz>, CodecError> {
     }
 }
 
-fn error(message: impl Into<String>) -> CodecError {
+fn error(message: impl Into<Cow<'static, str>>) -> CodecError {
     CodecError::operation(
         &super::codec::SYSLOG_CEF_ENCODING,
         CodecOperation::Encode,

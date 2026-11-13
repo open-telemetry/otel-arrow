@@ -28,6 +28,12 @@ pub fn syslog_logs(count: usize) -> OtapArrowRecords {
         .clone();
     let records = &mut logs.resource_logs[0].scope_logs[0].log_records;
     *records = records.iter().cycle().take(count).cloned().collect();
+    // Cycle January, April, July, and October after expanding the templates.
+    for (index, record) in records.iter_mut().enumerate() {
+        const NANOS_PER_DAY: u64 = 86_400_000_000_000;
+        record.time_unix_nano += [0, 91, 182, 274][index % 4] * NANOS_PER_DAY;
+        record.observed_time_unix_nano = record.time_unix_nano;
+    }
     encode_logs_otap_batch(&logs).expect("construct native logs")
 }
 

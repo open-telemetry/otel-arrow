@@ -26,6 +26,7 @@
 //! between bounded parsing steps and produces one complete Arrow batch. Arrow
 //! finalization remains synchronous, so step budgets are not latency guarantees.
 
+use std::borrow::Cow;
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
@@ -77,12 +78,20 @@ const SYSLOG_BATCH_SETTINGS: BatchSettings = BatchSettings {
 #[derive(Debug, thiserror::Error)]
 #[error("{reason}")]
 pub struct SyslogFramingError {
-    reason: String,
+    reason: FramingErrorReason,
 }
 
-pub(super) fn framing_error(reason: impl Into<String>) -> SyslogFramingError {
+#[derive(Debug, thiserror::Error)]
+enum FramingErrorReason {
+    #[error("{0}")]
+    Text(Cow<'static, str>),
+    #[error("syslog message exceeds {MAX_MESSAGE_SIZE} bytes")]
+    MessageTooLarge,
+}
+
+pub(super) fn framing_error(reason: impl Into<Cow<'static, str>>) -> SyslogFramingError {
     SyslogFramingError {
-        reason: reason.into(),
+        reason: FramingErrorReason::Text(reason.into()),
     }
 }
 
@@ -218,9 +227,9 @@ impl SyslogBatchBuilder {
         received_local_year: i32,
     ) -> Result<(), SyslogFramingError> {
         if message.len() > MAX_MESSAGE_SIZE {
-            return Err(framing_error(format!(
-                "syslog message exceeds {MAX_MESSAGE_SIZE} bytes"
-            )));
+            return Err(SyslogFramingError {
+                reason: FramingErrorReason::MessageTooLarge,
+            });
         }
         let run_header_len = if self.run_year == Some(received_local_year) {
             0
@@ -381,9 +390,9 @@ impl FrameState {
         let message_len = read_u32(&bytes[start..header_end]) as usize;
         if message_len > MAX_MESSAGE_SIZE {
             self.finished = true;
-            return Some(Err(framing_error(format!(
-                "syslog message exceeds {MAX_MESSAGE_SIZE} bytes"
-            ))));
+            return Some(Err(SyslogFramingError {
+                reason: FramingErrorReason::MessageTooLarge,
+            }));
         }
         let message_start = header_end;
         let end = match message_start.checked_add(message_len) {
@@ -1185,7 +1194,7 @@ mod tests {
     }
 
     /// Scenario: Admission reaches either hard bound or receives an oversized message.
-    /// Guarantees: Rejected appends leave the batch untouched and exact boundaries decode.
+    /// Guarantees: Rejected appends leave the batch untouched, oversize diagnostics avoid owned text, and exact boundaries decode.
     #[test]
     fn builder_enforces_item_byte_and_message_limits_atomically() {
         let mut builder = SyslogBatchBuilder::with_max_items(usize::MAX);
@@ -1228,7 +1237,14 @@ mod tests {
         );
 
         let mut builder = SyslogBatchBuilder::new();
-        assert!(builder.append(&vec![b'x'; MAX_MESSAGE_SIZE + 1]).is_err());
+        let error = builder
+            .append(&vec![b'x'; MAX_MESSAGE_SIZE + 1])
+            .unwrap_err();
+        assert!(matches!(error.reason, FramingErrorReason::MessageTooLarge));
+        assert_eq!(
+            error.to_string(),
+            format!("syslog message exceeds {MAX_MESSAGE_SIZE} bytes")
+        );
         assert!(builder.is_empty());
         builder.append(b"valid after error").unwrap();
     }
