@@ -821,6 +821,79 @@ fn syslog_encoder_validates_only_selected_messages() {
     }
 }
 
+/// Scenario: Invalid RFC 5424-only attributes accompany valid logs under each syslog wrapper.
+/// Guarantees: RFC 3164 ignores unused message IDs and versions, while RFC 5424 rejects invalid selected fields.
+#[test]
+fn syslog_encoder_ignores_unused_rfc5424_headers() {
+    for format in [
+        Format::Rfc3164,
+        Format::CefRfc3164,
+        Format::Rfc5424,
+        Format::CefRfc5424,
+    ] {
+        for invalid in [
+            integer("syslog.msg_id", 42),
+            text("syslog.msg_id", ""),
+            text("syslog.version", "invalid"),
+            integer("syslog.version", 256),
+        ] {
+            let mut input = log("ok");
+            input.time_unix_nano = 1_704_164_645_000_000_000;
+            input.attributes = cef_attributes();
+            input.attributes.push(invalid.clone());
+            let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+            let result = encoder.encode(records(vec![input], vec![]));
+            if matches!(format, Format::Rfc3164 | Format::CefRfc3164) {
+                let decoded = decode(result.unwrap());
+                let key = if format.is_cef() {
+                    "msg"
+                } else {
+                    "syslog.content"
+                };
+                assert!(decoded[0].attributes.contains(&text(key, "ok")));
+            } else {
+                assert!(result.is_err(), "invalid selected header: {invalid:?}");
+            }
+        }
+    }
+}
+
+/// Scenario: Repeated CEF msg attributes accompany a large extension and an optional body override.
+/// Guarantees: Discarded msg occurrences cannot exhaust the output budget; selected oversized extensions still fail.
+#[test]
+fn syslog_encoder_ignores_overridden_cef_msg_budget() {
+    let large = "x".repeat(16_000);
+    for format in [Format::Cef, Format::CefRfc3164, Format::CefRfc5424] {
+        for body in [None, Some(""), Some("ok")] {
+            let mut input = log("");
+            input.body = body.map(AnyValue::new_string);
+            input.time_unix_nano = 1_704_164_645_000_000_000;
+            input.attributes = cef_attributes();
+            input.attributes.push(text("vendorZone", &large));
+            input.attributes.extend(vec![text("msg", "discarded"); 80]);
+            let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+            let result = encoder.encode(records(vec![input], vec![]));
+            if body == Some("ok") {
+                let encoded = result.unwrap();
+                assert!(messages(&encoded)[0].len() <= MAX_MESSAGE_SIZE);
+                let decoded = decode(encoded);
+                let msg: Vec<_> = decoded[0]
+                    .attributes
+                    .iter()
+                    .filter(|attribute| attribute.key == "msg")
+                    .collect();
+                assert_eq!(msg, vec![&text("msg", "ok")]);
+                assert!(decoded[0].attributes.contains(&text("vendorZone", &large)));
+            } else {
+                assert!(
+                    result.is_err(),
+                    "selected msg attributes with body {body:?}"
+                );
+            }
+        }
+    }
+}
+
 /// Scenario: A valid format-specific syslog message coexists with an invalid lower-priority fallback.
 /// Guarantees: Fallback precedence is order-independent, and only the selected attribute is validated.
 #[test]

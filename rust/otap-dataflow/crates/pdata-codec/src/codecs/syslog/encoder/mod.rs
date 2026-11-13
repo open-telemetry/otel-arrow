@@ -354,10 +354,26 @@ impl SyslogEncoder {
                         }
                         header = resource_header;
                     }
+                    let body = log.body();
+                    let body = match body.as_ref() {
+                        Some(body) if body.value_type() == ValueType::Empty => None,
+                        Some(body) => Some(body.as_string().ok_or_else(|| {
+                            error("syslog/CEF encoding currently requires a string log body")
+                        })?),
+                        None => None,
+                    };
+                    let overrides_cef_msg =
+                        format.is_cef() && body.is_some_and(|body| !body.is_empty());
                     let mut cef = CefFields::new(parsed_cef);
                     // Field references must not outlive their attribute views.
                     for attribute in &attributes {
                         let key = attribute.key();
+                        if (matches!(format, Format::Rfc3164 | Format::CefRfc3164)
+                            && matches!(key, b"syslog.msg_id" | b"syslog.version"))
+                            || (overrides_cef_msg && key == b"msg")
+                        {
+                            continue;
+                        }
                         let value = attribute
                             .value()
                             .ok_or_else(|| error("syslog log attribute has no value"))?;
@@ -382,14 +398,6 @@ impl SyslogEncoder {
                         self.timezone.as_ref(),
                         &mut self.timestamp,
                     )?;
-                    let body = log.body();
-                    let body = match body.as_ref() {
-                        Some(body) if body.value_type() == ValueType::Empty => None,
-                        Some(body) => Some(body.as_string().ok_or_else(|| {
-                            error("syslog/CEF encoding currently requires a string log body")
-                        })?),
-                        None => None,
-                    };
                     let body = if format.is_cef() {
                         body
                     } else if let Some(body) = body.filter(|body| !body.is_empty()) {
