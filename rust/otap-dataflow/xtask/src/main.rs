@@ -25,6 +25,7 @@ mod diagnostics;
 mod genproto;
 mod publish_policy;
 mod structure_check;
+mod telemetry_schema;
 mod update_semconv;
 
 #[cfg(not(tarpaulin_include))]
@@ -55,6 +56,7 @@ fn main() -> anyhow::Result<()> {
             }
             "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
             "crates-publish" => crates_publish::run(&args.collect::<Vec<_>>()),
+            "telemetry-schema" => telemetry_schema::run(&args.collect::<Vec<_>>()),
             "update-semconv" => update_semconv::run(&args.collect::<Vec<_>>()),
             "help" => {
                 ensure_no_extra_args("help", &args.collect::<Vec<_>>())?;
@@ -83,6 +85,7 @@ Tasks:
   - compile-proto: Compile the protobufs files
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
   - crates-publish <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
+  - telemetry-schema [--check|--update|--generate-semconv <core|components|all>]: Validate or synchronize Weaver metric schemas and generated telemetry Markdown tables against Rust #[metric_set] declarations.
   - update-semconv [--version <vX.Y.Z>]: Refresh the vendored semantic conventions registry in vendor/semconv from upstream (requires git and network access). Defaults to re-syncing the tag recorded in vendor/semconv/VERSION.
 "
     );
@@ -123,6 +126,7 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
 
     run_structure_step(diagnostics.as_mut())?;
     run_component_inventory_step(diagnostics.as_mut())?;
+    run_telemetry_schema_step(diagnostics.as_mut())?;
     format_all(diagnostics.as_mut())?;
     clippy_all(options, diagnostics.as_mut())?;
     build_no_std()?;
@@ -141,6 +145,7 @@ fn quick_check() -> anyhow::Result<()> {
         "--check".to_string(),
         "components-baseline.json".to_string(),
     ])?;
+    telemetry_schema::run(&["--check".to_string()])?;
     format_all(None)?;
     clippy_quick()?;
     test_quick()?;
@@ -186,6 +191,30 @@ fn run_component_inventory_step(
     if let Some(diagnostics) = &mut diagnostics {
         diagnostics.record_step(
             "component-inventory",
+            duration,
+            step_status_from_result(&result),
+        );
+    }
+
+    if result.is_err()
+        && let Some(diagnostics) = &mut diagnostics
+    {
+        diagnostics.print_summary();
+    }
+
+    result
+}
+
+fn run_telemetry_schema_step(
+    mut diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let result = telemetry_schema::run(&["--check".to_string()]);
+    let duration = start.elapsed();
+
+    if let Some(diagnostics) = &mut diagnostics {
+        diagnostics.record_step(
+            "telemetry-schema",
             duration,
             step_status_from_result(&result),
         );
