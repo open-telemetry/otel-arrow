@@ -153,11 +153,9 @@ impl PolicyEngine {
                 // (e.g., alphabetically by ID)", and we're assuming that the compiled matcher we
                 // received from the snapshot has already applied this sort order.
                 for (idx, policy) in compiled_matchers.policies.iter().enumerate() {
-                    // TODO this should be policy matches != ALL (so we don't accidentally evaluate
-                    // unsupported "sampling" policies)?
-                    // TODO Do the transforms run on the rows that are not dropped in case of None?
-                    if matches!(policy.keep, CompiledKeep::None) {
-                        // Transforms never run on dropped rows.
+                    // Transforms never run on dropped rows and this engine doesn't currently
+                    // support sampling keeps, so per spec we don't evaluate them
+                    if matches!(policy.keep, CompiledKeep::None | CompiledKeep::Percentage(_)) {
                         continue;
                     }
 
@@ -405,8 +403,8 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
     use otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs;
     use policy_rs::proto::tero::policy::v1::{
-        AttributePath, LogMatcher, LogRename, LogTarget, LogTransform, Policy as ProtoPolicy,
-        log_matcher, log_rename, policy,
+        AttributePath, LogField, LogMatcher, LogRemove, LogRename, LogTarget, LogTransform,
+        NumericValue, Policy as ProtoPolicy, log_matcher, log_remove, log_rename, policy,
     };
     use policy_rs::{Policy, PolicyRegistry};
 
@@ -443,6 +441,604 @@ mod tests {
             })),
             ..Default::default()
         })
+    }
+
+    fn severity_text_exact_matcher(value: &str) -> LogMatcher {
+        LogMatcher {
+            field: Some(log_matcher::Field::LogField(LogField::SeverityText.into())),
+            r#match: Some(log_matcher::Match::Exact(value.to_string())),
+            negate: false,
+            case_insensitive: false,
+        }
+    }
+
+    fn attr_gte_int_matcher(key: &str, value: i64) -> LogMatcher {
+        LogMatcher {
+            field: Some(log_matcher::Field::LogAttribute(attr_path(key))),
+            r#match: Some(log_matcher::Match::Gte(NumericValue {
+                value: Some(
+                    policy_rs::proto::tero::policy::v1::numeric_value::Value::IntValue(value),
+                ),
+            })),
+            negate: false,
+            case_insensitive: false,
+        }
+    }
+
+    /// Helper: collect all attribute key strings from the output batch.
+    fn collect_attr_keys(result: &OtapArrowRecords) -> Vec<String> {
+        let Some(attrs_batch) = result
+            .get(otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs)
+        else {
+            return Vec::new();
+        };
+        let key_col = attrs_batch.column_by_name("key").unwrap();
+        let mut keys = Vec::new();
+        for i in 0..attrs_batch.num_rows() {
+            if let Some(key) = get_string_at(key_col, i) {
+                keys.push(key);
+            }
+        }
+        keys
+    }
+
+    /// Helper: collect severity_text values from the output root batch.
+    fn collect_severity_texts(result: &OtapArrowRecords) -> Vec<String> {
+        let Some(root_rb) = result.root_record_batch() else {
+            return Vec::new();
+        };
+        let Some(col) = root_rb.column_by_name("severity_text") else {
+            return Vec::new();
+        };
+        let mut values = Vec::new();
+        for i in 0..root_rb.num_rows() {
+            if let Some(val) = get_string_at(col, i) {
+                values.push(val);
+            }
+        }
+        values
+    }
+
+    /// Helper: evaluate policies and return (output batch, snapshot) for assertions.
+    fn eval(policies: Vec<Policy>, logs: Vec<LogRecord>) -> (OtapArrowRecords, PolicySnapshot) {
+        let registry = PolicyRegistry::new();
+        let handle = registry.register_provider();
+        handle.update(policies);
+        let snapshot = registry.snapshot();
+        let otap_batch = to_otap_logs(logs);
+        let engine = PolicyEngine::new();
+        let result = engine
+            .evaluate_and_transform(&snapshot, otap_batch)
+            .expect("evaluation should succeed");
+        (result, snapshot)
+    }
+
+    // -------------------------------------------------------------------
+    // Drop tests
+    // -------------------------------------------------------------------
+
+    /// Scenario: a single drop policy matches some rows via Vectorscan
+    /// string exact match on severity_text.
+    ///
+    /// Guarantees: only matched rows are dropped; unmatched rows survive
+    /// with their attributes intact.
+    #[test]
+    fn drop_by_severity_text_exact_match() {
+        let (result, snapshot) = eval(
+            vec![create_log_policy(
+                "drop-debug",
+                vec![severity_text_exact_matcher("DEBUG")],
+                "none",
+                None,
+            )],
+            vec![
+                LogRecord::build()
+                    .severity_text("DEBUG")
+                    .body(AnyValue::new_string("debug msg"))
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .body(AnyValue::new_string("info msg"))
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("ERROR")
+                    .body(AnyValue::new_string("error msg"))
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 2, "DEBUG row should be dropped");
+
+        // Verify the correct rows survived
+        let severities = collect_severity_texts(&result);
+        assert!(
+            severities.contains(&"INFO".to_string()),
+            "INFO row should survive, got: {severities:?}"
+        );
+        assert!(
+            severities.contains(&"ERROR".to_string()),
+            "ERROR row should survive, got: {severities:?}"
+        );
+        assert!(
+            !severities.contains(&"DEBUG".to_string()),
+            "DEBUG row should not survive, got: {severities:?}"
+        );
+
+        let entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "drop-debug")
+            .unwrap();
+        assert_eq!(entry.stats.hits(), 1);
+        assert_eq!(entry.stats.misses(), 0);
+    }
+
+    /// Scenario: a drop policy matches all rows.
+    ///
+    /// Guarantees: an empty batch is returned.
+    #[test]
+    fn drop_all_rows() {
+        let (result, _) = eval(
+            vec![create_log_policy(
+                "drop-all",
+                vec![attr_exists_matcher("always_present")],
+                "none",
+                None,
+            )],
+            vec![
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new(
+                        "always_present",
+                        AnyValue::new_bool(true),
+                    )])
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new(
+                        "always_present",
+                        AnyValue::new_bool(true),
+                    )])
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 0, "all rows should be dropped");
+    }
+
+    /// Scenario: no policies match any rows.
+    ///
+    /// Guarantees: all rows pass through unchanged, no stats recorded.
+    #[test]
+    fn no_policies_match() {
+        let (result, snapshot) = eval(
+            vec![create_log_policy(
+                "drop-nonexistent",
+                vec![attr_exists_matcher("nonexistent_attr")],
+                "none",
+                None,
+            )],
+            vec![
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .body(AnyValue::new_string("msg 1"))
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("WARN")
+                    .body(AnyValue::new_string("msg 2"))
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 2, "all rows should survive");
+
+        let entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "drop-nonexistent")
+            .unwrap();
+        assert_eq!(entry.stats.hits(), 0);
+        assert_eq!(entry.stats.misses(), 0);
+    }
+
+    /// Scenario: no policies loaded at all.
+    ///
+    /// Guarantees: batch passes through unchanged.
+    #[test]
+    fn no_policies_loaded() {
+        let (result, _) = eval(
+            vec![],
+            vec![
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .body(AnyValue::new_string("msg"))
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // Stats tracking tests
+    // -------------------------------------------------------------------
+
+    /// Scenario: two drop policies match the same row. The one with the
+    /// alphabetically-first ID wins (gets the hit); the other records a miss.
+    ///
+    /// Guarantees: per-policy hit/miss stats follow the spec's match tracking
+    /// rules for overlapping drop policies.
+    #[test]
+    fn overlapping_drop_policies_stats() {
+        let (result, snapshot) = eval(
+            vec![
+                create_log_policy(
+                    "aaa-drop",
+                    vec![attr_exists_matcher("shared_attr")],
+                    "none",
+                    None,
+                ),
+                create_log_policy(
+                    "bbb-drop",
+                    vec![attr_exists_matcher("shared_attr")],
+                    "none",
+                    None,
+                ),
+            ],
+            vec![
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new("shared_attr", AnyValue::new_bool(true))])
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 0, "row should be dropped");
+
+        let a = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "aaa-drop")
+            .unwrap();
+        let b = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "bbb-drop")
+            .unwrap();
+        assert_eq!(a.stats.hits(), 1, "first policy (by ID) should get the hit");
+        assert_eq!(b.stats.misses(), 1, "second policy should get a miss");
+    }
+
+    /// Scenario: a drop policy and a keep-all+transform policy both match
+    /// the same row. The drop policy wins, and the transform does not run.
+    ///
+    /// Guarantees: transforms are not applied to dropped rows; the keep-all
+    /// policy records a miss.
+    #[test]
+    fn drop_overrides_transform_policy() {
+        let (result, snapshot) = eval(
+            vec![
+                create_log_policy(
+                    "drop-tagged",
+                    vec![attr_exists_matcher("to_drop")],
+                    "none",
+                    None,
+                ),
+                create_log_policy(
+                    "rename-tagged",
+                    vec![attr_exists_matcher("to_drop")],
+                    "all",
+                    Some(LogTransform {
+                        rename: vec![LogRename {
+                            from: Some(log_rename::From::FromLogAttribute(attr_path("old_key"))),
+                            to: "new_key".to_string(),
+                            upsert: false,
+                        }],
+                        ..Default::default()
+                    }),
+                ),
+            ],
+            vec![
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![
+                        KeyValue::new("to_drop", AnyValue::new_bool(true)),
+                        KeyValue::new("old_key", AnyValue::new_string("value")),
+                    ])
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 0, "row should be dropped");
+
+        let drop_entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "drop-tagged")
+            .unwrap();
+        assert_eq!(drop_entry.stats.hits(), 1);
+
+        let rename_entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "rename-tagged")
+            .unwrap();
+        assert_eq!(rename_entry.stats.misses(), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // Transform tests
+    // -------------------------------------------------------------------
+
+    /// Scenario: a rename transform is applied to rows matching an attribute
+    /// existence check, but not to rows that lack the attribute.
+    ///
+    /// Guarantees: the rename only affects matched rows; unmatched rows
+    /// retain their original attributes.
+    #[test]
+    fn rename_only_on_matched_rows() {
+        let (result, _) = eval(
+            vec![create_log_policy(
+                "rename-policy",
+                vec![attr_exists_matcher("should_rename")],
+                "all",
+                Some(LogTransform {
+                    rename: vec![LogRename {
+                        from: Some(log_rename::From::FromLogAttribute(attr_path("old_key"))),
+                        to: "new_key".to_string(),
+                        upsert: false,
+                    }],
+                    ..Default::default()
+                }),
+            )],
+            vec![
+                // Row 0: has should_rename + old_key -> rename applies
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![
+                        KeyValue::new("should_rename", AnyValue::new_bool(true)),
+                        KeyValue::new("old_key", AnyValue::new_string("val")),
+                    ])
+                    .finish(),
+                // Row 1: has old_key but NOT should_rename -> rename skipped
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new(
+                        "old_key",
+                        AnyValue::new_string("keep_me"),
+                    )])
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 2);
+
+        let keys = collect_attr_keys(&result);
+        // Row 0's old_key should be renamed to new_key
+        assert!(
+            keys.contains(&"new_key".to_string()),
+            "new_key should exist"
+        );
+        // Row 1's old_key should still be present (not renamed)
+        assert!(
+            keys.contains(&"old_key".to_string()),
+            "old_key should still exist on unmatched row"
+        );
+    }
+
+    /// Scenario: a delete transform removes an attribute on matched rows.
+    ///
+    /// Guarantees: the attribute is removed only from matched rows.
+    #[test]
+    fn delete_attribute_on_matched_rows() {
+        let (result, _) = eval(
+            vec![create_log_policy(
+                "delete-policy",
+                vec![attr_exists_matcher("should_delete")],
+                "all",
+                Some(LogTransform {
+                    remove: vec![LogRemove {
+                        field: Some(log_remove::Field::LogAttribute(attr_path("secret"))),
+                    }],
+                    ..Default::default()
+                }),
+            )],
+            vec![
+                // Row 0: has should_delete + secret -> secret gets removed
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![
+                        KeyValue::new("should_delete", AnyValue::new_bool(true)),
+                        KeyValue::new("secret", AnyValue::new_string("password")),
+                        KeyValue::new("safe", AnyValue::new_string("ok")),
+                    ])
+                    .finish(),
+                // Row 1: has secret but NOT should_delete -> secret preserved
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new(
+                        "secret",
+                        AnyValue::new_string("also_secret"),
+                    )])
+                    .finish(),
+            ],
+        );
+
+        assert_eq!(result.num_items(), 2);
+
+        let keys = collect_attr_keys(&result);
+        // Row 1 should still have "secret"
+        assert!(
+            keys.contains(&"secret".to_string()),
+            "secret should still exist on unmatched row"
+        );
+        // Row 0 should have "safe" and "should_delete" but not "secret"
+        assert!(keys.contains(&"safe".to_string()));
+        assert!(keys.contains(&"should_delete".to_string()));
+    }
+
+    // -------------------------------------------------------------------
+    // Attribute typed check tests
+    // -------------------------------------------------------------------
+
+    /// Scenario: a policy matches rows where an integer attribute is >= 500.
+    ///
+    /// Guarantees: only rows with the attribute value meeting the threshold
+    /// are matched.
+    #[test]
+    fn typed_gte_on_attribute() {
+        let (result, snapshot) = eval(
+            vec![create_log_policy(
+                "drop-high-status",
+                vec![attr_gte_int_matcher("status_code", 500)],
+                "none",
+                None,
+            )],
+            vec![
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new("status_code", AnyValue::new_int(200))])
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("ERROR")
+                    .attributes(vec![KeyValue::new("status_code", AnyValue::new_int(500))])
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("ERROR")
+                    .attributes(vec![KeyValue::new("status_code", AnyValue::new_int(503))])
+                    .finish(),
+                // No status_code attribute at all
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .attributes(vec![KeyValue::new("other", AnyValue::new_string("val"))])
+                    .finish(),
+            ],
+        );
+
+        // Rows with status_code=500 and 503 should be dropped; INFO rows survive
+        assert_eq!(
+            result.num_items(),
+            2,
+            "rows with status_code >= 500 should be dropped"
+        );
+
+        // Verify the correct rows survived (both INFO rows, no ERROR rows)
+        let severities = collect_severity_texts(&result);
+        assert_eq!(
+            severities.iter().filter(|s| *s == "INFO").count(),
+            2,
+            "both INFO rows should survive, got: {severities:?}"
+        );
+        assert_eq!(
+            severities.iter().filter(|s| *s == "ERROR").count(),
+            0,
+            "no ERROR rows should survive, got: {severities:?}"
+        );
+
+        let entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "drop-high-status")
+            .unwrap();
+        assert_eq!(entry.stats.hits(), 2, "two rows should match");
+    }
+
+    // -------------------------------------------------------------------
+    // Combined drop + transform test
+    // -------------------------------------------------------------------
+
+    /// Scenario: a drop policy removes some rows, then a transform policy
+    /// renames an attribute on surviving rows that match a different criteria.
+    ///
+    /// Guarantees: the drop removes the correct rows, the transform applies
+    /// only to surviving rows that matched the transform policy, and stats
+    /// reflect the drop overriding the transform for rows that matched both.
+    #[test]
+    fn drop_then_transform_on_different_subsets() {
+        let (result, snapshot) = eval(
+            vec![
+                create_log_policy(
+                    "drop-debug",
+                    vec![severity_text_exact_matcher("DEBUG")],
+                    "none",
+                    None,
+                ),
+                create_log_policy(
+                    "rename-on-error",
+                    vec![severity_text_exact_matcher("ERROR")],
+                    "all",
+                    Some(LogTransform {
+                        rename: vec![LogRename {
+                            from: Some(log_rename::From::FromLogAttribute(attr_path("old_key"))),
+                            to: "new_key".to_string(),
+                            upsert: false,
+                        }],
+                        ..Default::default()
+                    }),
+                ),
+            ],
+            vec![
+                LogRecord::build()
+                    .severity_text("DEBUG")
+                    .body(AnyValue::new_string("dropped"))
+                    .attributes(vec![KeyValue::new(
+                        "old_key",
+                        AnyValue::new_string("should_not_be_renamed"),
+                    )])
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("ERROR")
+                    .body(AnyValue::new_string("error with rename"))
+                    .attributes(vec![KeyValue::new(
+                        "old_key",
+                        AnyValue::new_string("renamed_value"),
+                    )])
+                    .finish(),
+                LogRecord::build()
+                    .severity_text("INFO")
+                    .body(AnyValue::new_string("untouched"))
+                    .attributes(vec![KeyValue::new(
+                        "old_key",
+                        AnyValue::new_string("stays_old"),
+                    )])
+                    .finish(),
+            ],
+        );
+
+        // DEBUG dropped, ERROR + INFO survive
+        assert_eq!(result.num_items(), 2);
+
+        // Verify the correct rows survived
+        let severities = collect_severity_texts(&result);
+        assert!(
+            severities.contains(&"ERROR".to_string()),
+            "ERROR row should survive, got: {severities:?}"
+        );
+        assert!(
+            severities.contains(&"INFO".to_string()),
+            "INFO row should survive, got: {severities:?}"
+        );
+        assert!(
+            !severities.contains(&"DEBUG".to_string()),
+            "DEBUG row should not survive, got: {severities:?}"
+        );
+
+        let keys = collect_attr_keys(&result);
+        // ERROR row's old_key should be renamed to new_key
+        assert!(
+            keys.contains(&"new_key".to_string()),
+            "ERROR row should have new_key after rename, got: {keys:?}"
+        );
+        // INFO row's old_key should still be there (rename policy didn't match INFO)
+        assert!(
+            keys.contains(&"old_key".to_string()),
+            "INFO row should retain old_key, got: {keys:?}"
+        );
+
+        let drop_entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "drop-debug")
+            .unwrap();
+        assert_eq!(drop_entry.stats.hits(), 1);
+
+        let rename_entry = snapshot
+            .iter()
+            .find(|e| e.policy.id() == "rename-on-error")
+            .unwrap();
+        assert_eq!(rename_entry.stats.hits(), 1);
     }
 
     /// Scenario: two transform policies match different subsets of rows.
@@ -627,6 +1223,6 @@ mod tests {
             let key = dict.keys().value(idx) as usize;
             return Some(values.value(key).to_string());
         }
-        None
+        panic!("invalid string array type {:?}", col.data_type())
     }
 }
