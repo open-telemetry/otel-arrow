@@ -132,8 +132,12 @@ pub(crate) enum DataScope {
     /// filtered attribute record batch.
     AttributesAll(AttributesIdentifier),
 
-    /// A special data scope indicating the data is produced from a static scalar value defined
-    /// in the input expression tree, rather than data from the OTAP batch.
+    /// A scalar value that is uniform across all rows in the batch.
+    ///
+    // TODO: rename to `Scalar` -- this variant originally only covered
+    // compile-time literals, but it is now also used for runtime-computed
+    // scalars such as BatchEval results (signal-type predicates, metadata
+    // functions). The name "Static" is misleading.
     StaticScalar,
 
     /// A field read from a resource or scope struct column in the root record batch (e.g.,
