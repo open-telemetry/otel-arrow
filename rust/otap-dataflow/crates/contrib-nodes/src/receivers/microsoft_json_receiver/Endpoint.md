@@ -181,6 +181,12 @@ required-field or additional-target metadata; bare targetless leaves are
 configuration errors. Omitting a target does not implicitly drop values.
 Use an explicit `drop` target to suppress unmapped values.
 
+A targetless `string_coerce` rule must not overlap descendant rules unless it
+has a non-drop additional (`also`) target. Otherwise coercing an object would
+skip its child rules, including drops and attribute mappings. Compilation
+rejects this combination for nested children, separate dotted or wildcard
+rules, and merged event overrides. Standalone coercion remains supported.
+
 Each base or merged override mapping may have at most one `event_name` target,
 on an exact path. Wildcard and additional (`also`) event-name targets are
 configuration errors. When overrides or iKey filtering are configured, the
