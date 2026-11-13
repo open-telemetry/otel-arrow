@@ -134,6 +134,14 @@ uses the local timezone with second precision, and rejects ambiguous local
 times. Its year is retained in the internal envelope because the wire format
 does not carry a year. Bare CEF does not emit the event timestamp.
 
+RFC 3164-capable profiles detect the system's IANA timezone during codec
+preparation, not during encoding. A named `TZ` override, such as
+`America/New_York` or `:America/New_York`, takes precedence. Custom POSIX rules,
+timezone-file paths, unknown names, and discovery failures reject preparation.
+The selected zone uses the rules bundled with `chrono-tz` for each event's date,
+including daylight saving time. Recreate the codec to pick up a system timezone
+change; OS timezone-database updates do not update the bundled rules.
+
 Each record's observed timestamp is retained in the envelope; missing observed
 time becomes zero. Negative observed timestamps are preserved as signed 64-bit
 nanosecond values.
@@ -142,6 +150,8 @@ Batches must contain `1..=8192` logs. Each complete encoded message, including
 headers and escaping, is limited to 16 KiB. The framed batch is limited to
 2 MiB or the caller's smaller encoded-size budget. Violations fail the encode
 operation without returning partial output.
+CEF values larger than the remaining message capacity are rejected before
+scanning for escapes; escape expansion is checked as bytes are appended.
 
 Unmapped attributes, scope metadata, and trace context are not serialized.
 Encoding is not a lossless OTLP conversion; successful parsing does not imply

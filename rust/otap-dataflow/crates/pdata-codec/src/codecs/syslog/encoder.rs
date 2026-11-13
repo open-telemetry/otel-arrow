@@ -4,7 +4,8 @@
 //! Syslog and CEF output from native logs in the existing syslog batch envelope.
 
 use bytes::Bytes;
-use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono_tz::Tz;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::codecs::CodecConfiguration;
 use otel_arrow_dfe_pdata::otlp::{BoundedBuf, ProtoBuffer};
@@ -109,12 +110,14 @@ pub(super) fn prepare(
     Ok(Arc::new(SyslogFactory {
         profile: output_profile,
         explicit_profile: profile.is_some(),
+        timezone: prepare_local_timezone(output_profile)?,
     }))
 }
 
 struct SyslogFactory {
     profile: Profile,
     explicit_profile: bool,
+    timezone: Option<Tz>,
 }
 
 impl PreparedCodecFactory for SyslogFactory {
@@ -123,11 +126,50 @@ impl PreparedCodecFactory for SyslogFactory {
         _: ResolvedCodec,
         policy: EncodePolicy,
     ) -> Result<Box<dyn PdataEncoder>, CodecError> {
-        Ok(Box::new(SyslogEncoder::for_profile(policy, self.profile)))
+        Ok(Box::new(SyslogEncoder::for_profile(
+            policy,
+            self.profile,
+            self.timezone,
+        )))
     }
 
     fn allows_encoded_forwarding(&self) -> bool {
         !self.explicit_profile
+    }
+}
+
+fn parse_local_timezone(name: &str) -> Result<Tz, CodecError> {
+    name.strip_prefix(':')
+        .unwrap_or(name)
+        .parse()
+        .map_err(|error| {
+            CodecError::configuration(format!(
+                "RFC 3164 encoding requires a supported IANA timezone: {error}"
+            ))
+        })
+}
+
+fn prepare_local_timezone(profile: Profile) -> Result<Option<Tz>, CodecError> {
+    match profile {
+        Profile::Fixed(Format::Rfc3164 | Format::CefRfc3164) | Profile::All => {
+            let name = match std::env::var("TZ") {
+                Ok(name) => name,
+                Err(std::env::VarError::NotPresent) => {
+                    iana_time_zone::get_timezone().map_err(|error| {
+                        CodecError::configuration(format!(
+                            "cannot detect system IANA timezone for RFC 3164 encoding: {error}"
+                        ))
+                    })?
+                }
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    return Err(CodecError::configuration(
+                        "RFC 3164 encoding requires TZ to be a UTF-8 IANA timezone name",
+                    ));
+                }
+            };
+            parse_local_timezone(&name).map(Some)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -146,14 +188,15 @@ pub(super) struct SyslogEncoder {
     buffer: ProtoBuffer,
     message: Vec<u8>,
     timestamp: String,
+    timezone: Option<Tz>,
 }
 
 impl SyslogEncoder {
     pub(super) fn new(policy: EncodePolicy) -> Self {
-        Self::for_profile(policy, Profile::Fixed(Format::default()))
+        Self::for_profile(policy, Profile::Fixed(Format::default()), None)
     }
 
-    fn for_profile(policy: EncodePolicy, profile: Profile) -> Self {
+    fn for_profile(policy: EncodePolicy, profile: Profile, timezone: Option<Tz>) -> Self {
         let max_bytes = policy
             .max_encoded_size
             .map_or(MAX_BATCH_BYTES, |limit| limit.get().min(MAX_BATCH_BYTES));
@@ -164,12 +207,14 @@ impl SyslogEncoder {
             buffer: ProtoBuffer::with_capacity_and_limit(0, max_bytes),
             message: Vec::new(),
             timestamp: String::new(),
+            timezone,
         }
     }
 
     #[cfg(test)]
     fn for_format(policy: EncodePolicy, format: Format) -> Self {
-        Self::for_profile(policy, Profile::Fixed(format))
+        let profile = Profile::Fixed(format);
+        Self::for_profile(policy, profile, prepare_local_timezone(profile).unwrap())
     }
 }
 
@@ -501,17 +546,23 @@ impl<'a> CefFields<'a> {
     }
 }
 
-fn append_bytes(message: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CodecError> {
-    if bytes.len() > MAX_MESSAGE_SIZE.saturating_sub(message.len()) {
+fn check_message_capacity(message: &[u8], additional: usize) -> Result<(), CodecError> {
+    if additional > MAX_MESSAGE_SIZE.saturating_sub(message.len()) {
         return Err(error(format!(
             "encoded syslog/CEF message exceeds {MAX_MESSAGE_SIZE} bytes"
         )));
     }
+    Ok(())
+}
+
+fn append_bytes(message: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CodecError> {
+    check_message_capacity(message, bytes.len())?;
     message.extend_from_slice(bytes);
     Ok(())
 }
 
 fn append_escaped(message: &mut Vec<u8>, value: &[u8], header: bool) -> Result<(), CodecError> {
+    check_message_capacity(message, value.len())?;
     let mut start = 0;
     for (index, byte) in value.iter().enumerate() {
         let escaped: &[u8] = match byte {
@@ -531,7 +582,12 @@ fn append_escaped(message: &mut Vec<u8>, value: &[u8], header: bool) -> Result<(
     append_bytes(message, &value[start..])
 }
 
-fn wire_time(format: Format, time: Option<u64>, output: &mut String) -> Result<i32, CodecError> {
+fn wire_time(
+    format: Format,
+    time: Option<u64>,
+    timezone: Option<&Tz>,
+    output: &mut String,
+) -> Result<i32, CodecError> {
     output.clear();
     // The view exposes signed Arrow nanoseconds as u64 bits.
     let time = time.map(|value| value as i64);
@@ -552,9 +608,10 @@ fn wire_time(format: Format, time: Option<u64>, output: &mut String) -> Result<i
             let time = time
                 .filter(|time| *time != 0)
                 .ok_or_else(|| error("RFC 3164 encoding requires an event timestamp"))?;
-            let time = DateTime::from_timestamp_nanos(time).with_timezone(&Local);
-            if Local
-                .from_local_datetime(&time.naive_local())
+            let timezone = timezone.ok_or_else(|| error("RFC 3164 timezone was not prepared"))?;
+            let local = DateTime::<Utc>::from_timestamp_nanos(time).with_timezone(timezone);
+            if timezone
+                .from_local_datetime(&local.naive_local())
                 .single()
                 .is_none()
             {
@@ -562,10 +619,11 @@ fn wire_time(format: Format, time: Option<u64>, output: &mut String) -> Result<i
                     "RFC 3164 cannot represent an ambiguous local timestamp",
                 ));
             }
-            time.format("%b %e %T")
+            local
+                .format("%b %e %T")
                 .write_to(output)
                 .map_err(error_source)?;
-            Ok(time.year())
+            Ok(local.year())
         }
     }
 }
@@ -705,7 +763,12 @@ impl SyslogEncoder {
                             None => severity(log.severity_number())?,
                         });
                     }
-                    let year = wire_time(format, log.time_unix_nano(), &mut self.timestamp)?;
+                    let year = wire_time(
+                        format,
+                        log.time_unix_nano(),
+                        self.timezone.as_ref(),
+                        &mut self.timestamp,
+                    )?;
                     let body = log.body();
                     let body = match body.as_ref() {
                         Some(body) if body.value_type() == ValueType::Empty => None,
@@ -831,6 +894,7 @@ mod tests {
     use crate::EncodedPdataBatch;
     use crate::{CodecService, CodecServiceBuilder, EncodingPlan, OtapPayload, PdataEncoding};
     use arrow::array::{RecordBatch, UInt16Array, UInt32Array};
+    use chrono::Local;
     use otel_arrow_dfe_config::codecs::CodecsConfig;
     use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
     use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
@@ -940,8 +1004,8 @@ mod tests {
             .collect()
     }
 
-    /// Scenario: CEF fields contain plain spans, adjacent escapes, UTF-8 bytes, or output exactly at the message-size limit.
-    /// Guarantees: Span copying preserves header/extension escaping byte-for-byte and rejects expansion beyond the message-size limit.
+    /// Scenario: CEF fields contain plain spans, adjacent escapes, UTF-8 bytes, or input/output beyond the remaining message capacity.
+    /// Guarantees: Escaping preserves bytes and output limits; raw oversized values fail without changing the existing message.
     #[test]
     fn syslog_encoder_escaping_spans_preserves_bytes_and_limits() {
         for (header, input, expected) in [
@@ -961,6 +1025,12 @@ mod tests {
             assert_eq!(&message[7..], expected);
         }
         for header in [false, true] {
+            let prefix = b"prefix:";
+            let mut message = prefix.to_vec();
+            let mut oversized = vec![b'x'; MAX_MESSAGE_SIZE - prefix.len() + 1];
+            oversized[0] = b'\\';
+            assert!(append_escaped(&mut message, &oversized, header).is_err());
+            assert_eq!(message, prefix);
             let mut message = vec![b'x'; MAX_MESSAGE_SIZE - 2];
             append_escaped(&mut message, b"\\", header).unwrap();
             assert_eq!(message.len(), MAX_MESSAGE_SIZE);
@@ -1477,6 +1547,78 @@ mod tests {
                 }
                 _ => assert_eq!(decoded[0].time_unix_nano, time / 1000 * 1000),
             }
+        }
+    }
+
+    /// Scenario: Prepared RFC 3164 timezone rules cover winter, summer, pre-epoch dates, and both sides of a DST fold.
+    /// Guarantees: Cached rules choose the event-date offset and reject repeated local clock times in plain and wrapped CEF output.
+    #[test]
+    fn syslog_encoder_cached_timezone_preserves_dst_and_rejects_folds() {
+        let timezone = chrono_tz::America::New_York;
+        let codec = super::super::resolve_syslog().unwrap();
+        for format in [Format::Rfc3164, Format::CefRfc3164] {
+            let factory = SyslogFactory {
+                profile: Profile::Fixed(format),
+                explicit_profile: true,
+                timezone: Some(timezone),
+            };
+            let mut encoder = factory
+                .create_encoder(codec, EncodePolicy::default())
+                .unwrap();
+            for (instant, prefix) in [
+                ("2024-01-15T12:00:00Z", "<14>Jan 15 07:00:00"),
+                ("2024-07-15T12:00:00Z", "<14>Jul 15 08:00:00"),
+                ("1969-07-15T12:00:00Z", "<14>Jul 15 08:00:00"),
+            ] {
+                let mut input = log("body");
+                input.time_unix_nano = DateTime::parse_from_rfc3339(instant)
+                    .unwrap()
+                    .timestamp_nanos_opt()
+                    .unwrap() as u64;
+                input.attributes = cef_attributes();
+                let bytes = encoder.encode(records(vec![input], vec![])).unwrap();
+                let body = if format.is_cef() {
+                    "CEF:0|vendor|product|1.0|100|event|6|src=192.0.2.1 msg=body"
+                } else {
+                    "body"
+                };
+                let expected = format!("{prefix} - -: {body}");
+                assert_eq!(messages(&bytes), [expected.as_bytes()]);
+            }
+            for instant in ["2024-11-03T05:30:00Z", "2024-11-03T06:30:00Z"] {
+                let mut input = log("body");
+                input.time_unix_nano = DateTime::parse_from_rfc3339(instant)
+                    .unwrap()
+                    .timestamp_nanos_opt()
+                    .unwrap() as u64;
+                input.attributes = cef_attributes();
+                let error = encoder.encode(records(vec![input], vec![])).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("RFC 3164 cannot represent an ambiguous local timestamp")
+                );
+            }
+        }
+    }
+
+    /// Scenario: Timezone selection receives IANA names, a named TZ override, custom POSIX rules, file paths, or unknown names.
+    /// Guarantees: Supported IANA zones resolve explicitly; unsupported timezone configurations never silently fall back.
+    #[test]
+    fn syslog_encoder_requires_iana_timezone() {
+        for name in ["America/New_York", ":America/New_York"] {
+            assert_eq!(
+                parse_local_timezone(name).unwrap(),
+                chrono_tz::America::New_York
+            );
+        }
+        for name in ["EST5EDT,M3.2.0,M11.1.0", "/etc/localtime", "Unknown/Zone"] {
+            let error = parse_local_timezone(name).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires a supported IANA timezone")
+            );
         }
     }
 
