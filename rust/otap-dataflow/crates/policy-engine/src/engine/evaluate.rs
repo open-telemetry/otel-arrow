@@ -14,12 +14,11 @@
 
 // TODO: non-exhaustive list of ways to make this code better:
 //
-// - I'm convinced there is a way for attributes that we can cache the attribute we select with
-//   some given key. Currently every time an attribute is accessed, we scan the key column and then
-//   possibly filter some other columns with the same key.
+// - Currently every time an attribute is accessed, we scan the key column. Could cache maybe.
 // - Some of the kernels for checking if an attribute exists or has some value, we should at least
 //   validate this code isn't duplicated / useful elsewhere.
-// - Highly doubtful that the log "body" field works correctly.
+// - that the log "body" field isn't supported correctly
+// - resource/scope schema url aren't supported correctly either
 
 use std::collections::HashMap;
 

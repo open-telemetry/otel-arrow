@@ -43,8 +43,8 @@
 //! - All categories must be fail-open: no telemetry loss on error.
 //! - Errors should be reported via `PolicySyncStatus` for observability.
 //!
-//! Currently this just returns CompileError everywhere, alongside very simple (some might say
-//! uninformative) error messages, which I doubt is correct according to what the spec suggests.
+//! Currently this just returns CompileError everywhere, alongside very simple error messages,
+//! which is maybe not correct according to what the spec suggests.
 //!
 //! See the "Error Handling" section of the policy specification.
 
@@ -126,7 +126,6 @@ impl PolicyEngine {
                     }
                     PolicyMatch::Some(keep_selection) => {
                         filter_otap_batch(
-                            // TODO Arc Arc Arc ??
                             &BooleanArray::new(keep_selection.clone(), None),
                             &otap_batch,
                             &mut id_bitmap_pool,
@@ -146,9 +145,9 @@ impl PolicyEngine {
                 let mut indices: Vec<usize> = match &keep_mask {
                     PolicyMatch::All => (0..input_num_rows).collect(),
                     PolicyMatch::None => Vec::new(), // unreachable: we returned early above
-                    PolicyMatch::Some(buf) => (0..input_num_rows)
-                        .filter(|&i| buf.value(i))
-                        .collect(),
+                    PolicyMatch::Some(buf) => {
+                        (0..input_num_rows).filter(|&i| buf.value(i)).collect()
+                    }
                 };
 
                 // Apply transforms from matching keep:"all" policies
@@ -321,9 +320,8 @@ fn resolve_keep_and_record_stats(
     // Process keep:"all" policies (least restrictive). Since these don't contribute to the
     // drop decision, this is just updating statistics.
     //
-    // TODO - DOUBLE CHECK the assumption that "keep" doesn't contribute to the drop decision.
-    // E.g. if no policy matched for some row, do we keep it? What does the go-collector policy
-    // processor do?
+    // TODO - determine what should happen when no policies match. Assumption now is that we keep
+    // the telemetry. What does the go-collector policy processor do?
     //
     for (idx, policy) in policies.iter().enumerate() {
         if !matches!(policy.keep, CompiledKeep::All) {
@@ -532,9 +530,10 @@ mod tests {
             LogRecord::build()
                 .severity_text("INFO")
                 .body(AnyValue::new_string("row 3"))
-                .attributes(vec![
-                    KeyValue::new("unrelated", AnyValue::new_string("val_3")),
-                ])
+                .attributes(vec![KeyValue::new(
+                    "unrelated",
+                    AnyValue::new_string("val_3"),
+                )])
                 .finish(),
         ]);
 
@@ -597,10 +596,16 @@ mod tests {
         // Verify policy stats
         let entries: Vec<_> = snapshot.iter().collect();
         // Policy A matched rows 0, 2 (2 hits)
-        let a_stats = entries.iter().find(|e| e.policy.id() == "a-rename-marker-a").unwrap();
+        let a_stats = entries
+            .iter()
+            .find(|e| e.policy.id() == "a-rename-marker-a")
+            .unwrap();
         assert_eq!(a_stats.stats.hits(), 2, "policy A should have 2 hits");
         // Policy B matched rows 1, 2 (2 hits)
-        let b_stats = entries.iter().find(|e| e.policy.id() == "b-rename-marker-b").unwrap();
+        let b_stats = entries
+            .iter()
+            .find(|e| e.policy.id() == "b-rename-marker-b")
+            .unwrap();
         assert_eq!(b_stats.stats.hits(), 2, "policy B should have 2 hits");
     }
 

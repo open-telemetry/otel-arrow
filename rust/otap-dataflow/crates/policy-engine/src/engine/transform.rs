@@ -35,8 +35,6 @@ pub(crate) fn apply_policy_transforms(
     // Note: the spec mandates an execution order for these: remove, redact, rename, add.
     // However the `CompiledTransform` already stores ops in this order, so we can just iterate
     // what has been given to us
-    // (TODO ^^ validate this assumption - it's a claim from an LLM that hasn't been double checked
-    // by a human being).
     for op in &transform.ops {
         match op {
             TransformOp::Remove { field } => {
@@ -74,7 +72,7 @@ pub(crate) fn simple_field_name(field: &LogField) -> &'static str {
         LogField::EventName => "event_name",
         LogField::ResourceSchemaUrl | LogField::ScopeSchemaUrl | LogField::Unspecified => {
             // TODO resource/scope schema URL need special handling in whatever calls this as they
-            // are embedded within struct fields. 
+            // are embedded within struct fields.
             todo!()
         }
     }
@@ -171,9 +169,7 @@ fn apply_remove(
 
 /// Apply a single attribute rename to an OTAP batch.
 ///
-/// Renaming simple fields (body, severity_text, etc.) is a no-op per spec and
-/// the reference implementations
-// (TODO ^^ validate this assumption as a human)
+/// TODO - double check spec about how this works for non attr fields
 fn apply_rename(
     batch: &mut OtapArrowRecords,
     from: &LogFieldSelector,
