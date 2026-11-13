@@ -31,18 +31,25 @@ const K1: u64 = 0xBF58_476D_1CE4_E5B9;
 const K2: u64 = 0x94D0_49BB_1331_11EB;
 const K3: u64 = 0xD6E8_FEB8_6659_FD93;
 
+/// 128-bit multiset attribute hash stored as `[u64; 2]` (8-byte alignment) rather than `u128`
+/// (16-byte alignment) so `hashbrown::HashMap` bucket tuples `(AttrHash, SeriesEntry<S>)` do not
+/// waste 8 bytes of tail padding when `size_of::<SeriesEntry<S>>()` is an odd multiple of 8.
+pub type AttrHash = [u64; 2];
+
+const MARK_BIT: u64 = 1 << 63;
+
 #[derive(Debug, Default)]
 struct IdHashAccum {
-    dense: Vec<(u64, u64)>,
+    dense: Vec<AttrHash>,
     max_dense_id: Option<usize>,
-    sparse: HashMap<u32, (u64, u64)>,
+    sparse: HashMap<u32, AttrHash>,
 }
 
 impl IdHashAccum {
     fn clear(&mut self) {
         if let Some(max_id) = self.max_dense_id.take() {
             let end = (max_id + 1).min(self.dense.len());
-            self.dense[..end].fill((0, 0));
+            self.dense[..end].fill([0, 0]);
         }
         self.sparse.clear();
     }
@@ -53,28 +60,27 @@ impl IdHashAccum {
         if idx < DENSE_ID_LIMIT {
             if idx >= self.dense.len() {
                 let next_len = (idx + 1).next_power_of_two().min(DENSE_ID_LIMIT);
-                self.dense.resize(next_len, (0, 0));
+                self.dense.resize(next_len, [0, 0]);
             }
             self.max_dense_id = Some(self.max_dense_id.map_or(idx, |cur| cur.max(idx)));
             let slot = &mut self.dense[idx];
-            slot.0 = slot.0.wrapping_add(lo);
-            slot.1 = slot.1.wrapping_add(hi);
+            slot[0] = slot[0].wrapping_add(lo);
+            slot[1] = slot[1].wrapping_add(hi);
         } else {
-            let slot = self.sparse.entry(parent_id).or_insert((0, 0));
-            slot.0 = slot.0.wrapping_add(lo);
-            slot.1 = slot.1.wrapping_add(hi);
+            let slot = self.sparse.entry(parent_id).or_insert([0, 0]);
+            slot[0] = slot[0].wrapping_add(lo);
+            slot[1] = slot[1].wrapping_add(hi);
         }
     }
 
     #[inline]
-    fn get(&self, parent_id: u32) -> u128 {
+    fn get(&self, parent_id: u32) -> AttrHash {
         let idx = parent_id as usize;
-        let (lo, hi) = if idx < DENSE_ID_LIMIT {
-            self.dense.get(idx).copied().unwrap_or((0, 0))
+        if idx < DENSE_ID_LIMIT {
+            self.dense.get(idx).copied().unwrap_or([0, 0])
         } else {
-            self.sparse.get(&parent_id).copied().unwrap_or((0, 0))
-        };
-        ((hi as u128) << 64) | (lo as u128)
+            self.sparse.get(&parent_id).copied().unwrap_or([0, 0])
+        }
     }
 }
 
@@ -98,7 +104,7 @@ impl AttrHasher {
 
     #[inline]
     #[must_use]
-    pub fn get(&self, parent_id: u32) -> u128 {
+    pub fn get(&self, parent_id: u32) -> AttrHash {
         self.accum.get(parent_id)
     }
 
@@ -466,20 +472,54 @@ fn fill_str_hashes(vals: &StringArray, out: &mut Vec<u128>) {
     }
 }
 
-/// Wrapper storing mark-and-sweep liveness and adjusted `start_time_ns` alongside per-type state.
+/// Wrapper storing mark-and-sweep liveness packed into bit 63 of `start_time_ns` alongside
+/// per-type series state, avoiding 8 bytes of `bool` alignment padding per series.
 #[derive(Debug, Clone)]
 pub struct SeriesEntry<S> {
-    pub mark: bool,
-    pub start_time_ns: i64,
+    marked_start_ns: u64,
     pub data: S,
 }
 
+impl<S> SeriesEntry<S> {
+    #[inline]
+    #[must_use]
+    pub fn new(start_time_ns: i64, data: S) -> Self {
+        Self {
+            marked_start_ns: (start_time_ns as u64) | MARK_BIT,
+            data,
+        }
+    }
+
+    #[inline]
+    pub fn mark(&mut self) {
+        self.marked_start_ns |= MARK_BIT;
+    }
+
+    #[inline]
+    fn take_mark(&mut self) -> bool {
+        let marked = (self.marked_start_ns & MARK_BIT) != 0;
+        self.marked_start_ns &= !MARK_BIT;
+        marked
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn start_time_ns(&self) -> i64 {
+        (self.marked_start_ns & !MARK_BIT) as i64
+    }
+
+    #[inline]
+    pub fn set_start_time_ns(&mut self, start_time_ns: i64) {
+        self.marked_start_ns = (start_time_ns as u64) | MARK_BIT;
+    }
+}
+
+/// Compact 16-byte state for `Sum` (`NumberDataPoint`), storing the 64-bit representation of
+/// the reference and previous value (`i64 as u64` or `f64::to_bits()`).
 #[derive(Debug, Clone, Copy)]
 pub struct NumberState {
-    pub ref_double: f64,
-    pub ref_int: i64,
-    pub prev_double: f64,
-    pub prev_int: i64,
+    pub ref_bits: u64,
+    pub prev_bits: u64,
 }
 
 /// Shared `count` + `sum` baseline and previous-point tracker for `Summary`, `Histogram`, and
@@ -525,60 +565,187 @@ impl CountSumState {
     }
 }
 
+/// Compact 56-byte state for `HistogramDataPoint`, storing a 64-bit hash of `explicit_bounds`
+/// and packing `[ref_buckets | prev_buckets]` into a single exact-sized `Box<[u64]>`.
 #[derive(Debug, Clone)]
 pub struct HistogramState {
     pub cs: CountSumState,
-    pub explicit_bounds_bits: Vec<u64>,
-    pub ref_buckets: Vec<u64>,
-    pub prev_buckets: Vec<u64>,
+    pub bounds_hash: u64,
+    pub buckets: Box<[u64]>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ExpBucketsState {
-    pub offset: i32,
-    pub counts: Vec<u64>,
-}
-
-impl ExpBucketsState {
+impl HistogramState {
     #[inline]
     #[must_use]
-    pub fn new(offset: i32, counts: &[u64]) -> Self {
+    pub fn new(count: u64, sum: f64, bounds_hash: u64, cur_buckets: &[u64]) -> Self {
+        let b_len = cur_buckets.len();
+        let mut buf = Vec::with_capacity(b_len * 2);
+        buf.extend_from_slice(cur_buckets);
+        buf.extend_from_slice(cur_buckets);
         Self {
-            offset,
-            counts: counts.to_vec(),
+            cs: CountSumState::new(count, sum),
+            bounds_hash,
+            buckets: buf.into_boxed_slice(),
+        }
+    }
+}
+
+/// Compact 88-byte state for `ExponentialHistogramDataPoint`, packing all four bucket slices
+/// (`[ref_pos | prev_pos | ref_neg | prev_neg]`) into a single exact-sized `Box<[u64]>`.
+#[derive(Debug, Clone)]
+pub struct ExpHistogramState {
+    pub cs: CountSumState,
+    pub ref_zero_count: u64,
+    pub prev_zero_count: u64,
+    pub buckets: Box<[u64]>,
+    pub ref_pos_offset: i32,
+    pub prev_pos_offset: i32,
+    pub ref_neg_offset: i32,
+    pub prev_neg_offset: i32,
+    pub scale: i16,
+    pub ref_pos_len: u16,
+    pub prev_pos_len: u16,
+    pub ref_neg_len: u16,
+}
+
+impl ExpHistogramState {
+    #[inline]
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        scale: i32,
+        count: u64,
+        sum: f64,
+        zero_count: u64,
+        pos_offset: i32,
+        pos_counts: &[u64],
+        neg_offset: i32,
+        neg_counts: &[u64],
+    ) -> Self {
+        let p_len = pos_counts.len();
+        let n_len = neg_counts.len();
+        let mut buf = Vec::with_capacity((p_len + n_len) * 2);
+        buf.extend_from_slice(pos_counts);
+        buf.extend_from_slice(pos_counts);
+        buf.extend_from_slice(neg_counts);
+        buf.extend_from_slice(neg_counts);
+        Self {
+            cs: CountSumState::new(count, sum),
+            ref_zero_count: zero_count,
+            prev_zero_count: zero_count,
+            buckets: buf.into_boxed_slice(),
+            ref_pos_offset: pos_offset,
+            prev_pos_offset: pos_offset,
+            ref_neg_offset: neg_offset,
+            prev_neg_offset: neg_offset,
+            scale: scale as i16,
+            ref_pos_len: p_len as u16,
+            prev_pos_len: p_len as u16,
+            ref_neg_len: n_len as u16,
         }
     }
 
     #[inline]
-    pub fn update(&mut self, offset: i32, counts: &[u64]) {
-        self.offset = offset;
-        self.counts.clear();
-        self.counts.extend_from_slice(counts);
+    #[must_use]
+    pub fn ref_pos(&self) -> (i32, &[u64]) {
+        (
+            self.ref_pos_offset,
+            &self.buckets[..self.ref_pos_len as usize],
+        )
     }
 
     #[inline]
-    pub fn reset_zero(&mut self, offset: i32, len: usize) {
-        self.offset = offset;
-        self.counts.clear();
-        self.counts.resize(len, 0);
+    #[must_use]
+    pub fn prev_pos(&self) -> (i32, &[u64]) {
+        let start = self.ref_pos_len as usize;
+        let end = start + self.prev_pos_len as usize;
+        (self.prev_pos_offset, &self.buckets[start..end])
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct ExpHistogramState {
-    pub scale: i32,
-    pub cs: CountSumState,
-    pub ref_zero_count: u64,
-    pub prev_zero_count: u64,
-    pub ref_positive: ExpBucketsState,
-    pub prev_positive: ExpBucketsState,
-    pub ref_negative: ExpBucketsState,
-    pub prev_negative: ExpBucketsState,
+    #[inline]
+    #[must_use]
+    pub fn ref_neg(&self) -> (i32, &[u64]) {
+        let start = (self.ref_pos_len + self.prev_pos_len) as usize;
+        let end = start + self.ref_neg_len as usize;
+        (self.ref_neg_offset, &self.buckets[start..end])
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn prev_neg(&self) -> (i32, &[u64]) {
+        let start = (self.ref_pos_len + self.prev_pos_len + self.ref_neg_len) as usize;
+        (self.prev_neg_offset, &self.buckets[start..])
+    }
+
+    #[inline]
+    pub fn reset_and_update_prev(
+        &mut self,
+        scale: i32,
+        count: u64,
+        sum: f64,
+        zero_count: u64,
+        pos_offset: i32,
+        pos_counts: &[u64],
+        neg_offset: i32,
+        neg_counts: &[u64],
+    ) {
+        self.scale = scale as i16;
+        self.cs.reset(count, sum);
+        self.ref_zero_count = 0;
+        self.prev_zero_count = zero_count;
+        self.ref_pos_offset = pos_offset;
+        self.prev_pos_offset = pos_offset;
+        self.ref_neg_offset = neg_offset;
+        self.prev_neg_offset = neg_offset;
+        self.ref_pos_len = 0;
+        self.prev_pos_len = pos_counts.len() as u16;
+        self.ref_neg_len = 0;
+        let total = pos_counts.len() + neg_counts.len();
+        if self.buckets.len() == total {
+            self.buckets[..pos_counts.len()].copy_from_slice(pos_counts);
+            self.buckets[pos_counts.len()..].copy_from_slice(neg_counts);
+        } else {
+            let mut buf = Vec::with_capacity(total);
+            buf.extend_from_slice(pos_counts);
+            buf.extend_from_slice(neg_counts);
+            self.buckets = buf.into_boxed_slice();
+        }
+    }
+
+    #[inline]
+    pub fn update_prev(
+        &mut self,
+        zero_count: u64,
+        pos_offset: i32,
+        pos_counts: &[u64],
+        neg_offset: i32,
+        neg_counts: &[u64],
+    ) {
+        self.prev_zero_count = zero_count;
+        self.prev_pos_offset = pos_offset;
+        self.prev_neg_offset = neg_offset;
+        let rp = self.ref_pos_len as usize;
+        let pp = self.prev_pos_len as usize;
+        let rn = self.ref_neg_len as usize;
+        let pn = self.buckets.len() - (rp + pp + rn);
+        if pos_counts.len() == pp && neg_counts.len() == pn {
+            self.buckets[rp..rp + pp].copy_from_slice(pos_counts);
+            self.buckets[rp + pp + rn..].copy_from_slice(neg_counts);
+        } else {
+            let mut buf = Vec::with_capacity(rp + pos_counts.len() + rn + neg_counts.len());
+            buf.extend_from_slice(&self.buckets[..rp]);
+            buf.extend_from_slice(pos_counts);
+            buf.extend_from_slice(&self.buckets[rp + pp..rp + pp + rn]);
+            buf.extend_from_slice(neg_counts);
+            self.prev_pos_len = pos_counts.len() as u16;
+            self.buckets = buf.into_boxed_slice();
+        }
+    }
 }
 
 /// Per-metric series map (`metric_name -> dp_attr_hash -> SeriesEntry<S>`).
 #[derive(Debug)]
-pub struct SeriesTable<S>(HashMap<String, HashMap<u128, SeriesEntry<S>>>);
+pub struct SeriesTable<S>(HashMap<String, HashMap<AttrHash, SeriesEntry<S>>>);
 
 impl<S> Default for SeriesTable<S> {
     fn default() -> Self {
@@ -588,7 +755,7 @@ impl<S> Default for SeriesTable<S> {
 
 impl<S> SeriesTable<S> {
     #[inline]
-    pub fn series_mut(&mut self, metric_name: &str) -> &mut HashMap<u128, SeriesEntry<S>> {
+    pub fn series_mut(&mut self, metric_name: &str) -> &mut HashMap<AttrHash, SeriesEntry<S>> {
         match self.0.entry_ref(metric_name) {
             EntryRef::Occupied(entry) => entry.into_mut(),
             EntryRef::Vacant(entry) => entry.insert(HashMap::new()),
@@ -597,7 +764,7 @@ impl<S> SeriesTable<S> {
 
     fn sweep(&mut self) -> bool {
         self.0.retain(|_, series_map| {
-            series_map.retain(|_, entry| std::mem::replace(&mut entry.mark, false));
+            series_map.retain(|_, entry| entry.take_mark());
             !series_map.is_empty()
         });
         !self.0.is_empty()
@@ -628,7 +795,7 @@ impl ResourceSeriesMap {
 pub struct SubtractInitialCache {
     gc_interval: Duration,
     last_gc: Instant,
-    resources: HashMap<u128, ResourceSeriesMap>,
+    resources: HashMap<AttrHash, ResourceSeriesMap>,
 }
 
 impl SubtractInitialCache {
@@ -642,7 +809,7 @@ impl SubtractInitialCache {
     }
 
     #[inline]
-    pub fn resource_mut(&mut self, resource_hash: u128) -> &mut ResourceSeriesMap {
+    pub fn resource_mut(&mut self, resource_hash: AttrHash) -> &mut ResourceSeriesMap {
         let res = self.resources.entry(resource_hash).or_default();
         res.mark = true;
         res
@@ -667,3 +834,10 @@ impl SubtractInitialCache {
         self.resources.len()
     }
 }
+
+const _: () = {
+    assert!(size_of::<(AttrHash, SeriesEntry<NumberState>)>() == 40);
+    assert!(size_of::<(AttrHash, SeriesEntry<CountSumState>)>() == 56);
+    assert!(size_of::<(AttrHash, SeriesEntry<HistogramState>)>() == 80);
+    assert!(size_of::<(AttrHash, SeriesEntry<ExpHistogramState>)>() == 112);
+};
