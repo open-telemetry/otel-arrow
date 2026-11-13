@@ -1974,7 +1974,17 @@ impl<'a> ExprPlanner<'a> {
     ) -> Result<ScopedExpr> {
         let possible_scope = try_combine_scopes(&left, &right);
 
-        if let Some(scope) = possible_scope {
+        // Only use the combined-scope path when both children can be expressed as
+        // DataFusion expressions. BatchEval nodes (e.g. metadata functions) produce
+        // scalar values at runtime but cannot be inlined into a DataFusion Expr, so
+        // they must go through the JoinAndEval materialisation path.
+        let left_df = left.expr.as_df_eval_expr_ref().is_some();
+        let right_df = right.expr.as_df_eval_expr_ref().is_some();
+
+        if let Some(scope) = possible_scope
+            && left_df
+            && right_df
+        {
             let left_expr = left
                 .expr
                 .into_df_eval_expr()

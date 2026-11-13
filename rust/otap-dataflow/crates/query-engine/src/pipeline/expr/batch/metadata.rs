@@ -24,7 +24,7 @@ use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::pdata_context::{
     ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
-    ContextEntryTarget, ContextNameMatching, Metadata, NodeBindings, ValueRead,
+    ContextEntryTarget, ContextNameMatching, ContextValueKind, Metadata, NodeBindings, ValueRead,
 };
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
@@ -181,7 +181,13 @@ impl MetadataFunction for HasTransportHeaderPredicate {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Option<ContextEntrySelector>> {
-        Self::context_entry_selector_for_header_name(args, query_location).map(Some)
+        parse_header_name_arg(
+            Self::function_name(),
+            args,
+            ContextEntryTake::First,
+            query_location,
+        )
+        .map(Some)
     }
 
     fn try_new(
@@ -189,7 +195,12 @@ impl MetadataFunction for HasTransportHeaderPredicate {
         args: &[InvokeFunctionArgument],
         query_location: Option<&QueryLocation>,
     ) -> Result<Self> {
-        let entry_selector = Self::context_entry_selector_for_header_name(args, query_location)?;
+        let entry_selector = parse_header_name_arg(
+            Self::function_name(),
+            args,
+            ContextEntryTake::First,
+            query_location,
+        )?;
         let declared_metadata_read = Self::create_declared_metadata_read(
             &entry_selector,
             node_context_bindings,
@@ -218,49 +229,53 @@ impl BatchEval for HasTransportHeaderPredicate {
     }
 }
 
-impl HasTransportHeaderPredicate {
-    /// Create the [`ContextEntrySelector`] used to access the header whose name is identified
-    /// as the first argument.
-    fn context_entry_selector_for_header_name(
-        args: &[InvokeFunctionArgument],
-        query_location: Option<&QueryLocation>,
-    ) -> Result<ContextEntrySelector> {
-        // validate that we have the expected number of arguments:
-        if args.len() != 1 {
-            return Err(Error::InvalidPipelineError {
-                cause: format!(
-                    "Invalid num argument for {}. Expected 1, got {}",
-                    Self::function_name(),
-                    args.len()
-                ),
-                query_location: query_location.cloned(),
-            });
+/// Validate that the function arguments contain a single static string argument identifying a
+/// transport header name, and create a [`ContextEntrySelector`] for that header.
+///
+/// This is the shared argument-parsing logic used by all transport header metadata functions.
+fn parse_header_name_arg(
+    function_name: &str,
+    args: &[InvokeFunctionArgument],
+    take: ContextEntryTake,
+    query_location: Option<&QueryLocation>,
+) -> Result<ContextEntrySelector> {
+    // validate that we have the expected number of arguments:
+    if args.len() != 1 {
+        return Err(Error::InvalidPipelineError {
+            cause: format!(
+                "Invalid num argument for {function_name}. Expected 1, got {}",
+                args.len()
+            ),
+            query_location: query_location.cloned(),
+        });
+    }
+
+    // safety: we've checked that there is one arg in "if" block above
+    match args.first().expect("one arg") {
+        // we expect the argument to be a static string
+        InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+            StaticScalarExpression::String(header_name),
+        )) => {
+            create_transport_header_context_selector(header_name.get_value(), take, query_location)
         }
 
-        // safety: we've checked that there is one arg in "if" block above
-        match args.first().expect("one arg") {
-            // we expect the argument to be a static string
-            InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                StaticScalarExpression::String(header_name),
-            )) => create_transport_header_context_selector(header_name.get_value(), query_location),
-
-            // invalid argument:
-            other => Err(Error::InvalidPipelineError {
-                cause: format!(
-                    "Invalid argument for {} at position 0. Expected static string, received {other:?}",
-                    Self::function_name(),
-                ),
-                query_location: query_location.cloned(),
-            }),
-        }
+        // invalid argument:
+        other => Err(Error::InvalidPipelineError {
+            cause: format!(
+                "Invalid argument for {function_name} at position 0. \
+                 Expected static string, received {other:?}",
+            ),
+            query_location: query_location.cloned(),
+        }),
     }
 }
 
 /// Helper function to create an instance of [`ContextEntrySelector`] that selects a transport
-/// header by it's name. This returns an `Err` if the `header_name` is not a valid transport
+/// header by its name. This returns an `Err` if the `header_name` is not a valid transport
 /// header name.
 fn create_transport_header_context_selector(
     header_name: &str,
+    take: ContextEntryTake,
     query_location: Option<&QueryLocation>,
 ) -> Result<ContextEntrySelector> {
     Ok(ContextEntrySelector {
@@ -275,8 +290,173 @@ fn create_transport_header_context_selector(
             matching: ContextNameMatching::Exact,
         },
         form: ContextEntrySelectorForm::StoredKeyValue,
-        take: ContextEntryTake::First,
+        take,
     })
+}
+
+/// Metadata function used as a predicate to check if a transport header's value is a scalar
+/// string.
+///
+/// Signature:
+/// ```text
+/// is_transport_header_string(header_name: String) -> Boolean
+/// ```
+///
+/// Returns `true` if the batch contains the named transport header, the header has a single
+/// value (no duplicates), and that value is of type `String` (text). Returns `false` if the
+/// header is absent, has a binary value, or if there are multiple headers with the same name.
+///
+/// The `header_name` is matched against the header's stored name (not the original wire name).
+/// The `header_name` argument must be a static string literal.
+#[derive(Debug)]
+pub(crate) struct IsTransportHeaderStringPredicate {
+    declared_metadata_read: Option<ValueRead>,
+}
+
+impl MetadataFunction for IsTransportHeaderStringPredicate {
+    fn function_name() -> &'static str {
+        "is_transport_header_string"
+    }
+
+    fn logical_type() -> ExprLogicalType {
+        ExprLogicalType::Boolean
+    }
+
+    fn context_entry_selector(
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Option<ContextEntrySelector>> {
+        parse_header_name_arg(
+            Self::function_name(),
+            args,
+            ContextEntryTake::All,
+            query_location,
+        )
+        .map(Some)
+    }
+
+    fn try_new(
+        node_context_bindings: &NodeBindings,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Self> {
+        let entry_selector = parse_header_name_arg(
+            Self::function_name(),
+            args,
+            ContextEntryTake::All,
+            query_location,
+        )?;
+        let declared_metadata_read = Self::create_declared_metadata_read(
+            &entry_selector,
+            node_context_bindings,
+            query_location,
+        )?;
+
+        Ok(Self {
+            declared_metadata_read,
+        })
+    }
+}
+
+impl BatchEval for IsTransportHeaderStringPredicate {
+    fn evaluate(
+        &self,
+        _otel_arrow: &OtapArrowRecords,
+        eval_ctx: &EvalContext<'_>,
+    ) -> Result<ScalarValue> {
+        Ok(match &self.declared_metadata_read {
+            Some(declared_metadata_read) => {
+                let metadata = eval_ctx.state().get_metadata();
+                let is_string =
+                    read_scalar_string_value(metadata, declared_metadata_read)?.is_some();
+                ScalarValue::Boolean(Some(is_string))
+            }
+            // Header can never be present (no matching context declaration) -- return false.
+            None => ScalarValue::Boolean(Some(false)),
+        })
+    }
+}
+
+/// Metadata function that returns the string value of a transport header.
+///
+/// Signature:
+/// ```text
+/// transport_header_string_value(header_name: String) -> String?
+/// ```
+///
+/// Returns the string value of the named transport header if it is present, has a single value
+/// (no duplicates), and that value is of type `String` (text). Returns `Null` if the header is
+/// absent, has a binary value, or if there are multiple headers with the same name.
+///
+/// The `header_name` is matched against the header's stored name (not the original wire name).
+/// The `header_name` argument must be a static string literal.
+#[derive(Debug)]
+pub(crate) struct TransportHeaderStringValue {
+    declared_metadata_read: Option<ValueRead>,
+}
+
+impl MetadataFunction for TransportHeaderStringValue {
+    fn function_name() -> &'static str {
+        "transport_header_string_value"
+    }
+
+    fn logical_type() -> ExprLogicalType {
+        ExprLogicalType::String
+    }
+
+    fn context_entry_selector(
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Option<ContextEntrySelector>> {
+        parse_header_name_arg(
+            Self::function_name(),
+            args,
+            ContextEntryTake::All,
+            query_location,
+        )
+        .map(Some)
+    }
+
+    fn try_new(
+        node_context_bindings: &NodeBindings,
+        args: &[InvokeFunctionArgument],
+        query_location: Option<&QueryLocation>,
+    ) -> Result<Self> {
+        let entry_selector = parse_header_name_arg(
+            Self::function_name(),
+            args,
+            ContextEntryTake::All,
+            query_location,
+        )?;
+        let declared_metadata_read = Self::create_declared_metadata_read(
+            &entry_selector,
+            node_context_bindings,
+            query_location,
+        )?;
+
+        Ok(Self {
+            declared_metadata_read,
+        })
+    }
+}
+
+impl BatchEval for TransportHeaderStringValue {
+    fn evaluate(
+        &self,
+        _otel_arrow: &OtapArrowRecords,
+        eval_ctx: &EvalContext<'_>,
+    ) -> Result<ScalarValue> {
+        Ok(match &self.declared_metadata_read {
+            Some(declared_metadata_read) => {
+                let metadata = eval_ctx.state().get_metadata();
+                match read_scalar_string_value(metadata, declared_metadata_read)? {
+                    Some(string_value) => ScalarValue::Utf8(Some(string_value)),
+                    None => ScalarValue::Utf8(None),
+                }
+            }
+            None => ScalarValue::Utf8(None),
+        })
+    }
 }
 
 /// Helper to check if the value accessed by the [`ValueRead`] exists in the [`Metadata`].
@@ -289,4 +469,45 @@ fn value_exists(metadata: &Metadata, declared_metadata_read: &ValueRead) -> Resu
     }
 
     Ok(value_exists)
+}
+
+/// Reads a scalar string value from the metadata via the given [`ValueRead`].
+///
+/// Returns `Some(string)` if the read yields exactly one value and that value is of
+/// [`ContextValueKind::Text`]. Returns `None` if the header is absent, has a binary value,
+/// or if there are multiple values (duplicate headers).
+///
+/// The [`ValueRead`] should have been compiled with [`ContextEntryTake::All`] so that this
+/// function can detect duplicate headers by checking whether more than one value is yielded.
+fn read_scalar_string_value(
+    metadata: &Metadata,
+    declared_metadata_read: &ValueRead,
+) -> Result<Option<String>> {
+    let mut result: Option<String> = None;
+
+    if let Some(read) = declared_metadata_read.read(metadata)? {
+        read.visit_members(|read_member| {
+            let mut values = read_member.values();
+
+            // Get the first value
+            let Some(first) = values.next() else {
+                return;
+            };
+
+            // If there is a second value, we have duplicate headers -- not a scalar.
+            if values.next().is_some() {
+                return;
+            }
+
+            // Only return the value if it is text (not binary).
+            if first.kind == ContextValueKind::Text {
+                // ReadValue.bytes contains UTF-8 text when kind is Text.
+                if let Ok(s) = std::str::from_utf8(first.bytes) {
+                    result = Some(s.to_owned());
+                }
+            }
+        });
+    }
+
+    Ok(result)
 }
