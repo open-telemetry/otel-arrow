@@ -1,0 +1,6 @@
+change_type: enhancement
+component: observability
+note: Add Weaver semantic convention definitions and a generated reference table for all component-level receiver, processor, exporter, and extension metrics.
+issues: [4737, 4744]
+subtext: |
+  Populates `semconv/groups/metric.components.yaml` and `docs/telemetry/component-metrics-reference.md`, verified in CI by `cargo xtask telemetry-schema --check` and `weaver registry check`.

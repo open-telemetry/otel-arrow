@@ -19,6 +19,7 @@ semconv/
   groups/
     attributes.metrics.yaml
     event.<name>.yaml
+    metric.components.yaml
     metric.engine.yaml
   triggers/
     *.sh             # optional: scripts to run before validation
