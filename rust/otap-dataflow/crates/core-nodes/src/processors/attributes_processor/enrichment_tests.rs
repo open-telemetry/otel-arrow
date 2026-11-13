@@ -49,7 +49,7 @@ fn declared_pipeline_context(config: &Value) -> PipelineContext {
     };
     let parsed: Config = serde_json::from_value(config.clone()).unwrap();
     let mut entries = BTreeMap::<String, BTreeSet<String>>::new();
-    for declaration in parsed.context_declarations() {
+    for declaration in parsed.context_declarations().unwrap() {
         let ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries { entries: selected },
         } = declaration
@@ -666,7 +666,7 @@ fn existing_source_configs_remain_compatible() {
             let config = json!({"actions":[{"action":"insert","key":"x","value":value}]});
             validate_config(&config).unwrap();
             let parsed: Config = serde_json::from_value(config.clone()).unwrap();
-            let selected = parsed.context_declarations();
+            let selected = parsed.context_declarations().unwrap();
             if let Some(expected) = &declarations {
                 assert_eq!(&selected, expected);
             } else {
@@ -1979,7 +1979,7 @@ fn context_declarations_follow_effective_value_actions() {
             {"action":operation,"key":key,"value":"literal"}
         ]});
         let parsed: Config = serde_json::from_value(config.clone()).unwrap();
-        assert!(parsed.context_declarations().is_empty());
+        assert!(parsed.context_declarations().unwrap().is_empty());
         for entries in [
             json!({}),
             json!({"request":[{"type":"constant","name":"value","value":"unused"}]}),
@@ -2060,8 +2060,8 @@ fn live_update_preserves_bindings_when_candidate_order_and_grouping_change() {
     let parsed_initial: Config = serde_json::from_value(initial.clone()).unwrap();
     let parsed_updated: Config = serde_json::from_value(updated.clone()).unwrap();
     assert_eq!(
-        parsed_initial.context_declarations(),
-        parsed_updated.context_declarations()
+        parsed_initial.context_declarations().unwrap(),
+        parsed_updated.context_declarations().unwrap()
     );
     for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
         run(
