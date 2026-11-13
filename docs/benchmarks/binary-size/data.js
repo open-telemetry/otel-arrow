@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794604132916,
+  "lastUpdate": 1794608888940,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -84919,6 +84919,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/c15d144cd13296b9edace38b17a09f5781690890"
         },
         "date": 1794604117549,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "5668844+bendu@users.noreply.github.com",
+            "name": "Ben Du",
+            "username": "bendu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "44cef7ef41ed1e08d27926d381222d0eab45a12d",
+          "message": "feat(sql-receivers): relax SQL query restrictions (#4696)\n\n# Change summary\n\n> Chore PR? Open **Preview**, then [use the chore\ntemplate](?template=chore.md).\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAllow native filters, datetime expressions, joins, and CTEs across SQL\nServer, Oracle, and PostgreSQL. Preserve explicit cursor predicates,\nauthored null ordering, and checkpoint compatibility while retaining\npaging safeguards.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4695\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\nRan these commands\n```\n# Passed\ncargo fmt -p otel-arrow-dfe-scraper -p otel-arrow-dfe-contrib-nodes\n\n# Passed\ncargo check -p otel-arrow-dfe-contrib-nodes --no-default-features --features 'sql-server,postgresql,oracle,otel-arrow-dfe-otap/crypto-ring' --quiet\n\n# Passed: 178 scraper + 278 receiver tests; 15 opt-in tests ignored\ncargo test -p otel-arrow-dfe-scraper -p otel-arrow-dfe-contrib-nodes --no-default-features --features 'otel-arrow-dfe-contrib-nodes/sql-server,otel-arrow-dfe-contrib-nodes/postgresql,otel-arrow-dfe-contrib-nodes/oracle,otel-arrow-dfe-otap/crypto-ring' --lib --quiet\n\n# Passed\ncargo clippy -p otel-arrow-dfe-scraper -p otel-arrow-dfe-contrib-nodes --no-default-features --features 'otel-arrow-dfe-contrib-nodes/sql-server,otel-arrow-dfe-contrib-nodes/postgresql,otel-arrow-dfe-contrib-nodes/oracle,otel-arrow-dfe-otap/crypto-ring' --lib --tests --quiet -- -D warnings\n```\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nRicher SQL without migration for unchanged supported queries. Changelog:\n.chloggen/database-source-sql.yaml.\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-11-13T21:40:18Z",
+          "tree_id": "6fcaad1acd4fef5be3d4b87664c08401070b0ced",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/44cef7ef41ed1e08d27926d381222d0eab45a12d"
+        },
+        "date": 1794608871298,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
