@@ -906,15 +906,34 @@ impl<
 
     /// Promotes a ready replacement to the serving generation for one core.
     ///
-    /// Returns `None` when the core's recovery record no longer exists,
-    /// `Some(false)` when the worker lost ownership, was cancelled or preempted,
-    /// or the replacement is no longer active, and `Some(true)` on promotion.
+    /// Returns None when its recovery record is gone, Some(false) when the
+    /// worker lost ownership, and Some(true) after successful publication.
     pub(super) fn promote_runtime_recovery_candidate(
         &self,
         pipeline_key: &PipelineKey,
         core_id: usize,
         worker_id: u64,
         target_key: &DeployedPipelineKey,
+    ) -> Option<bool> {
+        self.promote_runtime_recovery_candidate_with_hook(
+            pipeline_key,
+            core_id,
+            worker_id,
+            target_key,
+            || {},
+        )
+    }
+
+    /// The hook marks the ownership-release / status-publication boundary for
+    /// deterministic test coordination; production supplies an empty closure.
+    /// It executes before publication, while the controller mutex is held.
+    pub(super) fn promote_runtime_recovery_candidate_with_hook(
+        &self,
+        pipeline_key: &PipelineKey,
+        core_id: usize,
+        worker_id: u64,
+        target_key: &DeployedPipelineKey,
+        before_publish: impl FnOnce(),
     ) -> Option<bool> {
         let mut state = self
             .state
@@ -939,13 +958,13 @@ impl<
         recovery.ready_since = Some(Instant::now());
         recovery.worker_id = None;
         recovery.candidate_generation = None;
-        // Publish the serving overlay before releasing the controller lock.
-        // Clearing worker_id lets a sibling core's prune compact observed
-        // instances to the selected generations; if the overlay were published
-        // after the lock, that compaction could drop this already-ready
-        // replacement and status would omit the core permanently. Lock order is
-        // controller state then observed state; the observed store never
-        // acquires the controller lock.
+
+        // The test hook lets a sibling try to acquire the controller lock at
+        // this exact boundary, without relying on sleeps or scheduler luck.
+        before_publish();
+
+        // Publish while still owning the controller lock. Otherwise a sibling
+        // prune could discard this ready candidate before its overlay exists.
         self.observed_state_store.set_pipeline_serving_generation(
             pipeline_key.clone(),
             core_id,
