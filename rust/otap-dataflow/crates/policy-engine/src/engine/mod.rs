@@ -5,8 +5,6 @@
 //!
 //! This module evaluates compiled telemetry policies against OTAP Arrow batches.
 //!
-//! ---
-//!
 //! TODO - This work is still experimental and there are various TODOs that should be completed,
 //! some of which are listed below.
 //!
@@ -30,13 +28,13 @@
 //!   `SessionContext` that can be reused across batches.
 //!
 //! - **Buffer pooling**: reuse `BooleanBuffer` heap allocations across batches and across policies
-//!   within a batch rather than allocating and discarding them each time. The `PolicyMatch` bitmaps are prime
-//!   candidates for pooling since they have predictable sizes.
+//!   within a batch rather than allocating and discarding them each time. The `PolicyMatch`
+//!   bitmaps are prime candidates for pooling since they have predictable sizes.
 //!
 //! # Error handling
 //!
-//! TODO: validate that errors returned by this module conform to the policy
-//! spec's error handling requirements:
+//! TODO: validate that errors returned by this module conform to the policy spec's error handling
+//! requirements:
 //! - Parse errors: malformed policies must be skipped; other policies continue.
 //! - Compilation errors: invalid policies must be inert (never match/transform).
 //! - Runtime evaluation errors: telemetry must pass through unmodified.

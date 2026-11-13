@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Translation and application of policy transforms to OTAP Arrow batches.
-//!
-// TODOs:
+
+// TODO:
 // - Signal type generalization - currently only supports logs
 // - Coalesce transformations (optimization): When a policy has multiple transforms of the same
 //   kind (e.g. several renames, or several removes), they can probably be combined into a single

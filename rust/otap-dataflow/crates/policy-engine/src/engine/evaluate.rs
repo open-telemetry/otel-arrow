@@ -12,13 +12,9 @@
 //!   match a double column and vice versa.
 //!
 
-// TODO: non-exhaustive list of ways to make this code better:
-//
+// TODO: (non-exhaustive list)
 // - Currently every time an attribute is accessed, we scan the key column. Could cache maybe.
-// - Some of the kernels for checking if an attribute exists or has some value, we should at least
-//   validate this code isn't duplicated / useful elsewhere.
-// - that the log "body" field isn't supported correctly
-// - resource/scope schema url aren't supported correctly either
+// - Fields the log "body" resource/scope schema url, field isn't supported correctly
 
 use std::collections::HashMap;
 
@@ -67,8 +63,8 @@ pub(crate) fn evaluate_typed_check(
     };
 
     // TODO - we could potentially avoid allocating a buffer if internally we were to swap the
-    // predicates instead of just evaluating the operation specified by the matcher and then
-    // inverting the result.
+    // predicates instead (e.g eq -> ne, gt -> lte, etc.) of just evaluating the operation specified
+    // by the matcher and then inverting the result afterward.
     if check.is_negated {
         PolicyMatch::not(&result)
     } else {
@@ -99,9 +95,8 @@ pub(crate) fn evaluate_existence_check(
         }
     };
 
-    // TODO - we could potentially avoid allocating a buffer if internally we were to swap the
-    // predicates internally when check is negated (e.g eq -> ne, gt -> lte, etc.) instead of just
-    // evaluating the operation specified by the matcher and then inverting the result post-hoc.
+    // TODO - we could potentially avoid allocating a buffer if internally we were push the negation
+    // down into the existence check above (maybe by inverting should_exist).
     if check.is_negated {
         PolicyMatch::not(&result)
     } else {
@@ -169,9 +164,8 @@ fn evaluate_numeric_cmp<F>(
 where
     F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError> + Copy,
 {
-    // Note: the spec has some rules around comparing floats to ints (basically, should be)
-    // supported) that we'll need to abide by
-    // TODO the logic below is NOT correct vis-a-vis the type coercion and panics in many cases
+    // Note: the spec has some rules around comparing floats to int that we'll need to abide by.
+    // TODO the logic below is NOT correct vis-a-vis the type coercion and panics in some cases
     // of type mismatches.
     match numeric_value {
         CompiledNumericValue::Int(int64_val) => {
@@ -209,7 +203,7 @@ where
 
 fn effective_data_type(column: &ArrayRef) -> DataType {
     // TODO try to avoid cloning the datatype here, which is not "free" for non-primitive types
-    // like Dictionaries and Structs due to the pointers/vecs contained therein
+    // (e.g. Dictionaries and Structs) due to pointers/vecs contained therein
     let dt = column.data_type();
     match dt {
         DataType::Dictionary(_, v) => v.as_ref().clone(),
@@ -869,14 +863,6 @@ fn evaluate_vectorscan_on_attribute(
 
     // Scan attr rows that match the key and have type=Str.
     // Build per-policy IdBitmaps of matching parent_ids.
-    //
-    // TODO: the current loop touches a different policy's IdBitmap per row,
-    // which can thrash the CPU cache. A two-pass approach -- build the full
-    // scan cache first, then iterate per-policy to populate IdBitmaps --
-    // would be more cache-friendly.
-    //
-    // TODO: use IdBitmapPool for reuse.
-    // TODO: optimize Vectorscan scratch cloning.
     let str_type = AttributeValueType::Str as u8;
     let num_attr_rows = attrs_batch.num_rows();
     let policy_id_bitmaps = scan_attr_string_column(
