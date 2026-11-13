@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794534606103,
+  "lastUpdate": 1794591819889,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4872,6 +4872,64 @@ window.BENCHMARK_DATA = {
             "value": 99932.54553176605,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "cec34692557dece6b91c3f89cb8b9acb46162175",
+          "message": "perf(pdata): Update OTLP proto field encoding order (#4730)\n\n# Change summary\n\nField order appears to matter when encoding logs data. Placing\ntimestamps next to each other works well and also encoding attribute\nvalues before keys also seems to move the needle.\n\nSee the attached issues for more info, but we get a very nice uplift\nfrom doing this.\n\n## Related issue\n\n* Closes #4720\n\n## Validation\n\nTested before/after:\n\n| Variant | In memory zstd-3 | In memory gzip-6 |\n|---|---|---|\n| Baseline (forward order) | 191,809 B | 228,959 B |\n| KeyValue + LogRecord in Go order | -20.5% | -10.4% |\n\n## User-facing changes\n\nBetter compression performance",
+          "timestamp": "2026-11-13T16:52:36Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cec34692557dece6b91c3f89cb8b9acb46162175"
+        },
+        "date": 1794591819020,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99201.33221434377,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100162.11492950785,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 101335.23357163326,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99940.3689132151,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100277.3552673562,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99923.72489000064,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
         ]
       }
