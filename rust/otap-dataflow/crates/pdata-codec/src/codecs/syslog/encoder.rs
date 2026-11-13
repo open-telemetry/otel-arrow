@@ -706,10 +706,12 @@ impl SyslogEncoder {
                             cef.apply(key, value)?;
                         }
                     }
-                    header.severity = Some(match header.severity {
-                        Some(level) => level,
-                        None => severity(log.severity_number())?,
-                    });
+                    if format != Format::Cef {
+                        header.severity = Some(match header.severity {
+                            Some(level) => level,
+                            None => severity(log.severity_number())?,
+                        });
+                    }
                     let year = wire_time(format, log.time_unix_nano(), &mut self.timestamp)?;
                     let body = log.body();
                     let body = match body.as_ref() {
@@ -1304,6 +1306,38 @@ mod tests {
         );
         let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), Format::CefRfc5424);
         assert!(encoder.encode(batch).is_err());
+    }
+
+    /// Scenario: Valid CEF records have OTel severity numbers outside the syslog mapping range.
+    /// Guarantees: Bare CEF preserves its own severity, while every syslog-wrapped profile rejects the invalid OTel severity.
+    #[test]
+    fn syslog_encoder_bare_cef_ignores_otel_severity() {
+        for level in [-1, 25] {
+            let mut input = log("body");
+            input.severity_number = level;
+            input.attributes = cef_attributes();
+            let batch = records(vec![input], vec![]);
+            for format in ALL_FORMATS {
+                let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+                let result = encoder.encode(batch.clone());
+                if format == Format::Cef {
+                    assert_eq!(
+                        messages(&result.unwrap()),
+                        [
+                            b"CEF:0|vendor|product|1.0|100|event|6|src=192.0.2.1 msg=body"
+                                .as_slice()
+                        ]
+                    );
+                } else {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("severity_number must be in 0..=24")
+                    );
+                }
+            }
+        }
     }
 
     /// Scenario: Every fixed profile prepares repeated batches and detaches output before another encode.

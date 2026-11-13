@@ -68,7 +68,8 @@ Unrelated headers and emitted CEF extensions still undergo validation.
 ## Syslog headers and defaults
 
 These rules apply to RFC 3164, RFC 5424, and their CEF-wrapped profiles.
-Bare CEF ignores syslog header attributes and resource header defaults.
+Bare CEF ignores syslog header attributes, resource header defaults, and OTel
+`severity_number`. Its severity comes from `cef.severity` instead.
 
 | Output field | Selection, highest priority first |
 | --- | --- |
