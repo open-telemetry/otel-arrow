@@ -72,11 +72,13 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 
 #### Engine and console metrics
 
-OTLP exports each instrument name below under its instrumentation scope; the
-scope is not a prefix of `Metric.name`. For example, select scope
-`engine.console_output` and instrument `diagnostics.dropped` to find diagnostic
-loss. Console points also carry the datapoint attribute `console.stream` with
-the bounded values `stdout` and `stderr`.
+OTLP exports each instrument below under its instrumentation scope with a
+default `Metric.name` of `<scope>.<instrument_name>` (unless overridden by a
+metric view). Metric view selectors can match either the unqualified instrument
+name (for example, scope `engine.console_output` and instrument
+`diagnostics.dropped`) or the qualified `<scope>.<instrument_name>`. Console
+points also carry the datapoint attribute `console.stream` with the bounded
+values `stdout` and `stderr`.
 
 Console counters measure process-wide activity since the controller run
 started. The controller performs a bounded console drain and emits any drain
