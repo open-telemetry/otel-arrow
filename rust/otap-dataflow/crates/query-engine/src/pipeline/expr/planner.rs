@@ -920,6 +920,14 @@ impl<'a> ExprPlanner<'a> {
                 }
             };
 
+            // "combined" execution also means we pass all the args into the same datafusion
+            // udf invocation Expr, so if any arg will be evaluated as something other than a
+            // datafusion Expr (like a BatchEval), we can't combine the args into one df Expr.
+            if arg.expr.as_df_eval_expr_ref().is_none() {
+                all_combinable = false;
+                break;
+            }
+
             combined_scope = match combined_scope.take() {
                 None => Some(arg_scope.clone()),
                 Some(existing) => {

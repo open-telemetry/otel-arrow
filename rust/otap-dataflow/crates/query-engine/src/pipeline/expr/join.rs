@@ -155,7 +155,7 @@ pub fn join<'a>(
         // handle special case where both sides have same source/row order
         (left_scope, right_scope) if left_scope == right_scope => {
             let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
-            return Ok((join_result, left.data_scope.clone()));
+            Ok((join_result, left.data_scope.clone()))
         }
         (
             DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_),

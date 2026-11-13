@@ -30,7 +30,7 @@ use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
 use crate::parser::default_parser_options;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{Pipeline, PipelineOptions};
+use crate::pipeline::{Pipeline, PipelineOptions, SignalKind};
 
 /// create a simple logs batch
 fn create_logs_batch(attributes: Vec<KeyValue>) -> OtapArrowRecords {
@@ -241,7 +241,7 @@ async fn test_simple_assign_transport_header_presence_as_property() {
     let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
     assert_eq!(attr, &KeyValue::new("has_header", AnyValue::new_bool(true)));
 
-    // assert it returns false when we don't have the heaer
+    // assert it returns false when we don't have the header
     let result = execute_pipeline(
         "signals | set attributes[\"has_header\"] = has_transport_header(\"foo\")",
         pipeline_options,
@@ -258,4 +258,49 @@ async fn test_simple_assign_transport_header_presence_as_property() {
         attr,
         &KeyValue::new("has_header", AnyValue::new_bool(false))
     );
+}
+
+#[tokio::test]
+async fn test_batch_metadata_function_result_used_as_function_argument() {
+    let header_name = "foo";
+    let header_val = "bar";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        signal_context: crate::pipeline::SignalContext::Single(SignalKind::Logs),
+        ..Default::default()
+    };
+
+    // this should return a non-null "true", the result from coalesce will not be "false"
+    let query = "logs | where coalesce(has_transport_header(\"foo\"), false)";
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    // assert we kept all the rows:
+    assert_eq!(result.num_items(), 1);
+
+    // do the same test, this time with more args... body should be null on the input batch,
+    // so the first arg will resolve to null and the from coalesce will be the "true" from the
+    // call to has_transport_header
+    let query = "logs | where coalesce(body, has_transport_header(\"foo\"), false)";
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    // assert we kept all the rows:
+    assert_eq!(result.num_items(), 1);
 }
