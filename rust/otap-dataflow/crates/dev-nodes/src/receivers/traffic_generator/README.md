@@ -102,6 +102,22 @@ cargo build --release
 bash crates/dev-nodes/src/receivers/traffic_generator/bench/bench.sh
 ```
 
+### Sender cost
+
+`bench/sender_throughput.sh` measures the traffic generator itself rather than
+a SUT. It takes a `df_engine` binary path so two builds can be compared on the
+same scenarios:
+
+```bash
+bash crates/dev-nodes/src/receivers/traffic_generator/bench/sender_throughput.sh \
+  target/release/df_engine new 3
+```
+
+- `sat-*` scenarios export to an in-process noop with unpaced production, so
+  they report the generator's max signals/sec on one core.
+- `grpc-*` scenarios export OTLP gRPC to a noop backend at a fixed rate, so
+  they report sender CPU at equal load.
+
 ---
 
 ## Results

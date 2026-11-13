@@ -57,8 +57,10 @@
 #![cfg(test)]
 
 use super::semconv_signal::semconv_otlp_logs;
-use super::synthetic_signal::static_otlp_logs_with_config;
+use super::synthetic_signal::{OtlpEncoder, static_otap_logs};
+use super::synthetic_signal_old::static_otlp_logs_with_config;
 use prost::Message;
+use std::io::Write;
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
@@ -135,7 +137,27 @@ fn load_semconv_registry() -> ResolvedRegistry {
 /// context. Keeps the static vs semconv compression-ratio numbers
 /// apples-to-apples.
 fn static_batch_bytes() -> Vec<u8> {
-    static_otlp_logs_with_config(BATCH_SIZE, Some(150), Some(4), false, None).encode_to_vec()
+    static_otap_batch_bytes(false)
+}
+
+/// Generate a `static` log batch through the OTAP path (what the traffic
+/// generator emits): build OTAP record batches, encode with the OTAP->OTLP
+/// encoder.
+fn static_otap_batch_bytes(use_trace_context: bool) -> Vec<u8> {
+    let records = static_otap_logs(BATCH_SIZE, Some(150), Some(4), use_trace_context, None)
+        .expect("build static logs");
+    OtlpEncoder::new()
+        .encode(records)
+        .expect("encode static logs")
+        .as_bytes()
+        .to_vec()
+}
+
+/// Generate a `static` log batch through the previous prost path, kept as a
+/// layout baseline.
+fn static_prost_batch_bytes(use_trace_context: bool) -> Vec<u8> {
+    static_otlp_logs_with_config(BATCH_SIZE, Some(150), Some(4), use_trace_context, None)
+        .encode_to_vec()
 }
 
 /// Same as [`static_batch_bytes`] but with `use_trace_context: true`, which
@@ -144,7 +166,7 @@ fn static_batch_bytes() -> Vec<u8> {
 /// see how much compression drops once realistic correlation IDs are in the
 /// payload.
 fn static_with_trace_ctx_batch_bytes() -> Vec<u8> {
-    static_otlp_logs_with_config(BATCH_SIZE, Some(150), Some(4), true, None).encode_to_vec()
+    static_otap_batch_bytes(true)
 }
 
 /// Generate a `semconv` log batch.
@@ -328,4 +350,72 @@ fn test_compression_ratios_across_source_and_strategy() {
         "static+tc/fresh ratio {tf_ratio:.1}:1 should be worse (lower) than \
          static/fresh ratio {sf_ratio:.1}:1 (trace context adds incompressible entropy)",
     );
+}
+
+/// Gzip `bytes` at level 6 (the level tonic uses) and return the compressed size.
+fn gzip_size(bytes: &[u8]) -> usize {
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(bytes.len() / 4),
+        flate2::Compression::new(6),
+    );
+    encoder.write_all(bytes).expect("gzip write");
+    encoder.finish().expect("gzip finish").len()
+}
+
+/// Concatenate `NUM_BATCHES` fresh batches from `generate`.
+fn fresh_stream(generate: impl Fn() -> Vec<u8>) -> Vec<u8> {
+    let first = generate();
+    let mut concatenated = Vec::with_capacity(first.len() * NUM_BATCHES);
+    concatenated.extend_from_slice(&first);
+    for _ in 1..NUM_BATCHES {
+        concatenated.extend_from_slice(&generate());
+    }
+    concatenated
+}
+
+/// Informational: compare the OTLP wire layout of the OTAP generation path
+/// against the previous prost path for the same static log data. The data
+/// is identical (see the equivalence tests in `synthetic_signal.rs`), so any
+/// difference comes from field order and length-prefix encoding.
+///
+/// Run with:
+/// ```sh
+/// cargo test -p otel-arrow-dfe-dev-nodes -- compression_ratio_tests::test_static_layout_otap_vs_prost --nocapture
+/// ```
+#[test]
+fn test_static_layout_otap_vs_prost() {
+    let total_records = (BATCH_SIZE * NUM_BATCHES) as f64;
+    println!(
+        "{:<22} {:>10} {:>9} {:>9} {:>9}",
+        "layout", "raw B/rec", "zstd-3", "gzip-6", "zstd B/rec"
+    );
+    for tc in [false, true] {
+        let mut sizes = [(0usize, 0usize, 0usize); 2];
+        for (i, (label, bytes)) in [
+            ("prost", fresh_stream(|| static_prost_batch_bytes(tc))),
+            ("otap", fresh_stream(|| static_otap_batch_bytes(tc))),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (raw, zstd, _) = measure(&bytes);
+            let gzip = gzip_size(&bytes);
+            sizes[i] = (raw, zstd, gzip);
+            println!(
+                "{:<22} {:>10.1} {:>9} {:>9} {:>9.1}",
+                format!("{label}{}", if tc { "+tc" } else { "" }),
+                raw as f64 / total_records,
+                zstd,
+                gzip,
+                zstd as f64 / total_records,
+            );
+        }
+        let pct = |new: usize, old: usize| (new as f64 / old as f64 - 1.0) * 100.0;
+        println!(
+            "  otap vs prost: raw {:+.1}%, zstd {:+.1}%, gzip {:+.1}%",
+            pct(sizes[1].0, sizes[0].0),
+            pct(sizes[1].1, sizes[0].1),
+            pct(sizes[1].2, sizes[0].2),
+        );
+    }
 }

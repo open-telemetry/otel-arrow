@@ -96,6 +96,10 @@ name = "otlp_bytes"
 harness = false
 
 [[bench]]
+name = "traffic_generator"
+harness = false
+
+[[bench]]
 name = "admission"
 harness = false
 
