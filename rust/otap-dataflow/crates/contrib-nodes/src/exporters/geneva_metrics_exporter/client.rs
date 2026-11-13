@@ -30,6 +30,8 @@ pub(crate) enum PublisherBuildError {
 #[derive(Debug, Error)]
 #[allow(variant_size_differences)]
 pub(crate) enum PublishError {
+    #[error("input publication deadline exhausted")]
+    DeadlineExceeded,
     #[error("Geneva metrics request failed: {0}")]
     Request(#[source] Box<reqwest::Error>),
     #[error("Geneva metrics endpoint returned HTTP {status}")]
@@ -48,7 +50,7 @@ impl PublishError {
 
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
-            Self::Request(_) => true,
+            Self::DeadlineExceeded | Self::Request(_) => true,
             Self::Response { status } => {
                 self.is_unauthorized()
                     || matches!(

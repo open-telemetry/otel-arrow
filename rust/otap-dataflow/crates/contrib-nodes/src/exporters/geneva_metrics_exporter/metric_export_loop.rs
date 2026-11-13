@@ -47,6 +47,7 @@ struct InFlightPublication {
     data: OtapPdata,
     auth_generation: u64,
     request: LocalBoxFuture<'static, Result<(), PublishError>>,
+    // Preserved across packets so splitting cannot restart the input timeout.
     deadline: tokio::time::Instant,
     attempt: ExporterAttempt,
     remaining: std::vec::IntoIter<EncodedPacket>,
@@ -55,6 +56,7 @@ struct InFlightPublication {
 struct CompletedPublication {
     data: OtapPdata,
     auth_generation: u64,
+    deadline: tokio::time::Instant,
     remaining: std::vec::IntoIter<EncodedPacket>,
     result: Result<(), PublishError>,
 }
@@ -73,6 +75,7 @@ impl InFlightPublication {
         CompletedPublication {
             data: self.data,
             auth_generation: self.auth_generation,
+            deadline: self.deadline,
             remaining: self.remaining,
             result: metrics.record(self.attempt.complete(result)),
         }
@@ -181,13 +184,19 @@ impl GenevaMetricsExporter {
 
         // Mapping and packet splitting are shared preparation. Each HTTP
         // submission below owns a separate backend attempt.
-        self.start_next_publication(data, prepared.publications.into_iter(), effect_handler)
+        self.start_next_publication(
+            data,
+            prepared.publications.into_iter(),
+            tokio::time::Instant::now() + self.publisher.timeout(),
+            effect_handler,
+        )
     }
 
     fn start_next_publication(
         &mut self,
         data: OtapPdata,
         mut remaining: std::vec::IntoIter<EncodedPacket>,
+        deadline: tokio::time::Instant,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> PublicationStart {
         let Some(packet) = remaining.next() else {
@@ -196,6 +205,10 @@ impl GenevaMetricsExporter {
         let mut attempt = self.metrics.attempt(SignalType::Metrics);
         attempt.set_item_count_with(|| packet.item_count);
         attempt.set_payload_size_with(|| packet.bytes.len());
+        if tokio::time::Instant::now() >= deadline {
+            let nack = NackMsg::new(PublishError::DeadlineExceeded.to_string(), data);
+            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
+        }
         let header = self.auth.header().filter(|_| self.auth.is_ready());
         let Some((auth_header_name, auth_header_value, auth_generation)) = header else {
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
@@ -211,8 +224,14 @@ impl GenevaMetricsExporter {
         PublicationStart::InFlight(Box::new(InFlightPublication {
             data,
             auth_generation,
-            request,
-            deadline: tokio::time::Instant::now() + self.publisher.timeout(),
+            request: Box::pin(async move {
+                tokio::select! {
+                    biased;
+                    () = tokio::time::sleep_until(deadline) => Err(PublishError::DeadlineExceeded),
+                    result = request => result,
+                }
+            }),
+            deadline,
             attempt,
             remaining,
         }))
@@ -226,12 +245,13 @@ impl GenevaMetricsExporter {
         let CompletedPublication {
             data,
             auth_generation,
+            deadline,
             remaining,
             result,
         } = publication;
 
         match result {
-            Ok(()) => self.start_next_publication(data, remaining, effect_handler),
+            Ok(()) => self.start_next_publication(data, remaining, deadline, effect_handler),
             Err(error) => {
                 if error.is_unauthorized() {
                     self.auth.invalidate(auth_generation);
@@ -300,10 +320,11 @@ impl GenevaMetricsExporter {
             let Some(mut publication) = in_flight.take() else {
                 return Ok(());
             };
-            let result = if tokio::time::Instant::now() < deadline {
+            let publication_deadline = deadline.min(publication.deadline);
+            let result = if tokio::time::Instant::now() < publication_deadline {
                 Some(
                     tokio::time::timeout_at(
-                        deadline,
+                        publication_deadline,
                         self.with_auth_refresh(publication.request.as_mut()),
                     )
                     .await,
@@ -330,7 +351,7 @@ impl GenevaMetricsExporter {
             };
             let completed = publication.complete(result, &mut self.metrics);
             if completed.result.is_ok() && !completed.remaining.as_slice().is_empty() {
-                self.wait_for_shutdown_auth(deadline).await;
+                self.wait_for_shutdown_auth(publication_deadline).await;
             }
             match self.publication_completion(completed, effect_handler) {
                 PublicationStart::InFlight(publication) => in_flight = Some(publication),
@@ -451,19 +472,18 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     }
                 }
                 Message::PData(mut data) => {
-                    if let Some(inbox_deadline) = msg_chan.shutdown_deadline() {
-                        // Admission may still be open for the first drained input.
-                        // Bound the entire drain by both the pipeline deadline
-                        // and one shared publication timeout.
+                    if !accepting_pdata {
+                        // Closed admission only delivers pdata during shutdown.
+                        // The inbox hides the pipeline deadline until draining
+                        // completes, so share one local timeout across the drain.
                         let deadline = *shutdown_drain_deadline.get_or_insert_with(|| {
-                            let local_deadline = in_flight.as_ref().map_or_else(
+                            in_flight.as_ref().map_or_else(
                                 || {
                                     (tokio::time::Instant::now() + self.publisher.timeout())
                                         .into_std()
                                 },
                                 |publication| publication.deadline.into_std(),
-                            );
-                            inbox_deadline.min(local_deadline)
+                            )
                         });
                         let at_capacity = has_in_flight || has_pending_completion;
                         if at_capacity {
@@ -807,7 +827,12 @@ mod tests {
                     .publications
             })
             .collect();
-        exporter.start_next_publication(data, packets.into_iter(), effect_handler)
+        exporter.start_next_publication(
+            data,
+            packets.into_iter(),
+            tokio::time::Instant::now() + exporter.publisher.timeout(),
+            effect_handler,
+        )
     }
 
     fn metric_value<'a>(
@@ -938,14 +963,14 @@ mod tests {
     }
 
     /// Scenario: A split input starts during shutdown draining while upstream remains open.
-    /// Guarantees: The shared drain deadline cancels the active packet and prevents later packets without waiting for another inbox message.
+    /// Guarantees: The input deadline cancels the active packet and prevents later packets without waiting for another inbox message.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_split_publication_while_upstream_remains_open() {
         assert_shutdown_bounds_split_publication(true, true, Duration::from_secs(60)).await;
     }
 
     /// Scenario: A split input is the first buffered input drained with ready auth and an engine clock ahead of paused Tokio time, with upstream open or closed and either a short or long shutdown grace period.
-    /// Guarantees: The first input shares one drain budget capped by the pipeline deadline, is retryably NACKed on expiry, and starts no further packets.
+    /// Guarantees: The first input shares one publication budget, honors an earlier delivered shutdown deadline (including channel closure), is retryably NACKed on expiry, and starts no further packets.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_first_buffered_split_publication() {
         for upstream_open in [true, false] {
@@ -971,14 +996,6 @@ mod tests {
         clock.advance_to(tokio::time::Instant::now().into_std());
 
         let split_data = subscribe(otlp_pdata(oversized_request()), 2);
-        assert!(
-            prepare_publication(&split_data, &mapping_config())
-                .expect("split input should prepare")
-                .publications
-                .len()
-                > 1
-        );
-
         let publisher_timeout = Duration::from_secs(10);
         let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
         let calls = Cell::new(0_u32);
@@ -1015,20 +1032,30 @@ mod tests {
                 .await
                 .expect("the first input should start a publication");
             let first_started_at = tokio::time::Instant::now();
-            requests
-                .next()
-                .await
-                .expect("a second publication should start");
-            if preliminary_input {
-                expect_ack(&mut completions).await;
+            if upstream_open {
+                requests
+                    .next()
+                    .await
+                    .expect("a second publication should start");
+                if preliminary_input {
+                    expect_ack(&mut completions).await;
+                }
             }
             let nack = expect_nack(&mut completions).await;
             assert!(!nack.permanent, "deadline expiry should allow retry");
-            assert_eq!(
-                tokio::time::Instant::now(),
-                first_started_at + publisher_timeout.min(grace_period),
-                "the split packet should be cancelled at the shared drain deadline"
-            );
+            let budget_deadline = first_started_at + publisher_timeout.min(grace_period);
+            if upstream_open {
+                assert_eq!(
+                    tokio::time::Instant::now(),
+                    budget_deadline,
+                    "the split packet should be cancelled at the shared input or delivered shutdown deadline"
+                );
+            } else {
+                assert!(
+                    tokio::time::Instant::now() <= budget_deadline,
+                    "channel closure may deliver an earlier shutdown, but must not extend publication"
+                );
+            }
             drop(pdata_tx);
         };
 
@@ -1041,19 +1068,103 @@ mod tests {
                 driver,
             );
             tokio::pin!(work);
+            // Mirror the production inbox timer so paused Tokio time wakes the
+            // independent engine clock at the pipeline deadline, not at the
+            // next HTTP timer.
+            let pipeline_timer = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+            tokio::pin!(pipeline_timer);
             poll_fn(|cx| {
+                let _ = pipeline_timer.as_mut().poll(cx);
                 clock.advance_to(tokio::time::Instant::now().into_std());
                 work.as_mut().poll(cx)
             })
             .await
         };
-        assert_eq!(terminal.deadline(), deadline);
-        assert_metric(terminal.metrics(), "success", "messages", 1);
+        if upstream_open {
+            assert_eq!(terminal.deadline(), deadline);
+            assert_metric(terminal.metrics(), "success", "messages", 1);
+        } else {
+            assert!(
+                terminal.deadline() <= deadline,
+                "the exporter must honor the earlier shutdown delivered for channel closure"
+            );
+        }
         assert_metric(terminal.metrics(), "failure", "messages", 1);
         assert!(
             requests.next().await.is_none(),
             "no later packet of the split input may start"
         );
+    }
+
+    /// Scenario: A normal input splits into two packets whose individual delays fit the timeout but whose combined duration may exceed it.
+    /// Guarantees: Both packets share one deadline, expiry produces exactly one retryable NACK, and the next input receives a fresh budget.
+    #[tokio::test(start_paused = true)]
+    async fn split_publications_share_input_timeout_during_normal_operation() {
+        for second_delay in [Duration::from_secs(5), Duration::from_secs(8)] {
+            let timeout = Duration::from_secs(10);
+            let (provider, _controller) = TestTokenProvider::new(Some("ready-token"));
+            let calls = Cell::new(0);
+            let (exporter, mut requests) = scripted_exporter(timeout, provider, move || {
+                let delay = match calls.replace(calls.get() + 1) {
+                    0 => Duration::from_secs(4),
+                    1 => second_delay,
+                    _ => Duration::ZERO,
+                };
+                Box::pin(async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(())
+                })
+            });
+            let split_data = subscribe(otlp_pdata(oversized_request()), 1);
+            let (effect_handler, mut completions) = completion_harness();
+            let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+            pdata_tx
+                .send_async(split_data)
+                .await
+                .expect("split input should be buffered");
+
+            let expires = Duration::from_secs(4) + second_delay > timeout;
+            let driver = async {
+                requests.next().await.expect("first packet should start");
+                let started_at = tokio::time::Instant::now();
+                requests.next().await.expect("second packet should start");
+                if expires {
+                    let nack = expect_nack(&mut completions).await;
+                    assert!(!nack.permanent);
+                    assert!(nack.reason.contains("input publication deadline exhausted"));
+                } else {
+                    expect_ack(&mut completions).await;
+                }
+                assert_eq!(
+                    started_at.elapsed(),
+                    timeout.min(Duration::from_secs(4) + second_delay),
+                );
+                pdata_tx
+                    .send_async(metrics_pdata(2))
+                    .await
+                    .expect("next input should be accepted");
+                requests.next().await.expect("next input should publish");
+                expect_ack(&mut completions).await;
+                send_shutdown(&control_tx, Instant::now()).await;
+                drop(pdata_tx);
+            };
+            _ = run_exporter(
+                exporter,
+                msg_chan,
+                effect_handler,
+                Duration::from_secs(60),
+                driver,
+            )
+            .await;
+            assert!(
+                requests.next().await.is_none(),
+                "each input must resolve before accepting the next input",
+            );
+            assert!(
+                completions.try_recv().is_err(),
+                "each input must receive exactly one completion",
+            );
+        }
     }
 
     /// Scenario: Cached authentication becomes unusable and a replacement arrives during or between shutdown publications.
@@ -1262,7 +1373,7 @@ mod tests {
         }
     }
 
-    /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the pipeline deadline, with completion delivery free or blocked.
+    /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the hidden pipeline deadline, with completion delivery free or blocked.
     /// Guarantees: Only one request is in flight, force-drained pdata is retryably NACKed, the local timeout bounds
     /// publication work and completion backpressure, and the terminal state preserves the pipeline deadline.
     #[tokio::test(start_paused = true)]
@@ -1294,7 +1405,7 @@ mod tests {
                     .send_async(metrics_pdata(2))
                     .await
                     .expect("second pdata should be buffered behind the active publication");
-                // Before the publisher timeout; far ahead of the real clock the inbox checks.
+                // The pipeline deadline is hidden while the second input is force-drained.
                 let deadline = (request_started_at + Duration::from_secs(30)).into_std();
                 send_shutdown(&control_tx, deadline).await;
                 if !blocked_completions {
@@ -1306,10 +1417,10 @@ mod tests {
                         }
                     }
                 }
-                deadline
+                (deadline, request_started_at)
             };
 
-            let (terminal_state, deadline) = run_exporter(
+            let (terminal_state, (deadline, request_started_at)) = run_exporter(
                 exporter,
                 msg_chan,
                 effect_handler,
@@ -1320,7 +1431,7 @@ mod tests {
             assert_eq!(terminal_state.deadline(), deadline);
             assert_eq!(
                 tokio::time::Instant::now(),
-                tokio::time::Instant::from_std(deadline)
+                request_started_at + publisher_timeout
             );
             assert!(
                 requests.next().await.is_none(),

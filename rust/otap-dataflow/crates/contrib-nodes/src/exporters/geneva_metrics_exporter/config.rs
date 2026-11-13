@@ -30,7 +30,7 @@ pub struct Config {
     /// Default metric namespace when OTLP attributes do not override it.
     pub metric_namespace: String,
 
-    /// Maximum time allowed for one HTTP publication request.
+    /// Maximum time allowed to publish all packets of one input.
     #[serde(default = "default_timeout", with = "humantime_serde")]
     pub timeout: Duration,
 
