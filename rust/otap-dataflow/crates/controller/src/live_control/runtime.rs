@@ -924,16 +924,18 @@ impl<
         )
     }
 
-    /// The hook marks the ownership-release / status-publication boundary for
+    /// The hook marks the end of the promotion critical section for
     /// deterministic test coordination; production supplies an empty closure.
-    /// It executes before publication, while the controller mutex is held.
+    /// It runs after worker ownership is released and the serving overlay is
+    /// published, immediately before the controller mutex is released, so a
+    /// test can verify that no sibling can prune between the two.
     pub(super) fn promote_runtime_recovery_candidate_with_hook(
         &self,
         pipeline_key: &PipelineKey,
         core_id: usize,
         worker_id: u64,
         target_key: &DeployedPipelineKey,
-        before_publish: impl FnOnce(),
+        before_unlock: impl FnOnce(),
     ) -> Option<bool> {
         let mut state = self
             .state
@@ -959,10 +961,6 @@ impl<
         recovery.worker_id = None;
         recovery.candidate_generation = None;
 
-        // The test hook lets a sibling try to acquire the controller lock at
-        // this exact boundary, without relying on sleeps or scheduler luck.
-        before_publish();
-
         // Publish while still owning the controller lock. Otherwise a sibling
         // prune could discard this ready candidate before its overlay exists.
         self.observed_state_store.set_pipeline_serving_generation(
@@ -970,6 +968,11 @@ impl<
             core_id,
             target_key.deployment_generation,
         );
+
+        // Test hook: runs at the end of the critical section, so a test can
+        // observe the published overlay while the controller lock is held.
+        before_unlock();
+        drop(state);
         Some(true)
     }
 

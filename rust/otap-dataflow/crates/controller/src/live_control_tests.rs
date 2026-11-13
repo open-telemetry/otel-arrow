@@ -1081,7 +1081,6 @@ fn try_wait_for_runtime_instance_stopped(
     }
 }
 
-
 /// Stops the background work a recovery test caused for one pipeline and
 /// waits for it to complete.
 ///
@@ -1197,7 +1196,6 @@ fn stop_pipeline_background_work(
         }
     }
 }
-
 
 /// Runs [`stop_pipeline_background_work`] when a recovery test ends, on both
 /// the success path and while unwinding from a failed assertion.
@@ -9959,9 +9957,10 @@ fn runtime_error_during_rollout_handoff_is_deferred_until_finish() {
 }
 
 /// Scenario: two cores recover concurrently while a sibling attempts pruning
-/// at the exact boundary between recovery ownership release and publication.
-/// Guarantees: a sibling cannot acquire the controller lock until the serving
-/// overlay is published, so status retains both ready replacement cores.
+/// at the end of a promotion's critical section, after recovery ownership is
+/// released.
+/// Guarantees: the serving overlay is published before the controller lock is
+/// released, so a sibling's prune retains both ready replacement cores.
 #[test]
 fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
     let config = engine_config_with_pipeline(
@@ -10042,9 +10041,11 @@ fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
         })
     });
 
-    // First publish core 1, then force a sibling to attempt pruning exactly
-    // after core 0 releases worker ownership but before it publishes its overlay.
-    // The sibling must not obtain the controller lock at that boundary.
+    // Publish core 1 first. Then, at the end of core 0's promotion critical
+    // section (worker ownership released, controller lock still held), check
+    // that core 0's overlay is already published and that a sibling cannot
+    // take the controller lock yet. The sibling then prunes as soon as the
+    // lock is released, which must keep both ready replacements.
     let (core_id, generation, worker_id) = replacements[1];
     assert_eq!(
         runtime.promote_runtime_recovery_candidate(
@@ -10060,10 +10061,15 @@ fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
     let sibling_runtime = Arc::clone(&runtime);
     let sibling_key = pipeline_key.clone();
     let sibling = thread::spawn(move || {
-        go_rx.recv().expect("promotion should release pruning probe");
-        let could_prune = sibling_runtime.state.try_lock().is_ok();
+        go_rx
+            .recv()
+            .expect("promotion should release pruning probe");
+        let lock_held_by_promotion = matches!(
+            sibling_runtime.state.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        );
         lock_tx
-            .send(could_prune)
+            .send(lock_held_by_promotion)
             .expect("promotion should receive pruning probe");
         sibling_runtime.prune_pipeline_runtime_and_history(&sibling_key);
     });
@@ -10076,18 +10082,29 @@ fn concurrent_recovery_promotions_keep_ready_replacements_observed() {
             worker_id,
             &deployed_key("g1", "p1", core_id, generation),
             || {
+                let published = runtime
+                    .observed_state_handle
+                    .pipeline_status(&pipeline_key)
+                    .and_then(|status| status.serving_generations().get(&core_id).copied());
+                assert_eq!(
+                    published,
+                    Some(generation),
+                    "serving overlay must be published before the controller lock is released"
+                );
                 go_tx.send(()).expect("pruning probe should start");
                 assert!(
-                    !lock_rx
+                    lock_rx
                         .recv_timeout(Duration::from_secs(5))
                         .expect("pruning probe should report lock availability"),
-                    "sibling could prune after worker ownership release but before publication"
+                    "sibling could take the controller lock before promotion released it"
                 );
             },
         ),
         Some(true)
     );
-    sibling.join().expect("sibling pruning thread should finish");
+    sibling
+        .join()
+        .expect("sibling pruning thread should finish");
 
     let status = runtime
         .observed_state_handle
@@ -10158,7 +10175,10 @@ fn recovery_cleanup_reports_errors_and_fences_late_exits() {
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
 
     // The original is a threadless fixture. No replacements are running yet.
-    assert!(stop_pipeline_background_work(&runtime, &pipeline_key, &[original.clone()]).is_empty());
+    assert!(
+        stop_pipeline_background_work(&runtime, &pipeline_key, std::slice::from_ref(&original))
+            .is_empty()
+    );
     let replacement = deployed_key("g1", "p1", 0, 1);
     let _replacement_rx =
         register_runtime_instance(&runtime, "g1", "p1", 0, 1, RuntimeInstanceLifecycle::Active);
@@ -10168,9 +10188,12 @@ fn recovery_cleanup_reports_errors_and_fences_late_exits() {
             "injected replacement failure".to_owned(),
         )),
     );
-    let errors = stop_pipeline_background_work(&runtime, &pipeline_key, &[original.clone()]);
+    let errors =
+        stop_pipeline_background_work(&runtime, &pipeline_key, std::slice::from_ref(&original));
     assert!(
-        errors.iter().any(|error| error.contains("injected replacement failure")),
+        errors
+            .iter()
+            .any(|error| error.contains("injected replacement failure")),
         "replacement error was lost: {errors:?}"
     );
     assert!(
