@@ -11,7 +11,8 @@
 //! the exact same generation parameters.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::synthetic_signal::{self, OtlpEncoder};
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::otap_batch::OtlpEncoder;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::synthetic_signal;
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::synthetic_signal_old;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;

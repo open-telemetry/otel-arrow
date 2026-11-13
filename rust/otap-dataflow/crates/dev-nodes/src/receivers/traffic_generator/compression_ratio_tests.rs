@@ -56,8 +56,10 @@
 
 #![cfg(test)]
 
+use super::otap_batch::OtlpEncoder;
+use super::semconv_signal::semconv_otap_logs;
 use super::semconv_signal_old::semconv_otlp_logs;
-use super::synthetic_signal::{OtlpEncoder, static_otap_logs};
+use super::synthetic_signal::static_otap_logs;
 use super::synthetic_signal_old::static_otlp_logs_with_config;
 use prost::Message;
 use std::io::Write;
@@ -173,7 +175,12 @@ fn static_with_trace_ctx_batch_bytes() -> Vec<u8> {
 
 /// Generate a `semconv` log batch.
 fn semconv_batch_bytes(registry: &ResolvedRegistry) -> Vec<u8> {
-    semconv_otlp_logs(BATCH_SIZE, registry).encode_to_vec()
+    let records = semconv_otap_logs(BATCH_SIZE, registry).expect("build semconv logs");
+    OtlpEncoder::new()
+        .encode(records)
+        .expect("encode semconv logs")
+        .as_bytes()
+        .to_vec()
 }
 
 /// Compress `bytes` with zstd level 3 and return (raw_size, compressed_size, ratio).
@@ -376,45 +383,66 @@ fn fresh_stream(generate: impl Fn() -> Vec<u8>) -> Vec<u8> {
 }
 
 /// Informational: compare the OTLP wire layout of the OTAP generation path
-/// against the previous prost path for the same static log data. The data
-/// is identical (see the equivalence tests in `synthetic_signal.rs`), so any
-/// difference comes from field order and length-prefix encoding.
+/// against the previous prost path for the same generated log data (see the
+/// equivalence tests in `synthetic_signal.rs` and `semconv_signal.rs`). Any
+/// difference comes from field order and length-prefix encoding. Semconv
+/// values are drawn at random from registry examples, so its two streams are
+/// statistically, not byte-for-byte, the same data.
 ///
 /// Run with:
 /// ```sh
-/// cargo test -p otel-arrow-dfe-dev-nodes -- compression_ratio_tests::test_static_layout_otap_vs_prost --nocapture
+/// cargo test -p otel-arrow-dfe-dev-nodes -- compression_ratio_tests::test_layout_otap_vs_prost --nocapture
 /// ```
 #[test]
-fn test_static_layout_otap_vs_prost() {
+fn test_layout_otap_vs_prost() {
+    let registry = load_semconv_registry();
     let total_records = (BATCH_SIZE * NUM_BATCHES) as f64;
     println!(
-        "{:<22} {:>10} {:>9} {:>9} {:>9}",
-        "layout", "raw B/rec", "zstd-3", "gzip-6", "zstd B/rec"
+        "{:<12} {:<6} {:>10} {:>9} {:>9} {:>11} {:>11}",
+        "source", "layout", "raw B/rec", "zstd-3", "gzip-6", "zstd B/rec", "gzip B/rec"
     );
-    for tc in [false, true] {
+
+    let sources: [(&str, Vec<u8>, Vec<u8>); 3] = [
+        (
+            "static",
+            fresh_stream(|| static_prost_batch_bytes(false)),
+            fresh_stream(|| static_otap_batch_bytes(false)),
+        ),
+        (
+            "static+tc",
+            fresh_stream(|| static_prost_batch_bytes(true)),
+            fresh_stream(|| static_otap_batch_bytes(true)),
+        ),
+        (
+            "semconv",
+            fresh_stream(|| semconv_otlp_logs(BATCH_SIZE, &registry).encode_to_vec()),
+            fresh_stream(|| semconv_batch_bytes(&registry)),
+        ),
+    ];
+
+    for (source, prost_bytes, otap_bytes) in sources {
         let mut sizes = [(0usize, 0usize, 0usize); 2];
-        for (i, (label, bytes)) in [
-            ("prost", fresh_stream(|| static_prost_batch_bytes(tc))),
-            ("otap", fresh_stream(|| static_otap_batch_bytes(tc))),
-        ]
-        .into_iter()
-        .enumerate()
+        for (i, (layout, bytes)) in [("prost", prost_bytes), ("otap", otap_bytes)]
+            .into_iter()
+            .enumerate()
         {
             let (raw, zstd, _) = measure(&bytes);
             let gzip = gzip_size(&bytes);
             sizes[i] = (raw, zstd, gzip);
             println!(
-                "{:<22} {:>10.1} {:>9} {:>9} {:>9.1}",
-                format!("{label}{}", if tc { "+tc" } else { "" }),
+                "{:<12} {:<6} {:>10.1} {:>9} {:>9} {:>11.2} {:>11.2}",
+                source,
+                layout,
                 raw as f64 / total_records,
                 zstd,
                 gzip,
                 zstd as f64 / total_records,
+                gzip as f64 / total_records,
             );
         }
         let pct = |new: usize, old: usize| (new as f64 / old as f64 - 1.0) * 100.0;
         println!(
-            "  otap vs prost: raw {:+.1}%, zstd {:+.1}%, gzip {:+.1}%",
+            "  {source} otap vs prost: raw {:+.1}%, zstd {:+.1}%, gzip {:+.1}%",
             pct(sizes[1].0, sizes[0].0),
             pct(sizes[1].1, sizes[0].1),
             pct(sizes[1].2, sizes[0].2),

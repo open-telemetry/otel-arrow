@@ -58,6 +58,8 @@ pub mod config;
 pub mod fake_data;
 /// traffic generator metrics implementation
 pub mod metrics;
+/// Shared OTAP batch construction and OTLP encoding for generated signals
+pub mod otap_batch;
 /// Signal generation abstractions
 pub mod producer;
 /// generates signals based on OTel semantic conventions registry

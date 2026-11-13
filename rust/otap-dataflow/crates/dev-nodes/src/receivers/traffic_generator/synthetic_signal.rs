@@ -7,162 +7,38 @@
 //! conventions registry, making them ideal for high-throughput load testing
 //! where startup time and per-signal CPU cost matter.
 //!
-//! Signals are built directly as OTAP record batches and then encoded to OTLP
-//! bytes with the OTAP->OTLP encoder (see [`OtlpEncoder`]). This gives the
-//! generated OTLP payloads the same wire layout that the engine itself
-//! produces, instead of the layout of the prost encoder.
+//! Signals are built directly as OTAP record batches through the shared
+//! [`super::otap_batch`] types and encoded to OTLP with
+//! [`super::otap_batch::OtlpEncoder`], so the generated OTLP has the same wire
+//! layout the engine produces.
 
-use crate::receivers::traffic_generator::fake_data::{
-    SCOPE_NAME, SCOPE_VERSION, current_time, delay, gen_span_id_bytes, gen_trace_id_bytes,
+use super::otap_batch::{
+    AttrValue, ExpHistogramPoint, HistogramPoint, LogRecordRow, LogsBatch, MetricRow, MetricsBatch,
+    NumberPoint, SummaryPoint, TracesBatch, append_attribute,
 };
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::arrow::array::RecordBatch;
-use otel_arrow_dfe_pdata::arrow::datatypes::ArrowPrimitiveType;
-use otel_arrow_dfe_pdata::encode::record::attributes::{
-    AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper,
-};
-use otel_arrow_dfe_pdata::encode::record::logs::LogsRecordBatchBuilder;
-use otel_arrow_dfe_pdata::encode::record::metrics::{
-    ExponentialHistogramDataPointsRecordBatchBuilder, HistogramDataPointsRecordBatchBuilder,
-    MetricsRecordBatchBuilder, NumberDataPointsRecordBatchBuilder,
-    SummaryDataPointsRecordBatchBuilder,
-};
-use otel_arrow_dfe_pdata::encode::record::traces::TracesRecordBatchBuilder;
-use otel_arrow_dfe_pdata::encode::{Error, Result};
-use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, Traces};
-use otel_arrow_dfe_pdata::otlp::attributes::parent_id::ParentId;
-use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::metrics::{MetricType, MetricsProtoBytesEncoder};
-use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use crate::receivers::traffic_generator::fake_data::{current_time, delay};
+use otel_arrow_dfe_pdata::encode::Result;
+use otel_arrow_dfe_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::span::SpanKind;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-/// Encodes generated OTAP batches into OTLP proto bytes.
-///
-/// Holds the per-signal encoders and a scratch buffer so they are reused
-/// across batches instead of being re-created for every payload.
-pub struct OtlpEncoder {
-    logs: LogsProtoBytesEncoder,
-    traces: TracesProtoBytesEncoder,
-    metrics: MetricsProtoBytesEncoder,
-    buffer: ProtoBuffer,
-}
-
-impl Default for OtlpEncoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl OtlpEncoder {
-    /// Create a new encoder with empty scratch state.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            logs: LogsProtoBytesEncoder::new(),
-            traces: TracesProtoBytesEncoder::new(),
-            metrics: MetricsProtoBytesEncoder::new(),
-            buffer: ProtoBuffer::default(),
-        }
-    }
-
-    /// Encode an OTAP batch into the matching OTLP export request bytes.
-    pub fn encode(
-        &mut self,
-        mut records: OtapArrowRecords,
-    ) -> otel_arrow_dfe_pdata::error::Result<OtlpProtoBytes> {
-        self.buffer.clear();
-        match records {
-            OtapArrowRecords::Logs(_) => self.logs.encode(&mut records, &mut self.buffer)?,
-            OtapArrowRecords::Traces(_) => self.traces.encode(&mut records, &mut self.buffer)?,
-            OtapArrowRecords::Metrics(_) => self.metrics.encode(&mut records, &mut self.buffer)?,
-        }
-
-        // The encoded bytes are handed off with the payload, so the buffer
-        // allocation goes with them. Re-reserve the same capacity so the next
-        // batch of similar size does not have to grow the buffer again.
-        let (bytes, capacity) = self.buffer.take_into_bytes();
-        self.buffer.ensure_capacity(capacity);
-
-        Ok(match records {
-            OtapArrowRecords::Logs(_) => OtlpProtoBytes::ExportLogsRequest(bytes),
-            OtapArrowRecords::Traces(_) => OtlpProtoBytes::ExportTracesRequest(bytes),
-            OtapArrowRecords::Metrics(_) => OtlpProtoBytes::ExportMetricsRequest(bytes),
-        })
-    }
-}
-
 /// Generates an OTAP traces batch with `signal_count` synthetic HTTP server spans.
 pub fn static_otap_traces(
     signal_count: usize,
     extra_attrs: Option<&HashMap<String, String>>,
 ) -> Result<OtapArrowRecords> {
-    if signal_count == 0 {
-        return Ok(OtapArrowRecords::Traces(Traces::default()));
+    let mut batch = TracesBatch::new();
+    append_resource_attributes(&mut batch.resource_attrs, extra_attrs);
+    for _ in 0..signal_count {
+        let span_id = batch.append_span("HTTP GET", SpanKind::Server)?;
+        append_span_attributes(&mut batch.span_attrs, span_id);
     }
-    let span_count = u16::try_from(signal_count).map_err(|_| Error::U16OverflowError)?;
-
-    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    append_resource_attributes(&mut resource_attrs, extra_attrs);
-
-    let mut spans = TracesRecordBatchBuilder::new();
-    let mut span_attrs = AttributesRecordBatchBuilder::<u16>::new();
-
-    spans.resource.append_id_n(0, signal_count);
-    spans.resource.append_schema_url_n(None, signal_count);
-    spans
-        .resource
-        .append_dropped_attributes_count_n(0, signal_count);
-    spans.scope.append_id_n(0, signal_count);
-    spans
-        .scope
-        .append_name_n(Some(SCOPE_NAME.as_bytes()), signal_count);
-    spans
-        .scope
-        .append_version_n(Some(SCOPE_VERSION.as_bytes()), signal_count);
-    spans
-        .scope
-        .append_dropped_attributes_count_n(0, signal_count);
-    spans.append_schema_url_n(None, signal_count);
-
-    for span_id in 0..span_count {
-        let start_time = current_time();
-        let end_time = start_time + delay();
-
-        spans.append_id(Some(span_id));
-        spans.append_start_time_unix_nano(start_time as i64);
-        spans.append_duration_time_unix_nano(end_time as i64 - start_time as i64);
-        spans.append_trace_id(gen_trace_id_bytes())?;
-        spans.append_span_id(gen_span_id_bytes())?;
-        spans.append_trace_state(None);
-        spans.append_parent_span_id(None)?;
-        spans.append_flags(None);
-        spans.append_name(b"HTTP GET");
-        spans.append_kind(Some(SpanKind::Server as i32));
-        spans.append_dropped_attributes_count(Some(0));
-        spans.append_dropped_events_count(Some(0));
-        spans.append_dropped_links_count(Some(0));
-        spans.status.append_code(None);
-        spans.status.append_status_message(None);
-
-        append_span_attributes(&mut span_attrs, span_id);
-    }
-
-    let mut records = OtapArrowRecords::Traces(Traces::default());
-    set_payloads(
-        &mut records,
-        [
-            (spans.finish()?, ArrowPayloadType::Spans),
-            (span_attrs.finish()?, ArrowPayloadType::SpanAttrs),
-            (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
-        ],
-    )?;
-    Ok(records)
+    batch.finish()
 }
 
 /// Generates an OTAP logs batch with configurable body size, attribute count,
@@ -181,90 +57,37 @@ pub fn static_otap_logs(
     use_trace_context: bool,
     extra_attrs: Option<&HashMap<String, String>>,
 ) -> Result<OtapArrowRecords> {
+    let mut batch = LogsBatch::new();
     if signal_count == 0 {
-        return Ok(OtapArrowRecords::Logs(Logs::default()));
+        return batch.finish();
     }
-    let log_count = u16::try_from(signal_count).map_err(|_| Error::U16OverflowError)?;
 
     let body_pool = build_body_pool(log_body_size_bytes);
     let attr_count = num_log_attributes.unwrap_or(DEFAULT_LOG_ATTRIBUTE_COUNT);
     let attr_names = attribute_names(ATTR_NAMES, "attr", attr_count);
+    append_resource_attributes(&mut batch.resource_attrs, extra_attrs);
 
-    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    append_resource_attributes(&mut resource_attrs, extra_attrs);
-
-    let mut logs = LogsRecordBatchBuilder::new();
-    let mut log_attrs = AttributesRecordBatchBuilder::<u16>::new();
-
-    logs.resource.append_id_n(0, signal_count);
-    logs.resource.append_schema_url_n(None, signal_count);
-    logs.resource
-        .append_dropped_attributes_count_n(0, signal_count);
-    logs.scope.append_id_n(0, signal_count);
-    logs.scope
-        .append_name_n(Some(SCOPE_NAME.as_bytes()), signal_count);
-    logs.scope
-        .append_version_n(Some(SCOPE_VERSION.as_bytes()), signal_count);
-    logs.scope
-        .append_dropped_attributes_count_n(0, signal_count);
-    logs.append_schema_url_n(None, signal_count);
-    logs.append_dropped_attributes_count_n(0, signal_count);
-    logs.append_flags_n(None, signal_count);
-
-    for log_id in 0..log_count {
-        let record_index = log_id as usize;
-        let timestamp = current_time() as i64;
+    for record_index in 0..signal_count {
         let (severity_number, severity_text) = log_severity(record_index);
-
-        logs.append_time_unix_nano(timestamp);
-        logs.append_observed_time_unix_nano(timestamp);
-        logs.append_severity_number(Some(severity_number as i32));
-        logs.append_severity_text(Some(severity_text.as_bytes()));
-        logs.append_event_name(None);
-
-        if use_trace_context {
-            logs.append_trace_id(Some(&gen_trace_id_bytes()))?;
-            logs.append_span_id(Some(&gen_span_id_bytes()))?;
-        } else {
-            logs.append_trace_id(None)?;
-            logs.append_span_id(None)?;
-        }
-
-        if body_pool.is_empty() {
-            logs.body.append_null();
-        } else {
-            logs.body
-                .append_str(body_pool[record_index % body_pool.len()].as_bytes());
-        }
-
-        // Log ids only exist to link attributes, so records without
-        // attributes get a null id.
-        if attr_names.is_empty() {
-            logs.append_id(None);
-            continue;
-        }
-
-        logs.append_id(Some(log_id));
+        let log_id = batch.append_log(LogRecordRow {
+            severity_number,
+            severity_text: Some(severity_text),
+            event_name: None,
+            trace_context: use_trace_context,
+            body: (!body_pool.is_empty())
+                .then(|| body_pool[record_index % body_pool.len()].as_str()),
+            has_attributes: !attr_names.is_empty(),
+        })?;
         for (i, name) in attr_names.iter().enumerate() {
             append_attribute(
-                &mut log_attrs,
+                &mut batch.log_attrs,
                 log_id,
                 name,
                 log_attribute_value(i, record_index),
             );
         }
     }
-
-    let mut records = OtapArrowRecords::Logs(Logs::default());
-    set_payloads(
-        &mut records,
-        [
-            (logs.finish()?, ArrowPayloadType::Logs),
-            (log_attrs.finish()?, ArrowPayloadType::LogAttrs),
-            (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
-        ],
-    )?;
-    Ok(records)
+    batch.finish()
 }
 
 /// Generates an OTAP metrics batch covering all five OTLP metric types with
@@ -285,46 +108,21 @@ pub fn static_otap_metrics(
     num_data_points: Option<usize>,
     extra_attrs: Option<&HashMap<String, String>>,
 ) -> Result<OtapArrowRecords> {
-    if signal_count == 0 {
-        return Ok(OtapArrowRecords::Metrics(Metrics::default()));
-    }
-    let metric_count = u16::try_from(signal_count).map_err(|_| Error::U16OverflowError)?;
+    let mut batch = MetricsBatch::new();
     let attr_count = num_metric_attributes.unwrap_or(DEFAULT_METRIC_ATTRIBUTE_COUNT);
     let dp_count = num_data_points.unwrap_or(DEFAULT_DATA_POINTS_PER_METRIC);
-    // Data point ids are u32 and are shared by all points of one type, so the
-    // total across all metrics must fit.
-    _ = signal_count
-        .checked_mul(dp_count)
-        .and_then(|total| u32::try_from(total).ok())
-        .ok_or(Error::U32OverflowError)?;
+    let attr_names = attribute_names(METRIC_ATTR_NAMES, "metric_attr", attr_count);
+    append_resource_attributes(&mut batch.resource_attrs, extra_attrs);
 
-    let mut b = MetricsBuilders::new(attr_count);
-    append_resource_attributes(&mut b.resource_attrs, extra_attrs);
-
-    b.metrics.resource.append_id_n(0, signal_count);
-    b.metrics.resource.append_schema_url_n(None, signal_count);
-    b.metrics
-        .resource
-        .append_dropped_attributes_count_n(0, signal_count);
-    b.metrics.scope.append_id_n(0, signal_count);
-    b.metrics
-        .scope
-        .append_name_n(Some(SCOPE_NAME.as_bytes()), signal_count);
-    b.metrics
-        .scope
-        .append_version_n(Some(SCOPE_VERSION.as_bytes()), signal_count);
-    b.metrics
-        .scope
-        .append_dropped_attributes_count_n(0, signal_count);
-    b.metrics.append_scope_schema_url_n(b"", signal_count);
-
-    for metric_id in 0..metric_count {
-        let metric_index = metric_id as usize;
+    for metric_index in 0..signal_count {
         let def = &METRIC_DEFS[metric_index % METRIC_DEFS.len()];
-        b.append_metric(metric_id, def, dp_count);
+        let metric_id = batch.append_metric(metric_row(def))?;
+        for j in 0..dp_count {
+            let point_idx = metric_index.wrapping_mul(31) + j;
+            append_data_point(&mut batch, def.kind, metric_id, point_idx, j, &attr_names)?;
+        }
     }
-
-    b.finish()
+    batch.finish()
 }
 
 /// Static resource attributes, with optional user-supplied extras merged in.
@@ -431,289 +229,137 @@ fn attribute_names(pool: &[&'static str], prefix: &str, count: usize) -> Vec<Cow
     names
 }
 
-/// A generated attribute value.
-#[derive(Clone, Copy)]
-enum AttrValue<'a> {
-    Str(&'a str),
-    Int(i64),
-}
-
-/// Append one attribute row (parent id, key, value) to an attributes builder.
-fn append_attribute<T>(
-    builder: &mut AttributesRecordBatchBuilder<T>,
-    parent_id: <T::ArrayType as ArrowPrimitiveType>::Native,
-    key: &str,
-    value: AttrValue<'_>,
-) where
-    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
-{
-    builder.append_parent_id(&parent_id);
-    builder.append_key(key.as_bytes());
-    match value {
-        AttrValue::Str(s) => builder.any_values_builder.append_str(s.as_bytes()),
-        AttrValue::Int(v) => builder.any_values_builder.append_int(v),
+/// The metric-level columns for a synthetic metric definition.
+fn metric_row(def: &MetricDef) -> MetricRow<'static> {
+    let (metric_type, temporality, is_monotonic) = match def.kind {
+        MetricKind::Counter => (
+            MetricType::Sum,
+            Some(AggregationTemporality::Cumulative),
+            Some(true),
+        ),
+        MetricKind::UpDownCounter => (
+            MetricType::Sum,
+            Some(AggregationTemporality::Delta),
+            Some(false),
+        ),
+        MetricKind::Gauge => (MetricType::Gauge, None, None),
+        MetricKind::Histogram => (
+            MetricType::Histogram,
+            Some(AggregationTemporality::Delta),
+            None,
+        ),
+        MetricKind::ExponentialHistogram => (
+            MetricType::ExponentialHistogram,
+            Some(AggregationTemporality::Delta),
+            None,
+        ),
+        MetricKind::Summary => (MetricType::Summary, None, None),
+    };
+    MetricRow {
+        metric_type,
+        name: def.name,
+        description: def.description,
+        unit: def.unit,
+        temporality,
+        is_monotonic,
     }
 }
 
-/// Set every non-empty record batch into the OTAP batch.
-pub(super) fn set_payloads<const N: usize>(
-    records: &mut OtapArrowRecords,
-    payloads: [(RecordBatch, ArrowPayloadType); N],
+/// Append the `j`-th data point of a metric of `kind` and its attributes.
+fn append_data_point(
+    batch: &mut MetricsBatch,
+    kind: MetricKind,
+    metric_id: u16,
+    point_idx: usize,
+    j: usize,
+    attr_names: &[Cow<'static, str>],
 ) -> Result<()> {
-    for (rb, payload_type) in payloads {
-        if rb.num_rows() > 0 {
-            records.set(payload_type, rb)?;
+    let time = current_time();
+    let start_time = time - delay();
+    match kind {
+        MetricKind::Counter | MetricKind::UpDownCounter | MetricKind::Gauge => {
+            let value = if matches!(kind, MetricKind::Counter) {
+                // Monotonic counter: increasing values
+                ((point_idx + 1) * 42) as f64 + (j as f64 * 1.5)
+            } else {
+                // Gauge/up-down: varied values centered around typical ranges
+                NUMBER_BASE_VALUES[point_idx % NUMBER_BASE_VALUES.len()]
+            };
+            let id = batch.append_number_point(
+                metric_id,
+                NumberPoint {
+                    start_time: Some(start_time),
+                    time,
+                    value,
+                },
+            )?;
+            append_metric_attributes(&mut batch.ndp_attrs, attr_names, id, point_idx);
+        }
+        MetricKind::Histogram => {
+            let dist = HISTOGRAM_DISTRIBUTIONS[point_idx % HISTOGRAM_DISTRIBUTIONS.len()];
+            let buckets = || dist.iter().zip(HISTOGRAM_MIDPOINTS.iter());
+            let sum: f64 = buckets().map(|(&c, &m)| c as f64 * m).sum();
+            // Derive min/max from the first and last non-zero bucket midpoints
+            let min = buckets().find(|(c, _)| **c > 0).map_or(0.0, |(_, &m)| m);
+            let max = buckets()
+                .rev()
+                .find(|(c, _)| **c > 0)
+                .map_or(0.0, |(_, &m)| m);
+            let id = batch.append_histogram_point(
+                metric_id,
+                HistogramPoint {
+                    start_time,
+                    time,
+                    count: dist.iter().sum(),
+                    sum: Some(sum),
+                    bucket_counts: dist,
+                    explicit_bounds: HISTOGRAM_BOUNDS,
+                    min: Some(min),
+                    max: Some(max),
+                },
+            )?;
+            append_metric_attributes(&mut batch.hdp_attrs, attr_names, id, point_idx);
+        }
+        MetricKind::ExponentialHistogram => {
+            let (offset, counts) = EXP_HISTOGRAM_BUCKETS[point_idx % EXP_HISTOGRAM_BUCKETS.len()];
+            let total_count: u64 = counts.iter().sum();
+            let sum = total_count as f64 * 12.5;
+            let zeros = 2u64;
+            let id = batch.append_exp_histogram_point(
+                metric_id,
+                ExpHistogramPoint {
+                    start_time,
+                    time,
+                    count: total_count + zeros,
+                    sum: Some(sum),
+                    scale: 4,
+                    zero_count: zeros,
+                    min: Some(0.1),
+                    max: Some(sum / total_count as f64 * 3.0),
+                    positive_offset: offset,
+                    positive_counts: counts,
+                },
+            )?;
+            append_metric_attributes(&mut batch.ehdp_attrs, attr_names, id, point_idx);
+        }
+        MetricKind::Summary => {
+            let profile = QUANTILE_PROFILES[point_idx % QUANTILE_PROFILES.len()];
+            let count = ((point_idx + 1) * 1000) as u64;
+            let id = batch.append_summary_point(
+                metric_id,
+                SummaryPoint {
+                    start_time,
+                    time,
+                    count,
+                    sum: profile[3] * count as f64 * 0.8,
+                    quantiles: SUMMARY_QUANTILES,
+                    values: profile,
+                },
+            )?;
+            append_metric_attributes(&mut batch.sdp_attrs, attr_names, id, point_idx);
         }
     }
     Ok(())
-}
-
-/// Builders for every record batch that makes up a generated metrics batch.
-struct MetricsBuilders {
-    attr_names: Vec<Cow<'static, str>>,
-    metrics: MetricsRecordBatchBuilder,
-    resource_attrs: AttributesRecordBatchBuilder<u16>,
-    ndp: NumberDataPointsRecordBatchBuilder,
-    ndp_attrs: AttributesRecordBatchBuilder<u32>,
-    hdp: HistogramDataPointsRecordBatchBuilder,
-    hdp_attrs: AttributesRecordBatchBuilder<u32>,
-    ehdp: ExponentialHistogramDataPointsRecordBatchBuilder,
-    ehdp_attrs: AttributesRecordBatchBuilder<u32>,
-    sdp: SummaryDataPointsRecordBatchBuilder,
-    sdp_attrs: AttributesRecordBatchBuilder<u32>,
-    next_ndp_id: u32,
-    next_hdp_id: u32,
-    next_ehdp_id: u32,
-    next_sdp_id: u32,
-}
-
-impl MetricsBuilders {
-    fn new(attr_count: usize) -> Self {
-        Self {
-            attr_names: attribute_names(METRIC_ATTR_NAMES, "metric_attr", attr_count),
-            metrics: MetricsRecordBatchBuilder::new(),
-            resource_attrs: AttributesRecordBatchBuilder::new(),
-            ndp: NumberDataPointsRecordBatchBuilder::new(),
-            ndp_attrs: AttributesRecordBatchBuilder::new(),
-            hdp: HistogramDataPointsRecordBatchBuilder::new(),
-            hdp_attrs: AttributesRecordBatchBuilder::new(),
-            ehdp: ExponentialHistogramDataPointsRecordBatchBuilder::new(),
-            ehdp_attrs: AttributesRecordBatchBuilder::new(),
-            sdp: SummaryDataPointsRecordBatchBuilder::new(),
-            sdp_attrs: AttributesRecordBatchBuilder::new(),
-            next_ndp_id: 0,
-            next_hdp_id: 0,
-            next_ehdp_id: 0,
-            next_sdp_id: 0,
-        }
-    }
-
-    /// Append one metric row and its `dp_count` data points.
-    fn append_metric(&mut self, metric_id: u16, def: &MetricDef, dp_count: usize) {
-        let (metric_type, temporality, monotonic) = match def.kind {
-            MetricKind::Counter => (
-                MetricType::Sum,
-                Some(AggregationTemporality::Cumulative),
-                Some(true),
-            ),
-            MetricKind::UpDownCounter => (
-                MetricType::Sum,
-                Some(AggregationTemporality::Delta),
-                Some(false),
-            ),
-            MetricKind::Gauge => (MetricType::Gauge, None, None),
-            MetricKind::Histogram => (
-                MetricType::Histogram,
-                Some(AggregationTemporality::Delta),
-                None,
-            ),
-            MetricKind::ExponentialHistogram => (
-                MetricType::ExponentialHistogram,
-                Some(AggregationTemporality::Delta),
-                None,
-            ),
-            MetricKind::Summary => (MetricType::Summary, None, None),
-        };
-
-        self.metrics.append_id(metric_id);
-        self.metrics.append_metric_type(metric_type as u8);
-        self.metrics.append_name(def.name.as_bytes());
-        self.metrics.append_description(def.description.as_bytes());
-        self.metrics.append_unit(def.unit.as_bytes());
-        self.metrics
-            .append_aggregation_temporality(temporality.map(|t| t as i32));
-        self.metrics.append_is_monotonic(monotonic);
-
-        let metric_index = metric_id as usize;
-        for j in 0..dp_count {
-            let point_idx = metric_index.wrapping_mul(31) + j;
-            match def.kind {
-                MetricKind::Counter => self.append_number_point(metric_id, point_idx, j, true),
-                MetricKind::UpDownCounter | MetricKind::Gauge => {
-                    self.append_number_point(metric_id, point_idx, j, false)
-                }
-                MetricKind::Histogram => self.append_histogram_point(metric_id, point_idx),
-                MetricKind::ExponentialHistogram => {
-                    self.append_exp_histogram_point(metric_id, point_idx)
-                }
-                MetricKind::Summary => self.append_summary_point(metric_id, point_idx),
-            }
-        }
-    }
-
-    /// Append a NumberDataPoint with a varying value.
-    fn append_number_point(&mut self, metric_id: u16, point_idx: usize, j: usize, monotonic: bool) {
-        let timestamp = current_time();
-        let start_time = timestamp - delay();
-        let value = if monotonic {
-            // Monotonic counter: increasing values
-            ((point_idx + 1) * 42) as f64 + (j as f64 * 1.5)
-        } else {
-            // Gauge/up-down: varied values centered around typical ranges
-            NUMBER_BASE_VALUES[point_idx % NUMBER_BASE_VALUES.len()]
-        };
-
-        let id = self.next_ndp_id;
-        self.next_ndp_id += 1;
-        self.ndp.append_id(id);
-        self.ndp.append_parent_id(metric_id);
-        self.ndp
-            .append_start_time_unix_nano(Some(start_time as i64));
-        self.ndp.append_time_unix_nano(timestamp as i64);
-        self.ndp.append_double_value(Some(value));
-        self.ndp.append_int_value(None);
-        self.ndp.append_flags(0);
-        append_metric_attributes(&mut self.ndp_attrs, &self.attr_names, id, point_idx);
-    }
-
-    /// Append a HistogramDataPoint with a realistic bucket distribution.
-    fn append_histogram_point(&mut self, metric_id: u16, point_idx: usize) {
-        let timestamp = current_time();
-        let start_time = timestamp - delay();
-        let dist = HISTOGRAM_DISTRIBUTIONS[point_idx % HISTOGRAM_DISTRIBUTIONS.len()];
-        let total_count: u64 = dist.iter().sum();
-        let sum: f64 = dist
-            .iter()
-            .zip(HISTOGRAM_MIDPOINTS.iter())
-            .map(|(&c, &m)| c as f64 * m)
-            .sum();
-        // Derive min/max from the first and last non-zero bucket midpoints
-        let min_val = dist
-            .iter()
-            .zip(HISTOGRAM_MIDPOINTS.iter())
-            .find(|(c, _)| **c > 0)
-            .map_or(0.0, |(_, &m)| m);
-        let max_val = dist
-            .iter()
-            .zip(HISTOGRAM_MIDPOINTS.iter())
-            .rev()
-            .find(|(c, _)| **c > 0)
-            .map_or(0.0, |(_, &m)| m);
-
-        let id = self.next_hdp_id;
-        self.next_hdp_id += 1;
-        self.hdp.append_id(id);
-        self.hdp.append_parent_id(metric_id);
-        self.hdp.append_start_time_unix_nano(start_time as i64);
-        self.hdp.append_time_unix_nano(timestamp as i64);
-        self.hdp.append_count(total_count);
-        self.hdp.append_bucket_counts(dist.iter().copied());
-        self.hdp
-            .append_explicit_bounds(HISTOGRAM_BOUNDS.iter().copied());
-        self.hdp.append_sum(Some(sum));
-        self.hdp.append_flags(0);
-        self.hdp.append_min(Some(min_val));
-        self.hdp.append_max(Some(max_val));
-        append_metric_attributes(&mut self.hdp_attrs, &self.attr_names, id, point_idx);
-    }
-
-    /// Append an ExponentialHistogramDataPoint with varying positive buckets.
-    fn append_exp_histogram_point(&mut self, metric_id: u16, point_idx: usize) {
-        let timestamp = current_time();
-        let start_time = timestamp - delay();
-        let (offset, counts) = EXP_HISTOGRAM_BUCKETS[point_idx % EXP_HISTOGRAM_BUCKETS.len()];
-        let total_count: u64 = counts.iter().sum();
-        let sum = total_count as f64 * 12.5;
-        let zeros = 2u64;
-
-        let id = self.next_ehdp_id;
-        self.next_ehdp_id += 1;
-        self.ehdp.append_id(id);
-        self.ehdp.append_parent_id(metric_id);
-        self.ehdp.append_start_time_unix_nano(start_time as i64);
-        self.ehdp.append_time_unix_nano(timestamp as i64);
-        self.ehdp.append_count(total_count + zeros);
-        self.ehdp.append_sum(Some(sum));
-        self.ehdp.append_scale(4);
-        self.ehdp.append_zero_count(zeros);
-        self.ehdp.append_flags(0);
-        self.ehdp.append_min(Some(0.1));
-        self.ehdp.append_max(Some(sum / total_count as f64 * 3.0));
-        self.ehdp.append_zero_threshold(0.0);
-        self.ehdp
-            .positive
-            .append(Some((offset, counts.iter().copied())));
-        self.ehdp
-            .negative
-            .append(None::<(i32, std::iter::Empty<u64>)>);
-        append_metric_attributes(&mut self.ehdp_attrs, &self.attr_names, id, point_idx);
-    }
-
-    /// Append a SummaryDataPoint with realistic quantile values.
-    fn append_summary_point(&mut self, metric_id: u16, point_idx: usize) {
-        let timestamp = current_time();
-        let start_time = timestamp - delay();
-        let profile = QUANTILE_PROFILES[point_idx % QUANTILE_PROFILES.len()];
-        let total_count = ((point_idx + 1) * 1000) as u64;
-        let sum = profile[3] * total_count as f64 * 0.8;
-
-        let id = self.next_sdp_id;
-        self.next_sdp_id += 1;
-        self.sdp.append_id(id);
-        self.sdp.append_parent_id(metric_id);
-        self.sdp.append_start_time_unix_nano(start_time as i64);
-        self.sdp.append_time_unix_nano(timestamp as i64);
-        self.sdp.append_count(total_count);
-        self.sdp.append_sum(sum);
-        self.sdp.append_flags(0);
-        self.sdp.quantile_values.append(
-            SUMMARY_QUANTILES
-                .iter()
-                .copied()
-                .zip(profile.iter().copied()),
-        );
-        append_metric_attributes(&mut self.sdp_attrs, &self.attr_names, id, point_idx);
-    }
-
-    /// Finish all builders into an OTAP metrics batch.
-    fn finish(mut self) -> Result<OtapArrowRecords> {
-        let mut records = OtapArrowRecords::Metrics(Metrics::default());
-        set_payloads(
-            &mut records,
-            [
-                (self.metrics.finish()?, ArrowPayloadType::UnivariateMetrics),
-                (
-                    self.resource_attrs.finish()?,
-                    ArrowPayloadType::ResourceAttrs,
-                ),
-                (self.ndp.finish()?, ArrowPayloadType::NumberDataPoints),
-                (self.ndp_attrs.finish()?, ArrowPayloadType::NumberDpAttrs),
-                (self.hdp.finish()?, ArrowPayloadType::HistogramDataPoints),
-                (self.hdp_attrs.finish()?, ArrowPayloadType::HistogramDpAttrs),
-                (
-                    self.ehdp.finish()?,
-                    ArrowPayloadType::ExpHistogramDataPoints,
-                ),
-                (
-                    self.ehdp_attrs.finish()?,
-                    ArrowPayloadType::ExpHistogramDpAttrs,
-                ),
-                (self.sdp.finish()?, ArrowPayloadType::SummaryDataPoints),
-                (self.sdp_attrs.finish()?, ArrowPayloadType::SummaryDpAttrs),
-            ],
-        )?;
-        Ok(records)
-    }
 }
 
 /// Append the attributes for one metric data point.
@@ -1324,8 +970,10 @@ pub(super) fn build_body_pool(size_bytes: Option<usize>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::otap_batch::OtlpEncoder;
     use super::super::synthetic_signal_old as old;
     use super::*;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{MetricsData, metric::Data};
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
@@ -1544,7 +1192,9 @@ mod tests {
 
     #[test]
     fn oversized_batches_are_rejected() {
-        let too_many = u16::MAX as usize + 1;
+        // Row ids are u16, so a batch holds at most u16::MAX + 1 rows (ids
+        // 0..=u16::MAX).
+        let too_many = u16::MAX as usize + 2;
         assert!(static_otap_logs(too_many, None, Some(0), false, None).is_err());
         assert!(static_otap_traces(too_many, None).is_err());
         assert!(static_otap_metrics(too_many, Some(0), None, None).is_err());

@@ -12,7 +12,7 @@ use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
     build_rotation_table,
 };
-use super::synthetic_signal::OtlpEncoder;
+use super::otap_batch::OtlpEncoder;
 use super::{semconv_signal, synthetic_signal};
 
 /// A SignalProducer yields the signals that need to be exported in a given

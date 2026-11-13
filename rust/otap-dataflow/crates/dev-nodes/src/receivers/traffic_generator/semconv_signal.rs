@@ -5,41 +5,26 @@
 //! The semconv signal module generates signals based on the OpenTelemetry
 //! Semantic Conventions registry.
 //!
-//! Signals are built directly as OTAP record batches and encoded to OTLP with
-//! [`super::synthetic_signal::OtlpEncoder`], so the generated OTLP has the same
-//! wire layout the engine produces.
+//! Signals are built directly as OTAP record batches through the shared
+//! [`super::otap_batch`] types and encoded to OTLP with
+//! [`super::otap_batch::OtlpEncoder`], so the generated OTLP has the same wire
+//! layout the engine produces.
 //!
 //! ToDo: Add profile signal support
 
+use super::otap_batch::{
+    AttrValue, HistogramPoint, LogRecordRow, LogsBatch, MetricRow, MetricsBatch, NumberPoint,
+    TracesBatch, append_attribute, append_key_value,
+};
 use crate::receivers::traffic_generator::attributes::get_attribute_name_value;
-use crate::receivers::traffic_generator::fake_data::{
-    SCOPE_NAME, SCOPE_VERSION, current_time, delay, gen_span_id_bytes, gen_trace_id_bytes,
-};
-use crate::receivers::traffic_generator::synthetic_signal::set_payloads;
-use otel_arrow_dfe_pdata::arrow::datatypes::ArrowPrimitiveType;
-use otel_arrow_dfe_pdata::encode::append_attribute_value;
-use otel_arrow_dfe_pdata::encode::record::attributes::{
-    AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper,
-};
-use otel_arrow_dfe_pdata::encode::record::logs::LogsRecordBatchBuilder;
-use otel_arrow_dfe_pdata::encode::record::metrics::{
-    HistogramDataPointsRecordBatchBuilder, MetricsRecordBatchBuilder,
-    NumberDataPointsRecordBatchBuilder,
-};
-use otel_arrow_dfe_pdata::encode::record::traces::{
-    EventsRecordBatchBuilder, TracesRecordBatchBuilder,
-};
-use otel_arrow_dfe_pdata::encode::{Error, Result};
-use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, Traces};
-use otel_arrow_dfe_pdata::otlp::attributes::parent_id::ParentId;
+use crate::receivers::traffic_generator::fake_data::current_time;
+use otel_arrow_dfe_pdata::encode::Result;
+use otel_arrow_dfe_pdata::encode::record::attributes::AttributesRecordBatchBuilder;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
-use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::span::SpanKind;
-use otel_arrow_dfe_pdata::views::otlp::proto::common::ObjKeyValue;
-use otel_arrow_dfe_pdata::views::otlp::proto::wrappers::GenericObj;
 use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_semconv::v1::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
@@ -49,93 +34,32 @@ pub fn semconv_otap_traces(
     signal_count: usize,
     registry: &ResolvedRegistry,
 ) -> Result<OtapArrowRecords> {
+    let mut batch = TracesBatch::new();
     let groups: Vec<_> = registry
         .groups
         .iter()
         .filter(|g| g.r#type == GroupType::Span)
         .collect();
     if signal_count == 0 || groups.is_empty() {
-        return Ok(OtapArrowRecords::Traces(Traces::default()));
+        return batch.finish();
     }
-    let span_count = u16::try_from(signal_count).map_err(|_| Error::U16OverflowError)?;
+    append_resource_attributes(&mut batch.resource_attrs);
 
-    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    append_resource_attributes(&mut resource_attrs);
-
-    let mut spans = TracesRecordBatchBuilder::new();
-    let mut span_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    let mut events = EventsRecordBatchBuilder::new();
-    let mut next_event_id: u32 = 0;
-
-    spans.resource.append_id_n(0, signal_count);
-    spans.resource.append_schema_url_n(None, signal_count);
-    spans
-        .resource
-        .append_dropped_attributes_count_n(0, signal_count);
-    spans.scope.append_id_n(0, signal_count);
-    spans
-        .scope
-        .append_name_n(Some(SCOPE_NAME.as_bytes()), signal_count);
-    spans
-        .scope
-        .append_version_n(Some(SCOPE_VERSION.as_bytes()), signal_count);
-    spans
-        .scope
-        .append_dropped_attributes_count_n(0, signal_count);
-    spans.append_schema_url_n(None, signal_count);
-
-    for span_id in 0..span_count {
-        let group = groups[span_id as usize % groups.len()];
-        let start_time = current_time();
-        let end_time = start_time + delay();
-
-        spans.append_id(Some(span_id));
-        spans.append_start_time_unix_nano(start_time as i64);
-        spans.append_duration_time_unix_nano(end_time as i64 - start_time as i64);
-        spans.append_trace_id(gen_trace_id_bytes())?;
-        spans.append_span_id(gen_span_id_bytes())?;
-        spans.append_trace_state(None);
-        spans.append_parent_span_id(None)?;
-        spans.append_flags(None);
-        spans.append_name(group.id.as_bytes());
-        spans.append_kind(Some(otel_span_kind(group.span_kind.as_ref()) as i32));
-        spans.append_dropped_attributes_count(Some(0));
-        spans.append_dropped_events_count(Some(0));
-        spans.append_dropped_links_count(Some(0));
-        spans.status.append_code(None);
-        spans.status.append_status_message(None);
-
+    for i in 0..signal_count {
+        let group = groups[i % groups.len()];
+        let span_id = batch.append_span(&group.id, otel_span_kind(group.span_kind.as_ref()))?;
         for attribute in &group.attributes {
             append_key_value(
-                &mut span_attrs,
+                &mut batch.span_attrs,
                 span_id,
                 &get_attribute_name_value(attribute),
             )?;
         }
-
         for event_name in &group.events {
-            events.append_id(Some(next_event_id));
-            events.append_parent_id(span_id);
-            events.append_time_unix_nano(Some(current_time() as i64));
-            events.append_name(event_name.as_bytes());
-            events.append_dropped_attributes_count(Some(0));
-            next_event_id = next_event_id
-                .checked_add(1)
-                .ok_or(Error::U32OverflowError)?;
+            batch.append_event(span_id, event_name)?;
         }
     }
-
-    let mut records = OtapArrowRecords::Traces(Traces::default());
-    set_payloads(
-        &mut records,
-        [
-            (spans.finish()?, ArrowPayloadType::Spans),
-            (events.finish()?, ArrowPayloadType::SpanEvents),
-            (span_attrs.finish()?, ArrowPayloadType::SpanAttrs),
-            (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
-        ],
-    )?;
-    Ok(records)
+    batch.finish()
 }
 
 /// Generates an OTAP logs batch with `signal_count` records, cycling through
@@ -144,87 +68,44 @@ pub fn semconv_otap_logs(
     signal_count: usize,
     registry: &ResolvedRegistry,
 ) -> Result<OtapArrowRecords> {
+    let mut batch = LogsBatch::new();
     let groups: Vec<_> = registry
         .groups
         .iter()
         .filter(|g| g.r#type == GroupType::Event)
         .collect();
     if signal_count == 0 || groups.is_empty() {
-        return Ok(OtapArrowRecords::Logs(Logs::default()));
+        return batch.finish();
     }
-    let log_count = u16::try_from(signal_count).map_err(|_| Error::U16OverflowError)?;
-
-    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    append_resource_attributes(&mut resource_attrs);
-
-    let mut logs = LogsRecordBatchBuilder::new();
-    let mut log_attrs = AttributesRecordBatchBuilder::<u16>::new();
-
-    logs.resource.append_id_n(0, signal_count);
-    logs.resource.append_schema_url_n(None, signal_count);
-    logs.resource
-        .append_dropped_attributes_count_n(0, signal_count);
-    logs.scope.append_id_n(0, signal_count);
-    logs.scope
-        .append_name_n(Some(SCOPE_NAME.as_bytes()), signal_count);
-    logs.scope
-        .append_version_n(Some(SCOPE_VERSION.as_bytes()), signal_count);
-    logs.scope
-        .append_dropped_attributes_count_n(0, signal_count);
-    logs.append_schema_url_n(None, signal_count);
-    logs.append_dropped_attributes_count_n(0, signal_count);
-    logs.append_flags_n(None, signal_count);
+    append_resource_attributes(&mut batch.resource_attrs);
 
     // Reused across records so rendering each body does not allocate.
     let mut body = String::new();
-    for log_id in 0..log_count {
-        let group = groups[log_id as usize % groups.len()];
-        let timestamp = current_time() as i64;
-
-        logs.append_time_unix_nano(timestamp);
-        logs.append_observed_time_unix_nano(timestamp);
-        logs.append_severity_number(Some(SeverityNumber::Info as i32));
-        logs.append_severity_text(None);
-        logs.append_event_name(
-            group
-                .name
-                .as_deref()
-                .filter(|name| !name.is_empty())
-                .map(str::as_bytes),
-        );
-        logs.append_trace_id(None)?;
-        logs.append_span_id(None)?;
-
+    for i in 0..signal_count {
+        let group = groups[i % groups.len()];
         body.clear();
         if let Some(group_body) = &group.body {
             use std::fmt::Write;
             write!(body, "{group_body}").expect("writing to a String cannot fail");
         }
-        logs.body.append_str(body.as_bytes());
 
-        // Log ids only exist to link attributes, so records without
-        // attributes get a null id.
-        if group.attributes.is_empty() {
-            logs.append_id(None);
-            continue;
-        }
-
-        logs.append_id(Some(log_id));
+        let log_id = batch.append_log(LogRecordRow {
+            severity_number: SeverityNumber::Info,
+            severity_text: None,
+            event_name: group.name.as_deref().filter(|name| !name.is_empty()),
+            trace_context: false,
+            body: Some(&body),
+            has_attributes: !group.attributes.is_empty(),
+        })?;
         for attribute in &group.attributes {
-            append_key_value(&mut log_attrs, log_id, &get_attribute_name_value(attribute))?;
+            append_key_value(
+                &mut batch.log_attrs,
+                log_id,
+                &get_attribute_name_value(attribute),
+            )?;
         }
     }
-
-    let mut records = OtapArrowRecords::Logs(Logs::default());
-    set_payloads(
-        &mut records,
-        [
-            (logs.finish()?, ArrowPayloadType::Logs),
-            (log_attrs.finish()?, ArrowPayloadType::LogAttrs),
-            (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
-        ],
-    )?;
-    Ok(records)
+    batch.finish()
 }
 
 /// Generates an OTAP metrics batch by cycling through the metric groups
@@ -236,35 +117,23 @@ pub fn semconv_otap_metrics(
     signal_count: usize,
     registry: &ResolvedRegistry,
 ) -> Result<OtapArrowRecords> {
+    let mut batch = MetricsBatch::new();
     let groups: Vec<_> = registry
         .groups
         .iter()
         .filter(|g| g.r#type == GroupType::Metric)
         .collect();
     if signal_count == 0 || groups.is_empty() {
-        return Ok(OtapArrowRecords::Metrics(Metrics::default()));
+        return batch.finish();
     }
-    _ = u16::try_from(signal_count).map_err(|_| Error::U16OverflowError)?;
-
-    let mut resource_attrs = AttributesRecordBatchBuilder::<u16>::new();
-    append_resource_attributes(&mut resource_attrs);
-
-    let mut metrics = MetricsRecordBatchBuilder::new();
-    let mut ndp = NumberDataPointsRecordBatchBuilder::new();
-    let mut ndp_attrs = AttributesRecordBatchBuilder::<u32>::new();
-    let mut hdp = HistogramDataPointsRecordBatchBuilder::new();
-    let mut hdp_attrs = AttributesRecordBatchBuilder::<u32>::new();
-    let mut metric_id: u16 = 0;
-    let mut next_ndp_id: u32 = 0;
-    let mut next_hdp_id: u32 = 0;
+    append_resource_attributes(&mut batch.resource_attrs);
 
     for i in 0..signal_count {
         let group = groups[i % groups.len()];
         let Some(instrument) = &group.instrument else {
             continue;
         };
-
-        let (metric_type, temporality, monotonic) = match instrument {
+        let (metric_type, temporality, is_monotonic) = match instrument {
             InstrumentSpec::Counter => (
                 MetricType::Sum,
                 Some(AggregationTemporality::Unspecified),
@@ -282,105 +151,52 @@ pub fn semconv_otap_metrics(
                 None,
             ),
         };
+        let metric_id = batch.append_metric(MetricRow {
+            metric_type,
+            name: group.metric_name.as_deref().unwrap_or(""),
+            description: &group.brief,
+            unit: group.unit.as_deref().unwrap_or(""),
+            temporality,
+            is_monotonic,
+        })?;
 
-        metrics.append_id(metric_id);
-        metrics.append_metric_type(metric_type as u8);
-        metrics.append_name(group.metric_name.as_deref().unwrap_or("").as_bytes());
-        metrics.append_description(group.brief.as_bytes());
-        metrics.append_unit(group.unit.as_deref().unwrap_or("").as_bytes());
-        metrics.append_aggregation_temporality(temporality.map(|t| t as i32));
-        metrics.append_is_monotonic(monotonic);
-
-        if metric_type == MetricType::Histogram {
-            let id = next_hdp_id;
-            next_hdp_id += 1;
-            hdp.append_id(id);
-            hdp.append_parent_id(metric_id);
-            hdp.append_start_time_unix_nano(0);
-            hdp.append_time_unix_nano(current_time() as i64);
-            hdp.append_count(0);
-            hdp.append_bucket_counts(std::iter::empty());
-            hdp.append_explicit_bounds(std::iter::empty());
-            hdp.append_sum(None);
-            hdp.append_flags(0);
-            hdp.append_min(None);
-            hdp.append_max(None);
-            for attribute in &group.attributes {
-                append_key_value(&mut hdp_attrs, id, &get_attribute_name_value(attribute))?;
-            }
+        let time = current_time();
+        let (attrs, id) = if metric_type == MetricType::Histogram {
+            let id = batch.append_histogram_point(
+                metric_id,
+                HistogramPoint {
+                    start_time: 0,
+                    time,
+                    count: 0,
+                    sum: None,
+                    bucket_counts: &[],
+                    explicit_bounds: &[],
+                    min: None,
+                    max: None,
+                },
+            )?;
+            (&mut batch.hdp_attrs, id)
         } else {
-            let id = next_ndp_id;
-            next_ndp_id += 1;
-            ndp.append_id(id);
-            ndp.append_parent_id(metric_id);
-            ndp.append_start_time_unix_nano(None);
-            ndp.append_time_unix_nano(current_time() as i64);
-            ndp.append_double_value(Some(1.0));
-            ndp.append_int_value(None);
-            ndp.append_flags(0);
-            for attribute in &group.attributes {
-                append_key_value(&mut ndp_attrs, id, &get_attribute_name_value(attribute))?;
-            }
+            let id = batch.append_number_point(
+                metric_id,
+                NumberPoint {
+                    start_time: None,
+                    time,
+                    value: 1.0,
+                },
+            )?;
+            (&mut batch.ndp_attrs, id)
+        };
+        for attribute in &group.attributes {
+            append_key_value(attrs, id, &get_attribute_name_value(attribute))?;
         }
-
-        metric_id += 1;
     }
-
-    let metric_count = metric_id as usize;
-    if metric_count == 0 {
-        return Ok(OtapArrowRecords::Metrics(Metrics::default()));
-    }
-    metrics.resource.append_id_n(0, metric_count);
-    metrics.resource.append_schema_url_n(None, metric_count);
-    metrics
-        .resource
-        .append_dropped_attributes_count_n(0, metric_count);
-    metrics.scope.append_id_n(0, metric_count);
-    metrics
-        .scope
-        .append_name_n(Some(SCOPE_NAME.as_bytes()), metric_count);
-    metrics
-        .scope
-        .append_version_n(Some(SCOPE_VERSION.as_bytes()), metric_count);
-    metrics
-        .scope
-        .append_dropped_attributes_count_n(0, metric_count);
-    metrics.append_scope_schema_url_n(b"", metric_count);
-
-    let mut records = OtapArrowRecords::Metrics(Metrics::default());
-    set_payloads(
-        &mut records,
-        [
-            (metrics.finish()?, ArrowPayloadType::UnivariateMetrics),
-            (resource_attrs.finish()?, ArrowPayloadType::ResourceAttrs),
-            (ndp.finish()?, ArrowPayloadType::NumberDataPoints),
-            (ndp_attrs.finish()?, ArrowPayloadType::NumberDpAttrs),
-            (hdp.finish()?, ArrowPayloadType::HistogramDataPoints),
-            (hdp_attrs.finish()?, ArrowPayloadType::HistogramDpAttrs),
-        ],
-    )?;
-    Ok(records)
+    batch.finish()
 }
 
 /// Resource attributes shared by all semconv batches.
 fn append_resource_attributes(builder: &mut AttributesRecordBatchBuilder<u16>) {
-    builder.append_parent_id(&0);
-    builder.append_key(b"traffic_generator");
-    builder.any_values_builder.append_str(b"v1");
-}
-
-/// Append one generated attribute, of any value type, to an attributes builder.
-fn append_key_value<T>(
-    builder: &mut AttributesRecordBatchBuilder<T>,
-    parent_id: <T::ArrayType as ArrowPrimitiveType>::Native,
-    kv: &KeyValue,
-) -> Result<()>
-where
-    T: ParentId + AttributesRecordBatchBuilderConstructorHelper,
-{
-    builder.append_parent_id(&parent_id);
-    let view = ObjKeyValue::new(&kv.key, kv.value.as_ref().map(|inner| GenericObj { inner }));
-    append_attribute_value(builder, &view)
+    append_attribute(builder, 0, "traffic_generator", AttrValue::Str("v1"));
 }
 
 /// map a SpanKindSpec to a SpanKind
@@ -398,10 +214,11 @@ const fn otel_span_kind(span_kind: Option<&SpanKindSpec>) -> SpanKind {
 #[cfg(test)]
 mod tests {
     use super::super::compression_ratio_tests::load_semconv_registry;
+    use super::super::otap_batch::OtlpEncoder;
     use super::super::semconv_signal_old as old;
-    use super::super::synthetic_signal::OtlpEncoder;
     use super::*;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{MetricsData, metric::Data};
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
