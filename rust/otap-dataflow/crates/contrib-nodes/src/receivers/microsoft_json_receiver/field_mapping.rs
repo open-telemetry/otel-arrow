@@ -6,8 +6,8 @@
 #![allow(dead_code)] // The receiver remains non-operational until the runtime phase.
 
 use super::config::{
-    Config, EndpointConfig, EventAction, FieldRule, MappingTarget, OnMissing, ScopeField,
-    ScopeSplit, ValueTransform,
+    Config, EndpointConfig, EventAction, ExpectedType, FieldRule, MappingTarget, OnMissing,
+    ScopeField, ScopeSplit, ValueTransform,
 };
 use super::error::MappingError;
 use super::ikey_filter::{self, IkeyValidator};
@@ -211,6 +211,7 @@ impl CompiledEndpoint {
         let mut budget = Budget::new(limits.work);
         let rules = flatten(&config.rules, limits, &mut budget)?;
         validate_event_name_rules(&rules, &mut budget)?;
+        validate_container_rules(&rules, &mut budget)?;
         let mut overrides = Vec::new();
         let mut count = rules.len();
         let mut entries: Vec<_> = config.event_overrides.iter().collect();
@@ -287,6 +288,7 @@ impl CompiledEndpoint {
                 return Err(MappingError::Limit("compiled rules"));
             }
             validate_event_name_rules(&merged, &mut budget)?;
+            validate_container_rules(&merged, &mut budget)?;
             let ancestor_constraints = compile_ancestor_constraints(&merged, &mut budget)?;
             overrides.push(CompiledOverride {
                 pattern: pattern.clone(),
@@ -461,6 +463,46 @@ fn validate_event_name_rules(
     Ok(())
 }
 
+fn validate_container_rules(
+    rules: &[CompiledRule],
+    budget: &mut Budget,
+) -> Result<(), MappingError> {
+    for (index, parent) in rules.iter().enumerate() {
+        budget.charge(1)?;
+        if parent.rule.target.is_some()
+            || parent
+                .rule
+                .also
+                .iter()
+                .any(|also| !matches!(also.target, MappingTarget::Drop))
+            || !matches!(
+                parent
+                    .rule
+                    .validate
+                    .as_ref()
+                    .and_then(|v| v.expected_type.as_ref()),
+                Some(ExpectedType::StringCoerce)
+            )
+        {
+            continue;
+        }
+        budget.charge(parent.path.iter().map(|part| part.len() + 1).sum())?;
+        let mut descendants = parent.path.clone();
+        descendants.push("*".into());
+        for (child_index, child) in rules.iter().enumerate() {
+            budget.charge(1)?;
+            if child_index != index && selector_overlap(&descendants, &child.path, budget)? {
+                return Err(MappingError::Config(format!(
+                    "targetless string_coerce rule `{}` overlaps descendant rule `{}`",
+                    parent.path.join("."),
+                    child.path.join(".")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn selector_overlap(
     pattern: &[String],
     path: &[String],
@@ -479,12 +521,13 @@ fn selector_overlap(
     for expected in pattern {
         next.fill(false);
         for (index, part) in path.iter().enumerate() {
-            // A wildcard can consume several segments when they form one
-            // literal dotted key in the source.
-            next[index + 1] = if expected == "*" {
-                current[index] || next[index]
-            } else {
-                current[index] && expected == part
+            // Either selector's wildcard can cover several literal dotted
+            // segments. Each wildcard must consume at least one segment.
+            next[index + 1] = match (expected.as_str(), part.as_str()) {
+                ("*", "*") => current[index] || next[index] || current[index + 1],
+                ("*", _) => current[index] || next[index],
+                (_, "*") => current[index] || current[index + 1],
+                _ => current[index] && expected == part,
             };
         }
         std::mem::swap(&mut current, &mut next);

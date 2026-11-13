@@ -215,6 +215,130 @@ rules:
     );
 }
 
+/// Scenario: targetless string coercion overlaps nested, dotted or wildcard descendant rules in either declaration order.
+/// Guarantees: compilation rejects parents that would serialize dropped children or bypass child attribute mappings.
+#[test]
+fn targetless_string_coerce_rejects_descendant_rules() {
+    for target in [
+        json!({"kind": "drop"}),
+        json!({"kind": "attribute", "key": "visible"}),
+    ] {
+        let config = serde_json::from_value(json!({
+            "rules": [{
+                "path": "data",
+                "validate": {"expected_type": "string_coerce"},
+                "children": [{"path": "secret", "target": target}]
+            }]
+        }))
+        .expect("nested config");
+        assert!(matches!(
+            CompiledEndpoint::compile(&config, None, &no_environment),
+            Err(MappingError::Config(message)) if message.contains("targetless string_coerce")
+        ));
+
+        for (parent, child) in [
+            ("data", "data.secret"),
+            ("data", "data.*"),
+            ("groups.*", "groups.*.secret"),
+            ("groups.*", "groups.app.secret"),
+            ("data.*", "*.secret"),
+            ("*.data", "groups.*.secret"),
+        ] {
+            let parent = json!({
+                "path": parent, "validate": {"expected_type": "string_coerce"}
+            });
+            let child = json!({"path": child, "target": target});
+            for rules in [json!([parent, child]), json!([child, parent])] {
+                let config = serde_json::from_value(json!({"rules": rules})).expect("config");
+                assert!(matches!(
+                    CompiledEndpoint::compile(&config, None, &no_environment),
+                    Err(MappingError::Config(message)) if message.contains("targetless string_coerce")
+                ));
+            }
+        }
+    }
+}
+
+/// Scenario: overrides introduce coercion, descendants or validation overlays alongside inherited rules.
+/// Guarantees: both inherited and standalone override mappings reject ambiguous targetless container coercion.
+#[test]
+fn targetless_string_coerce_rejects_ambiguous_overrides() {
+    let parent = json!({"path": "data", "validate": {"expected_type": "string_coerce"}});
+    let child = json!({"path": "data.secret", "target": {"kind": "drop"}});
+    for config in [
+        json!({
+            "rules": [parent],
+            "event_overrides": {"E": {"rules": [child]}}
+        }),
+        json!({
+            "rules": [child],
+            "event_overrides": {"E": {"rules": [parent]}}
+        }),
+        json!({
+            "rules": [{"path": "data", "validate": {}}, child],
+            "event_overrides": {"E": {"rules": [parent]}}
+        }),
+        json!({
+            "event_overrides": {"E": {"inherit_rules": false, "rules": [parent, child]}}
+        }),
+    ] {
+        let config = serde_json::from_value(config).expect("config");
+        assert!(matches!(
+            CompiledEndpoint::compile(&config, None, &no_environment),
+            Err(MappingError::Config(message)) if message.contains("targetless string_coerce")
+        ));
+    }
+}
+
+/// Scenario: string coercion has no overlapping descendants or a consuming target preserves original child traversal.
+/// Guarantees: scalar and standalone wildcard coercion remain valid, and explicit parent targets still process children.
+#[test]
+fn string_coerce_preserves_unambiguous_mappings() {
+    for (parent, sibling) in [
+        ("data", "database.secret"),
+        ("groups.*", "other.secret"),
+        ("data.*", "data.secret"),
+        ("*.data", "groups.other.secret"),
+    ] {
+        let config = serde_json::from_value(json!({
+            "rules": [
+                {"path": parent, "validate": {"expected_type": "string_coerce"}},
+                {"path": sibling, "target": {"kind": "drop"}}
+            ]
+        }))
+        .expect("config");
+        assert!(CompiledEndpoint::compile(&config, None, &no_environment).is_ok());
+    }
+    let ep = endpoint("rules: [{ path: '*', validate: { expected_type: string_coerce } }]");
+    assert_eq!(
+        accepted(&ep, json!({"scalar": 1, "object": {"key": 2}})).body,
+        Some(json!({"scalar": "1", "object": "{\"key\":2}"}))
+    );
+    for destination in [
+        json!({"target": {"kind": "attribute", "key": "parent"}}),
+        json!({"target": {"kind": "drop"}}),
+        json!({"also": [{"target": {"kind": "attribute", "key": "parent"}}]}),
+    ] {
+        let mut parent = json!({
+            "path": "data",
+            "validate": {"expected_type": "string_coerce"},
+            "children": [
+                {"path": "secret", "target": {"kind": "drop"}},
+                {"path": "visible", "target": {"kind": "attribute", "key": "visible"}}
+            ]
+        });
+        parent
+            .as_object_mut()
+            .expect("parent")
+            .extend(destination.as_object().expect("destination").clone());
+        let config = serde_json::from_value(json!({"rules": [parent]})).expect("config");
+        let ep = CompiledEndpoint::compile(&config, None, &no_environment).expect("compile");
+        let log = accepted(&ep, json!({"data": {"secret": "private", "visible": 1}}));
+        assert_eq!(log.attributes["visible"], 1);
+        assert!(log.body.is_none());
+    }
+}
+
 /// Scenario: retained originals exceed the output allowance while six mapped strings are truncated to one byte.
 /// Guarantees: retained-source measurement uses work rather than output capacity, and small work budgets still fail explicitly.
 #[test]
