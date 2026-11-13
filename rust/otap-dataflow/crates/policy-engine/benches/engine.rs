@@ -13,15 +13,15 @@
 use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord as OtlpLogRecord;
 use otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs;
-use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_policy_engine::engine::PolicyEngine;
 use policy_rs::adapter::{LogRecord as AdapterLogRecord, Value};
 use policy_rs::proto::tero::policy::v1::{
-    AttributePath, LogField, LogMatcher, LogRename, LogTarget, LogTransform,
-    Policy as ProtoPolicy, log_matcher, log_rename, policy,
+    AttributePath, LogField, LogMatcher, LogRename, LogTarget, LogTransform, Policy as ProtoPolicy,
+    log_matcher, log_rename, policy,
 };
 use policy_rs::{Policy, PolicyEngine as PolicyRsEngine, PolicyRegistry, PolicySnapshot};
 use tokio::runtime::Runtime;
@@ -243,9 +243,7 @@ fn create_scaling_policies(count: usize) -> PolicySnapshot {
             create_log_policy(
                 &format!("policy-{i}"),
                 vec![LogMatcher {
-                    field: Some(log_matcher::Field::LogField(
-                        LogField::SeverityText.into(),
-                    )),
+                    field: Some(log_matcher::Field::LogField(LogField::SeverityText.into())),
                     r#match: Some(log_matcher::Match::Regex(format!("UNIQUE_PATTERN_{i}"))),
                     negate: false,
                     case_insensitive: false,

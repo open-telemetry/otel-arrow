@@ -578,7 +578,7 @@ fn collect_matching_attr_rows_numeric<F>(
 ) where
     F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError> + Copy,
 {
-    // TODO - this doesn't properly handle  all numeric coercions 
+    // TODO - this doesn't properly handle  all numeric coercions
 
     match numeric_value {
         CompiledNumericValue::Int(v) => {
@@ -747,41 +747,35 @@ fn evaluate_vectorscan_on_root_column(
         return Ok(());
     };
 
-    let Some(accessor) = StringColumnAccessor::try_new(column) else {
-        // Non-string column -- Vectorscan can't operate on it.
+    // Build per-policy hit bitmaps by scanning the column's string values.
+    //
+    // TODO: no unwrapping below ...
+    let policy_hits = if let Some(str_arr) = column.as_any().downcast_ref::<StringArray>() {
+        scan_plain_string_column(str_arr, db, num_rows)?
+    } else if let Some(dict) = column.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
+        let values = dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        scan_dict_string_column(dict.keys(), values, db, num_rows)?
+    } else if let Some(dict) = column
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt16Type>>()
+    {
+        let values = dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        scan_dict_string_column(dict.keys(), values, db, num_rows)?
+    } else {
+        // Non-string column (or unsupported OTAP arrow dict key).
         if !negated {
             all_policies_no_match(db, matched);
         }
         return Ok(());
     };
-
-    // Build per-policy hit bitmaps by scanning string values.
-    // Dict-encoded columns use a lazy cache so each unique value is scanned
-    // at most once.
-    let mut policy_hits: HashMap<usize, BooleanBufferBuilder> = HashMap::new();
-
-    // This is used in the case where the string column is dictionary encoded. We cache which
-    // dictionary keys were matches for which policies, so we can avoid re-scanning the dictionary
-    // values multiple times.
-    let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
-
-    // TODO: optimize Vectorscan scratch cloning -- currently VectorscanDatabase::scan clones
-    // the scratch space on every call.
-    for i in 0..num_rows {
-        let matching_patterns = accessor.scan_row(i, db, &mut scan_cache)?;
-        for &pattern_id in matching_patterns {
-            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
-                let builder = policy_hits
-                    .entry(pattern_ref.policy_index)
-                    .or_insert_with(|| {
-                        let mut b = BooleanBufferBuilder::new(num_rows);
-                        b.append_n(num_rows, false);
-                        b
-                    });
-                builder.set_bit(i, true);
-            }
-        }
-    }
 
     // Fold hits into the matched bitmaps.
     apply_policy_hits(&policy_hits, db, negated, matched);
@@ -816,6 +810,8 @@ fn evaluate_vectorscan_on_attribute(
 
     // Filter by attribute key.
     let Some(key_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_KEY) else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         if !negated {
             all_policies_no_match(db, matched);
         }
@@ -834,12 +830,16 @@ fn evaluate_vectorscan_on_attribute(
 
     // Get the type column and check for string type.
     let Some(type_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_TYPE) else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         if !negated {
             all_policies_no_match(db, matched);
         }
         return Ok(());
     };
     let Some(type_u8) = type_col.as_any().downcast_ref::<UInt8Array>() else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         if !negated {
             all_policies_no_match(db, matched);
         }
@@ -848,13 +848,6 @@ fn evaluate_vectorscan_on_attribute(
 
     // Get the "str" value column.
     let Some(str_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_STR) else {
-        if !negated {
-            all_policies_no_match(db, matched);
-        }
-        return Ok(());
-    };
-
-    let Some(accessor) = StringColumnAccessor::try_new(str_col) else {
         if !negated {
             all_policies_no_match(db, matched);
         }
@@ -880,29 +873,22 @@ fn evaluate_vectorscan_on_attribute(
     //
     // TODO: the current loop touches a different policy's IdBitmap per row,
     // which can thrash the CPU cache. A two-pass approach -- build the full
-    // scan_cache first, then iterate per-policy to populate IdBitmaps --
+    // scan cache first, then iterate per-policy to populate IdBitmaps --
     // would be more cache-friendly.
     //
     // TODO: use IdBitmapPool for reuse.
-    let mut policy_id_bitmaps: HashMap<usize, IdBitmap> = HashMap::new();
-    let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
+    // TODO: optimize Vectorscan scratch cloning.
     let str_type = AttributeValueType::Str as u8;
-
-    for i in 0..attrs_batch.num_rows() {
-        if !key_mask.value(i) || type_u8.value(i) != str_type {
-            continue;
-        }
-
-        let matching_patterns = accessor.scan_row(i, db, &mut scan_cache)?;
-        for &pattern_id in matching_patterns {
-            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
-                policy_id_bitmaps
-                    .entry(pattern_ref.policy_index)
-                    .or_insert_with(IdBitmap::new)
-                    .insert(u32::from(parent_id_u16.value(i)));
-            }
-        }
-    }
+    let num_attr_rows = attrs_batch.num_rows();
+    let policy_id_bitmaps = scan_attr_string_column(
+        str_col,
+        &key_mask,
+        type_u8,
+        parent_id_u16,
+        str_type,
+        num_attr_rows,
+        db,
+    )?;
 
     // Convert per-policy IdBitmaps to root-aligned PolicyMatches and fold in.
     let mut seen_policies = std::collections::HashSet::new();
@@ -920,7 +906,8 @@ fn evaluate_vectorscan_on_attribute(
         };
 
         if negated {
-            matched[policy_idx] = matched[policy_idx].and(&PolicyMatch::not(&policy_hit));
+            // TODO - why don't we use PolicyMatch::and_not here?
+            matched[policy_idx] = matched[policy_idx].and_not(&policy_hit);
         } else {
             matched[policy_idx] = matched[policy_idx].and(&policy_hit);
         }
@@ -944,15 +931,14 @@ fn apply_policy_hits(
         }
 
         let policy_hit = if let Some(builder) = policy_hits.get(&policy_idx) {
-            // TODO: find a way to avoid this finish_cloned.
-            let buffer = BooleanArray::new(builder.finish_cloned(), None);
-            PolicyMatch::from_boolean_array(&buffer)
+            // TODO: find a way to avoid this finish_cloned?
+            PolicyMatch::from_boolean_buffer(builder.finish_cloned())
         } else {
             PolicyMatch::None
         };
 
         if negated {
-            matched[policy_idx] = matched[policy_idx].and(&PolicyMatch::not(&policy_hit));
+            matched[policy_idx] = matched[policy_idx].and_not(&policy_hit);
         } else {
             matched[policy_idx] = matched[policy_idx].and(&policy_hit);
         }
@@ -966,118 +952,305 @@ fn all_policies_no_match(db: &CompiledDatabase, matched: &mut [PolicyMatch]) {
     }
 }
 
-/// Provides access to string values in an OTAP Arrow column, which generally may,
-/// or may not, be dictionary encoded(`Dict<UInt8, Utf8>`, `Dict<UInt16, Utf8>`).
-/// 
-/// This also provides some helpers for scanning the array's string values using Vectorscan db.
-enum StringColumnAccessor<'a> {
-    Plain(&'a StringArray),
+// ---------------------------------------------------------------------------
+// Vectorscan string scanning helpers
+// ---------------------------------------------------------------------------
 
-    DictU8 {
-        keys: &'a UInt8Array,
-        values: &'a StringArray,
-    },
+/// Scan a plain (non-dictionary) `StringArray` through a Vectorscan database.
+/// Returns per-policy hit bitmaps.
+fn scan_plain_string_column(
+    arr: &StringArray,
+    db: &CompiledDatabase,
+    num_rows: usize,
+) -> Result<HashMap<usize, BooleanBufferBuilder>, PolicyError> {
+    let mut policy_hits: HashMap<usize, BooleanBufferBuilder> = HashMap::new();
 
-    DictU16 {
-        keys: &'a UInt16Array,
-        values: &'a StringArray,
-    },
+    // TODO: there are some ideas in the loop below for how we could write this better, but before
+    // jumping into those it might be worth it to look more deeply into VectorscanDatabase::scan
+    // and understand if there's opportunity to call this in a more efficient manner. Currently we
+    // are calling it for every individual string.
+
+    for i in 0..num_rows {
+        if arr.is_null(i) {
+            // TODO: we should benchmark it but it might be helpful to switch this loop it iterate
+            // non-null rows instead of calling is_null for each row (similar comment for the loop
+            // below in phase 2)
+            continue;
+        }
+        let value = arr.value(i);
+        let scan_result = db.database.scan(value.as_bytes())?;
+
+        // TODO we should benchmark the loop below to figure out how inefficient it is ...
+        //
+        // For one thing this might thrash the CPU cache by loading the match buffer builder for
+        // each policy for each row. It'd be nice if we could have just kept each buffer in memory
+        // while we fill it in for better cache locality.
+        //
+        // Secondly, it's typically faster with arrow's boolean if we set contiguous ranges of bits
+        // in a single call instead of setting them all individually.
+        for pattern_id in scan_result {
+            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
+                let builder = policy_hits
+                    .entry(pattern_ref.policy_index)
+                    .or_insert_with(|| {
+                        let mut b = BooleanBufferBuilder::new(num_rows);
+                        b.append_n(num_rows, false);
+                        b
+                    });
+                builder.set_bit(i, true);
+            }
+        }
+    }
+
+    Ok(policy_hits)
 }
 
-impl<'a> StringColumnAccessor<'a> {
-    /// Try to create an accessor for the given column. Returns `None` if the
-    /// column is not a supported string type.
-    fn try_new(column: &'a ArrayRef) -> Option<Self> {
-        if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
-            return Some(Self::Plain(arr));
+/// Scan a dictionary-encoded string column through a Vectorscan database.
+fn scan_dict_string_column<K>(
+    keys: &arrow::array::PrimitiveArray<K>,
+    values: &StringArray,
+    db: &CompiledDatabase,
+    num_rows: usize,
+) -> Result<HashMap<usize, BooleanBufferBuilder>, PolicyError>
+where
+    K: arrow::datatypes::ArrowPrimitiveType,
+    K::Native: Into<usize> + Copy,
+{
+    // Phase 1: scan each unique dictionary value once and cache which policies it matched by
+    let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
+
+    for i in 0..num_rows {
+        // TODO: we should benchmark it but it might be helpful to switch this loop it iterate
+        // non-null rows instead of calling is_null for each row (similar comment for the loop
+        // below in phase 2)
+        if keys.is_null(i) {
+            continue;
         }
-        if let Some(dict) = column.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
-            let values = dict.values().as_any().downcast_ref::<StringArray>()?;
-            return Some(Self::DictU8 {
-                keys: dict.keys(),
-                values,
-            });
+        let dict_idx: usize = keys.value(i).into();
+        if scan_cache.contains_key(&dict_idx) {
+            continue;
         }
-        if let Some(dict) = column
-            .as_any()
-            .downcast_ref::<DictionaryArray<UInt16Type>>()
-        {
-            let values = dict.values().as_any().downcast_ref::<StringArray>()?;
-            return Some(Self::DictU16 {
-                keys: dict.keys(),
-                values,
-            });
-        }
-        None
+        let result = if values.is_null(dict_idx) {
+            Vec::new()
+        } else {
+            db.database.scan(values.value(dict_idx).as_bytes())?
+        };
+        let _ = scan_cache.insert(dict_idx, result);
     }
 
-    /// Scan the string value at `row` through the Vectorscan database,
-    /// returning the matching pattern IDs.
-    ///
-    /// For dictionary-encoded columns, uses `scan_cache` keyed by dict value
-    /// index to avoid rescanning the same value. For plain arrays, each row
-    /// is scanned independently (the cache key is `usize::MAX - row` to avoid
-    /// collisions, but in practice plain arrays don't benefit from caching).
-    fn scan_row<'b>(
-        &self,
-        row: usize,
-        db: &CompiledDatabase,
-        scan_cache: &'b mut HashMap<usize, Vec<u32>>,
-    ) -> Result<&'b [u32], PolicyError> {
-        match self {
-            Self::Plain(arr) => {
-                if arr.is_null(row) {
-                    return Ok(&[]);
-                }
-                // No dedup for plain arrays -- scan every row.
-                // Use row index as cache key (won't collide with dict indices).
-                let entry = scan_cache.entry(row);
-                // Always insert since plain arrays have unique "keys" per row.
-                if matches!(entry, std::collections::hash_map::Entry::Vacant(_)) {
-                    let value = arr.value(row);
-                    let result = db.database.scan(value.as_bytes())?;
-                    let _ = entry.or_insert(result);
-                }
-                Ok(scan_cache.get(&row).map(|v| v.as_slice()).unwrap_or(&[]))
-            }
-            Self::DictU8 { keys, values } => {
-                if keys.is_null(row) {
-                    return Ok(&[]);
-                }
-                let dict_idx = keys.value(row) as usize;
-                if !scan_cache.contains_key(&dict_idx) {
-                    if values.is_null(dict_idx) {
-                        let _ = scan_cache.insert(dict_idx, Vec::new());
-                    } else {
-                        let value = values.value(dict_idx);
-                        let result = db.database.scan(value.as_bytes())?;
-                        let _ = scan_cache.insert(dict_idx, result);
-                    }
-                }
-                Ok(scan_cache
-                    .get(&dict_idx)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]))
-            }
-            Self::DictU16 { keys, values } => {
-                if keys.is_null(row) {
-                    return Ok(&[]);
-                }
-                let dict_idx = keys.value(row) as usize;
-                if !scan_cache.contains_key(&dict_idx) {
-                    if values.is_null(dict_idx) {
-                        let _ = scan_cache.insert(dict_idx, Vec::new());
-                    } else {
-                        let value = values.value(dict_idx);
-                        let result = db.database.scan(value.as_bytes())?;
-                        let _ = scan_cache.insert(dict_idx, result);
-                    }
-                }
-                Ok(scan_cache
-                    .get(&dict_idx)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]))
+    // Phase 2: map cached results back to rows.
+    let mut policy_hits: HashMap<usize, BooleanBufferBuilder> = HashMap::new();
+    for i in 0..num_rows {
+        // TODO re: null check, see comment above in "phase 1" loop
+        if keys.is_null(i) {
+            continue;
+        }
+        let dict_idx: usize = keys.value(i).into();
+        let Some(matching_patterns) = scan_cache.get(&dict_idx) else {
+            continue;
+        };
+
+        // TODO - Not sure how inefficient what we're doing below is.. need to benchmark this and
+        // figure out if it can be optimized.
+        //
+        // For one thing this might thrash the CPU cache by loading the match buffer builder for
+        // each policy for each row. It'd be nice if we could have just kept each buffer in memory
+        // while we fill it in for better cache locality.
+        //
+        // Secondly, it's typically faster with arrow's boolean if we set contiguous ranges of bits
+        // in a single call instead of setting them all individually.
+        for &pattern_id in matching_patterns {
+            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
+                let builder = policy_hits
+                    .entry(pattern_ref.policy_index)
+                    .or_insert_with(|| {
+                        let mut b = BooleanBufferBuilder::new(num_rows);
+                        b.append_n(num_rows, false);
+                        b
+                    });
+                builder.set_bit(i, true);
             }
         }
     }
+
+    Ok(policy_hits)
+}
+
+/// Scan attribute string values through a Vectorscan database, respecting
+/// key and type filters. Returns per-policy `IdBitmap`s of matching parent_ids.
+///
+/// For dictionary-encoded `str` columns, each unique dictionary value is
+/// scanned at most once.
+fn scan_attr_string_column(
+    str_col: &ArrayRef,
+    key_mask: &BooleanArray,
+    type_col: &UInt8Array,
+    parent_id_col: &UInt16Array,
+    str_type: u8,
+    num_rows: usize,
+    db: &CompiledDatabase,
+) -> Result<HashMap<usize, IdBitmap>, PolicyError> {
+    if let Some(str_arr) = str_col.as_any().downcast_ref::<StringArray>() {
+        scan_attr_plain_string(
+            str_arr,
+            key_mask,
+            type_col,
+            parent_id_col,
+            str_type,
+            num_rows,
+            db,
+        )
+    } else if let Some(dict) = str_col
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt8Type>>()
+    {
+        let values = dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        scan_attr_dict_string(
+            dict.keys(),
+            values,
+            key_mask,
+            type_col,
+            parent_id_col,
+            str_type,
+            num_rows,
+            db,
+        )
+    } else if let Some(dict) = str_col
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt16Type>>()
+    {
+        let values = dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        scan_attr_dict_string(
+            dict.keys(),
+            values,
+            key_mask,
+            type_col,
+            parent_id_col,
+            str_type,
+            num_rows,
+            db,
+        )
+    } else {
+        // Not a string column -- no matches.
+        Ok(HashMap::new())
+    }
+}
+
+/// Scan a plain attribute string column. Returns a map, keyed by policy index, of the rows it
+/// matched via this vectorscan db.
+fn scan_attr_plain_string(
+    str_arr: &StringArray,
+    key_mask: &BooleanArray,
+    type_col: &UInt8Array,
+    parent_id_col: &UInt16Array,
+    str_type: u8,
+    num_rows: usize,
+    db: &CompiledDatabase,
+) -> Result<HashMap<usize, IdBitmap>, PolicyError> {
+    let mut policy_id_bitmaps: HashMap<usize, IdBitmap> = HashMap::new();
+
+    // TODO: there are some ideas in the loop below for how we could write this better, but before
+    // jumping into those it might be worth it to look more deeply into VectorscanDatabase::scan
+    // and understand if there's opportunity to call this in a more efficient manner. Currently we
+    // are calling it for every individual string.
+
+    for i in 0..num_rows {
+        // TODO - maybe make the loop iteration faster (should benchmark if this is a bottleneck).
+        //
+        // It might be faster to iterate over non-null segments of the array, identified something
+        // like BitSliceIter instead of checking whether each row is null. It might also be faster
+        // to have pre-computed where the type_col is a string and have AND'd this with they key
+        // mask.If there are many attributes that need to be checked, it may be more efficient to
+        // have pre-computed eq(type_col, Str) and cached it somewhere. Anyway, if we did all this,
+        // we could just do iterate over valid ranges from (key & eq(type_col, str) & nulls) and
+        // again avoid this per-row check.
+        if !key_mask.value(i) || type_col.value(i) != str_type || str_arr.is_null(i) {
+            continue;
+        }
+
+        let value = str_arr.value(i);
+        let scan_result = db.database.scan(value.as_bytes())?;
+
+        // TODO we load all the Id Bitmaps for every row here, which might thrash the CPU cache.
+        // It might be nice if there was a way we could fill in individual bitmaps for all rows
+        // at the same time instead.
+        for pattern_id in scan_result {
+            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
+                policy_id_bitmaps
+                    .entry(pattern_ref.policy_index)
+                    .or_insert_with(IdBitmap::new)
+                    .insert(u32::from(parent_id_col.value(i)));
+            }
+        }
+    }
+
+    Ok(policy_id_bitmaps)
+}
+
+/// Scan a dictionary-encoded attribute string column: cache unique value scans,
+/// then map back to rows respecting key/type filters.
+fn scan_attr_dict_string<K>(
+    keys: &arrow::array::PrimitiveArray<K>,
+    values: &StringArray,
+    key_mask: &BooleanArray,
+    type_col: &UInt8Array,
+    parent_id_col: &UInt16Array,
+    str_type: u8,
+    num_rows: usize,
+    db: &CompiledDatabase,
+) -> Result<HashMap<usize, IdBitmap>, PolicyError>
+where
+    K: arrow::datatypes::ArrowPrimitiveType,
+    K::Native: Into<usize> + Copy,
+{
+    // TODO: all the same commentary from scan_attr_plain_string (above) related to potential
+    // future optimizations also apply to this function.
+
+    // Phase 1: scan unique dict values that appear in qualifying rows.
+    let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
+    for i in 0..num_rows {
+        if !key_mask.value(i) || type_col.value(i) != str_type || keys.is_null(i) {
+            continue;
+        }
+        let dict_idx: usize = keys.value(i).into();
+        if scan_cache.contains_key(&dict_idx) {
+            continue;
+        }
+        let result = if values.is_null(dict_idx) {
+            Vec::new()
+        } else {
+            db.database.scan(values.value(dict_idx).as_bytes())?
+        };
+        let _ = scan_cache.insert(dict_idx, result);
+    }
+
+    // Phase 2: map cached results to parent_ids.
+    let mut policy_id_bitmaps: HashMap<usize, IdBitmap> = HashMap::new();
+    for i in 0..num_rows {
+        if !key_mask.value(i) || type_col.value(i) != str_type || keys.is_null(i) {
+            continue;
+        }
+        let dict_idx: usize = keys.value(i).into();
+        let Some(matching_patterns) = scan_cache.get(&dict_idx) else {
+            continue;
+        };
+        for &pattern_id in matching_patterns {
+            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
+                policy_id_bitmaps
+                    .entry(pattern_ref.policy_index)
+                    .or_insert_with(IdBitmap::new)
+                    .insert(u32::from(parent_id_col.value(i)));
+            }
+        }
+    }
+
+    Ok(policy_id_bitmaps)
 }

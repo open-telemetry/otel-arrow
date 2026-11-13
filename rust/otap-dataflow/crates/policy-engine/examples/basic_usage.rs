@@ -102,9 +102,7 @@ fn main() {
         LogRecord::build()
             .severity_text("INFO")
             .body(AnyValue::new_string("Request completed"))
-            .attributes(vec![
-                KeyValue::new("status_code", AnyValue::new_int(200)),
-            ])
+            .attributes(vec![KeyValue::new("status_code", AnyValue::new_int(200))])
             .finish(),
         // Log 3: has status_code=500 but no "old_key" -- should survive,
         //         rename is a no-op (attribute to rename doesn't exist)
@@ -120,9 +118,10 @@ fn main() {
         LogRecord::build()
             .severity_text("INFO")
             .body(AnyValue::new_string("Startup complete"))
-            .attributes(vec![
-                KeyValue::new("component", AnyValue::new_string("main")),
-            ])
+            .attributes(vec![KeyValue::new(
+                "component",
+                AnyValue::new_string("main"),
+            )])
             .finish(),
     ]);
 
@@ -163,9 +162,9 @@ fn main() {
     }
 
     // Print attribute keys from the output to verify rename
-    if let Some(attrs_batch) = result.get(
-        otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
-    ) {
+    if let Some(attrs_batch) = result
+        .get(otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs)
+    {
         println!("Attribute batch ({} rows):", attrs_batch.num_rows());
         if let Some(key_col) = attrs_batch.column_by_name("key") {
             println!("  keys: {:?}", key_col);
@@ -177,12 +176,7 @@ fn main() {
     for entry in snapshot.iter() {
         let hits = entry.stats.hits();
         let misses = entry.stats.misses();
-        println!(
-            "{}: {} hits, {} misses",
-            entry.policy.id(),
-            hits,
-            misses
-        );
+        println!("{}: {} hits, {} misses", entry.policy.id(), hits, misses);
     }
 }
 
@@ -221,9 +215,7 @@ fn attr_gte_int_matcher(key: &str, value: i64) -> LogMatcher {
     LogMatcher {
         field: Some(log_matcher::Field::LogAttribute(attr_path(key))),
         r#match: Some(log_matcher::Match::Gte(NumericValue {
-            value: Some(
-                policy_rs::proto::tero::policy::v1::numeric_value::Value::IntValue(value),
-            ),
+            value: Some(policy_rs::proto::tero::policy::v1::numeric_value::Value::IntValue(value)),
         })),
         negate: false,
         case_insensitive: false,
