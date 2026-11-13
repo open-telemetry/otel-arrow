@@ -18,7 +18,8 @@ From `rust/otap-dataflow`, set
 Trafficgen cycles the three events per batch; use at least three logs to include
 each. Message examples use parser-style attributes: `syslog.content` (RFC 3164),
 `syslog.message` (RFC 5424), and `msg` (CEF). Custom CEF fields use
-`cef.extension.<wire-key>`; the encoder strips the prefix and escapes values.
+the bare wire names, such as `cs1` and `vendorZone`, exactly as the receiver does.
+The encoder escapes their values without renaming their keys.
 
 ## Encoding
 
@@ -28,8 +29,10 @@ through that order per record, continuing across successful batches. An explicit
 profile forces re-encoding instead of forwarding existing syslog bytes.
 
 A nonempty string body overrides the message attributes above. CEF requires its
-six `cef.*` header attributes. Unmapped fields are omitted, non-NIL structured
-data is unsupported, and escaped CEF headers are not byte-preserving.
+six `cef.*` header attributes. Unmapped generated fields are omitted.
+Receiver-originated CEF retains its bare extension names and semantic header
+values, including when wrapped by a plain syslog profile. RFC 5424 preserves
+structured data; conversions that cannot represent it fail explicitly.
 See [encoding behavior](../syslog-encoding-behavior.md) for message precedence,
 header defaults, validation, escaping, timestamps, and limits.
 

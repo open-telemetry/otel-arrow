@@ -145,23 +145,23 @@ groups:
         examples: ["300"]
       - ref: cef.name
         examples: [Policy matched, 'Policy | audit \ event']
-      - id: cef.extension.cs1Label
+      - id: cs1Label
         type: string
         brief: Vendor-specific meaning of custom string slot 1.
         examples: [PolicyName]
-      - id: cef.extension.cs1
+      - id: cs1
         type: string
         brief: Synthetic vendor policy name.
         examples: [allow-web, deny-untrusted]
-      - id: cef.extension.cn1Label
+      - id: cn1Label
         type: string
         brief: Vendor-specific meaning of custom numeric slot 1.
         examples: [SessionId]
-      - id: cef.extension.cn1
+      - id: cn1
         type: int
         brief: Synthetic vendor session identifier.
         examples: [100001, 100002]
-      - id: cef.extension.vendorZone
+      - id: vendorZone
         type: string
         brief: Synthetic vendor-defined extension outside the standard CEF dictionary.
         examples: [trusted, untrusted]

@@ -416,35 +416,23 @@ impl ParsedSyslogMessage<'_> {
             .any_values_builder
             .append_int(msg.version.into());
 
-        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceVendor);
-        log_attributes_arrow_records
-            .any_values_builder
-            .append_str(msg.device_vendor);
-
-        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceProduct);
-        log_attributes_arrow_records
-            .any_values_builder
-            .append_str(msg.device_product);
-
-        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefDeviceVersion);
-        log_attributes_arrow_records
-            .any_values_builder
-            .append_str(msg.device_version);
-
-        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefEventClassId);
-        log_attributes_arrow_records
-            .any_values_builder
-            .append_str(msg.device_event_class_id);
-
-        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefName);
-        log_attributes_arrow_records
-            .any_values_builder
-            .append_str(msg.name);
-
-        log_attributes_arrow_records.append_known_key(KnownAttributeKey::CefSeverity);
-        log_attributes_arrow_records
-            .any_values_builder
-            .append_str(msg.severity);
+        let mut scratch = Vec::new();
+        for (key, value) in [
+            (KnownAttributeKey::CefDeviceVendor, msg.device_vendor),
+            (KnownAttributeKey::CefDeviceProduct, msg.device_product),
+            (KnownAttributeKey::CefDeviceVersion, msg.device_version),
+            (
+                KnownAttributeKey::CefEventClassId,
+                msg.device_event_class_id,
+            ),
+            (KnownAttributeKey::CefName, msg.name),
+            (KnownAttributeKey::CefSeverity, msg.severity),
+        ] {
+            log_attributes_arrow_records.append_known_key(key);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(super::cef::unescape_header(value, &mut scratch));
+        }
 
         let mut extensions_iter = msg.parse_extensions();
         while let Some((key, value)) = extensions_iter.next_extension() {
