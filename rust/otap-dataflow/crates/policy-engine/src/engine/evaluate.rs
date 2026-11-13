@@ -13,8 +13,10 @@
 //!
 
 // TODO: (non-exhaustive list)
-// - Currently every time an attribute is accessed, we scan the key column. Could cache maybe.
-// - Fields the log "body" resource/scope schema url, field isn't supported correctly
+// - Currently every time an attribute is accessed, we scan the key column. Potential for caching.
+// - Fields the log "body" resource/scope schema url, field are not supported correctly
+// - Nested attribute access (multi part keys) are not supported correctly.
+// - Proper error handling (needed for error statistics).
 
 use std::collections::HashMap;
 
@@ -95,7 +97,7 @@ pub(crate) fn evaluate_existence_check(
         }
     };
 
-    // TODO - we could potentially avoid allocating a buffer if internally we were push the negation
+    // TODO - we could avoid allocating & copying a buffer if we were to push the negation
     // down into the existence check above (maybe by inverting should_exist).
     if check.is_negated {
         PolicyMatch::not(&result)
@@ -165,8 +167,8 @@ where
     F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError> + Copy,
 {
     // Note: the spec has some rules around comparing floats to int that we'll need to abide by.
-    // TODO the logic below is NOT correct vis-a-vis the type coercion and panics in some cases
-    // of type mismatches.
+    // TODO the logic below is NOT correct vis-a-vis the type coercion and currently panics in
+    // some cases of type mismatches.
     match numeric_value {
         CompiledNumericValue::Int(int64_val) => {
             match effective_data_type(column) {
@@ -180,7 +182,7 @@ where
                 }
 
                 _ => {
-                    // TODO bunch of other numeric data types
+                    // TODO handle other numeric data types
                     todo!("numeric coercion")
                 }
             }
@@ -193,7 +195,7 @@ where
                 }
 
                 _ => {
-                    // TODO bunch of other numeric data types
+                    // TODO handle other numeric data types
                     todo!("numeric coercion")
                 }
             }
@@ -233,14 +235,16 @@ fn evaluate_existence_on_root(
 
     let num_rows = root_batch.num_rows();
 
+    // TODO - handle getting the special resource/scope schema URL from struct columns on the root
+
+    // TODO - handle "AnyValue" which we need to look inside of and account for the struct null
+    // buffer, the type being Empty, and the null buffer within the various values columns. This
+    // would be needed for log body.
+
     let Some(column) = root_batch.column_by_name(column_name) else {
         // Column missing entirely from the batch.
         return no_field_result;
     };
-
-    // TODO - handle "AnyValue" which we need to look inside of and account for the struct
-    // null buffer, the type being Empty, and the null buffer within the various values columns.
-    // This'd be needed for the special case of log body.
 
     let null_count = column.null_count();
 
@@ -332,17 +336,17 @@ fn evaluate_existence_on_attribute(
         }
     }
 
-    // TODO - we could change the impl of build_native_selection_vec to possibly avoid
+    // TODO - We could change the impl of build_native_selection_vec to possibly avoid
     // a heap allocation/drop for the Arc containing the BooleanArray values and have it
     // simply return an owned BooleanBuffer. Once this is done, we should grep this file for
     // all usages and resolve this issue (maybe removing from_boolean_array for PolicyMatch)
     let selection = build_native_selection_vec(root_id_col, &id_bitmap);
     let result = PolicyMatch::from_boolean_array(&selection);
 
-    // For should_exist: false, invert the result..
+    // For should_exist: false, invert the result
     //
-    // TODO build the inverted bitmap above where we populate the IdBitmap of inverting this here.
-    // This would save us a copy to negate the buffer in the case only some rows are matched.
+    // TODO build the inverted bitmap above where we populate the IdBitmap instead of inverting here
+    // which would save us a copy to negate the buffer in the case only some rows are matched.
     if should_exist {
         result
     } else {
@@ -509,11 +513,10 @@ fn evaluate_typed_check_on_attribute(
     PolicyMatch::from_boolean_array(&selection)
 }
 
-/// Compare attribute values in a single typed column against a scalar, and
-/// insert the parent_ids of matching rows into the `id_bitmap`.
+/// Compare attribute values in a single typed column against a scalar, and insert the parent_ids
+/// of matching rows into the `id_bitmap`.
 ///
-/// Only considers rows where `key_mask` is true and `type_col` matches
-/// `expected_type`.
+/// Only considers rows where `key_mask` is true and `type_col` matches `expected_type`.
 fn collect_matching_attr_rows<S: Datum, F>(
     attrs_batch: &RecordBatch,
     key_mask: &BooleanArray,
@@ -534,8 +537,8 @@ fn collect_matching_attr_rows<S: Datum, F>(
     // TODO the logic here probably needs to be reworked/optimized..
     //
     // The `eq` kernel to check the `type` column below might be faster than checking it inline
-    // while iterating the rows. Although, if there are many matchers that need to check attrs of
-    // the same type, it might be more efficient to do this once and cache it.
+    // while iterating the rows. Although, if there are many other matchers that need to check
+    // attrs of the same type, it might be more efficient to do this once and cache the result.
     //
     // Also, we check the cmp_fn for every row, but we actually only need the result for rows
     // where there is a key match. We could consider pre-filtering the ID column. Whether this is
@@ -543,9 +546,9 @@ fn collect_matching_attr_rows<S: Datum, F>(
 
     // Compare the entire value column against the scalar.
     //
-    // TODO - this will actually return an error for data types that weren't coerced properly which
-    // means comparisons that should pass, but just aren't supported correctly, will silently
-    // reject the rows. Consider proper error handling.
+    // TODO - This will actually return an error for data types that weren't coerced properly which
+    // means comparisons that should pass, but just aren't coerced correctly, will silently not
+    // match the rows. Consider proper error handling.
     let Ok(cmp_result) = cmp_fn(value_col, scalar) else {
         return;
     };
@@ -679,7 +682,7 @@ pub(crate) fn evaluate_vectorscan_databases(
             None => {
                 // Unsupported field -- mark all policies in this db as non-matching.
                 // TODO - double check this is the right thing to do here (e.g. should this have
-                // been a compile error and is that what should be thrown?)
+                // been a policy compile error due to an invalid key).
                 all_policies_no_match(db, matched);
 
                 continue;
@@ -742,7 +745,7 @@ fn evaluate_vectorscan_on_root_column(
 
     // Build per-policy hit bitmaps by scanning the column's string values.
     //
-    // TODO: no unwrapping below ...
+    // TODO: no unwrapping below. Should use expect w/ safety comments or arrow cast helpers.
     let policy_hits = if let Some(str_arr) = column.as_any().downcast_ref::<StringArray>() {
         scan_plain_string_column(str_arr, db, num_rows)?
     } else if let Some(dict) = column.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
@@ -891,7 +894,6 @@ fn evaluate_vectorscan_on_attribute(
         };
 
         if negated {
-            // TODO - why don't we use PolicyMatch::and_not here?
             matched[policy_idx] = matched[policy_idx].and_not(&policy_hit);
         } else {
             matched[policy_idx] = matched[policy_idx].and(&policy_hit);
@@ -950,7 +952,7 @@ fn scan_plain_string_column(
 ) -> Result<HashMap<usize, BooleanBufferBuilder>, PolicyError> {
     let mut policy_hits: HashMap<usize, BooleanBufferBuilder> = HashMap::new();
 
-    // TODO: there are some ideas in the loop below for how we could write this better, but before
+    // TODO: there are some ideas in the loop below for how we could optimize this, but before
     // jumping into those it might be worth it to look more deeply into VectorscanDatabase::scan
     // and understand if there's opportunity to call this in a more efficient manner. Currently we
     // are calling it for every individual string.
@@ -967,11 +969,11 @@ fn scan_plain_string_column(
 
         // TODO we should benchmark the loop below to figure out how inefficient it is ...
         //
-        // For one thing this might thrash the CPU cache by loading the match buffer builder for
-        // each policy for each row. It'd be nice if we could have just kept each buffer in memory
-        // while we fill it in for better cache locality.
+        // This might thrash the CPU cache by loading the match buffer builder for each policy for
+        // each row. It'd be nice if we could have just kept each buffer in memory while we fill it
+        // in for better cache locality.
         //
-        // Secondly, it's typically faster with arrow's boolean if we set contiguous ranges of bits
+        // Also, it's typically faster with arrow's boolean if we set contiguous ranges of bits
         // in a single call instead of setting them all individually.
         for pattern_id in scan_result {
             if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
@@ -1038,11 +1040,11 @@ where
         // TODO - Not sure how inefficient what we're doing below is.. need to benchmark this and
         // figure out if it can be optimized.
         //
-        // For one thing this might thrash the CPU cache by loading the match buffer builder for
-        // each policy for each row. It'd be nice if we could have just kept each buffer in memory
-        // while we fill it in for better cache locality.
+        // This might thrash the CPU cache by loading the match buffer builder for each policy for
+        // each row. It'd be nice if we could have just kept each buffer in memory while we fill it
+        // in for better cache locality.
         //
-        // Secondly, it's typically faster with arrow's boolean if we set contiguous ranges of bits
+        // Also, it's typically faster with arrow's boolean if we set contiguous ranges of bits
         // in a single call instead of setting them all individually.
         for &pattern_id in matching_patterns {
             if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
@@ -1061,11 +1063,8 @@ where
     Ok(policy_hits)
 }
 
-/// Scan attribute string values through a Vectorscan database, respecting
-/// key and type filters. Returns per-policy `IdBitmap`s of matching parent_ids.
-///
-/// For dictionary-encoded `str` columns, each unique dictionary value is
-/// scanned at most once.
+/// Scan attribute string values through a Vectorscan database, respecting key and type filters.
+/// Returns per-policy `IdBitmap`s of matching parent_ids.
 fn scan_attr_string_column(
     str_col: &ArrayRef,
     key_mask: &BooleanArray,
@@ -1075,6 +1074,7 @@ fn scan_attr_string_column(
     num_rows: usize,
     db: &CompiledDatabase,
 ) -> Result<HashMap<usize, IdBitmap>, PolicyError> {
+    // TODO no unwrap for the type coercions below. Use arrow tye cast utilities.
     if let Some(str_arr) = str_col.as_any().downcast_ref::<StringArray>() {
         scan_attr_plain_string(
             str_arr,

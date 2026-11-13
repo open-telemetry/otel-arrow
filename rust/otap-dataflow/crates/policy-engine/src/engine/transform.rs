@@ -3,7 +3,7 @@
 
 //! Translation and application of policy transforms to OTAP Arrow batches.
 
-// TODO:
+// TODO
 // - Signal type generalization - currently only supports logs
 // - Coalesce transformations (optimization): When a policy has multiple transforms of the same
 //   kind (e.g. several renames, or several removes), they can probably be combined into a single
@@ -127,7 +127,7 @@ pub(crate) fn field_selector_to_otap_target(field: &LogFieldSelector) -> Option<
 }
 
 /// Apply a single remove operation to an OTAP batch.
-/// - For attribute fields: uses `DeleteTransform` to remove matching rows from the attribute batch./
+/// - For attribute fields: uses `DeleteTransform` to remove matching rows from the attribute batch.
 /// - For simple fields: removes the column from the root record batch.
 fn apply_remove(
     batch: &mut OtapArrowRecords,
@@ -169,7 +169,7 @@ fn apply_remove(
 
 /// Apply a single attribute rename to an OTAP batch.
 ///
-/// TODO - double check spec about how this works for non attr fields
+// TODO - double check spec about how this works for non attr fields
 fn apply_rename(
     batch: &mut OtapArrowRecords,
     from: &LogFieldSelector,

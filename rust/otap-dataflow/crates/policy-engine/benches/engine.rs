@@ -88,7 +88,7 @@ fn generate_otap_batch(batch_size: usize) -> OtapArrowRecords {
 }
 
 /// Generate adapter LogRecords for policy-rs row-by-row evaluation.
-/// Same logical data as [`generate_otap_batch`] wrt to log content
+/// Same logical data as [`generate_otap_batch`]
 fn generate_adapter_logs(batch_size: usize) -> Vec<AdapterLogRecord> {
     (0..batch_size)
         .map(|i| {
@@ -261,7 +261,7 @@ fn create_scaling_policies(count: usize) -> PolicySnapshot {
 // Benchmarks
 // ---------------------------------------------------------------------------
 
-/// Benchmark: full pipeline throughput with string matching + transforms for comparing engines
+/// Benchmark: throughput with string matching + transforms for comparing engines
 fn bench_throughput_matching(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let snapshot = create_root_match_policies();
@@ -309,7 +309,7 @@ fn bench_throughput_matching(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark: full pipeline with transforms.
+/// Benchmark: policies with transforms.
 ///
 /// Includes drop (keep:"none") and rename transforms.
 fn bench_throughput_transforms(c: &mut Criterion) {

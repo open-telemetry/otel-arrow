@@ -5,8 +5,7 @@
 //!
 //! This module evaluates compiled telemetry policies against OTAP Arrow batches.
 //!
-//! TODO - This work is still experimental and there are various TODOs that should be completed,
-//! some of which are listed below.
+//! This work is still experimental and there are various TODOs that should be completed.
 //!
 //! # Functionality (things that aren't yet supported)
 //!
@@ -14,7 +13,7 @@
 //! - Sampling
 //! - Volume Tracking
 //!
-//! # Performance
+//! # Performance (possible optimizations)
 //!
 //! The following optimizations should be evaluated and implemented if they seem worthwhile:
 //!
@@ -31,7 +30,7 @@
 //!   within a batch rather than allocating and discarding them each time. The `PolicyMatch`
 //!   bitmaps are prime candidates for pooling since they have predictable sizes.
 //!
-//! # Error handling
+//! # Error handling (needs improvement)
 //!
 //! TODO: validate that errors returned by this module conform to the policy spec's error handling
 //! requirements:
