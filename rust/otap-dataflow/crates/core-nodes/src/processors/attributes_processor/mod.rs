@@ -196,7 +196,7 @@ pub struct Config {
 }
 
 impl ConfigNodeContextDeclaration for Config {
-    fn context_declarations(&self) -> NodeContextDeclarations {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
         let entries = [SignalType::Logs, SignalType::Metrics, SignalType::Traces]
             .into_iter()
             .flat_map(|signal| plan::effective_value_actions(&self.actions, signal))
@@ -207,15 +207,15 @@ impl ConfigNodeContextDeclaration for Config {
             .flat_map(enrichment::context_entries)
             .collect::<BTreeSet<_>>();
         if entries.is_empty() {
-            return NodeContextDeclarations::default();
+            return Ok(NodeContextDeclarations::default());
         }
-        [ContextDeclaration::Consumes {
+        Ok([ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
                 entries: entries.into_iter().collect(),
             },
         }]
         .into_iter()
-        .collect()
+        .collect())
     }
 }
 
@@ -358,7 +358,7 @@ fn bind_config(
     config: &Config,
     pipeline_ctx: &PipelineContext,
 ) -> Result<[CompiledTransform; 3], ConfigError> {
-    if config.context_declarations().is_empty() {
+    if config.context_declarations()?.is_empty() {
         return compile_config(config, SourceBindings::ValidateOnly);
     }
     config.validate_context_declarations(pipeline_ctx)?;
