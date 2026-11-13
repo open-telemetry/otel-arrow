@@ -24,8 +24,8 @@
 use std::collections::HashMap;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, Datum, DictionaryArray,
-    Float64Array, Int64Array, RecordBatch, StringArray, UInt16Array, UInt8Array,
+    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, Datum, DictionaryArray, Float64Array,
+    Int64Array, RecordBatch, StringArray, UInt8Array, UInt16Array,
 };
 use arrow::compute::kernels::cmp;
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
@@ -34,14 +34,14 @@ use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, build_native_selection_vec};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
+use policy_rs::PolicyError;
 use policy_rs::engine::{
     CompiledDatabase, CompiledMatchers, CompiledNumericValue, CompiledTypedMatcher, CompiledValue,
     ExistenceCheck, LogSignal, TypedCheck,
 };
-use policy_rs::PolicyError;
 
 use crate::engine::policy_match::PolicyMatch;
-use crate::engine::transform::{FieldTarget, classify_field};
+use crate::engine::transform::{FieldTarget, field_selector_to_otap_target};
 
 /// Evaluate a [`TypedCheck`] against an OTAP batch, returning a [`PolicyMatch`] indicating which
 /// rows satisfy the check.
@@ -51,7 +51,7 @@ pub(crate) fn evaluate_typed_check(
     otap_batch: &OtapArrowRecords,
     check: &TypedCheck<LogSignal>,
 ) -> PolicyMatch {
-    let Some(target) = classify_field(&check.field) else {
+    let Some(target) = field_selector_to_otap_target(&check.field) else {
         // Unsupported field (e.g., nested attribute path) -- non-match.
         return PolicyMatch::None;
     };
@@ -61,6 +61,8 @@ pub(crate) fn evaluate_typed_check(
             evaluate_typed_check_on_attribute(otap_batch, key, payload_type, &check.matcher)
         }
         FieldTarget::SimpleField(column_name) => {
+            // TODO return an error here if column_name is "body" because this function
+            // doesn't handle it correctly
             evaluate_typed_check_on_root(otap_batch, column_name, &check.matcher)
         }
     };
@@ -75,15 +77,15 @@ pub(crate) fn evaluate_typed_check(
     }
 }
 
-/// Evaluate an [`ExistenceCheck`] against an OTAP batch, returning a
-/// [`PolicyMatch`] indicating which rows satisfy the check.
+/// Evaluate an [`ExistenceCheck`] against an OTAP batch, returning a [`PolicyMatch`] indicating
+/// which rows satisfy the check.
 ///
 /// Handles negation internally.
 pub(crate) fn evaluate_existence_check(
     otap_batch: &OtapArrowRecords,
     check: &ExistenceCheck<LogSignal>,
 ) -> PolicyMatch {
-    let Some(target) = classify_field(&check.field) else {
+    let Some(target) = field_selector_to_otap_target(&check.field) else {
         return PolicyMatch::None;
     };
 
@@ -92,13 +94,15 @@ pub(crate) fn evaluate_existence_check(
             evaluate_existence_on_attribute(otap_batch, key, payload_type, check.should_exist)
         }
         FieldTarget::SimpleField(column_name) => {
+            // TODO return an error here if column_name is "body" because this function
+            // doesn't handle it correctly
             evaluate_existence_on_root(otap_batch, column_name, check.should_exist)
         }
     };
 
     // TODO - we could potentially avoid allocating a buffer if internally we were to swap the
-    // predicates instead of just evaluating the operation specified by the matcher and then
-    // inverting the result.
+    // predicates internally when check is negated (e.g eq -> ne, gt -> lte, etc.) instead of just
+    // evaluating the operation specified by the matcher and then inverting the result post-hoc.
     if check.is_negated {
         PolicyMatch::not(&result)
     } else {
@@ -107,9 +111,6 @@ pub(crate) fn evaluate_existence_check(
 }
 
 /// Evaluate a typed comparison on a root record batch column.
-///
-/// Per spec: type mismatches are non-matches (not errors). Integer and
-/// floating-point values are compared in a single numeric domain.
 fn evaluate_typed_check_on_root(
     otap_batch: &OtapArrowRecords,
     column_name: &str,
@@ -126,10 +127,10 @@ fn evaluate_typed_check_on_root(
 
     let result = match matcher {
         CompiledTypedMatcher::Equals(value) => evaluate_equals(column, value),
-        CompiledTypedMatcher::Gt(nv) => evaluate_numberic_cmp(column, nv, cmp::gt),
-        CompiledTypedMatcher::Gte(nv) => evaluate_numberic_cmp(column, nv, cmp::gt_eq),
-        CompiledTypedMatcher::Lt(nv) => evaluate_numberic_cmp(column, nv, cmp::lt),
-        CompiledTypedMatcher::Lte(nv) => evaluate_numberic_cmp(column, nv, cmp::lt_eq),
+        CompiledTypedMatcher::Gt(nv) => evaluate_numeric_cmp(column, nv, cmp::gt),
+        CompiledTypedMatcher::Gte(nv) => evaluate_numeric_cmp(column, nv, cmp::gt_eq),
+        CompiledTypedMatcher::Lt(nv) => evaluate_numeric_cmp(column, nv, cmp::lt),
+        CompiledTypedMatcher::Lte(nv) => evaluate_numeric_cmp(column, nv, cmp::lt_eq),
     };
 
     match result {
@@ -145,10 +146,10 @@ fn evaluate_typed_check_on_root(
 fn evaluate_equals(column: &ArrayRef, value: &CompiledValue) -> Option<BooleanArray> {
     match value {
         CompiledValue::Int(i) => {
-            evaluate_numberic_cmp(column, &CompiledNumericValue::Int(*i), cmp::eq)
+            evaluate_numeric_cmp(column, &CompiledNumericValue::Int(*i), cmp::eq)
         }
         CompiledValue::Double(d) => {
-            evaluate_numberic_cmp(column, &CompiledNumericValue::Double(*d), cmp::eq)
+            evaluate_numeric_cmp(column, &CompiledNumericValue::Double(*d), cmp::eq)
         }
 
         CompiledValue::Bool(v) => {
@@ -161,17 +162,19 @@ fn evaluate_equals(column: &ArrayRef, value: &CompiledValue) -> Option<BooleanAr
     }
 }
 
-fn evaluate_numberic_cmp<F>(
+fn evaluate_numeric_cmp<F>(
     column: &ArrayRef,
-    numberic_value: &CompiledNumericValue,
+    numeric_value: &CompiledNumericValue,
     cmp_fn: F,
 ) -> Option<BooleanArray>
 where
     F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError> + Copy,
 {
-    // TODO the logic below is NOT correct -- we need to have better logic around data type
-    // coercion and not just panicking when an invalid type encountered
-    match numberic_value {
+    // Note: the spec has some rules around comparing floats to ints (basically, should be)
+    // supported) that we'll need to abide by
+    // TODO the logic below is NOT correct vis-a-vis the type coercion and panics in many cases
+    // of type mismatches.
+    match numeric_value {
         CompiledNumericValue::Int(int64_val) => {
             match effective_data_type(column) {
                 DataType::Int64 => {
@@ -184,8 +187,8 @@ where
                 }
 
                 _ => {
-                    // TODO bunch of other numberic data types
-                    todo!("numberic coercion")
+                    // TODO bunch of other numeric data types
+                    todo!("numeric coercion")
                 }
             }
         }
@@ -197,8 +200,8 @@ where
                 }
 
                 _ => {
-                    // TODO bunch of other numberic data types
-                    todo!("numberic coercion")
+                    // TODO bunch of other numeric data types
+                    todo!("numeric coercion")
                 }
             }
         }
@@ -206,7 +209,8 @@ where
 }
 
 fn effective_data_type(column: &ArrayRef) -> DataType {
-    // TODO try to avoid cloning anything not primitive here
+    // TODO try to avoid cloning the datatype here, which is not "free" for non-primitive types
+    // like Dictionaries and Structs due to the pointers/vecs contained therein
     let dt = column.data_type();
     match dt {
         DataType::Dictionary(_, v) => v.as_ref().clone(),
@@ -225,68 +229,48 @@ fn evaluate_existence_on_root(
     column_name: &str,
     should_exist: bool,
 ) -> PolicyMatch {
+    let no_field_result = if should_exist {
+        PolicyMatch::None
+    } else {
+        PolicyMatch::All
+    };
     let Some(root_batch) = otap_batch.root_record_batch() else {
-        return if should_exist {
-            PolicyMatch::None
-        } else {
-            PolicyMatch::All
-        };
+        return no_field_result;
     };
 
     let num_rows = root_batch.num_rows();
 
     let Some(column) = root_batch.column_by_name(column_name) else {
         // Column missing entirely from the batch.
-        return if should_exist {
-            PolicyMatch::None
-        } else {
-            PolicyMatch::All
-        };
+        return no_field_result;
     };
 
-    // TODO - the code below is quite verbose, it could be shortened and it needs to take into
-    // account that if the column is an "AnyValue" struct, we may need to go into the type
-    // column to determine if, for example, log "body" exists.
+    // TODO - handle "AnyValue" which we need to look inside of and account for the struct
+    // null buffer, the type being Empty, and the null buffer within the various values columns.
+    // This'd be needed for the special case of log body.
 
     let null_count = column.null_count();
-    if should_exist {
-        // "field exists" = "field is not null"
-        if null_count == 0 {
-            PolicyMatch::All
-        } else if null_count == num_rows {
-            PolicyMatch::None
-        } else {
-            // The validity bitmap has true where the value is present.
-            match column.nulls() {
-                Some(nulls) => {
-                    PolicyMatch::from_boolean_array(&BooleanArray::new(nulls.inner().clone(), None))
-                }
-                None => PolicyMatch::All,
-            }
-        }
-    } else {
-        // "field does not exist" = "field is null"
-        if null_count == num_rows {
-            PolicyMatch::All
-        } else if null_count == 0 {
-            PolicyMatch::None
-        } else {
-            match column.nulls() {
-                Some(nulls) => {
-                    let inverted = !nulls.inner();
-                    PolicyMatch::from_boolean_array(&BooleanArray::new(inverted, None))
-                }
-                None => PolicyMatch::None,
-            }
-        }
+
+    if null_count == num_rows {
+        return no_field_result;
     }
+
+    let Some(validity) = column.nulls() else {
+        // all rows are valid
+        return PolicyMatch::not(&no_field_result);
+    };
+
+    PolicyMatch::from_boolean_buffer(if should_exist {
+        validity.inner().clone()
+    } else {
+        !validity.inner()
+    })
 }
 
 /// Evaluate a field existence check on an attribute child batch.
 ///
-/// For `should_exist: true`: returns true for root rows that have an attribute
-/// with the given key. For `should_exist: false`: returns true for root rows
-/// that do NOT have the attribute.
+/// For `should_exist: true`: returns true for root rows that have an attribute with the given key.
+/// For `should_exist: false`: returns true for root rows that do NOT have the attribute.
 fn evaluate_existence_on_attribute(
     otap_batch: &OtapArrowRecords,
     attr_key: &str,
@@ -310,20 +294,22 @@ fn evaluate_existence_on_attribute(
         return no_attrs_result;
     };
 
-    // Get the attribute batch. If it doesn't exist, no rows have any
-    // attributes of this type.
+    // Get the attribute batch. If it doesn't exist, no rows have any attributes of this type.
     let Some(attrs_batch) = otap_batch.get(payload_type) else {
         return no_attrs_result;
     };
 
     // Get the key column and find rows matching the target key.
     let Some(key_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_KEY) else {
+        // TODO - consider returning error here? This would be an invalid batch.
+        // Need to confirm what the spec says to do in this case.
         return no_attrs_result;
     };
 
     let key_scalar = StringArray::new_scalar(attr_key);
     let Ok(key_mask) = cmp::eq(key_col, &key_scalar) else {
-        // Comparison failed (unexpected type) -- non-match.
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
 
@@ -334,9 +320,13 @@ fn evaluate_existence_on_attribute(
 
     // Get the parent_id column from the attribute batch.
     let Some(parent_id_col) = attrs_batch.column_by_name(consts::PARENT_ID) else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
     let Some(parent_id_u16) = parent_id_col.as_any().downcast_ref::<UInt16Array>() else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
 
@@ -350,12 +340,16 @@ fn evaluate_existence_on_attribute(
     }
 
     // TODO - we could change the impl of build_native_selection_vec to possibly avoid
-    // a heap allocation/drop for the Arc containing the BoolArray values.
+    // a heap allocation/drop for the Arc containing the BooleanArray values and have it
+    // simply return an owned BooleanBuffer. Once this is done, we should grep this file for
+    // all usages and resolve this issue (maybe removing from_boolean_array for PolicyMatch)
     let selection = build_native_selection_vec(root_id_col, &id_bitmap);
     let result = PolicyMatch::from_boolean_array(&selection);
 
-    // TODO - build the inverted bitmap above instead of inverting this here
-    // For should_exist: false, invert the result.
+    // For should_exist: false, invert the result..
+    //
+    // TODO build the inverted bitmap above where we populate the IdBitmap of inverting this here.
+    // This would save us a copy to negate the buffer in the case only some rows are matched.
     if should_exist {
         result
     } else {
@@ -364,10 +358,6 @@ fn evaluate_existence_on_attribute(
 }
 
 /// Evaluate a typed comparison on an attribute child batch.
-///
-/// Filters the attribute batch by key, checks the type column for compatible
-/// types, applies the comparison on the typed value column, and joins the
-/// result back to root rows via parent_id/id.
 fn evaluate_typed_check_on_attribute(
     otap_batch: &OtapArrowRecords,
     attr_key: &str,
@@ -389,10 +379,15 @@ fn evaluate_typed_check_on_attribute(
 
     // Filter by key.
     let Some(key_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_KEY) else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
     let key_scalar = StringArray::new_scalar(attr_key);
     let Ok(key_mask) = cmp::eq(key_col, &key_scalar) else {
+        // If this failed, it probably is because of a type mismatch type mismatch.
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
     if key_mask.true_count() == 0 {
@@ -401,74 +396,115 @@ fn evaluate_typed_check_on_attribute(
 
     // Get the parent_id column.
     let Some(parent_id_col) = attrs_batch.column_by_name(consts::PARENT_ID) else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
     let Some(parent_id_u16) = parent_id_col.as_any().downcast_ref::<UInt16Array>() else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
 
     // Get the type column to check value type compatibility.
     let Some(type_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_TYPE) else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
     let Some(type_u8) = type_col.as_any().downcast_ref::<UInt8Array>() else {
+        // TODO - consider returning error here? This would be an invalid batch
+        // Need to confirm what the spec says to do in this case.
         return PolicyMatch::None;
     };
 
-    // Determine which attribute value types and columns are relevant for
-    // this matcher, then attempt the comparison on each.
     // TODO: use an IdBitmapPool for reuse between evaluations.
     let mut id_bitmap = IdBitmap::new();
 
+    // Determine which attribute value types and columns are relevant for this matcher,
+    // then attempt the comparison on each.
     match matcher {
         CompiledTypedMatcher::Equals(CompiledValue::Bool(val)) => {
             collect_matching_attr_rows(
-                attrs_batch, &key_mask, type_u8, parent_id_u16,
-                consts::ATTRIBUTE_BOOL, AttributeValueType::Bool as u8,
-                &BooleanArray::new_scalar(*val), cmp::eq,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                consts::ATTRIBUTE_BOOL,
+                AttributeValueType::Bool as u8,
+                &BooleanArray::new_scalar(*val),
+                cmp::eq,
                 &mut id_bitmap,
             );
         }
         CompiledTypedMatcher::Equals(CompiledValue::Int(val)) => {
             collect_matching_attr_rows_numeric(
-                attrs_batch, &key_mask, type_u8, parent_id_u16,
-                &CompiledNumericValue::Int(*val), cmp::eq,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                &CompiledNumericValue::Int(*val),
+                cmp::eq,
                 &mut id_bitmap,
             );
         }
         CompiledTypedMatcher::Equals(CompiledValue::Double(val)) => {
             collect_matching_attr_rows_numeric(
-                attrs_batch, &key_mask, type_u8, parent_id_u16,
-                &CompiledNumericValue::Double(*val), cmp::eq,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                &CompiledNumericValue::Double(*val),
+                cmp::eq,
                 &mut id_bitmap,
             );
         }
-        CompiledTypedMatcher::Equals(CompiledValue::Bytes(_)) => {
-            todo!("Equals(Bytes) comparison on attribute values")
-        }
         CompiledTypedMatcher::Gt(nv) => {
             collect_matching_attr_rows_numeric(
-                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::gt,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                nv,
+                cmp::gt,
                 &mut id_bitmap,
             );
         }
         CompiledTypedMatcher::Gte(nv) => {
             collect_matching_attr_rows_numeric(
-                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::gt_eq,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                nv,
+                cmp::gt_eq,
                 &mut id_bitmap,
             );
         }
         CompiledTypedMatcher::Lt(nv) => {
             collect_matching_attr_rows_numeric(
-                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::lt,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                nv,
+                cmp::lt,
                 &mut id_bitmap,
             );
         }
         CompiledTypedMatcher::Lte(nv) => {
             collect_matching_attr_rows_numeric(
-                attrs_batch, &key_mask, type_u8, parent_id_u16, nv, cmp::lt_eq,
+                attrs_batch,
+                &key_mask,
+                type_u8,
+                parent_id_u16,
+                nv,
+                cmp::lt_eq,
                 &mut id_bitmap,
             );
+        }
+        CompiledTypedMatcher::Equals(CompiledValue::Bytes(_)) => {
+            todo!("Equals(Bytes) comparison on attribute values")
         }
     };
 
@@ -502,11 +538,20 @@ fn collect_matching_attr_rows<S: Datum, F>(
         return;
     };
 
-    // Compare the entire value column against the scalar.
-    // The kernel handles dictionary-encoded columns transparently.
+    // TODO the logic here probably needs to be reworked/optimized..
     //
-    // TODO - this will actually return an error for data types that were'd coerced properly
-    // which means comparisons that should pass, but just aren't supported correctly, will silently
+    // The `eq` kernel to check the `type` column below might be faster than checking it inline
+    // while iterating the rows. Although, if there are many matchers that need to check attrs of
+    // the same type, it might be more efficient to do this once and cache it.
+    //
+    // Also, we check the cmp_fn for every row, but we actually only need the result for rows
+    // where there is a key match. We could consider pre-filtering the ID column. Whether this is
+    // actually a better thing to do probably depends on how selective is the key mask.
+
+    // Compare the entire value column against the scalar.
+    //
+    // TODO - this will actually return an error for data types that weren't coerced properly which
+    // means comparisons that should pass, but just aren't supported correctly, will silently
     // reject the rows. Consider proper error handling.
     let Ok(cmp_result) = cmp_fn(value_col, scalar) else {
         return;
@@ -514,10 +559,7 @@ fn collect_matching_attr_rows<S: Datum, F>(
 
     // Scan: row must match key AND have the right type AND pass the comparison.
     for i in 0..key_mask.len() {
-        if key_mask.value(i)
-            && type_col.value(i) == expected_type
-            && cmp_result.value(i)
-        {
+        if key_mask.value(i) && type_col.value(i) == expected_type && cmp_result.value(i) {
             id_bitmap.insert(u32::from(parent_id_col.value(i)));
         }
     }
@@ -536,36 +578,60 @@ fn collect_matching_attr_rows_numeric<F>(
 ) where
     F: Fn(&dyn Datum, &dyn Datum) -> Result<BooleanArray, arrow::error::ArrowError> + Copy,
 {
-    // TODO - There are other coercions that probably need to be supported here...
+    // TODO - this doesn't properly handle  all numeric coercions 
 
     match numeric_value {
         CompiledNumericValue::Int(v) => {
             // Check the int column directly.
             collect_matching_attr_rows(
-                attrs_batch, key_mask, type_col, parent_id_col,
-                consts::ATTRIBUTE_INT, AttributeValueType::Int as u8,
-                &Int64Array::new_scalar(*v), cmp_fn, id_bitmap,
+                attrs_batch,
+                key_mask,
+                type_col,
+                parent_id_col,
+                consts::ATTRIBUTE_INT,
+                AttributeValueType::Int as u8,
+                &Int64Array::new_scalar(*v),
+                cmp_fn,
+                id_bitmap,
             );
             // Cross-numeric: also check the double column with promoted value.
             collect_matching_attr_rows(
-                attrs_batch, key_mask, type_col, parent_id_col,
-                consts::ATTRIBUTE_DOUBLE, AttributeValueType::Double as u8,
-                &Float64Array::new_scalar(*v as f64), cmp_fn, id_bitmap,
+                attrs_batch,
+                key_mask,
+                type_col,
+                parent_id_col,
+                consts::ATTRIBUTE_DOUBLE,
+                AttributeValueType::Double as u8,
+                &Float64Array::new_scalar(*v as f64),
+                cmp_fn,
+                id_bitmap,
             );
         }
         CompiledNumericValue::Double(v) => {
             // Check the double column directly.
             collect_matching_attr_rows(
-                attrs_batch, key_mask, type_col, parent_id_col,
-                consts::ATTRIBUTE_DOUBLE, AttributeValueType::Double as u8,
-                &Float64Array::new_scalar(*v), cmp_fn, id_bitmap,
+                attrs_batch,
+                key_mask,
+                type_col,
+                parent_id_col,
+                consts::ATTRIBUTE_DOUBLE,
+                AttributeValueType::Double as u8,
+                &Float64Array::new_scalar(*v),
+                cmp_fn,
+                id_bitmap,
             );
             // Cross-numeric: also check the int column if the double is exact.
             if v.fract() == 0.0 && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 {
                 collect_matching_attr_rows(
-                    attrs_batch, key_mask, type_col, parent_id_col,
-                    consts::ATTRIBUTE_INT, AttributeValueType::Int as u8,
-                    &Int64Array::new_scalar(*v as i64), cmp_fn, id_bitmap,
+                    attrs_batch,
+                    key_mask,
+                    type_col,
+                    parent_id_col,
+                    consts::ATTRIBUTE_INT,
+                    AttributeValueType::Int as u8,
+                    &Int64Array::new_scalar(*v as i64),
+                    cmp_fn,
+                    id_bitmap,
                 );
             }
         }
@@ -601,18 +667,8 @@ fn get_root_id_column<'a>(
 // Vectorscan database evaluation
 // ---------------------------------------------------------------------------
 
-/// Evaluate all Vectorscan databases against the OTAP batch, updating the
-/// per-policy `matched` bitmaps.
-///
-/// Each database is keyed by `(field, negated)` and contains compiled regex
-/// patterns from one or more policies. For each database:
-///
-/// 1. Resolve the field to a string Arrow column (root or attribute `str`).
-/// 2. For dictionary-encoded columns, scan each unique dict value once and
-///    map the results back to rows via the keys array.
-/// 3. For non-negated databases: AND the per-policy hit bitmap into `matched`.
-/// 4. For negated databases: AND `NOT(hit)` into `matched` (a negated pattern
-///    that fires means the policy should NOT match that row).
+/// Evaluate all Vectorscan databases against the OTAP batch, updating the per-policy `matched`
+/// bitmaps.
 pub(crate) fn evaluate_vectorscan_databases(
     compiled: &CompiledMatchers<LogSignal>,
     otap_batch: &OtapArrowRecords,
@@ -625,11 +681,14 @@ pub(crate) fn evaluate_vectorscan_databases(
     let num_root_rows = root_batch.num_rows();
 
     for (key, db) in &compiled.databases {
-        let target = match classify_field(&key.field) {
+        let target = match field_selector_to_otap_target(&key.field) {
             Some(t) => t,
             None => {
                 // Unsupported field -- mark all policies in this db as non-matching.
-                mark_db_policies_none(db, matched);
+                // TODO - double check this is the right thing to do here (e.g. should this have
+                // been a compile error and is that what should be thrown?)
+                all_policies_no_match(db, matched);
+
                 continue;
             }
         };
@@ -637,13 +696,24 @@ pub(crate) fn evaluate_vectorscan_databases(
         match target {
             FieldTarget::SimpleField(col_name) => {
                 evaluate_vectorscan_on_root_column(
-                    root_batch, col_name, db, key.negated, num_root_rows, matched,
+                    root_batch,
+                    col_name,
+                    db,
+                    key.negated,
+                    num_root_rows,
+                    matched,
                 )?;
             }
             FieldTarget::Attribute(attr_key, payload_type) => {
                 evaluate_vectorscan_on_attribute(
-                    otap_batch, root_batch, attr_key, payload_type, db, key.negated,
-                    num_root_rows, matched,
+                    otap_batch,
+                    root_batch,
+                    attr_key,
+                    payload_type,
+                    db,
+                    key.negated,
+                    num_root_rows,
+                    matched,
                 )?;
             }
         }
@@ -661,13 +731,18 @@ fn evaluate_vectorscan_on_root_column(
     num_rows: usize,
     matched: &mut [PolicyMatch],
 ) -> Result<(), PolicyError> {
+    if col_name == consts::BODY {
+        // TODO: "body" field not yet supported. We'll need special logic for this to pull out
+        // the "str" column from the AnyValue struct, check the "type" column is string, etc.
+        return Err(PolicyError::CompileError {
+            reason: "'body' field not yet supported".into(),
+        });
+    }
+
     let Some(column) = root_batch.column_by_name(col_name) else {
         // Column missing -- no patterns can match.
-        // TODO: handle "body" field which is an AnyValue struct (need to extract
-        // the string value from the struct). Also, body should eventually be
-        // treated as numeric for typed checks as well.
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -675,7 +750,7 @@ fn evaluate_vectorscan_on_root_column(
     let Some(accessor) = StringColumnAccessor::try_new(column) else {
         // Non-string column -- Vectorscan can't operate on it.
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -684,10 +759,14 @@ fn evaluate_vectorscan_on_root_column(
     // Dict-encoded columns use a lazy cache so each unique value is scanned
     // at most once.
     let mut policy_hits: HashMap<usize, BooleanBufferBuilder> = HashMap::new();
+
+    // This is used in the case where the string column is dictionary encoded. We cache which
+    // dictionary keys were matches for which policies, so we can avoid re-scanning the dictionary
+    // values multiple times.
     let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
 
-    // TODO: optimize Vectorscan scratch cloning -- currently
-    // VectorscanDatabase::scan clones the scratch space on every call.
+    // TODO: optimize Vectorscan scratch cloning -- currently VectorscanDatabase::scan clones
+    // the scratch space on every call.
     for i in 0..num_rows {
         let matching_patterns = accessor.scan_row(i, db, &mut scan_cache)?;
         for &pattern_id in matching_patterns {
@@ -723,14 +802,14 @@ fn evaluate_vectorscan_on_attribute(
 ) -> Result<(), PolicyError> {
     let Some(root_id_col) = get_root_id_column(root_batch, payload_type) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
 
     let Some(attrs_batch) = otap_batch.get(payload_type) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -738,7 +817,7 @@ fn evaluate_vectorscan_on_attribute(
     // Filter by attribute key.
     let Some(key_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_KEY) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -748,7 +827,7 @@ fn evaluate_vectorscan_on_attribute(
     })?;
     if key_mask.true_count() == 0 {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     }
@@ -756,13 +835,13 @@ fn evaluate_vectorscan_on_attribute(
     // Get the type column and check for string type.
     let Some(type_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_TYPE) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
     let Some(type_u8) = type_col.as_any().downcast_ref::<UInt8Array>() else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -770,14 +849,14 @@ fn evaluate_vectorscan_on_attribute(
     // Get the "str" value column.
     let Some(str_col) = attrs_batch.column_by_name(consts::ATTRIBUTE_STR) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
 
     let Some(accessor) = StringColumnAccessor::try_new(str_col) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -785,13 +864,13 @@ fn evaluate_vectorscan_on_attribute(
     // Get parent_id column.
     let Some(parent_id_col) = attrs_batch.column_by_name(consts::PARENT_ID) else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
     let Some(parent_id_u16) = parent_id_col.as_any().downcast_ref::<UInt16Array>() else {
         if !negated {
-            mark_db_policies_none(db, matched);
+            all_policies_no_match(db, matched);
         }
         return Ok(());
     };
@@ -881,34 +960,24 @@ fn apply_policy_hits(
 }
 
 /// Mark all policies in a database as non-matching.
-fn mark_db_policies_none(db: &CompiledDatabase, matched: &mut [PolicyMatch]) {
+fn all_policies_no_match(db: &CompiledDatabase, matched: &mut [PolicyMatch]) {
     for pattern_ref in &db.pattern_index {
         matched[pattern_ref.policy_index] = PolicyMatch::None;
     }
 }
 
-// ---------------------------------------------------------------------------
-// StringColumnAccessor -- unified string column access with lazy scan cache
-// ---------------------------------------------------------------------------
-
-/// Provides access to string values in an Arrow column, handling both plain
-/// `StringArray` and dictionary-encoded variants (`Dict<UInt8, Utf8>`,
-/// `Dict<UInt16, Utf8>`).
-///
-/// For dictionary-encoded columns, Vectorscan scans are cached by dict value
-/// index so each unique value is scanned at most once. This is important
-/// because Arrow's `filter` on a dict array only filters the keys, leaving
-/// all dictionary values present -- scanning all values would waste work on
-/// values no remaining key points to.
+/// Provides access to string values in an OTAP Arrow column, which generally may,
+/// or may not, be dictionary encoded(`Dict<UInt8, Utf8>`, `Dict<UInt16, Utf8>`).
+/// 
+/// This also provides some helpers for scanning the array's string values using Vectorscan db.
 enum StringColumnAccessor<'a> {
-    /// Plain UTF-8 string array. No dict dedup opportunity.
     Plain(&'a StringArray),
-    /// Dictionary with UInt8 keys and Utf8 values.
+
     DictU8 {
         keys: &'a UInt8Array,
         values: &'a StringArray,
     },
-    /// Dictionary with UInt16 keys and Utf8 values.
+
     DictU16 {
         keys: &'a UInt16Array,
         values: &'a StringArray,
@@ -929,7 +998,10 @@ impl<'a> StringColumnAccessor<'a> {
                 values,
             });
         }
-        if let Some(dict) = column.as_any().downcast_ref::<DictionaryArray<UInt16Type>>() {
+        if let Some(dict) = column
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+        {
             let values = dict.values().as_any().downcast_ref::<StringArray>()?;
             return Some(Self::DictU16 {
                 keys: dict.keys(),
@@ -982,7 +1054,10 @@ impl<'a> StringColumnAccessor<'a> {
                         let _ = scan_cache.insert(dict_idx, result);
                     }
                 }
-                Ok(scan_cache.get(&dict_idx).map(|v| v.as_slice()).unwrap_or(&[]))
+                Ok(scan_cache
+                    .get(&dict_idx)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]))
             }
             Self::DictU16 { keys, values } => {
                 if keys.is_null(row) {
@@ -998,7 +1073,10 @@ impl<'a> StringColumnAccessor<'a> {
                         let _ = scan_cache.insert(dict_idx, result);
                     }
                 }
-                Ok(scan_cache.get(&dict_idx).map(|v| v.as_slice()).unwrap_or(&[]))
+                Ok(scan_cache
+                    .get(&dict_idx)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]))
             }
         }
     }

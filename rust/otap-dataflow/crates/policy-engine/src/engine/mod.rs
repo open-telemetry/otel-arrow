@@ -346,10 +346,8 @@ fn find_matching_policies(
     // as we evaluate each policy's matchers.
     let mut matched = vec![PolicyMatch::All; policy_count];
 
-    // Evaluate Vectorscan databases (string pattern matchers: exact, regex,
-    // starts_with, ends_with, contains). Each database groups patterns by
-    // (field, negated) and scans string column values through the compiled
-    // Vectorscan DFA.
+    // Evaluate Vectorscan databases. Each database groups patterns by (field, negated) and scans
+    // string column values through the compiled Vectorscan DFA.
     evaluate_vectorscan_databases(compiled, otap_batch, &mut matched)?;
 
     // Evaluate existence checks.

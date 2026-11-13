@@ -179,6 +179,8 @@ impl PolicyMatch {
     /// Create a [`PolicyMatch`] from a [`BooleanArray`].
     ///
     /// Null values in the array are treated as `false` (fail-open).
+    ///
+    // TODO: `From` impl would be more canonical
     pub(crate) fn from_boolean_array(arr: &BooleanArray) -> Self {
         // Strip nulls: treat null as false by ANDing values with validity.
         let buffer = match arr.nulls() {
@@ -186,6 +188,13 @@ impl PolicyMatch {
             None => arr.values().clone(),
         };
 
+        Self::from_boolean_buffer(buffer)
+    }
+
+    /// Create a [`PolicyMatch`] from a [`BooleanBuffer`]
+    ///
+    // TODO: `From` impl would be more canonical
+    pub(crate) fn from_boolean_buffer(buffer: BooleanBuffer) -> Self {
         let set_bits = buffer.count_set_bits();
         if set_bits == 0 {
             Self::None

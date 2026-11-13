@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::raw_batch_store::{LOGS_TYPE_MASK, RawBatchStore};
 use otel_arrow_dfe_pdata::otap::transform::concatenate::{ConcatOptions, concatenate};
 use otel_arrow_dfe_pdata::otap::transform::{
@@ -22,12 +23,9 @@ use otel_arrow_dfe_pdata::otap::transform::{
 };
 use otel_arrow_dfe_pdata::otap::{Logs, OtapBatchStore};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::OtapArrowRecords;
+use policy_rs::LogFieldSelector;
 use policy_rs::engine::{CompiledTransform, LogSignal, TransformOp};
 use policy_rs::proto::tero::policy::v1::LogField;
-use policy_rs::LogFieldSelector;
-
-
 
 /// Apply all transform operations from a compiled policy transform to an OTAP batch.
 pub(crate) fn apply_policy_transforms(
@@ -37,7 +35,7 @@ pub(crate) fn apply_policy_transforms(
     // Note: the spec mandates an execution order for these: remove, redact, rename, add.
     // However the `CompiledTransform` already stores ops in this order, so we can just iterate
     // what has been given to us
-    // (TODO ^^ validate this assumption - it's a claim from an LLM that hasn't been double checked 
+    // (TODO ^^ validate this assumption - it's a claim from an LLM that hasn't been double checked
     // by a human being).
     for op in &transform.ops {
         match op {
@@ -47,7 +45,11 @@ pub(crate) fn apply_policy_transforms(
             TransformOp::Redact { .. } => {
                 // TODO: implement redact transform
             }
-            TransformOp::Rename { from, to, upsert: _ } => {
+            TransformOp::Rename {
+                from,
+                to,
+                upsert: _,
+            } => {
                 // TODO: handle the upsert flag. Currently we always rename (overwrite). Per spec, if
                 // upsert is false and the target key already exists, the rename should be a no-op.
                 apply_rename(batch, from, to)?;
@@ -66,7 +68,7 @@ pub(crate) fn apply_policy_transforms(
 /// struct sub-fields in the OTAP format (`resource.schema_url`,
 /// `instrumentation_scope.schema_url`). The current mapping returns the
 /// shared `"schema_url"` column name, which is only correct for the
-/// top-level `schema_url` column. 
+/// top-level `schema_url` column.
 // TODO: verify/fix schema_url mapping for resource vs scope distinction.
 pub(crate) fn simple_field_name(field: &LogField) -> &'static str {
     match field {
@@ -80,12 +82,11 @@ pub(crate) fn simple_field_name(field: &LogField) -> &'static str {
     }
 }
 
-/// Classify a `LogFieldSelector` as either an attribute operation (with key and payload type) or
-/// a simple field operation (with column name).
+/// Target for some selected field within an OTAP batch.
 pub(crate) enum FieldTarget<'a> {
-    /// An attribute field: the key to match and the Arrow payload type
-    /// for that attribute batch.
+    /// An attribute field
     Attribute(&'a str, ArrowPayloadType),
+
     /// A simple root column field (body, severity_text, etc.).
     SimpleField(&'static str),
 }
@@ -95,10 +96,11 @@ pub(crate) enum FieldTarget<'a> {
 /// *Does not _yet_ support nested attribute access!* Returns `None` if the field selector uses a
 /// nested attribute path (path length > 1), which is not yet supported for transforms.
 ///
+// TODO: make this generic over signal type
 // TODO: support nested attribute paths (e.g., `["http", "request", "method"]`). This requires
 // operating on serialized map/slice values within the attribute's value column, not just matching
 // on the top-level key.
-pub(crate) fn classify_field(field: &LogFieldSelector) -> Option<FieldTarget<'_>> {
+pub(crate) fn field_selector_to_otap_target(field: &LogFieldSelector) -> Option<FieldTarget<'_>> {
     match field {
         LogFieldSelector::LogAttribute(path) => {
             if path.len() != 1 {
@@ -135,7 +137,7 @@ fn apply_remove(
     batch: &mut OtapArrowRecords,
     field: &LogFieldSelector,
 ) -> Result<(), otel_arrow_dfe_pdata::error::Error> {
-    let Some(target) = classify_field(field) else {
+    let Some(target) = field_selector_to_otap_target(field) else {
         return Ok(());
     };
 
@@ -179,7 +181,7 @@ fn apply_rename(
     from: &LogFieldSelector,
     to: &str,
 ) -> Result<(), otel_arrow_dfe_pdata::error::Error> {
-    let Some(target) = classify_field(from) else {
+    let Some(target) = field_selector_to_otap_target(from) else {
         return Ok(());
     };
 
