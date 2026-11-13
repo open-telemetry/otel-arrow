@@ -3,9 +3,8 @@
 
 //! Per-policy match bitmaps.
 
-use arrow::array::{Array, BooleanArray};
+use arrow::array::{Array, BooleanArray, BooleanBufferBuilder};
 use arrow::buffer::BooleanBuffer;
-use arrow::compute::filter as arrow_filter;
 
 /// Indicates which rows in a batch matched a policy.
 ///
@@ -131,38 +130,27 @@ impl PolicyMatch {
         }
     }
 
-    /// Filter this bitmap to keep only the rows indicated by `keep_mask`.
+    /// Reorder this bitmap by gathering bits at the positions given by
+    /// `indices`. The result has length `indices.len()`, where bit `i` in
+    /// the output is bit `indices[i]` from the original bitmap.
+    ///
+    /// This is the bitmap equivalent of Arrow's `take` kernel: it selects
+    /// and reorders elements by index.
+    ///
+    /// Used to remap a policy match bitmap (computed against the original
+    /// batch row order) into the current row order after split/concat
+    /// operations have reordered the batch.
     #[must_use]
-    pub(crate) fn filter_by(&self, keep_mask: &PolicyMatch) -> PolicyMatch {
-        match (self, keep_mask) {
-            // If the mask keeps everything, the bitmap is unchanged.
-            (x, PolicyMatch::All) => x.clone(),
-            // If the mask keeps nothing, no rows survive.
-            (_, PolicyMatch::None) => PolicyMatch::None,
-            // If this bitmap matches everything, the filtered result is All
-            // (all surviving rows are matched).
-            (PolicyMatch::All, PolicyMatch::Some(_)) => PolicyMatch::All,
-            // If this bitmap matches nothing, still nothing.
-            (PolicyMatch::None, PolicyMatch::Some(_)) => PolicyMatch::None,
-            // Filter the bitmap: keep only bits where keep_mask is true.
-            (PolicyMatch::Some(buf), PolicyMatch::Some(mask)) => {
-                debug_assert_eq!(buf.len(), mask.len());
-                let arr = BooleanArray::new(buf.clone(), None);
-                let mask_arr = BooleanArray::new(mask.clone(), None);
-                let filtered = arrow_filter(&arr, &mask_arr)
-                    .expect("filter should not fail on equal-length boolean arrays");
-                let filtered_bool = filtered
-                    .as_any()
-                    .downcast_ref::<BooleanArray>()
-                    .expect("filter of BooleanArray produces BooleanArray");
-                let new_buf = filtered_bool.values().clone();
-                if new_buf.count_set_bits() == 0 {
-                    PolicyMatch::None
-                } else if new_buf.count_set_bits() == new_buf.len() {
-                    PolicyMatch::All
-                } else {
-                    PolicyMatch::Some(new_buf)
+    pub(crate) fn take(&self, indices: &[usize]) -> PolicyMatch {
+        match self {
+            PolicyMatch::All => PolicyMatch::All,
+            PolicyMatch::None => PolicyMatch::None,
+            PolicyMatch::Some(buf) => {
+                let mut builder = BooleanBufferBuilder::new(indices.len());
+                for &orig_idx in indices {
+                    builder.append(buf.value(orig_idx));
                 }
+                Self::from_boolean_buffer(builder.finish())
             }
         }
     }

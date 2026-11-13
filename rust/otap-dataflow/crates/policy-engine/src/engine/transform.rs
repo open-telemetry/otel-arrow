@@ -64,11 +64,6 @@ pub(crate) fn apply_policy_transforms(
 
 /// Map a `LogField` enum variant to its OTAP Arrow column name.
 ///
-/// Note: schema URL fields (`ResourceSchemaUrl`, `ScopeSchemaUrl`) are
-/// struct sub-fields in the OTAP format (`resource.schema_url`,
-/// `instrumentation_scope.schema_url`). The current mapping returns the
-/// shared `"schema_url"` column name, which is only correct for the
-/// top-level `schema_url` column.
 // TODO: verify/fix schema_url mapping for resource vs scope distinction.
 pub(crate) fn simple_field_name(field: &LogField) -> &'static str {
     match field {
@@ -77,8 +72,11 @@ pub(crate) fn simple_field_name(field: &LogField) -> &'static str {
         LogField::TraceId => "trace_id",
         LogField::SpanId => "span_id",
         LogField::EventName => "event_name",
-        LogField::ResourceSchemaUrl | LogField::ScopeSchemaUrl => "schema_url",
-        LogField::Unspecified => "body", // fallback, should not occur
+        LogField::ResourceSchemaUrl | LogField::ScopeSchemaUrl | LogField::Unspecified => {
+            // TODO resource/scope schema URL need special handling in whatever calls this as they
+            // are embedded within struct fields. 
+            todo!()
+        }
     }
 }
 

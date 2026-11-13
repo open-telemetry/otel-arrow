@@ -138,6 +138,18 @@ impl PolicyEngine {
                     }
                 };
 
+                // Build an indices vector mapping current row position to
+                // original row position. This is needed because split/concat
+                // during transforms changes the row order, but policy match
+                // bitmaps are computed against the original row order.
+                let mut indices: Vec<usize> = match &keep_mask {
+                    PolicyMatch::All => (0..input_num_rows).collect(),
+                    PolicyMatch::None => Vec::new(), // unreachable: we returned early above
+                    PolicyMatch::Some(buf) => (0..input_num_rows)
+                        .filter(|&i| buf.value(i))
+                        .collect(),
+                };
+
                 // Apply transforms from matching keep:"all" policies
                 //
                 // Note: the spec states that the policies must be applied in a "consistent order
@@ -159,37 +171,44 @@ impl PolicyEngine {
                         continue;
                     }
 
-                    // Get the mask of non-dropped rows that are matched by this policy
-                    let filtered_match = policy_matches[idx].filter_by(&keep_mask);
+                    // Remap the policy's match bitmap from original row order
+                    // to current row order using the indices vector.
+                    let current_match = policy_matches[idx].take(&indices);
 
-                    match filtered_match {
+                    match current_match {
                         PolicyMatch::None => continue,
                         PolicyMatch::All => {
                             // Transform all surviving rows in place.
+                            // Indices unchanged since no split/concat.
                             apply_policy_transforms(&mut filtered_batch, transform).map_err(
                                 |e| PolicyError::CompileError {
                                     reason: format!("transform: {e}"),
                                 },
                             )?;
                         }
-                        PolicyMatch::Some(_) => {
-                            let map_transform_filter = |e| PolicyError::CompileError {
+                        PolicyMatch::Some(ref bitmap) => {
+                            let map_err = |e| PolicyError::CompileError {
                                 reason: format!("transform filter: {e}"),
                             };
 
-                            // Apply transforms to matched subset.
+                            // Split indices into matched and unmatched.
+                            let mut matched_indices = Vec::new();
+                            let mut unmatched_indices = Vec::new();
+                            for (i, &orig) in indices.iter().enumerate() {
+                                if bitmap.value(i) {
+                                    matched_indices.push(orig);
+                                } else {
+                                    unmatched_indices.push(orig);
+                                }
+                            }
+
+                            // Split the batch by the current-order mask.
                             let selection =
-                                filtered_match.to_boolean_array(filtered_batch.num_items());
+                                current_match.to_boolean_array(filtered_batch.num_items());
                             let mut matched_batch =
                                 filter_otap_batch(&selection, &filtered_batch, &mut id_bitmap_pool)
-                                    .map_err(map_transform_filter)?;
-                            apply_policy_transforms(&mut matched_batch, transform).map_err(
-                                |e| PolicyError::CompileError {
-                                    reason: format!("transform: {e}"),
-                                },
-                            )?;
+                                    .map_err(map_err)?;
 
-                            // Get the non-matched rows
                             let not_selection =
                                 not(&selection).map_err(|e| PolicyError::CompileError {
                                     reason: format!("transform: {e}"),
@@ -199,13 +218,24 @@ impl PolicyEngine {
                                 &filtered_batch,
                                 &mut id_bitmap_pool,
                             )
-                            .map_err(map_transform_filter)?;
+                            .map_err(map_err)?;
 
-                            // Concat back together.
+                            // Apply transforms to matched subset.
+                            apply_policy_transforms(&mut matched_batch, transform).map_err(
+                                |e| PolicyError::CompileError {
+                                    reason: format!("transform: {e}"),
+                                },
+                            )?;
+
+                            // Concat back together: matched first, then unmatched.
                             filtered_batch = concat_log_batches(matched_batch, unmatched_batch)
                                 .map_err(|e| PolicyError::CompileError {
                                     reason: format!("transform concat: {e}"),
                                 })?;
+
+                            // Update indices to match the new row order.
+                            matched_indices.extend(unmatched_indices);
+                            indices = matched_indices;
                         }
                     }
                 }
@@ -369,4 +399,230 @@ fn find_matching_policies(
     }
 
     Ok(matched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs;
+    use policy_rs::proto::tero::policy::v1::{
+        AttributePath, LogMatcher, LogRename, LogTarget, LogTransform, Policy as ProtoPolicy,
+        log_matcher, log_rename, policy,
+    };
+    use policy_rs::{Policy, PolicyRegistry};
+
+    fn attr_path(s: &str) -> AttributePath {
+        AttributePath {
+            path: vec![s.to_string()],
+        }
+    }
+
+    fn attr_exists_matcher(key: &str) -> LogMatcher {
+        LogMatcher {
+            field: Some(log_matcher::Field::LogAttribute(attr_path(key))),
+            r#match: Some(log_matcher::Match::Exists(true)),
+            negate: false,
+            case_insensitive: false,
+        }
+    }
+
+    fn create_log_policy(
+        id: &str,
+        matchers: Vec<LogMatcher>,
+        keep: &str,
+        transform: Option<LogTransform>,
+    ) -> Policy {
+        Policy::new(ProtoPolicy {
+            id: id.to_string(),
+            name: id.to_string(),
+            enabled: true,
+            target: Some(policy::Target::Log(LogTarget {
+                r#match: matchers,
+                keep: keep.to_string(),
+                transform,
+                sample_key: None,
+            })),
+            ..Default::default()
+        })
+    }
+
+    /// Scenario: two transform policies match different subsets of rows.
+    /// The first policy's split/concat reorders the batch; the second
+    /// policy must still apply its transforms to the correct rows.
+    ///
+    /// Guarantees: transforms are applied to the rows that matched each
+    /// policy's matchers, regardless of how previous transforms reordered
+    /// the batch.
+    #[test]
+    fn transforms_applied_to_correct_rows_after_reorder() {
+        let registry = PolicyRegistry::new();
+        let handle = registry.register_provider();
+
+        // Policy A (id="a-rename-marker-a"): matches rows with "marker_a" attr,
+        // renames "old_a" -> "new_a"
+        let policy_a = create_log_policy(
+            "a-rename-marker-a",
+            vec![attr_exists_matcher("marker_a")],
+            "all",
+            Some(LogTransform {
+                rename: vec![LogRename {
+                    from: Some(log_rename::From::FromLogAttribute(attr_path("old_a"))),
+                    to: "new_a".to_string(),
+                    upsert: false,
+                }],
+                ..Default::default()
+            }),
+        );
+
+        // Policy B (id="b-rename-marker-b"): matches rows with "marker_b" attr,
+        // renames "old_b" -> "new_b"
+        let policy_b = create_log_policy(
+            "b-rename-marker-b",
+            vec![attr_exists_matcher("marker_b")],
+            "all",
+            Some(LogTransform {
+                rename: vec![LogRename {
+                    from: Some(log_rename::From::FromLogAttribute(attr_path("old_b"))),
+                    to: "new_b".to_string(),
+                    upsert: false,
+                }],
+                ..Default::default()
+            }),
+        );
+
+        handle.update(vec![policy_a, policy_b]);
+        let snapshot = registry.snapshot();
+
+        // Create 4 log records:
+        //   Row 0: has marker_a + old_a (should be renamed by policy A)
+        //   Row 1: has marker_b + old_b (should be renamed by policy B)
+        //   Row 2: has both markers + old_a + old_b (both renames)
+        //   Row 3: no markers (no transforms)
+        let otap_batch = to_otap_logs(vec![
+            LogRecord::build()
+                .severity_text("INFO")
+                .body(AnyValue::new_string("row 0"))
+                .attributes(vec![
+                    KeyValue::new("marker_a", AnyValue::new_bool(true)),
+                    KeyValue::new("old_a", AnyValue::new_string("val_a_0")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .body(AnyValue::new_string("row 1"))
+                .attributes(vec![
+                    KeyValue::new("marker_b", AnyValue::new_bool(true)),
+                    KeyValue::new("old_b", AnyValue::new_string("val_b_1")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .body(AnyValue::new_string("row 2"))
+                .attributes(vec![
+                    KeyValue::new("marker_a", AnyValue::new_bool(true)),
+                    KeyValue::new("marker_b", AnyValue::new_bool(true)),
+                    KeyValue::new("old_a", AnyValue::new_string("val_a_2")),
+                    KeyValue::new("old_b", AnyValue::new_string("val_b_2")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .body(AnyValue::new_string("row 3"))
+                .attributes(vec![
+                    KeyValue::new("unrelated", AnyValue::new_string("val_3")),
+                ])
+                .finish(),
+        ]);
+
+        let engine = PolicyEngine::new();
+        let result = engine
+            .evaluate_and_transform(&snapshot, otap_batch)
+            .expect("evaluation should succeed");
+
+        // All 4 rows should survive (no drop policies).
+        let output_rows = result
+            .root_record_batch()
+            .map(|rb| rb.num_rows())
+            .unwrap_or(0);
+        assert_eq!(output_rows, 4, "all 4 rows should survive");
+
+        // Check that the attribute renames were applied correctly.
+        // After transforms: "old_a" should become "new_a" on rows 0 and 2,
+        // "old_b" should become "new_b" on rows 1 and 2.
+        let attrs_batch = result
+            .get(otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs)
+            .expect("should have log attributes");
+
+        let key_col = attrs_batch
+            .column_by_name("key")
+            .expect("should have key column");
+
+        // Collect all attribute keys as strings.
+        let mut all_keys = Vec::new();
+        for i in 0..attrs_batch.num_rows() {
+            if let Some(key) = get_string_at(key_col, i) {
+                all_keys.push(key);
+            }
+        }
+
+        // "old_a" should NOT appear (it was renamed to "new_a")
+        assert!(
+            !all_keys.contains(&"old_a".to_string()),
+            "old_a should have been renamed to new_a, found keys: {:?}",
+            all_keys
+        );
+        // "new_a" SHOULD appear
+        assert!(
+            all_keys.contains(&"new_a".to_string()),
+            "new_a should exist after rename, found keys: {:?}",
+            all_keys
+        );
+        // "old_b" should NOT appear (it was renamed to "new_b")
+        assert!(
+            !all_keys.contains(&"old_b".to_string()),
+            "old_b should have been renamed to new_b, found keys: {:?}",
+            all_keys
+        );
+        // "new_b" SHOULD appear
+        assert!(
+            all_keys.contains(&"new_b".to_string()),
+            "new_b should exist after rename, found keys: {:?}",
+            all_keys
+        );
+
+        // Verify policy stats
+        let entries: Vec<_> = snapshot.iter().collect();
+        // Policy A matched rows 0, 2 (2 hits)
+        let a_stats = entries.iter().find(|e| e.policy.id() == "a-rename-marker-a").unwrap();
+        assert_eq!(a_stats.stats.hits(), 2, "policy A should have 2 hits");
+        // Policy B matched rows 1, 2 (2 hits)
+        let b_stats = entries.iter().find(|e| e.policy.id() == "b-rename-marker-b").unwrap();
+        assert_eq!(b_stats.stats.hits(), 2, "policy B should have 2 hits");
+    }
+
+    /// Helper: get a string value from a possibly dict-encoded column.
+    fn get_string_at(col: &arrow::array::ArrayRef, idx: usize) -> Option<String> {
+        use arrow::array::{Array, DictionaryArray, StringArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        if col.is_null(idx) {
+            return None;
+        }
+        if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
+            return Some(arr.value(idx).to_string());
+        }
+        if let Some(dict) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
+            let values = dict.values().as_any().downcast_ref::<StringArray>()?;
+            let key = dict.keys().value(idx) as usize;
+            return Some(values.value(key).to_string());
+        }
+        if let Some(dict) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>() {
+            let values = dict.values().as_any().downcast_ref::<StringArray>()?;
+            let key = dict.keys().value(idx) as usize;
+            return Some(values.value(key).to_string());
+        }
+        None
+    }
 }
