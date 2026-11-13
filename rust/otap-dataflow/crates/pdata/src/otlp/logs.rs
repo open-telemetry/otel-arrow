@@ -403,13 +403,6 @@ impl LogsProtoBytesEncoder {
 
         let log_arrays = &logs_data_arrays.log_arrays;
 
-        if let Some(col) = log_arrays.time_unix_nano
-            && let Some(val) = col.value_at(index)
-        {
-            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-
         if let Some(col) = &log_arrays.severity_number
             && let Some(val) = col.value_at(index)
         {
@@ -475,6 +468,12 @@ impl LogsProtoBytesEncoder {
             result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
         }
 
+        if let Some(col) = &log_arrays.event_name
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+        }
+
         if let Some(col) = log_arrays.observed_time_unix_nano
             && let Some(val) = col.value_at(index)
         {
@@ -482,10 +481,11 @@ impl LogsProtoBytesEncoder {
             result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(col) = &log_arrays.event_name
-            && let Some(val) = col.str_at(index)
+        if let Some(col) = log_arrays.time_unix_nano
+            && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
         self.root_cursor.advance();

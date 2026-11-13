@@ -11,6 +11,7 @@ components:
           - "8085:8080"
         volumes:
           - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+          - '../../rust/otap-dataflow/vendor/semconv:/home/nonroot/semconv:ro'
         command:
           - "--config"
           - "./config.yaml"
