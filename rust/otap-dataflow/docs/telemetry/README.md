@@ -243,6 +243,7 @@ telemetry:
 - [Attributes Guide](attributes-guide.md)
 - [Item Attributes for Metrics](item-attributes.md)
 - [System Metrics Guide](metrics-guide.md)
+- [Component Metrics Reference](component-metrics-reference.md)
 - [System Events Guide](events-guide.md)
 - [System Traces Draft - Not For Review](tracing-draft-not-for-review.md)
 - [Stability and Compatibility Guide](stability-compatibility-guide.md)
