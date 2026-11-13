@@ -586,15 +586,18 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
 mod payload_sets {
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
 
-    // Signal payloads per signal type
+    // Signal payloads per signal type.
+    // NOTE: `A::MetricAttrs` maps to OTLP `Metric.metadata` (metric-family metadata), not
+    // data point or exemplar attributes, so it is intentionally excluded from `METRICS_SIGNAL`.
     pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
     pub(super) const METRICS_SIGNAL: &[A] = &[
-        A::MetricAttrs,
         A::NumberDpAttrs,
         A::HistogramDpAttrs,
+        A::ExpHistogramDpAttrs,
         A::SummaryDpAttrs,
         A::NumberDpExemplarAttrs,
         A::HistogramDpExemplarAttrs,
+        A::ExpHistogramDpExemplarAttrs,
     ];
     pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
 
@@ -616,7 +619,8 @@ mod tests {
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
-        Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+        ExponentialHistogram, ExponentialHistogramDataPoint, Metric, MetricsData, NumberDataPoint,
+        ResourceMetrics, ScopeMetrics, Sum,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
@@ -1503,6 +1507,10 @@ mod tests {
                 let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
 
                 let metric_0 = &decoded.resource_metrics[0].scope_metrics[0].metrics[0];
+                assert!(
+                    metric_0.metadata.is_empty(),
+                    "signal domain must not insert attributes into Metric.metadata"
+                );
                 let Data::Sum(sum) = metric_0.data.as_ref().unwrap() else {
                     panic!("invalid data {:?}", metric_0.data)
                 };
@@ -1522,6 +1530,120 @@ mod tests {
                             .finish(),
                     ]
                 );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_metrics_signal_domain_excludes_metric_metadata_and_includes_exp_histogram() {
+        let input = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric {
+                            name: "http_requests_total".into(),
+                            metadata: vec![KeyValue::new(
+                                "prometheus.type",
+                                AnyValue::new_string("counter"),
+                            )],
+                            data: Some(Data::Sum(Sum::new(
+                                0,
+                                true,
+                                vec![NumberDataPoint::build().value_int(10).finish()],
+                            ))),
+                            ..Default::default()
+                        },
+                        Metric {
+                            name: "http_request_duration_seconds".into(),
+                            data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                                aggregation_temporality: 2,
+                                data_points: vec![ExponentialHistogramDataPoint {
+                                    count: 1,
+                                    scale: 3,
+                                    ..Default::default()
+                                }],
+                            })),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "upsert", "key": "env", "value": "prod"},
+                {"action": "upsert", "key": "prometheus.type", "value": "overwritten"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-metrics-signal-domain");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
+                let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+                assert_eq!(metrics.len(), 2);
+
+                // Metric.metadata must remain untouched by signal-domain actions.
+                assert_eq!(
+                    metrics[0].metadata,
+                    vec![KeyValue::new(
+                        "prometheus.type",
+                        AnyValue::new_string("counter")
+                    )]
+                );
+                assert!(metrics[1].metadata.is_empty());
+
+                // Both Sum and ExponentialHistogram data points must receive the signal attributes.
+                let expected_dp_attrs = vec![
+                    KeyValue::new("env", AnyValue::new_string("prod")),
+                    KeyValue::new("prometheus.type", AnyValue::new_string("overwritten")),
+                ];
+                let Data::Sum(sum) = metrics[0].data.as_ref().unwrap() else {
+                    panic!("expected Sum data, got {:?}", metrics[0].data);
+                };
+                assert_eq!(sum.data_points[0].attributes, expected_dp_attrs);
+
+                let Data::ExponentialHistogram(exp_hist) = metrics[1].data.as_ref().unwrap() else {
+                    panic!(
+                        "expected ExponentialHistogram data, got {:?}",
+                        metrics[1].data
+                    );
+                };
+                assert_eq!(exp_hist.data_points[0].attributes, expected_dp_attrs);
             })
             .validate(|_| async move {});
     }
