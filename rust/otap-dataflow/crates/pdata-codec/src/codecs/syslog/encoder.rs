@@ -533,15 +533,13 @@ fn append_escaped(message: &mut Vec<u8>, value: &[u8], header: bool) -> Result<(
 
 fn wire_time(format: Format, time: Option<u64>, output: &mut String) -> Result<i32, CodecError> {
     output.clear();
+    // The view exposes signed Arrow nanoseconds as u64 bits.
+    let time = time.map(|value| value as i64);
     match format {
         Format::Cef => Ok(1970),
         Format::Rfc5424 | Format::CefRfc5424 => {
             if let Some(value) = time.filter(|time| *time != 0) {
-                let time = DateTime::<Utc>::from_timestamp(
-                    (value / 1_000_000_000) as i64,
-                    (value % 1_000_000_000) as u32,
-                )
-                .ok_or_else(|| error("log timestamp cannot be represented as RFC 5424"))?;
+                let time = DateTime::<Utc>::from_timestamp_nanos(value);
                 time.format("%Y-%m-%dT%H:%M:%S%.6fZ")
                     .write_to(output)
                     .map_err(error_source)?;
@@ -554,12 +552,7 @@ fn wire_time(format: Format, time: Option<u64>, output: &mut String) -> Result<i
             let time = time
                 .filter(|time| *time != 0)
                 .ok_or_else(|| error("RFC 3164 encoding requires an event timestamp"))?;
-            let time = DateTime::from_timestamp(
-                (time / 1_000_000_000) as i64,
-                (time % 1_000_000_000) as u32,
-            )
-            .ok_or_else(|| error("log timestamp cannot be represented as RFC 3164"))?
-            .with_timezone(&Local);
+            let time = DateTime::from_timestamp_nanos(time).with_timezone(&Local);
             if Local
                 .from_local_datetime(&time.naive_local())
                 .single()
@@ -753,10 +746,8 @@ impl SyslogEncoder {
                         body,
                         format.is_cef().then_some(cef),
                     )?;
-                    let observed_time = i64::try_from(log.observed_time_unix_nano().unwrap_or(0))
-                        .map_err(|_| {
-                        error("observed timestamp exceeds syslog batch timestamp range")
-                    })?;
+                    // Recover the signed Arrow value exposed by the view.
+                    let observed_time = log.observed_time_unix_nano().unwrap_or(0) as i64;
                     let context = (observed_time, year);
                     let new_run = previous_context != Some(context);
                     encoded_size += FRAME_HEADER_LEN + self.message.len();
@@ -1666,11 +1657,35 @@ mod tests {
         );
     }
 
-    /// Scenario: RFC 3164 logs cross years and output budgets include each receipt-year run.
-    /// Guarantees: Encoded years survive deferred decoding, second precision is explicit, and the complete framed-byte limit is enforced.
+    /// Scenario: RFC 5424 and wrapped CEF encode pre-epoch event timestamps, including fractional seconds.
+    /// Guarantees: Negative native timestamps retain their date and round down to wire microsecond precision.
+    #[test]
+    fn syslog_encoder_rfc5424_preserves_pre_epoch_timestamps() {
+        for (nanos, timestamp) in [
+            (-1_000_000_000_i64, "1969-12-31T23:59:59.000000Z"),
+            (-1_500_000_001, "1969-12-31T23:59:58.499999Z"),
+        ] {
+            for format in [Format::Rfc5424, Format::CefRfc5424] {
+                let mut input = log("body");
+                input.time_unix_nano = nanos as u64;
+                input.attributes = cef_attributes();
+                let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+                let bytes = encoder.encode(records(vec![input], vec![])).unwrap();
+                let expected_prefix = format!("<14>1 {timestamp} - - - - - ");
+                assert!(messages(&bytes)[0].starts_with(expected_prefix.as_bytes()));
+                assert_eq!(
+                    decode(bytes)[0].time_unix_nano as i64,
+                    nanos.div_euclid(1000) * 1000
+                );
+            }
+        }
+    }
+
+    /// Scenario: RFC 3164 logs cross years, including pre-epoch dates, and output budgets include each receipt-year run.
+    /// Guarantees: Signed timestamps and encoded years survive deferred decoding, second precision is explicit, and the complete framed-byte limit is enforced.
     #[test]
     fn syslog_encoder_rfc3164_preserves_year_runs_and_limits() {
-        let times: Vec<_> = [2024, 2025, 2024]
+        let times: Vec<_> = [1969, 2024, 2025, 1969]
             .map(|year| {
                 Utc.with_ymd_and_hms(year, 6, 15, 12, 0, 0)
                     .unwrap()
@@ -1687,7 +1702,7 @@ mod tests {
             .collect();
         let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), Format::Rfc3164);
         let bytes = encoder.encode(records(inputs.clone(), vec![])).unwrap();
-        assert_eq!(messages(&bytes).len(), 3);
+        assert_eq!(messages(&bytes).len(), times.len());
         let decoded = decode(bytes.clone());
         assert_eq!(
             decoded
@@ -1705,17 +1720,17 @@ mod tests {
         assert_eq!(encoder.encode(records(inputs, vec![])).unwrap(), bytes);
     }
 
-    /// Scenario: Observed timestamps repeat, change, decrease, or are absent within the same year, including explicit profile rewrites.
-    /// Guarantees: Every profile preserves per-record observed time, coalesces only adjacent equal contexts, and budgets all run headers exactly.
+    /// Scenario: Observed timestamps repeat, become negative, or are absent within the same year, including explicit profile rewrites.
+    /// Guarantees: Every profile preserves signed per-record observed time, coalesces only adjacent equal contexts, and budgets all run headers exactly.
     #[test]
     fn syslog_encoder_preserves_observed_runs() {
-        let observed_times = [100, 100, 200, 0, 100];
+        let observed_times = [100_i64, 100, -7, -7, 0, 100];
         for profile in ["rfc3164", "rfc5424", "cef", "cef_rfc3164", "cef_rfc5424"] {
             let inputs: Vec<_> = observed_times
                 .iter()
                 .map(|observed| LogRecord {
                     time_unix_nano: 1_704_164_645_000_000_000,
-                    observed_time_unix_nano: *observed,
+                    observed_time_unix_nano: *observed as u64,
                     attributes: cef_attributes(),
                     ..log("body")
                 })
@@ -1727,7 +1742,7 @@ mod tests {
             assert_eq!(
                 decoded
                     .iter()
-                    .map(|log| log.observed_time_unix_nano)
+                    .map(|log| log.observed_time_unix_nano as i64)
                     .collect::<Vec<_>>(),
                 observed_times,
                 "{profile}"
@@ -1761,7 +1776,7 @@ mod tests {
             assert_eq!(
                 decode(rewritten)
                     .iter()
-                    .map(|log| log.observed_time_unix_nano)
+                    .map(|log| log.observed_time_unix_nano as i64)
                     .collect::<Vec<_>>(),
                 observed_times,
                 "{profile}"

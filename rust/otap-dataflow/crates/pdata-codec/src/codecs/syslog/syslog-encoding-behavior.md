@@ -135,8 +135,8 @@ times. Its year is retained in the internal envelope because the wire format
 does not carry a year. Bare CEF does not emit the event timestamp.
 
 Each record's observed timestamp is retained in the envelope; missing observed
-time becomes zero. Observed timestamps must fit a signed 64-bit nanosecond
-value.
+time becomes zero. Negative observed timestamps are preserved as signed 64-bit
+nanosecond values.
 
 Batches must contain `1..=8192` logs. Each complete encoded message, including
 headers and escaping, is limited to 16 KiB. The framed batch is limited to
