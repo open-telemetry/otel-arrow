@@ -160,6 +160,18 @@ cpu_ticks() {
   awk '{ print $14 + $15 }' "/proc/$1/stat"
 }
 
+# A sender or backend exited before the sample finished. Report it and keep
+# going rather than letting `set -e` silently abort the remaining scenarios.
+report_failure() {
+  echo "scenario $1 run $2 failed: a process exited early. Sender log tail:" >&2
+  tail -5 "$WORK_DIR/sender.log" >&2 || true
+  kill "$SENDER" "$BACKEND" 2>/dev/null || true
+  wait "$SENDER" "$BACKEND" 2>/dev/null || true
+  SENDER=""
+  BACKEND=""
+  sleep 2
+}
+
 run_one() {
   local scenario=$1 run=$2
   IFS='|' read -r name sink source signal strategy rate batch extra <<<"$scenario"
@@ -174,13 +186,17 @@ run_one() {
   sleep "$SETTLE"
 
   local m1 m2 i1 i2 t1 t2 b1 b2
-  t1=$(cpu_ticks "$SENDER")
-  b1=$(cpu_ticks "$BACKEND")
+  if ! t1=$(cpu_ticks "$SENDER") || ! b1=$(cpu_ticks "$BACKEND"); then
+    report_failure "$name" "$run"
+    return
+  fi
   m1=$(curl -s "$METRICS_URL")
   i1=$(items_for "$m1" "$signal")
   sleep "$SAMPLE"
-  t2=$(cpu_ticks "$SENDER")
-  b2=$(cpu_ticks "$BACKEND")
+  if ! t2=$(cpu_ticks "$SENDER") || ! b2=$(cpu_ticks "$BACKEND"); then
+    report_failure "$name" "$run"
+    return
+  fi
   m2=$(curl -s "$METRICS_URL")
   i2=$(items_for "$m2" "$signal")
 
