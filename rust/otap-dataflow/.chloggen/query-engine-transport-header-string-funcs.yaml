@@ -1,0 +1,7 @@
+change_type: enhancement
+component: query-engine
+note: Add is_transport_header_string() and transport_header_string_value() metadata functions for transform queries
+issues: [3310]
+subtext: |
+  is_transport_header_string(name) returns true when the named header is a scalar string.
+  transport_header_string_value(name) returns the string value or null if absent/binary/duplicate.
