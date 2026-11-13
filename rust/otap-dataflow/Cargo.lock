@@ -8256,6 +8256,7 @@ dependencies = [
  "prost 0.14.4",
  "serde",
  "serde_json",
+ "sqlparser 0.63.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

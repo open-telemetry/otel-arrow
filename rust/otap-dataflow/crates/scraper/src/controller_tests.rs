@@ -15,6 +15,60 @@ fn rejects_older_timestamp_with_larger_tie_breaker() {
         .is_err()
     );
 }
+
+/// Scenario: A duplicate cursor lies just beyond the largest prefix that fits the encoded-byte limit.
+/// Guarantees: Entire-page validation rejects the duplicate rather than allowing encoding to hide it.
+#[test]
+fn rejects_duplicate_beyond_an_encodable_prefix() {
+    use crate::database::encode_page;
+
+    let page = QueryPage {
+        columns: vec![ColumnMetadata {
+            name: "id".into(),
+            source_type: "int8".into(),
+            nullable: false,
+        }],
+        rows: [1, 2, 2]
+            .into_iter()
+            .map(|id| CursorRow {
+                row: Row {
+                    values: vec![CellValue::Int64(id)],
+                },
+                cursor: Cursor::composite("2026-01-01 00:00:00".into(), id),
+            })
+            .collect(),
+    };
+    let mut prefix = page.clone();
+    prefix.rows.truncate(2);
+    let output = OutputConfig::default();
+    let limit = encode_page(
+        prefix,
+        DatabaseSystem::PostgreSQL,
+        "boundary",
+        &output,
+        0,
+        u64::MAX,
+    )
+    .unwrap()
+    .unwrap()
+    .encoded_bytes as u64;
+    let encoded = encode_page(
+        page.clone(),
+        DatabaseSystem::PostgreSQL,
+        "boundary",
+        &output,
+        0,
+        limit,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(encoded.row_count, 2);
+    assert_eq!(encoded.deferred_rows, 1);
+    assert!(
+        ensure_page_advanced(&Cursor::composite("2026-01-01 00:00:00".into(), 0), &page).is_err()
+    );
+}
+
 use crate::checkpoint::WriteControl;
 use crate::database::{
     CellValue, CheckpointConfig, ColumnMetadata, CursorRow, DatabaseSystem, OnNack, OutputConfig,

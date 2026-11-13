@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(sum(args[0] == "cargo" for args in self.commands), 1)
         self.assert_cleaned()
         run.cleanup(self.artifacts)
+
+    # Scenario: A named Rust live scenario is added, removed, or registered twice in the CI inventory.
+    # Guarantees: The expected test inventory matches the source independently of mocked Cargo output.
+    def test_live_inventory_matches_source(self):
+        source = (run.CI / "live_tests.rs").read_text(encoding="utf-8")
+        names = re.findall(r"^(?:async )?fn (live_[A-Za-z0-9_]+)\(", source, re.MULTILINE)
+        self.assertTrue(names, "the native fixture must contain live scenarios")
+        self.assertCountEqual(run.LIVE_TESTS, names)
 
     # Scenario: Persisting fixture ownership fails before any Docker command starts.
     # Guarantees: Empty owned directories and partial state are removed; the original error propagates.
