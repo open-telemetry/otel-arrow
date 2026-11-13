@@ -53,7 +53,7 @@ impl EntityAttributeSet {
     fn new(attrs: impl AttributeSetHandler) -> Self {
         let descriptor = attrs.descriptor();
         let values: Arc<[AttributeValue]> = attrs.attribute_values().into_owned().into();
-        debug_assert_eq!(
+        assert_eq!(
             descriptor.fields.len(),
             values.len(),
             "descriptor.fields and attribute values length must match"
@@ -329,6 +329,29 @@ mod tests {
         fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
             std::borrow::Cow::Borrowed(&self.values)
         }
+    }
+
+    /// Scenario: a handwritten attribute set provides no value for its descriptor field.
+    /// Guarantees: registration rejects the mismatch immediately, including in release builds.
+    #[test]
+    #[should_panic(expected = "descriptor.fields and attribute values length must match")]
+    fn register_rejects_missing_attribute_values() {
+        let mut registry = EntityRegistry::default();
+        let _ = registry.register(MockAttributeSet { values: vec![] });
+    }
+
+    /// Scenario: a handwritten attribute set provides more values than descriptor fields.
+    /// Guarantees: registration rejects extra values without waiting for attribute iteration.
+    #[test]
+    #[should_panic(expected = "descriptor.fields and attribute values length must match")]
+    fn register_rejects_extra_attribute_values() {
+        let mut registry = EntityRegistry::default();
+        let _ = registry.register(MockAttributeSet {
+            values: vec![
+                AttributeValue::String("first".into()),
+                AttributeValue::String("extra".into()),
+            ],
+        });
     }
 
     #[test]

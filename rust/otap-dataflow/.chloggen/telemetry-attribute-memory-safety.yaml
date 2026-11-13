@@ -18,4 +18,4 @@ issues: []
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Invalid attribute descriptor/value lengths now fail immediately in release builds instead of risking memory corruption with unchecked indexing enabled.
+subtext: Attribute descriptor/value length mismatches are rejected during entity registration and iterator construction, including in release builds with unchecked indexing enabled.

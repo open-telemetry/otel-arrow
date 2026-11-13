@@ -766,7 +766,12 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                     values.extend([
                         #( #attr_iter_values ),*
                     ]);
-                    #( values.extend(self.#composed_field_idents.attribute_values().into_owned()); )*
+                    #(
+                        match self.#composed_field_idents.attribute_values() {
+                            ::std::borrow::Cow::Borrowed(child_values) => values.extend_from_slice(child_values),
+                            ::std::borrow::Cow::Owned(child_values) => values.extend(child_values),
+                        }
+                    )*
                     ::std::borrow::Cow::Owned(values)
                 }
             }

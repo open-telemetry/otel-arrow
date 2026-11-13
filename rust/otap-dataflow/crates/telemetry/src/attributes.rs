@@ -335,6 +335,29 @@ mod tests {
         inner: ComposedSnapshotAttributes,
     }
 
+    struct StoredAttributes(Vec<AttributeValue>);
+
+    impl AttributeSetHandler for StoredAttributes {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &AttributesDescriptor {
+                name: "stored",
+                fields: &[AttributeField {
+                    key: "label",
+                    r#type: AttributeValueType::String,
+                    brief: "Stored label",
+                }],
+            }
+        }
+
+        fn attribute_values(&self) -> Cow<'_, [AttributeValue]> {
+            Cow::Borrowed(&self.0)
+        }
+    }
+
+    impl AttributeSetKeySchema for StoredAttributes {
+        const KEY_SCHEMA: &'static [AttributeKeySchema] = &[AttributeKeySchema::Key("label")];
+    }
+
     /// Scenario: two instances of one derived type produce values while earlier slices are live.
     /// Guarantees: repeated calls do not overwrite or invalidate a prior snapshot or its strings.
     #[test]
@@ -454,27 +477,61 @@ mod tests {
         assert_eq!(other_items[4].1.as_ref(), &AttributeValue::UInt(21));
     }
 
+    /// Scenario: composition combines a borrowed child and an owned child after local fields.
+    /// Guarantees: snapshots retain ordered values independently of subsequent child mutations.
+    #[test]
+    fn composed_attribute_snapshots_mix_borrowed_and_owned_children() {
+        #[derive(otel_arrow_dfe_telemetry_macros::AttributeSetHandler)]
+        #[attributes(name = "mixed.snapshot")]
+        struct MixedAttributes {
+            active: bool,
+            #[compose]
+            stored: StoredAttributes,
+            #[compose]
+            generated: SnapshotAttributes,
+        }
+
+        let mut attrs = MixedAttributes {
+            active: true,
+            stored: StoredAttributes(vec![AttributeValue::String("stored".into())]),
+            generated: SnapshotAttributes {
+                label: "generated".into(),
+                count: 7,
+            },
+        };
+        let snapshot = attrs.attribute_values().into_owned();
+        let items: Vec<_> = attrs
+            .iter_attributes()
+            .map(|(key, value)| (key, value.into_owned()))
+            .collect();
+        attrs.stored.0[0] = AttributeValue::String("changed stored".into());
+        attrs.generated.label = "changed generated".into();
+        let updated = attrs.attribute_values();
+        let expected = vec![
+            AttributeValue::Boolean(true),
+            AttributeValue::String("stored".into()),
+            AttributeValue::String("generated".into()),
+            AttributeValue::UInt(7),
+        ];
+        assert_eq!(snapshot, expected);
+        assert_eq!(
+            items,
+            ["active", "label", "label", "count"]
+                .into_iter()
+                .zip(expected)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(updated[1], AttributeValue::String("changed stored".into()));
+        assert_eq!(
+            updated[2],
+            AttributeValue::String("changed generated".into())
+        );
+    }
+
     /// Scenario: a stored attribute set exposes a string through the trait-object iterator.
     /// Guarantees: iteration borrows existing storage without cloning or allocating a snapshot.
     #[test]
     fn stored_attribute_iteration_borrows_values() {
-        struct StoredAttributes(Vec<AttributeValue>);
-        impl AttributeSetHandler for StoredAttributes {
-            fn descriptor(&self) -> &'static AttributesDescriptor {
-                &AttributesDescriptor {
-                    name: "stored",
-                    fields: &[AttributeField {
-                        key: "label",
-                        r#type: AttributeValueType::String,
-                        brief: "Stored label",
-                    }],
-                }
-            }
-
-            fn attribute_values(&self) -> Cow<'_, [AttributeValue]> {
-                Cow::Borrowed(&self.0)
-            }
-        }
         let attrs = StoredAttributes(vec![AttributeValue::String("stored".into())]);
         let handler: &dyn AttributeSetHandler = &attrs;
         let (_, value) = handler.iter_attributes().next().unwrap();
