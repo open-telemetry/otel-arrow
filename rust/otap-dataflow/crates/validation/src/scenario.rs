@@ -20,6 +20,10 @@ use std::time::Duration;
 const VALIDATION_TEMPLATE: &str = include_str!("../templates/validation_template.yaml.j2");
 const CAPTURE_TEMPLATE: &str = include_str!("../templates/capture_template.yaml.j2");
 const GENERATOR_TEMPLATE: &str = include_str!("../templates/generator_template.yaml.j2");
+/// Vendored copy of the semantic conventions registry used by generators with
+/// the `semantic_conventions` data source, so scenarios don't need network access.
+const VENDORED_SEMCONV_REGISTRY: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/semconv/model");
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
 const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
@@ -474,6 +478,7 @@ impl Scenario {
                     generator_core_end => generator.core_end,
                     generator_label => label,
                     data_source => &generator.data_source,
+                    registry_path => VENDORED_SEMCONV_REGISTRY,
                     tls_enabled => tls_enabled,
                     tls_ca_cert => tls_ca_cert,
                     tls_client_cert => tls_client_cert,
