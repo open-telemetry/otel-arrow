@@ -406,6 +406,9 @@ jobs:
       - name: Validate component inventory baseline
         run: cargo xtask component-inventory --check components-baseline.json
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Validate telemetry metric schema and generated docs
+        run: cargo xtask telemetry-schema --check
+        working-directory: ./rust/${{ matrix.folder }}
       - name: Validate crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: ./rust/${{ matrix.folder }}
