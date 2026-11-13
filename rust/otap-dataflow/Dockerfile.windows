@@ -25,7 +25,7 @@
 # nanoserver base may work here and would cut several GB from the per-run image
 # pull. Left as servercore until that is verified.
 
-FROM mcr.microsoft.com/windows/servercore:ltsc2025@sha256:c622317822fefb54a056fd09ab51f5bb48390feb47abb2b8696b2c526bdce4ef
+FROM mcr.microsoft.com/windows/servercore:ltsc2025@sha256:a43c2d41a3d6e940dec865731e2f5db5c3e03f705f5300ef0b5817d3e01ecfb1
 
 WORKDIR C:\\dataflow
 
