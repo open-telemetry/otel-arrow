@@ -64,15 +64,8 @@ pub mod otap_batch;
 pub mod producer;
 /// generates signals based on OTel semantic conventions registry
 pub mod semconv_signal;
-/// Previous prost-based semantic conventions generators, kept to compare
-/// against the OTAP-based implementation and for callers that need prost
-/// structs.
-pub mod semconv_signal_old;
 /// Synthetic hardcoded signal generators for lightweight load testing
 pub mod synthetic_signal;
-/// Previous prost-based synthetic generators, kept to compare against the
-/// OTAP-based implementation in equivalence tests and benchmarks.
-pub mod synthetic_signal_old;
 
 /// The URN for the traffic generator receiver.
 pub const TRAFFIC_GENERATOR_RECEIVER_URN: &str = "urn:otel:receiver:traffic_generator";

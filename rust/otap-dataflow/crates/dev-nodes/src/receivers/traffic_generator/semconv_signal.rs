@@ -215,144 +215,134 @@ const fn otel_span_kind(span_kind: Option<&SpanKindSpec>) -> SpanKind {
 mod tests {
     use super::super::compression_ratio_tests::load_semconv_registry;
     use super::super::otap_batch::OtlpEncoder;
-    use super::super::semconv_signal_old as old;
     use super::*;
-    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{MetricsData, metric::Data};
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
     use prost::Message;
     use std::sync::OnceLock;
+    use weaver_forge::v1::registry::ResolvedGroup;
 
     fn registry() -> &'static ResolvedRegistry {
         static REGISTRY: OnceLock<ResolvedRegistry> = OnceLock::new();
         REGISTRY.get_or_init(load_semconv_registry)
     }
 
-    fn encode(records: OtapArrowRecords) -> OtlpProtoBytes {
-        OtlpEncoder::new().encode(records).expect("encode to OTLP")
+    fn groups(group_type: GroupType) -> Vec<&'static ResolvedGroup> {
+        registry()
+            .groups
+            .iter()
+            .filter(|g| g.r#type == group_type)
+            .collect()
+    }
+
+    fn encode(records: OtapArrowRecords) -> Vec<u8> {
+        OtlpEncoder::new()
+            .encode(records)
+            .expect("encode to OTLP")
+            .as_bytes()
+            .to_vec()
     }
 
     /// Weaver picks attribute values at random from the registry examples,
-    /// and for `any`-typed attributes even the value type is random. Two
-    /// generations therefore only agree on attribute keys, so drop values.
-    /// Value encoding is covered by the synthetic equivalence tests.
-    fn normalize_attrs(attrs: &mut [KeyValue]) {
-        for kv in attrs {
-            kv.value = None;
-        }
+    /// so only the keys are deterministic.
+    fn keys(attrs: &[KeyValue]) -> Vec<&str> {
+        attrs.iter().map(|kv| kv.key.as_str()).collect()
     }
 
-    fn normalize_logs(mut logs: LogsData) -> LogsData {
-        for rl in &mut logs.resource_logs {
-            for sl in &mut rl.scope_logs {
-                for lr in &mut sl.log_records {
-                    lr.time_unix_nano = 0;
-                    lr.observed_time_unix_nano = 0;
-                    normalize_attrs(&mut lr.attributes);
-                }
-            }
-        }
-        logs
-    }
-
-    fn normalize_traces(mut traces: TracesData) -> TracesData {
-        for rs in &mut traces.resource_spans {
-            for ss in &mut rs.scope_spans {
-                for span in &mut ss.spans {
-                    span.end_time_unix_nano -= span.start_time_unix_nano;
-                    span.start_time_unix_nano = 0;
-                    span.trace_id = vec![1; 16];
-                    span.span_id = vec![1; 8];
-                    // OTAP has no null bitmap on the span status struct, so
-                    // the encoder writes an empty `Status` where prost omits
-                    // it. Both mean `Unset`.
-                    if span.status == Some(Default::default()) {
-                        span.status = None;
-                    }
-                    normalize_attrs(&mut span.attributes);
-                    for event in &mut span.events {
-                        event.time_unix_nano = 0;
-                    }
-                }
-            }
-        }
-        traces
-    }
-
-    fn normalize_metrics(mut metrics: MetricsData) -> MetricsData {
-        for rm in &mut metrics.resource_metrics {
-            for sm in &mut rm.scope_metrics {
-                for m in &mut sm.metrics {
-                    match m.data.as_mut().expect("metric data") {
-                        Data::Gauge(g) => g.data_points.iter_mut().for_each(|p| {
-                            p.time_unix_nano = 0;
-                            normalize_attrs(&mut p.attributes);
-                        }),
-                        Data::Sum(s) => s.data_points.iter_mut().for_each(|p| {
-                            p.time_unix_nano = 0;
-                            normalize_attrs(&mut p.attributes);
-                        }),
-                        Data::Histogram(h) => h.data_points.iter_mut().for_each(|p| {
-                            p.time_unix_nano = 0;
-                            normalize_attrs(&mut p.attributes);
-                        }),
-                        Data::ExponentialHistogram(_) | Data::Summary(_) => {
-                            panic!("semconv does not generate this metric type")
-                        }
-                    }
-                }
-            }
-        }
-        metrics
+    fn group_keys(group: &ResolvedGroup) -> Vec<&str> {
+        group.attributes.iter().map(|a| a.name.as_str()).collect()
     }
 
     #[test]
-    fn logs_match_prost_implementation() {
-        for count in [1, 7, 200] {
-            let expected = old::semconv_otlp_logs(count, registry());
-            let actual = LogsData::decode(
-                encode(semconv_otap_logs(count, registry()).expect("build logs")).as_bytes(),
-            )
-            .expect("decode logs");
-            assert_eq!(
-                normalize_logs(actual),
-                normalize_logs(expected),
-                "count={count}"
-            );
+    fn logs_follow_event_groups() {
+        let groups = groups(GroupType::Event);
+        let count = groups.len() + 3;
+        let logs = LogsData::decode(
+            encode(semconv_otap_logs(count, registry()).expect("build logs")).as_slice(),
+        )
+        .expect("decode logs");
+
+        assert_eq!(logs.resource_logs.len(), 1);
+        let resource = logs.resource_logs[0].resource.as_ref().expect("resource");
+        assert_eq!(keys(&resource.attributes), ["traffic_generator"]);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), count);
+        for (i, record) in records.iter().enumerate() {
+            let group = groups[i % groups.len()];
+            let expected_name = group.name.as_deref().unwrap_or("");
+            assert_eq!(record.event_name, expected_name, "record {i}");
+            assert_eq!(keys(&record.attributes), group_keys(group), "record {i}");
+            assert_eq!(record.severity_number, SeverityNumber::Info as i32);
+            assert!(record.body.is_some());
         }
     }
 
     #[test]
-    fn traces_match_prost_implementation() {
-        for count in [1, 7, 200] {
-            let expected = old::semconv_otlp_traces(count, registry());
-            let actual = TracesData::decode(
-                encode(semconv_otap_traces(count, registry()).expect("build traces")).as_bytes(),
-            )
-            .expect("decode traces");
+    fn traces_follow_span_groups() {
+        let groups = groups(GroupType::Span);
+        let count = groups.len() + 3;
+        let traces = TracesData::decode(
+            encode(semconv_otap_traces(count, registry()).expect("build traces")).as_slice(),
+        )
+        .expect("decode traces");
+
+        let spans = &traces.resource_spans[0].scope_spans[0].spans;
+        assert_eq!(spans.len(), count);
+        for (i, span) in spans.iter().enumerate() {
+            let group = groups[i % groups.len()];
+            assert_eq!(span.name, group.id, "span {i}");
             assert_eq!(
-                normalize_traces(actual),
-                normalize_traces(expected),
-                "count={count}"
+                span.kind,
+                otel_span_kind(group.span_kind.as_ref()) as i32,
+                "span {i}"
             );
+            assert_eq!(keys(&span.attributes), group_keys(group), "span {i}");
+            let events: Vec<&str> = span.events.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(events, group.events, "span {i}");
+            assert_eq!(span.trace_id.len(), 16);
+            assert_eq!(span.span_id.len(), 8);
         }
     }
 
     #[test]
-    fn metrics_match_prost_implementation() {
-        for count in [1, 7, 200] {
-            let expected = old::semconv_otlp_metrics(count, registry());
-            let actual = MetricsData::decode(
-                encode(semconv_otap_metrics(count, registry()).expect("build metrics")).as_bytes(),
-            )
-            .expect("decode metrics");
-            assert_eq!(
-                normalize_metrics(actual),
-                normalize_metrics(expected),
-                "count={count}"
-            );
+    fn metrics_follow_metric_groups() {
+        let groups = groups(GroupType::Metric);
+        let count = groups.len() + 3;
+        let metrics = MetricsData::decode(
+            encode(semconv_otap_metrics(count, registry()).expect("build metrics")).as_slice(),
+        )
+        .expect("decode metrics");
+
+        // Groups without an instrument are skipped.
+        let expected: Vec<&ResolvedGroup> = (0..count)
+            .map(|i| groups[i % groups.len()])
+            .filter(|g| g.instrument.is_some())
+            .collect();
+        let list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(list.len(), expected.len());
+        for (metric, group) in list.iter().zip(expected) {
+            assert_eq!(metric.name, group.metric_name.as_deref().unwrap_or(""));
+            assert_eq!(metric.unit, group.unit.as_deref().unwrap_or(""));
+            let attrs = match (metric.data.as_ref(), group.instrument.as_ref()) {
+                (Some(Data::Sum(s)), Some(InstrumentSpec::Counter)) => {
+                    assert!(s.is_monotonic);
+                    &s.data_points[0].attributes
+                }
+                (Some(Data::Sum(s)), Some(InstrumentSpec::UpDownCounter)) => {
+                    assert!(!s.is_monotonic);
+                    &s.data_points[0].attributes
+                }
+                (Some(Data::Gauge(g)), Some(InstrumentSpec::Gauge)) => &g.data_points[0].attributes,
+                (Some(Data::Histogram(h)), Some(InstrumentSpec::Histogram)) => {
+                    &h.data_points[0].attributes
+                }
+                (data, instrument) => {
+                    panic!("metric {} has {data:?} for {instrument:?}", metric.name)
+                }
+            };
+            assert_eq!(keys(attrs), group_keys(group), "metric {}", metric.name);
         }
     }
 

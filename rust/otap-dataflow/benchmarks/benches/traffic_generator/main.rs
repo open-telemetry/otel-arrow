@@ -4,17 +4,12 @@
 #![allow(missing_docs)]
 
 //! Benchmarks the traffic generator's synthetic data path: building one batch
-//! of signals and encoding it to OTLP bytes.
-//!
-//! `old` is the prost path (build prost structs, prost-encode). `new` builds
-//! OTAP record batches and encodes them with the OTAP->OTLP encoder. Both use
-//! the exact same generation parameters.
+//! of signals as OTAP record batches and encoding it to OTLP bytes with the
+//! OTAP->OTLP encoder.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::otap_batch::OtlpEncoder;
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::synthetic_signal;
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::synthetic_signal_old;
-use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use std::hint::black_box;
 
@@ -43,19 +38,7 @@ fn bench_logs(c: &mut Criterion) {
     for &batch in BATCH_SIZES {
         _ = group.throughput(Throughput::Elements(batch as u64));
         for &(label, body, attrs, tc) in LOG_CASES {
-            let id = format!("{label}/{batch}");
-            _ = group.bench_with_input(BenchmarkId::new("old", &id), &batch, |b, &n| {
-                b.iter(|| {
-                    let logs = synthetic_signal_old::static_otlp_logs_with_config(
-                        n, body, attrs, tc, None,
-                    );
-                    let payload: OtapPayload = OtlpProtoMessage::Logs(logs)
-                        .try_into()
-                        .expect("encode logs");
-                    black_box(payload)
-                })
-            });
-            _ = group.bench_with_input(BenchmarkId::new("new", &id), &batch, |b, &n| {
+            _ = group.bench_with_input(BenchmarkId::new(label, batch), &batch, |b, &n| {
                 let mut encoder = OtlpEncoder::new();
                 b.iter(|| {
                     let records = synthetic_signal::static_otap_logs(n, body, attrs, tc, None)
@@ -73,17 +56,7 @@ fn bench_traces(c: &mut Criterion) {
     let mut group = c.benchmark_group("traffic_generator/traces");
     for &batch in BATCH_SIZES {
         _ = group.throughput(Throughput::Elements(batch as u64));
-        let id = format!("default/{batch}");
-        _ = group.bench_with_input(BenchmarkId::new("old", &id), &batch, |b, &n| {
-            b.iter(|| {
-                let traces = synthetic_signal_old::static_otlp_traces(n, None);
-                let payload: OtapPayload = OtlpProtoMessage::Traces(traces)
-                    .try_into()
-                    .expect("encode traces");
-                black_box(payload)
-            })
-        });
-        _ = group.bench_with_input(BenchmarkId::new("new", &id), &batch, |b, &n| {
+        _ = group.bench_with_input(BenchmarkId::new("default", batch), &batch, |b, &n| {
             let mut encoder = OtlpEncoder::new();
             b.iter(|| {
                 let records = synthetic_signal::static_otap_traces(n, None).expect("build traces");
@@ -100,18 +73,7 @@ fn bench_metrics(c: &mut Criterion) {
     for &batch in BATCH_SIZES {
         _ = group.throughput(Throughput::Elements(batch as u64));
         for &(label, attrs, dps) in METRIC_CASES {
-            let id = format!("{label}/{batch}");
-            _ = group.bench_with_input(BenchmarkId::new("old", &id), &batch, |b, &n| {
-                b.iter(|| {
-                    let metrics =
-                        synthetic_signal_old::static_otlp_metrics_with_config(n, attrs, dps, None);
-                    let payload: OtapPayload = OtlpProtoMessage::Metrics(metrics)
-                        .try_into()
-                        .expect("encode metrics");
-                    black_box(payload)
-                })
-            });
-            _ = group.bench_with_input(BenchmarkId::new("new", &id), &batch, |b, &n| {
+            _ = group.bench_with_input(BenchmarkId::new(label, batch), &batch, |b, &n| {
                 let mut encoder = OtlpEncoder::new();
                 b.iter(|| {
                     let records = synthetic_signal::static_otap_metrics(n, attrs, dps, None)

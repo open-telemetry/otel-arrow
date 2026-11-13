@@ -7889,7 +7889,6 @@ name = "otel-arrow-dfe-dev-nodes"
 version = "0.66.0"
 dependencies = [
  "async-trait",
- "flate2",
  "humantime-serde",
  "linkme",
  "otel-arrow-dfe-channel",

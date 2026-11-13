@@ -380,8 +380,7 @@ fn append_metric_attributes(
 }
 
 // ---------------------------------------------------------------------------
-// Data pools. Shared with the previous prost implementation in
-// `synthetic_signal_old.rs`.
+// Data pools.
 // ---------------------------------------------------------------------------
 
 /// HTTP status codes, weighted towards success.
@@ -436,13 +435,13 @@ const QUANTILE_PROFILES: &[&[f64]] = &[
 ];
 
 /// Default number of metric attributes when `num_metric_attributes` is not configured.
-pub(super) const DEFAULT_METRIC_ATTRIBUTE_COUNT: usize = 3;
+const DEFAULT_METRIC_ATTRIBUTE_COUNT: usize = 3;
 
 /// Default number of data points per metric when `num_data_points` is not configured.
-pub(super) const DEFAULT_DATA_POINTS_PER_METRIC: usize = 1;
+const DEFAULT_DATA_POINTS_PER_METRIC: usize = 1;
 
 /// Metric attribute names drawn from common OTel semantic conventions for metrics.
-pub(super) const METRIC_ATTR_NAMES: &[&str] = &[
+const METRIC_ATTR_NAMES: &[&str] = &[
     "http.method",
     "http.route",
     "http.status_code",
@@ -474,7 +473,7 @@ pub(super) const METRIC_ATTR_NAMES: &[&str] = &[
 ];
 
 /// Metric attribute value pools per attribute type for realistic cardinality.
-pub(super) const METRIC_ATTR_ROUTES: &[&str] = &[
+const METRIC_ATTR_ROUTES: &[&str] = &[
     "/api/v1/users",
     "/api/v2/orders",
     "/api/v1/products",
@@ -485,9 +484,9 @@ pub(super) const METRIC_ATTR_ROUTES: &[&str] = &[
     "/internal/health",
 ];
 
-pub(super) const METRIC_ATTR_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
+const METRIC_ATTR_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
 
-pub(super) const METRIC_ATTR_HOSTS: &[&str] = &[
+const METRIC_ATTR_HOSTS: &[&str] = &[
     "prod-us-east-1a.internal",
     "prod-us-west-2b.internal",
     "staging-eu-west-1.internal",
@@ -501,7 +500,7 @@ pub(super) const METRIC_ATTR_HOSTS: &[&str] = &[
 /// Realistic metric definitions covering all five OTLP metric types.
 /// Each entry: (name, description, unit, MetricKind)
 #[derive(Clone, Copy)]
-pub(super) enum MetricKind {
+enum MetricKind {
     /// Monotonic cumulative sum (counter)
     Counter,
     /// Non-monotonic delta sum (up-down counter)
@@ -516,14 +515,14 @@ pub(super) enum MetricKind {
     Summary,
 }
 
-pub(super) struct MetricDef {
-    pub(super) name: &'static str,
-    pub(super) description: &'static str,
-    pub(super) unit: &'static str,
-    pub(super) kind: MetricKind,
+struct MetricDef {
+    name: &'static str,
+    description: &'static str,
+    unit: &'static str,
+    kind: MetricKind,
 }
 
-pub(super) const METRIC_DEFS: &[MetricDef] = &[
+const METRIC_DEFS: &[MetricDef] = &[
     // Counters
     MetricDef {
         name: "http.server.request.count",
@@ -660,19 +659,19 @@ pub(super) const METRIC_DEFS: &[MetricDef] = &[
 
 /// OTel SDK default explicit bucket histogram boundaries.
 /// See <https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation>
-pub(super) const HISTOGRAM_BOUNDS: &[f64] = &[
+const HISTOGRAM_BOUNDS: &[f64] = &[
     0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
     10000.0,
 ];
 
 /// Standard quantiles for summary metrics.
-pub(super) const SUMMARY_QUANTILES: &[f64] = &[0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0];
+const SUMMARY_QUANTILES: &[f64] = &[0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0];
 
 /// Pool of realistic log attribute names drawn from common OTel semantic conventions.
 /// When generating attributes, names are picked from this pool in order.
 /// If more attributes are requested than the pool contains, extra names are
 /// generated as `attr_N` (where N is the overflow index).
-pub(super) const ATTR_NAMES: &[&str] = &[
+const ATTR_NAMES: &[&str] = &[
     "thread.id",
     "thread.name",
     "code.function",
@@ -757,7 +756,7 @@ pub(super) const ATTR_NAMES: &[&str] = &[
 ];
 
 /// Thread names to rotate through for realistic cardinality.
-pub(super) const THREAD_NAMES: &[&str] = &[
+const THREAD_NAMES: &[&str] = &[
     "main",
     "worker-1",
     "worker-2",
@@ -771,7 +770,7 @@ pub(super) const THREAD_NAMES: &[&str] = &[
 /// Realistic attribute value pools for generic string attributes.
 /// Each pool entry is 20-120 chars, resembling real observability values like
 /// paths, IDs, hostnames, URLs, error descriptions, and user agents.
-pub(super) const ATTR_VALUE_POOL: &[&str] = &[
+const ATTR_VALUE_POOL: &[&str] = &[
     // URL paths
     "/api/v2/orders/checkout/confirm",
     "/api/v1/users/profile/settings",
@@ -860,12 +859,12 @@ pub(super) const ATTR_VALUE_POOL: &[&str] = &[
 ];
 
 /// Default number of log attributes when `num_log_attributes` is not configured.
-pub(super) const DEFAULT_LOG_ATTRIBUTE_COUNT: usize = 2;
+const DEFAULT_LOG_ATTRIBUTE_COUNT: usize = 2;
 
 /// Default log body templates used when `log_body_size_bytes` is not configured.
 /// Records cycle through these to produce realistic dictionary-friendly cardinality.
 /// Each template is ~150 chars to provide meaningful entropy when padded to larger sizes.
-pub(super) const DEFAULT_BODY_TEMPLATES: &[&str] = &[
+const DEFAULT_BODY_TEMPLATES: &[&str] = &[
     "Order processed successfully for customer account region=us-east-1 warehouse=primary fulfillment_id=ful-29847 shipment_method=express priority=high",
     "User authentication completed via SSO provider=okta domain=corp.example.com session_duration=3600s mfa_method=totp client_ip=10.42.0.17 org=engineering",
     "Payment transaction recorded amount=149.99 currency=USD gateway=stripe merchant_id=acct_9f8e7d processor=visa card_type=credit risk_score=low batch=daily",
@@ -921,7 +920,7 @@ pub(super) const DEFAULT_BODY_TEMPLATES: &[&str] = &[
 /// Minimum number of bodies in the pool when `log_body_size_bytes` is set.
 /// This ensures enough variety within a single batch (default batch_size=512)
 /// to produce realistic compression ratios.
-pub(super) const MIN_BODY_POOL_SIZE: usize = 512;
+const MIN_BODY_POOL_SIZE: usize = 512;
 
 /// Build a pool of body strings for log generation.
 ///
@@ -933,7 +932,7 @@ pub(super) const MIN_BODY_POOL_SIZE: usize = 512;
 /// realistic entropy that avoids inflating compression ratios.
 ///
 /// When `None`, the templates are used as-is.
-pub(super) fn build_body_pool(size_bytes: Option<usize>) -> Vec<String> {
+fn build_body_pool(size_bytes: Option<usize>) -> Vec<String> {
     match size_bytes {
         Some(0) => Vec::new(),
         Some(n) => {
@@ -971,9 +970,9 @@ pub(super) fn build_body_pool(size_bytes: Option<usize>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::super::otap_batch::OtlpEncoder;
-    use super::super::synthetic_signal_old as old;
     use super::*;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{MetricsData, metric::Data};
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
@@ -983,192 +982,80 @@ mod tests {
         OtlpEncoder::new().encode(records).expect("encode to OTLP")
     }
 
-    fn decode_logs(records: OtapArrowRecords) -> LogsData {
+    fn logs(
+        count: usize,
+        body_size: Option<usize>,
+        num_attrs: Option<usize>,
+        use_trace_context: bool,
+        extra_attrs: Option<&HashMap<String, String>>,
+    ) -> LogsData {
+        let records = static_otap_logs(count, body_size, num_attrs, use_trace_context, extra_attrs)
+            .expect("build logs");
         LogsData::decode(encode(records).as_bytes()).expect("decode logs")
     }
 
-    fn decode_traces(records: OtapArrowRecords) -> TracesData {
+    fn traces(count: usize, extra_attrs: Option<&HashMap<String, String>>) -> TracesData {
+        let records = static_otap_traces(count, extra_attrs).expect("build traces");
         TracesData::decode(encode(records).as_bytes()).expect("decode traces")
     }
 
-    fn decode_metrics(records: OtapArrowRecords) -> MetricsData {
+    fn metrics(
+        count: usize,
+        num_attrs: Option<usize>,
+        num_dps: Option<usize>,
+        extra_attrs: Option<&HashMap<String, String>>,
+    ) -> MetricsData {
+        let records =
+            static_otap_metrics(count, num_attrs, num_dps, extra_attrs).expect("build metrics");
         MetricsData::decode(encode(records).as_bytes()).expect("decode metrics")
     }
 
-    /// Zero the fields that are nondeterministic between two generations
-    /// (wall clock timestamps and random ids).
-    fn normalize_logs(mut logs: LogsData) -> LogsData {
-        for rl in &mut logs.resource_logs {
-            for sl in &mut rl.scope_logs {
-                for lr in &mut sl.log_records {
-                    lr.time_unix_nano = 0;
-                    lr.observed_time_unix_nano = 0;
-                    if !lr.trace_id.is_empty() {
-                        lr.trace_id = vec![1; 16];
-                    }
-                    if !lr.span_id.is_empty() {
-                        lr.span_id = vec![1; 8];
-                    }
-                }
-            }
-        }
-        logs
-    }
-
-    fn normalize_traces(mut traces: TracesData) -> TracesData {
-        for rs in &mut traces.resource_spans {
-            for ss in &mut rs.scope_spans {
-                for span in &mut ss.spans {
-                    // Keep the duration, which is deterministic.
-                    span.end_time_unix_nano -= span.start_time_unix_nano;
-                    span.start_time_unix_nano = 0;
-                    span.trace_id = vec![1; 16];
-                    span.span_id = vec![1; 8];
-                    // OTAP has no null bitmap on the span status struct, so
-                    // the OTAP->OTLP encoder writes an empty `Status` where
-                    // prost omits it. Both mean `Unset`.
-                    if span.status == Some(Default::default()) {
-                        span.status = None;
-                    }
-                }
-            }
-        }
-        traces
-    }
-
-    fn normalize_metrics(mut metrics: MetricsData) -> MetricsData {
-        for rm in &mut metrics.resource_metrics {
-            for sm in &mut rm.scope_metrics {
-                for m in &mut sm.metrics {
-                    match m.data.as_mut().expect("metric data") {
-                        Data::Gauge(g) => g.data_points.iter_mut().for_each(|p| {
-                            p.start_time_unix_nano = p.time_unix_nano - p.start_time_unix_nano;
-                            p.time_unix_nano = 0;
-                        }),
-                        Data::Sum(s) => s.data_points.iter_mut().for_each(|p| {
-                            p.start_time_unix_nano = p.time_unix_nano - p.start_time_unix_nano;
-                            p.time_unix_nano = 0;
-                        }),
-                        Data::Histogram(h) => h.data_points.iter_mut().for_each(|p| {
-                            p.start_time_unix_nano = p.time_unix_nano - p.start_time_unix_nano;
-                            p.time_unix_nano = 0;
-                        }),
-                        Data::ExponentialHistogram(h) => h.data_points.iter_mut().for_each(|p| {
-                            p.start_time_unix_nano = p.time_unix_nano - p.start_time_unix_nano;
-                            p.time_unix_nano = 0;
-                            // OTAP buckets have no null bitmap, so the
-                            // OTAP->OTLP encoder writes empty `negative`
-                            // buckets where prost omits them. Both are empty.
-                            if p.negative == Some(Default::default()) {
-                                p.negative = None;
-                            }
-                        }),
-                        Data::Summary(s) => s.data_points.iter_mut().for_each(|p| {
-                            p.start_time_unix_nano = p.time_unix_nano - p.start_time_unix_nano;
-                            p.time_unix_nano = 0;
-                        }),
-                    }
-                }
-            }
-        }
-        metrics
-    }
-
     fn extra_attrs() -> HashMap<String, String> {
-        HashMap::from([
-            ("tenant.id".to_string(), "prod".to_string()),
-            ("deployment.environment".to_string(), "staging".to_string()),
-        ])
+        HashMap::from([("tenant.id".to_string(), "prod".to_string())])
     }
 
     #[test]
-    fn logs_match_prost_implementation() {
-        let extra = extra_attrs();
-        // (count, body size, attribute count, trace context, extra resource attrs)
-        let cases: [(
-            usize,
-            Option<usize>,
-            Option<usize>,
-            bool,
-            Option<&HashMap<_, _>>,
-        ); 8] = [
-            (1, None, None, false, None),
-            (100, None, None, false, None),
-            (64, Some(1024), None, false, None),
-            (10, Some(0), Some(0), false, None),
-            (10, None, Some(0), false, None),
-            (20, None, Some(90), false, None),
-            (50, Some(150), Some(4), true, None),
-            (30, None, Some(10), false, Some(&extra)),
-        ];
-
-        for (count, body, attrs, tc, extra) in cases {
-            let expected = old::static_otlp_logs_with_config(count, body, attrs, tc, extra);
-            let actual =
-                decode_logs(static_otap_logs(count, body, attrs, tc, extra).expect("build logs"));
-            assert_eq!(
-                normalize_logs(actual),
-                normalize_logs(expected),
-                "count={count} body={body:?} attrs={attrs:?} tc={tc} extra={extra:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn logs_trace_context_is_random_per_record() {
-        let logs = decode_logs(static_otap_logs(4, None, None, true, None).expect("build logs"));
-        let records = &logs.resource_logs[0].scope_logs[0].log_records;
-        assert!(records.iter().all(|r| r.trace_id.len() == 16));
-        assert!(records.iter().all(|r| r.span_id.len() == 8));
-        assert_ne!(records[0].trace_id, records[1].trace_id);
-    }
-
-    #[test]
-    fn traces_match_prost_implementation() {
-        let extra = extra_attrs();
-        for (count, extra) in [(1, None), (100, None), (10, Some(&extra))] {
-            let expected = old::static_otlp_traces(count, extra);
-            let actual = decode_traces(static_otap_traces(count, extra).expect("build traces"));
-            assert_eq!(
-                normalize_traces(actual),
-                normalize_traces(expected),
-                "count={count} extra={extra:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn metrics_match_prost_implementation() {
-        let extra = extra_attrs();
-        // (count, attribute count, data points per metric, extra resource attrs)
-        let cases: [(usize, Option<usize>, Option<usize>, Option<&HashMap<_, _>>); 6] = [
-            (1, None, None, None),
-            // Enough metrics to cycle through every METRIC_DEFS entry twice.
-            (2 * METRIC_DEFS.len(), None, None, None),
-            (2 * METRIC_DEFS.len(), Some(6), Some(3), None),
-            (25, Some(0), Some(2), None),
-            (25, Some(40), Some(1), None),
-            (10, None, None, Some(&extra)),
-        ];
-
-        for (count, attrs, dps, extra) in cases {
-            let expected = old::static_otlp_metrics_with_config(count, attrs, dps, extra);
-            let actual = decode_metrics(
-                static_otap_metrics(count, attrs, dps, extra).expect("build metrics"),
-            );
-            assert_eq!(
-                normalize_metrics(actual),
-                normalize_metrics(expected),
-                "count={count} attrs={attrs:?} dps={dps:?} extra={extra:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn metrics_cover_all_types() {
-        let metrics = decode_metrics(
-            static_otap_metrics(METRIC_DEFS.len(), None, None, None).expect("build metrics"),
+    fn test_static_traces() {
+        let traces = traces(10, None);
+        assert_eq!(traces.resource_spans.len(), 1);
+        assert_eq!(traces.resource_spans[0].scope_spans.len(), 1);
+        let spans = &traces.resource_spans[0].scope_spans[0].spans;
+        assert_eq!(spans.len(), 10);
+        assert!(spans.iter().all(|s| s.trace_id.len() == 16));
+        assert!(spans.iter().all(|s| s.span_id.len() == 8));
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.end_time_unix_nano > s.start_time_unix_nano)
         );
+    }
+
+    #[test]
+    fn test_static_traces_with_extra_resource_attrs() {
+        let extra = extra_attrs();
+        let traces = traces(5, Some(&extra));
+        let attrs = &traces.resource_spans[0]
+            .resource
+            .as_ref()
+            .expect("resource")
+            .attributes;
+        assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
+    }
+
+    #[test]
+    fn test_static_metrics() {
+        let metrics = metrics(10, None, None, None);
+        assert_eq!(metrics.resource_metrics.len(), 1);
+        assert_eq!(metrics.resource_metrics[0].scope_metrics.len(), 1);
+        assert_eq!(
+            metrics.resource_metrics[0].scope_metrics[0].metrics.len(),
+            10
+        );
+    }
+
+    #[test]
+    fn test_static_metrics_all_types() {
+        let metrics = metrics(METRIC_DEFS.len(), None, None, None);
         let list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
         assert_eq!(list.len(), METRIC_DEFS.len());
         let has = |f: fn(&Data) -> bool| list.iter().any(|m| m.data.as_ref().is_some_and(f));
@@ -1177,6 +1064,163 @@ mod tests {
         assert!(has(|d| matches!(d, Data::Histogram(_))));
         assert!(has(|d| matches!(d, Data::ExponentialHistogram(_))));
         assert!(has(|d| matches!(d, Data::Summary(_))));
+    }
+
+    #[test]
+    fn test_static_metrics_with_custom_attributes() {
+        let metrics = metrics(5, Some(6), None, None);
+        let list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(list.len(), 5);
+        let Some(Data::Sum(sum)) = &list[0].data else {
+            panic!("first metric should be a Sum");
+        };
+        assert!(sum.data_points.iter().all(|p| p.attributes.len() == 6));
+    }
+
+    #[test]
+    fn test_static_metrics_with_custom_data_points() {
+        let metrics = metrics(3, None, Some(4), None);
+        let list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
+        assert_eq!(list.len(), 3);
+        let Some(Data::Sum(sum)) = &list[0].data else {
+            panic!("first metric should be a Sum");
+        };
+        assert_eq!(sum.data_points.len(), 4);
+    }
+
+    #[test]
+    fn test_static_metrics_with_extra_resource_attrs() {
+        let extra = extra_attrs();
+        let metrics = metrics(5, None, None, Some(&extra));
+        let attrs = &metrics.resource_metrics[0]
+            .resource
+            .as_ref()
+            .expect("resource")
+            .attributes;
+        assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
+    }
+
+    /// Verify that generated metric batches achieve a realistic compression ratio.
+    ///
+    /// Generates 500 metrics covering all five OTLP metric types with 6
+    /// attributes and 3 data points per metric, then checks the zstd
+    /// compression ratio stays within a realistic range.
+    #[test]
+    fn test_metrics_compression_ratio_is_realistic() {
+        let records = static_otap_metrics(500, Some(6), Some(3), None).expect("build metrics");
+        let raw = encode(records);
+        let raw_size = raw.as_bytes().len();
+        let compressed_size = zstd::bulk::compress(raw.as_bytes(), 3)
+            .expect("zstd compression failed")
+            .len();
+        let ratio = raw_size as f64 / compressed_size as f64;
+        assert!(
+            (3.0..=45.0).contains(&ratio),
+            "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 - 45:1); \
+             raw={raw_size} bytes, compressed={compressed_size} bytes"
+        );
+    }
+
+    #[test]
+    fn test_static_logs() {
+        let logs = logs(10, None, None, false, None);
+        assert_eq!(logs.resource_logs.len(), 1);
+        assert_eq!(logs.resource_logs[0].scope_logs.len(), 1);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 10);
+        // Bodies cycle through the default template pool.
+        assert!(records.iter().all(|r| r.body.is_some()));
+        // No trace context unless requested.
+        assert!(records.iter().all(|r| r.trace_id.is_empty()));
+    }
+
+    #[test]
+    fn test_static_logs_with_extra_attrs() {
+        let extra = extra_attrs();
+        let logs = logs(5, None, None, false, Some(&extra));
+        let attrs = &logs.resource_logs[0]
+            .resource
+            .as_ref()
+            .expect("resource")
+            .attributes;
+        assert!(attrs.iter().any(|kv| kv.key == "tenant.id"));
+    }
+
+    #[test]
+    fn test_static_logs_with_custom_body_size() {
+        let logs = logs(5, Some(1024), None, false, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 5);
+        let body = records[0].body.as_ref().and_then(|b| b.value.as_ref());
+        let Some(Value::StringValue(s)) = body else {
+            panic!("expected string body");
+        };
+        assert_eq!(s.len(), 1024);
+        // Default attribute count (2) is used.
+        assert_eq!(records[0].attributes.len(), 2);
+    }
+
+    #[test]
+    fn test_static_logs_with_custom_attributes() {
+        let logs = logs(3, None, Some(5), false, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 3);
+        let keys: Vec<&str> = records[0]
+            .attributes
+            .iter()
+            .map(|kv| kv.key.as_str())
+            .collect();
+        // The first names come from the ATTR_NAMES pool.
+        assert_eq!(
+            keys,
+            [
+                "thread.id",
+                "thread.name",
+                "code.function",
+                "code.namespace",
+                "code.filepath"
+            ]
+        );
+        // Values vary per record.
+        assert_ne!(
+            records[0].attributes[2].value,
+            records[1].attributes[2].value
+        );
+    }
+
+    #[test]
+    fn test_static_logs_attributes_beyond_name_pool() {
+        let num_attrs = ATTR_NAMES.len() + 3;
+        let logs = logs(2, None, Some(num_attrs), false, None);
+        let attrs = &logs.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert_eq!(attrs.len(), num_attrs);
+        assert!(attrs.iter().any(|kv| kv.key.starts_with("attr_")));
+    }
+
+    #[test]
+    fn test_static_logs_zero_body_size() {
+        let logs = logs(1, Some(0), None, false, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert!(
+            records[0].body.is_none(),
+            "body should be omitted when size is 0"
+        );
+    }
+
+    #[test]
+    fn test_static_logs_zero_attributes() {
+        let logs = logs(1, None, Some(0), false, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert!(records[0].attributes.is_empty());
+    }
+
+    #[test]
+    fn test_static_logs_trace_context_is_random_per_record() {
+        let logs = logs(4, None, None, true, None);
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert!(records.iter().all(|r| r.trace_id.len() == 16));
+        assert!(records.iter().all(|r| r.span_id.len() == 8));
+        assert_ne!(records[0].trace_id, records[1].trace_id);
     }
 
     #[test]

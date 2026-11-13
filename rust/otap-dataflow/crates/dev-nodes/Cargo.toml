@@ -42,5 +42,4 @@ otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
-flate2.workspace = true
 zstd.workspace = true

@@ -130,6 +130,38 @@ build, logs only. Averaged over 4 runs.
 | static/fresh 1KB    | ~480 K logs/sec  | ~82 %       | **~97 %**    |
 | static/pregen 1KB   | ~500 K logs/sec  | ~66 %       | **~95 %**    |
 
+### Sender cost
+
+`bench/sender_throughput.sh`, AMD Ryzen 9 7950X3D (WSL2), release build,
+one sender core, `generation_strategy: fresh`. Median of 3 runs.
+
+Saturation (`sat-*`, noop exporter, unpaced): max throughput of one core.
+
+| Scenario                         | Signals/sec | CPU-us per 1k signals |
+|----------------------------------|-------------|-----------------------|
+| synthetic logs, 1KB body, b50    | ~367 K      | ~2730                 |
+| synthetic logs, 1KB body, b512   | ~1.46 M     | ~683                  |
+| synthetic logs, 10 attrs, b512   | ~1.10 M     | ~913                  |
+| synthetic traces, b512           | ~2.12 M     | ~471                  |
+| synthetic metrics 6x3, b512      | ~1.19 M     | ~839                  |
+| semconv logs, b512               | ~1.53 M     | ~653                  |
+| semconv traces, b512             | ~498 K      | ~2008                 |
+| semconv metrics, b512            | ~1.47 M     | ~681                  |
+
+For metrics, signals/sec is the pipeline item count, which counts data points
+rather than metrics.
+
+Fixed rate (`grpc-*`, OTLP gRPC export to a noop backend): sender CPU at
+equal load. Rate is the configured `signals_per_second`.
+
+| Scenario                               | Rate       | Sender core |
+|----------------------------------------|------------|-------------|
+| synthetic logs, 1KB body, b512         | 100 K/sec  | ~16 %       |
+| synthetic logs, 1KB body, b50          | 50 K/sec   | ~31 %       |
+| synthetic traces, b512                 | 100 K/sec  | ~10 %       |
+| synthetic metrics 6x3, b512            | 50 K/sec   | ~18 %       |
+| semconv logs, b512                     | 100 K/sec  | ~12 %       |
+
 ---
 
 ## Conclusion
