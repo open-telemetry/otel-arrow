@@ -481,7 +481,7 @@ pub(super) fn join_and_eval_value(
 
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
-    let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
+    let mut result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
         evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &projected_rb)?
     } else {
         evaluate_with_anyval_partitions(
@@ -493,6 +493,15 @@ pub(super) fn join_and_eval_value(
             &any_value_indices,
         )?
     };
+
+    // if we evaluated the expression on a unit length record batch comprised of scalar result
+    // values, convert the back into a scalar value
+    if *result_scope == DataScope::StaticScalar
+        && let ColumnarValue::Array(arr) = &result_vals
+        && arr.len() == 1
+    {
+        result_vals = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?);
+    }
 
     let result = ScopedValue::new(
         coerce_nulls_for_predicate(result_vals, *missing_data_passes),
