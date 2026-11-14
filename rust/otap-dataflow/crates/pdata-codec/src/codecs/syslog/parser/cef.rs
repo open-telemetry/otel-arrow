@@ -22,6 +22,29 @@ impl CefMessage<'_> {
     }
 }
 
+pub(super) fn unescape_header<'a>(data: &'a [u8], scratch: &'a mut Vec<u8>) -> &'a [u8] {
+    if !data
+        .windows(2)
+        .any(|pair| matches!(pair, [b'\\', b'\\' | b'|']))
+    {
+        return data;
+    }
+    scratch.clear();
+    let mut pos = 0;
+    while pos < data.len() {
+        if data[pos] == b'\\'
+            && data
+                .get(pos + 1)
+                .is_some_and(|byte| matches!(byte, b'\\' | b'|'))
+        {
+            pos += 1;
+        }
+        scratch.push(data[pos]);
+        pos += 1;
+    }
+    scratch
+}
+
 /// Zero-allocation helper to check if a slice needs unescaping
 #[inline]
 fn needs_unescaping(data: &[u8]) -> bool {

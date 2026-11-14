@@ -1326,6 +1326,7 @@ dependencies = [
  "tracing-subscriber",
  "unsync",
  "weaver_common",
+ "weaver_semconv",
 ]
 
 [[package]]
@@ -8096,7 +8097,9 @@ dependencies = [
  "arrow",
  "bytes",
  "chrono",
+ "chrono-tz",
  "futures",
+ "iana-time-zone",
  "linkme",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",

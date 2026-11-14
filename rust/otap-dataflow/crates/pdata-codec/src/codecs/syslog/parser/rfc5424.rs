@@ -114,7 +114,34 @@ pub(super) fn parse_rfc5424<'a>(
     remaining = rest;
 
     // Parse structured data and message
-    let (structured_data, mut message) = if remaining.is_empty() {
+    let (structured_data, mut message) = parse_structured_data(remaining);
+
+    // Strip UTF-8 BOM if present at the beginning of the message
+    // UTF-8 BOM is the byte sequence 0xEF 0xBB 0xBF
+    message = message.map(|msg| {
+        if msg.len() >= 3 && msg.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            &msg[3..]
+        } else {
+            msg
+        }
+    });
+
+    Ok(Rfc5424Message {
+        priority,
+        version,
+        timestamp,
+        hostname,
+        app_name,
+        proc_id,
+        msg_id,
+        structured_data,
+        message,
+        input,
+    })
+}
+
+pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
+    if remaining.is_empty() {
         (None, None)
     } else if remaining.starts_with(b"-") {
         let msg_start = remaining
@@ -199,30 +226,7 @@ pub(super) fn parse_rfc5424<'a>(
         }
     } else {
         (None, Some(remaining))
-    };
-
-    // Strip UTF-8 BOM if present at the beginning of the message
-    // UTF-8 BOM is the byte sequence 0xEF 0xBB 0xBF
-    message = message.map(|msg| {
-        if msg.len() >= 3 && msg.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            &msg[3..]
-        } else {
-            msg
-        }
-    });
-
-    Ok(Rfc5424Message {
-        priority,
-        version,
-        timestamp,
-        hostname,
-        app_name,
-        proc_id,
-        msg_id,
-        structured_data,
-        message,
-        input,
-    })
+    }
 }
 
 #[cfg(test)]

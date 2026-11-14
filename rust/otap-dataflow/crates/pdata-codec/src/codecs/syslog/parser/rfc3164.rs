@@ -121,7 +121,7 @@ pub(super) fn parse_rfc3164<'a>(
 /// - `"sshd[5678]"` -> app_name=`"sshd"`, proc_id=`"5678"`
 /// - `"app[worker-1]"` -> app_name=`"app"`, proc_id=None (non-numeric)
 /// - `"app[]"` -> app_name=`"app"`, proc_id=None (empty)
-fn parse_tag_components(tag: Option<&[u8]>) -> (Option<&[u8]>, Option<&[u8]>) {
+pub(crate) fn parse_tag_components(tag: Option<&[u8]>) -> (Option<&[u8]>, Option<&[u8]>) {
     let Some(tag) = tag else {
         return (None, None);
     };
