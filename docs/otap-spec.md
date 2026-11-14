@@ -62,7 +62,7 @@ The allowed Payload Types for each signal can be found in section 3.
 
 ### 2.2 Apache Arrow and Columnar Representation
 
-OTAP leverages the the
+OTAP leverages the 
 [Arrow Columnar Format](https://arrow.apache.org/docs/format/Columnar.html#arrow-columnar-format)
 to transmit the payloads described in the previous section. The Arrow Columnar
 Format defines a Serialization and Interprocess Communication (IPC) protocol for
