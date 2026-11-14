@@ -27,11 +27,11 @@ otel-arrow-dfe-telemetry-macros.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
 chrono.workspace = true
-fs2.workspace = true
 humantime-serde.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlparser = { workspace = true, features = ["visitor"] }
 thiserror.workspace = true
 tokio.workspace = true
 

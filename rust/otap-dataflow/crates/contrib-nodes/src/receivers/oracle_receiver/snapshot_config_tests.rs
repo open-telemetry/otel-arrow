@@ -27,6 +27,15 @@ fn snapshot_queries_need_no_order_or_cursor() {
         r#"SELECT PAYLOAD AS "SELECT" FROM AUDIT_LOGS"#,
         r#"SELECT PAYLOAD AS "a'" FROM AUDIT_LOGS ORDER BY "a'""#,
         r#"SELECT PAYLOAD AS "a""b" FROM AUDIT_LOGS"#,
+        "SELECT PAYLOAD FROM AUDIT_LOGS -- ignored",
+        "SELECT PAYLOAD FROM (SELECT PAYLOAD FROM AUDIT_LOGS)",
+        "SELECT PAYLOAD FROM AUDIT_LOGS UNION SELECT PAYLOAD FROM OTHER",
+        r#"SELECT PAYLOAD AS "a'" FROM (SELECT PAYLOAD FROM AUDIT_LOGS) ORDER BY "a'""#,
+        "SELECT Q'{SELECT PAYLOAD FROM AUDIT_LOGS}' AS PAYLOAD FROM DUAL",
+        "SELECT ';' AS PAYLOAD FROM DUAL;",
+        "SELECT PAYLOAD FROM AUDIT_LOGS -- trailing semicolon in comment;",
+        "SELECT PAYLOAD FROM AUDIT_LOGS; -- trailing semicolon in comment;",
+        "SELECT PAYLOAD FROM AUDIT_LOGS -- comment\n  ;",
     ] {
         let mut raw = snapshot_config();
         raw["query"]["statement"] = sql.into();
@@ -38,8 +47,48 @@ fn snapshot_queries_need_no_order_or_cursor() {
     }
 }
 
-/// Scenario: Snapshot SQL contains visible or quote-hidden parameters, locks, extra statements, or nested SELECTs.
-/// Guarantees: Quoted identifiers and unsupported Oracle q-quotes cannot hide SQL from the read-only contract.
+/// Scenario: A legacy Oracle statement exactly reaches the trimmed SQL byte limit with surrounding whitespace and a final semicolon.
+/// Guarantees: Harmless legacy formatting does not invalidate configuration or its checkpoint fingerprint.
+#[test]
+fn legacy_trimmed_query_limit_remains_compatible() {
+    use otel_arrow_dfe_scraper::database::MAX_QUERY_BYTES;
+
+    let sql = format!(
+        "SELECT {}PAYLOAD FROM AUDIT_LOGS",
+        " ".repeat(MAX_QUERY_BYTES - "SELECT PAYLOAD FROM AUDIT_LOGS".len()),
+    );
+    assert_eq!(sql.len(), MAX_QUERY_BYTES);
+    let mut raw = snapshot_config();
+    raw["query"]["statement"] = sql.clone().into();
+    let baseline = parsed(raw.clone()).expect("exact trimmed limit");
+    for gap in ["", " \t", " \r\n "] {
+        raw["query"]["statement"] = format!(" \r\n{sql}{gap}; \r\n").into();
+        let formatted = parsed(raw.clone()).expect("legacy surrounding whitespace and terminator");
+        assert_eq!(
+            baseline.config_fingerprint(),
+            formatted.config_fingerprint()
+        );
+    }
+    raw["query"]["statement"] = sql.replace("SELECT ", "SELECT  ").into();
+    assert!(
+        parsed(raw).is_err(),
+        "SQL exceeding the trimmed limit still fails"
+    );
+    for sql in [
+        "SELECT PAYLOAD FROM AUDIT_LOGS;;",
+        "SELECT PAYLOAD FROM AUDIT_LOGS; /* comment */;",
+    ] {
+        let mut raw = snapshot_config();
+        raw["query"]["statement"] = sql.into();
+        assert!(
+            parsed(raw).is_err(),
+            "trimming must not hide an extra terminator"
+        );
+    }
+}
+
+/// Scenario: Snapshot SQL contains parameters, locks, writes, or multiple executable statements.
+/// Guarantees: Native literals and quoted identifiers cannot hide violations of the common read-only boundary.
 #[test]
 fn snapshot_sql_rejects_unsafe_or_unbound_statements() {
     for sql in [
@@ -49,15 +98,10 @@ fn snapshot_sql_rejects_unsafe_or_unbound_statements() {
         "SELECT PAYLOAD INTO TARGET FROM AUDIT_LOGS",
         "DELETE FROM AUDIT_LOGS",
         "SELECT PAYLOAD FROM AUDIT_LOGS; DELETE FROM AUDIT_LOGS",
-        "SELECT PAYLOAD FROM AUDIT_LOGS -- ignored",
-        "SELECT PAYLOAD FROM (SELECT PAYLOAD FROM AUDIT_LOGS)",
-        "SELECT PAYLOAD FROM AUDIT_LOGS UNION SELECT PAYLOAD FROM OTHER",
         r#"SELECT PAYLOAD AS "a'" FROM AUDIT_LOGS WHERE PAYLOAD = :key ORDER BY "a'""#,
-        r#"SELECT PAYLOAD AS "a'" FROM (SELECT PAYLOAD FROM AUDIT_LOGS) ORDER BY "a'""#,
         r#"SELECT PAYLOAD AS "unterminated FROM AUDIT_LOGS"#,
         "SELECT q'[it's]' AS PAYLOAD FROM DUAL WHERE DUMMY = :key",
         "SELECT nq'<it's>' AS PAYLOAD FROM DUAL WHERE DUMMY = :key",
-        "SELECT Q'{SELECT PAYLOAD FROM AUDIT_LOGS}' AS PAYLOAD FROM DUAL",
     ] {
         let mut raw = snapshot_config();
         raw["query"]["statement"] = sql.into();

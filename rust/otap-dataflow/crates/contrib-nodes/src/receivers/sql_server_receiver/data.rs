@@ -6,8 +6,8 @@
 use super::{SqlServerError as Error, SqlServerParameter, SqlServerStatement};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use otel_arrow_dfe_scraper::database::{
-    CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, CompositeCursor, Cursor,
-    CursorRow, Row, ScalarValue,
+    CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, Cursor, CursorRow, Row,
+    ScalarValue,
 };
 use std::collections::HashSet;
 use tiberius::{ColumnData, ColumnType, time};
@@ -97,6 +97,7 @@ impl NativeType {
 pub(super) struct ResultPlan {
     pub columns: Vec<ColumnPlan>,
     cursor: CursorColumns,
+    sql: String,
 }
 
 #[derive(Clone, Copy)]
@@ -107,7 +108,11 @@ enum CursorColumns {
 }
 
 impl ResultPlan {
-    pub fn new(columns: Vec<ColumnPlan>, query: &CompiledQuery) -> Result<Self, Error> {
+    pub fn new(
+        columns: Vec<ColumnPlan>,
+        query: &CompiledQuery,
+        statement: &SqlServerStatement,
+    ) -> Result<Self, Error> {
         let mut names = HashSet::new();
         if columns.is_empty() || columns.len() > MAX_COLUMNS {
             return Err(Error::Metadata);
@@ -128,7 +133,7 @@ impl ResultPlan {
         let key = |name: &str| {
             columns
                 .iter()
-                .position(|column| column.metadata.name == name && !column.metadata.nullable)
+                .position(|column| column.metadata.name.eq_ignore_ascii_case(name))
                 .ok_or(Error::Metadata)
         };
         let cursor = match query.watermark() {
@@ -152,7 +157,18 @@ impl ResultPlan {
                 CursorColumns::Composite { timestamp, integer }
             }
         };
-        Ok(Self { columns, cursor })
+        let metadata = columns
+            .iter()
+            .map(|column| column.metadata.clone())
+            .collect::<Vec<_>>();
+        let sql = statement
+            .driver_sql(query, &metadata)
+            .map_err(|_| Error::Metadata)?;
+        Ok(Self {
+            columns,
+            cursor,
+            sql,
+        })
     }
 
     pub fn metadata(&self) -> Vec<ColumnMetadata> {
@@ -175,38 +191,44 @@ impl ResultPlan {
     }
 
     pub fn row(&self, row: tiberius::Row) -> Result<CursorRow, Error> {
-        self.check_columns(row.columns())?;
+        let cursor = self.row_cursor(&row)?;
         let mut values = Vec::with_capacity(self.columns.len());
         for (value, column) in row.into_iter().zip(&self.columns) {
             values.push(convert(value, column)?);
         }
-        let cursor = match self.cursor {
-            CursorColumns::Snapshot => Cursor::Snapshot,
-            CursorColumns::Scalar(index) => match &values[index] {
-                CellValue::Int64(value) => Cursor::Scalar(ScalarValue::Int64(*value)),
-                CellValue::Timestamp(value) => {
-                    Cursor::Scalar(ScalarValue::Timestamp(value.clone()))
-                }
-                _ => return Err(Error::Cursor),
-            },
-            CursorColumns::Composite { timestamp, integer } => {
-                let (CellValue::Timestamp(timestamp), CellValue::Int64(integer)) =
-                    (&values[timestamp], &values[integer])
-                else {
-                    return Err(Error::Cursor);
-                };
-                Cursor::Composite(CompositeCursor::new(timestamp.clone(), *integer))
-            }
-        };
         Ok(CursorRow {
             row: Row { values },
             cursor,
         })
     }
 
+    pub fn row_cursor(&self, row: &tiberius::Row) -> Result<Cursor, Error> {
+        self.check_columns(row.columns())?;
+        let cell = |index: usize| {
+            let (_, value) = row.cells().nth(index).ok_or(Error::Cursor)?;
+            convert(value.clone(), &self.columns[index])
+        };
+        match self.cursor {
+            CursorColumns::Snapshot => Ok(Cursor::Snapshot),
+            CursorColumns::Scalar(index) => match cell(index)? {
+                CellValue::Int64(value) => Ok(ScalarValue::Int64(value).into()),
+                CellValue::Timestamp(value) => Ok(ScalarValue::Timestamp(value).into()),
+                _ => Err(Error::Cursor),
+            },
+            CursorColumns::Composite { timestamp, integer } => {
+                let (CellValue::Timestamp(timestamp), CellValue::Int64(integer)) =
+                    (cell(timestamp)?, cell(integer)?)
+                else {
+                    return Err(Error::Cursor);
+                };
+                Ok(Cursor::composite(timestamp, integer))
+            }
+        }
+    }
+
     pub fn request<'a>(
-        &self,
-        statement: &'a SqlServerStatement,
+        &'a self,
+        statement: &SqlServerStatement,
         query: &CompiledQuery,
         cursor: &Cursor,
     ) -> Result<tiberius::Query<'a>, Error> {
@@ -214,11 +236,11 @@ impl ResultPlan {
             .watermark()
             .validate_cursor(cursor)
             .map_err(|_| Error::Cursor)?;
-        let mut request = tiberius::Query::new(statement.driver_sql());
+        let mut request = tiberius::Query::new(&self.sql);
         for role in statement.parameters() {
             match (role, cursor, self.cursor) {
                 (SqlServerParameter::PageLimit, _, _) => {
-                    let limit = query.max_rows() + usize::from(matches!(cursor, Cursor::Snapshot));
+                    let limit = query.max_rows() + 1;
                     request.bind(i64::try_from(limit).map_err(|_| Error::Cursor)?);
                 }
                 (

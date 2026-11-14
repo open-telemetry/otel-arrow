@@ -66,7 +66,7 @@ macro_rules! postgresql_module_tests {
 
             /// Builds one backend frame: tag, big-endian length including the
             /// length field itself, then the body.
-            fn frame(tag: u8, body: &[u8]) -> Vec<u8> {
+            pub(super) fn frame(tag: u8, body: &[u8]) -> Vec<u8> {
                 let mut bytes = vec![tag];
                 bytes.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
                 bytes.extend_from_slice(body);
@@ -374,37 +374,206 @@ macro_rules! postgresql_module_tests {
                 assert_eq!(lifetime_requests / adaptive_requests, 151);
             }
 
-            /// Scenario: PostgreSQL rebuilds an equivalent unique index with a new internal OID.
-            /// Guarantees: Physical index identity changes are accepted, while column-contract changes still fail closed.
+            /// Scenario: Equivalent result metadata is rediscovered without table or index provenance.
+            /// Guarantees: Stable schemas reuse the plan, while changed result types fail closed.
             #[test]
             fn equivalent_rebuilt_index_preserves_cached_schema() {
                 use tokio_postgres::types::Type;
 
                 let validated = super::super::tests::test_validated();
-                let mut signature = super::super::tests::mock_signature(
-                    &validated.plan,
-                    &[(Type::TIMESTAMPTZ, 6, true), (Type::INT8, -1, true)],
+                let mut schema = super::super::tests::mock_schema(
+                    &[("ts", Type::TIMESTAMPTZ, 6, true), ("id", Type::INT8, -1, true)],
                 );
                 let mut cache = None;
-                _ = resolve_schema(&mut cache, &validated, signature.clone())
+                _ = resolve_schema(&mut cache, &validated, schema.clone())
                     .expect("initial schema");
-                signature.keys[0].1[0].0 = 999;
-                _ = resolve_schema(&mut cache, &validated, signature.clone())
-                    .expect("equivalent rebuilt index");
-                signature
-                    .columns
-                    .get_mut(&validated.plan.projections[0])
-                    .expect("timestamp")
-                    .type_oid = Type::TEXT.oid();
-                assert!(resolve_schema(&mut cache, &validated, signature).is_err());
+                _ = resolve_schema(&mut cache, &validated, schema.clone())
+                    .expect("equivalent result schema");
+                schema.native_types[0] = Type::TEXT;
+                assert!(resolve_schema(&mut cache, &validated, schema).is_err());
             }
 
-            /// Scenario: RLS is enabled after catalog validation but before query execution.
-            /// Guarantees: Every session requests fail-closed PostgreSQL RLS behavior rather than filtered rows.
+            /// Scenario: Untyped preparation infers int4 for COALESCE($1, 0), while the selected cursor is bigint.
+            /// Guarantees: Discovery retries with bigint, caches the typed output, avoids unnecessary retries, and still rejects real schema drift.
+            #[tokio::test]
+            async fn discovery_uses_cursor_types_and_final_output_schema() {
+                use super::framing_tests::frame;
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                use serde_json::json;
+                use tokio::{
+                    io::{AsyncReadExt, AsyncWriteExt},
+                    net::TcpListener,
+                };
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        for inferred in [Type::INT4, Type::INT8] {
+                            let listener = TcpListener::bind("127.0.0.1:0")
+                                .await
+                                .expect("reserved loopback listener");
+                            let port = listener.local_addr().unwrap().port();
+                            let state = tempfile::tempdir().unwrap();
+                            let raw = json!({
+                                "source_id":"typed-discovery",
+                                "connection":{"host":"127.0.0.1","port":port,"database":"fixture","tls":{"enabled":false}},
+                                "query":{
+                                    "statement":"SELECT e.id, COALESCE(:last_id, 0) AS previous_id FROM events e WHERE e.id > :last_id ORDER BY e.id",
+                                    "fetch_size_rows":1,"max_rows_per_poll":2,"max_batch_bytes":"1 MiB"
+                                },
+                                "watermark":{"mode":"scalar","column":"id","bind":"last_id","initial":{"type":"int64","value":0}},
+                                "checkpoint":{"directory":state.path()}
+                            });
+                            let validated = super::super::config::PostgreSqlReceiverConfig::parse(&raw)
+                                .and_then(super::super::config::PostgreSqlReceiverConfig::validate)
+                                .expect("receiver config");
+                            let query = validated.common.clone();
+                            let mut adapter = PostgreSqlAdapter::new(
+                                validated,
+                                super::super::tests::test_provider(),
+                            )
+                            .unwrap();
+                            let server = async {
+                                let (mut socket, _) = listener.accept().await.unwrap();
+                                let startup_len = socket.read_u32().await.unwrap();
+                                assert!((8..8192).contains(&startup_len));
+                                let mut startup = vec![0; startup_len as usize - 4];
+                                let _ = socket.read_exact(&mut startup).await.unwrap();
+                                assert_eq!(&startup[..4], &196608u32.to_be_bytes());
+                                let mut response = frame(b'R', &0u32.to_be_bytes());
+                                response.extend(frame(b'K', &[0; 8]));
+                                response.extend(frame(b'Z', b"I"));
+                                socket.write_all(&response).await.unwrap();
+
+                                let mut transaction = 0;
+                                let mut status = b'I';
+                                let mut parsed = None;
+                                let mut prepares = Vec::new();
+                                let mut terminated = false;
+                                for _ in 0..64 {
+                                    let tag = socket.read_u8().await.unwrap();
+                                    let length = socket.read_u32().await.unwrap();
+                                    assert!((4..65536).contains(&length));
+                                    let mut body = vec![0; length as usize - 4];
+                                    let _ = socket.read_exact(&mut body).await.unwrap();
+                                    let response = match tag {
+                                        b'Q' => {
+                                            let sql = std::str::from_utf8(&body[..body.len() - 1]).unwrap();
+                                            let command = if sql == "ROLLBACK" {
+                                                status = b'I';
+                                                b"ROLLBACK\0".as_slice()
+                                            } else {
+                                                assert!(sql.contains("READ ONLY"), "{sql}");
+                                                transaction += 1;
+                                                status = b'T';
+                                                b"BEGIN\0".as_slice()
+                                            };
+                                            let mut response = frame(b'C', command);
+                                            response.extend(frame(b'Z', &[status]));
+                                            response
+                                        }
+                                        b'P' => {
+                                            let mut parts = body.splitn(3, |byte| *byte == 0);
+                                            let name = parts.next().unwrap().to_vec();
+                                            let sql = std::str::from_utf8(parts.next().unwrap()).unwrap().to_owned();
+                                            let parameters = parts.next().unwrap();
+                                            let count = u16::from_be_bytes(parameters[..2].try_into().unwrap());
+                                            assert_eq!(parameters.len(), 2 + usize::from(count) * 4);
+                                            let types: Vec<_> = parameters[2..]
+                                                .chunks_exact(4)
+                                                .map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()))
+                                                .collect();
+                                            assert!(types.is_empty() || types == [Type::INT8.oid()]);
+                                            assert!(sql.contains("COALESCE($1, 0)"), "{sql}");
+                                            prepares.push((sql, types.clone()));
+                                            parsed = Some((name, types));
+                                            frame(b'1', &[])
+                                        }
+                                        b'D' => {
+                                            let (name, declared) = parsed.as_ref().unwrap();
+                                            assert_eq!(body[0], b'S');
+                                            assert_eq!(&body[1..body.len() - 1], name);
+                                            let parameter = if declared.is_empty() {
+                                                inferred.clone()
+                                            } else {
+                                                Type::INT8
+                                            };
+                                            let previous = if transaction == 3 && parameter == Type::INT8 {
+                                                Type::TEXT
+                                            } else {
+                                                parameter.clone()
+                                            };
+                                            let mut parameters = 1u16.to_be_bytes().to_vec();
+                                            parameters.extend(parameter.oid().to_be_bytes());
+                                            let mut response = frame(b't', &parameters);
+                                            let mut columns = 2u16.to_be_bytes().to_vec();
+                                            for (name, native) in [("id", Type::INT8), ("previous_id", previous)] {
+                                                columns.extend(name.as_bytes());
+                                                columns.push(0);
+                                                columns.extend(0u32.to_be_bytes());
+                                                columns.extend(0i16.to_be_bytes());
+                                                columns.extend(native.oid().to_be_bytes());
+                                                let size: i16 = match native {
+                                                    Type::INT4 => 4,
+                                                    Type::INT8 => 8,
+                                                    _ => -1,
+                                                };
+                                                columns.extend(size.to_be_bytes());
+                                                columns.extend((-1i32).to_be_bytes());
+                                                columns.extend(0i16.to_be_bytes());
+                                            }
+                                            response.extend(frame(b'T', &columns));
+                                            response
+                                        }
+                                        b'C' => frame(b'3', &[]),
+                                        b'S' => frame(b'Z', &[status]),
+                                        b'X' => {
+                                            terminated = true;
+                                            break;
+                                        }
+                                        _ => panic!("unexpected frontend message {tag}"),
+                                    };
+                                    socket.write_all(&response).await.unwrap();
+                                }
+                                assert!(terminated, "connection must close within the bounded exchange");
+                                assert_eq!(transaction, 3);
+                                prepares
+                            };
+                            let client = async {
+                                for _ in 0..2 {
+                                    _ = adapter.begin_operation().unwrap();
+                                    let columns = adapter.validate_query(&query).await.unwrap();
+                                    assert_eq!(
+                                        columns.iter().map(|column| (column.name.as_str(), column.source_type.as_str())).collect::<Vec<_>>(),
+                                        vec![("id", "int8"), ("previous_id", "int8")]
+                                    );
+                                }
+                                _ = adapter.begin_operation().unwrap();
+                                assert_eq!(adapter.validate_query(&query).await.err(), Some(Error::Metadata));
+                                adapter.shutdown().await.unwrap();
+                                assert!(adapter.session.is_none());
+                            };
+                            let (prepares, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+                                tokio::join!(server, client)
+                            })
+                            .await
+                            .expect("bounded native-protocol discovery scenario");
+                            let typed_source = prepares.iter()
+                                .filter(|(sql, types)| !sql.contains("\nLIMIT") && !types.is_empty())
+                                .count();
+                            assert_eq!(typed_source, if inferred == Type::INT4 { 3 } else { 0 });
+                            assert_eq!(prepares.iter().filter(|(sql, _)| sql.ends_with("\nLIMIT 3")).count(), 1);
+                        }
+                    })
+                    .await;
+            }
+
+            /// Scenario: A source uses database-managed row policies.
+            /// Guarantees: The session preserves read-only time-bounded execution without disabling native RLS.
             #[test]
             fn session_options_disable_filtered_rls_results() {
                 let options = session_options(Duration::from_secs(30));
-                assert!(options.contains("-c row_security=off"));
+                assert!(!options.contains("-c row_security=off"));
+                assert!(options.contains("-c default_transaction_read_only=on"));
                 assert!(options.contains("-c statement_timeout=30000"));
                 assert!(options.contains("-c idle_in_transaction_session_timeout=30000"));
             }
@@ -426,7 +595,6 @@ macro_rules! postgresql_module_tests {
                             client: None,
                             driver: tokio::task::spawn_local(future::pending()),
                             statement: None,
-                            catalog: None,
                             receive_failure: ReceiveFailure::default(),
                         });
                         let operation = Operation::default();
@@ -490,7 +658,6 @@ macro_rules! postgresql_module_tests {
                     client: None,
                     driver: tokio::task::spawn_local(async move { result }),
                     statement: None,
-                    catalog: None,
                     receive_failure: ReceiveFailure::default(),
                 });
                 // Let the driver task reach completion so the close path joins a
@@ -735,7 +902,7 @@ macro_rules! postgresql_module_tests {
 
 use super::{
     config::PostgreSqlReceiverConfig as Config,
-    query::{NativeColumn, Plan, Signature, compatible_literal},
+    query::{ResolvedSchema, ResultColumn},
     value as convert,
 };
 use otel_arrow_dfe_engine::capability::{
@@ -744,7 +911,6 @@ use otel_arrow_dfe_engine::capability::{
 };
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use serde_json::{Value, json};
-use sqlparser::ast::Value as SqlValue;
 use tokio_postgres::types::Type;
 
 struct TestCredentials;
@@ -872,7 +1038,7 @@ fn tls_settings_do_not_change_source_fingerprint() {
 }
 
 /// Scenario: One logical PostgreSQL source is configured with each watermark mode.
-/// Guarantees: Composite keeps its durable identity while scalar and snapshot cannot reuse its checkpoint.
+/// Guarantees: Source-query modes have distinct identities and cannot reinterpret each other's checkpoints.
 #[test]
 fn watermark_modes_have_distinct_source_fingerprints() {
     let composite = config(&sql(KEY));
@@ -902,6 +1068,51 @@ fn watermark_modes_have_distinct_source_fingerprints() {
     assert_ne!(fingerprints[1], fingerprints[2]);
 }
 
+/// Scenario: The original PostgreSQL v5 configurations and native parameter styles are reused.
+/// Guarantees: Frozen raw-SQL fingerprints reopen existing checkpoints for all collection modes.
+#[test]
+fn original_identity_payloads_reopen_checkpoints() {
+    use otel_arrow_dfe_scraper::database::{Cursor, ScalarValue};
+    use otel_arrow_dfe_scraper::{CheckpointStore, SourceLease};
+    const COMPOSITE: &str = r#"["postgresql/v5-watermark-time","postgresql","localhost",5432,"fixture","SELECT e.ts, e.id FROM public.events AS e WHERE ((e.ts > :last_timestamp) OR (e.ts = :last_timestamp AND e.id > :last_tie_breaker)) ORDER BY e.ts, e.id","named-parameters/v2",{"mode":"composite","timestamp":{"column":"ts","bind":"last_timestamp","initial":"2026-10-05T00:00:00.000000Z","timezone":"UTC"},"tie_breaker":{"column":"id","bind":"last_tie_breaker","initial":0}},"UTC/microseconds/native-v2"]"#;
+    const SCALAR: &str = r#"["postgresql/v5-watermark-time","postgresql","localhost",5432,"fixture","SELECT e.id FROM public.events AS e WHERE e.id > $1 ORDER BY e.id","named-parameters/v2",{"mode":"scalar","column":"id","bind":"last_value","initial":{"type":"int64","value":0}},"UTC/microseconds/native-v2"]"#;
+    const SNAPSHOT: &str = r#"["postgresql/v5-watermark-time","postgresql","localhost",5432,"fixture","SELECT e.ts, e.id FROM public.events AS e ORDER BY e.ts, e.id","named-parameters/v2",{"mode":"snapshot"},"UTC/microseconds/native-v2"]"#;
+    let mut scalar = config("SELECT e.id FROM public.events AS e WHERE e.id > $1 ORDER BY e.id");
+    scalar["watermark"] = json!({"mode":"scalar","column":"id","bind":"last_value","initial":{"type":"int64","value":0}});
+    let mut snapshot = config("SELECT e.ts, e.id FROM public.events AS e ORDER BY e.ts, e.id");
+    snapshot["watermark"] = json!({"mode":"snapshot"});
+    for (raw, legacy) in [
+        (config(&sql(KEY)), COMPOSITE),
+        (scalar, SCALAR),
+        (snapshot, SNAPSHOT),
+    ] {
+        let validated = validate(&raw).unwrap();
+        let expected = blake3::hash(legacy.as_bytes()).to_hex().to_string();
+        assert_eq!(validated.fingerprint, expected);
+        let dir = tempfile::tempdir().unwrap();
+        let old = CheckpointStore::new(dir.path(), "group", "pipeline", "pg", "source", expected);
+        let lease = SourceLease::acquire(old.lease_key()).unwrap();
+        let progress = match validated.common.watermark().initial() {
+            Cursor::Composite(mut cursor) => {
+                cursor.tie_breaker = 17;
+                Cursor::Composite(cursor)
+            }
+            Cursor::Scalar(_) => ScalarValue::Int64(17).into(),
+            Cursor::Snapshot => Cursor::Snapshot,
+        };
+        let (saved, _) = old.write(0, &progress).unwrap();
+        drop(lease);
+        let current = CheckpointStore::new(
+            dir.path(),
+            "group",
+            "pipeline",
+            "pg",
+            "source",
+            validated.fingerprint,
+        );
+        assert_eq!(current.read().unwrap(), Some(saved));
+    }
+}
 pub(super) fn test_validated() -> super::config::Validated {
     validate(&config(&sql(KEY))).expect("worker fixture")
 }
@@ -918,59 +1129,38 @@ pub(super) fn test_validated_with_connection(connection: Value) -> super::config
     validate(&raw).expect("transport fixture")
 }
 
-pub(super) fn mock_signature(plan: &Plan, columns: &[(Type, i32, bool)]) -> Signature {
-    assert_eq!(plan.projections.len(), columns.len());
-    Signature {
-        columns: plan
-            .projections
+pub(super) fn mock_schema(columns: &[(&str, Type, i32, bool)]) -> ResolvedSchema {
+    ResolvedSchema {
+        columns: columns
             .iter()
-            .zip(columns)
-            .enumerate()
-            .map(|(index, (reference, (native, modifier, not_null)))| {
-                (
-                    reference.clone(),
-                    NativeColumn {
-                        oid: 42,
-                        attribute: index as i16 + 1,
-                        type_oid: native.oid(),
-                        modifier: *modifier,
-                        not_null: *not_null,
-                        collation: 0,
-                    },
-                )
+            .map(|(name, native, modifier, nullable)| ResultColumn {
+                name: (*name).into(),
+                source_type: native.name().into(),
+                nullable: *nullable,
+                type_modifier: *modifier,
             })
             .collect(),
-        keys: vec![(42, vec![(43, vec![1, 2])])],
+        native_types: columns
+            .iter()
+            .map(|(_, native, _, _)| native.clone())
+            .collect(),
     }
 }
 
-/// Scenario: Legal SQL outside the experiment or an OR-bypass weakens the keyset contract.
-/// Guarantees: Rejected statements never reach native prepare, including all extra query/select clauses.
+/// Scenario: Source SQL attempts mutation, manual cursor binding, or conflicting pagination.
+/// Guarantees: The common contract rejects these operations before native preparation.
 #[test]
 fn unsafe_and_unsupported_sql_rejected() {
     let base = sql(KEY);
     for text in [
-        sql(&format!("{KEY} OR TRUE")),
-        sql(&format!("{KEY} AND ({KEY})")),
-        sql(&format!(
-            "{KEY} AND (e.ts, e.id) > (:last_timestamp, :last_tie_breaker)"
-        )),
+        sql("e.id > :last_tie_breaker"),
         sql("e.ts >= :last_timestamp OR (e.ts = :last_timestamp AND e.id > :last_tie_breaker)"),
         sql("e.ts > :last_timestamp OR (e.ts = :last_timestamp AND e.id >= :last_tie_breaker)"),
         sql("e.ts > :last_timestamp OR (e.id > :last_tie_breaker AND e.ts = :last_timestamp)"),
         sql("e.ts > :last_timestamp AND e.id > :last_tie_breaker"),
-        base.replace("e.ts, e.id FROM", "e.ts, abs(e.id) AS id FROM"),
-        base.replace("SELECT", "SELECT DISTINCT"),
         base.replace(" FROM", " INTO public.copy FROM"),
-        base.replace("e.ts, e.id FROM", "* FROM"),
-        base.replace("public.events AS e", "(SELECT * FROM public.events) AS e"),
-        base.replace(
-            "public.events AS e",
-            "public.events AS e LEFT JOIN public.x AS x ON e.id=x.id",
-        ),
         base.replace("ORDER BY e.ts, e.id", "ORDER BY e.id, e.ts"),
         base.replace("ORDER BY e.ts, e.id", "ORDER BY e.ts DESC, e.id"),
-        base.replace("ORDER BY e.ts, e.id", "ORDER BY e.ts NULLS FIRST, e.id"),
         format!("{base} LIMIT 1"),
         format!(
             "{base} LIMIT {}",
@@ -980,40 +1170,26 @@ fn unsafe_and_unsupported_sql_rejected() {
         format!("{base} FETCH FIRST 1 ROW ONLY"),
         format!("{base} FOR UPDATE"),
         format!("{base}; SELECT 1"),
-        format!("{base} UNION {base}"),
-        base.replace("ORDER BY", "GROUP BY e.ts, e.id ORDER BY"),
         format!("WITH x AS (DELETE FROM public.events) {base}"),
-        sql(&format!(
-            "{KEY} AND e.id = pg_catalog.set_config('a', 'b', false)"
-        )),
     ] {
         assert!(validate(&config(&text)).is_err(), "{text}");
     }
 }
 
-/// Scenario: Static date and timestamp filters use text literals across reconnects and restarts.
-/// Guarantees: Relative temporal literals are rejected so replay cannot silently skip unacknowledged rows.
+/// Scenario: Native filters use date literals, casts, relative expressions, and OR conditions.
+/// Guarantees: Query logic is delegated to PostgreSQL rather than a receiver expression allowlist.
 #[test]
-fn relative_temporal_literals_rejected() {
-    for (oid, literal, valid) in [
-        (Type::DATE.oid(), "2026-10-05", true),
-        (Type::DATE.oid(), "today", false),
-        (Type::TIMESTAMP.oid(), "2026-10-05 00:00:00", true),
-        (Type::TIMESTAMP.oid(), "2026-10-05T00:00:00.123456", true),
-        (
-            Type::TIMESTAMP.oid(),
-            "2026-10-05T00:00:00.123456789Z",
-            true,
-        ),
-        (Type::TIMESTAMP.oid(), "2026-10-05T00:00:00Z", true),
-        (Type::TIMESTAMP.oid(), "now", false),
-        (Type::TIMESTAMPTZ.oid(), "2026-10-05T00:00:00Z", true),
-        (Type::TIMESTAMPTZ.oid(), "2026-10-05T00:00:00-07:00", true),
-        (Type::TIMESTAMPTZ.oid(), "today", false),
-        (Type::TIMESTAMPTZ.oid(), "epoch", false),
+fn native_temporal_expressions_are_accepted() {
+    for predicate in [
+        "e.ts >= TIMESTAMPTZ '2026-10-05T00:00:00Z'",
+        "e.ts >= '2026-10-05T00:00:00Z'::timestamptz AND e.id BETWEEN 1 AND 10",
+        "e.ts >= now() - INTERVAL '1 day' OR e.id IN (1, 2)",
+        "e.ts >= 'today'",
     ] {
-        let literal = SqlValue::SingleQuotedString(literal.into());
-        assert_eq!(compatible_literal(oid, &literal).is_ok(), valid);
+        assert!(
+            validate(&config(&sql(&format!("{KEY} AND ({predicate})")))).is_ok(),
+            "{predicate}"
+        );
     }
 }
 

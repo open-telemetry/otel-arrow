@@ -4,7 +4,7 @@
 //! Descriptor-relative Linux namespace operations. No diagnostic pathname is
 //! reopened and no namespace artifact is followed through a symbolic link.
 
-use std::fs::File;
+use std::fs::{File, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::BorrowedFd;
 use std::os::unix::fs::MetadataExt;
@@ -14,9 +14,8 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, FcntlArg, OFlag, fcntl, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, geteuid, unlinkat};
-// nix::renameat2 is GNU-only; rustix also supports Linux musl. Its flock API
-// avoids File::try_lock, which is newer than the workspace's Rust 1.88 MSRV.
-use rustix::fs::{FlockOperation, RenameFlags, flock, renameat_with};
+// nix::renameat2 is GNU-only; rustix also supports Linux musl.
+use rustix::fs::{RenameFlags, renameat_with};
 
 use super::{COMPACT, CREATE, DB, StoreError, io};
 
@@ -154,12 +153,9 @@ impl Namespace {
         if lock.metadata().map_err(|e| io("stat lock", e))?.len() != 0 {
             return Err(StoreError::Untrusted("lock file must be empty"));
         }
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-            if error == rustix::io::Errno::WOULDBLOCK {
-                StoreError::Locked
-            } else {
-                io("lock namespace", error)
-            }
+        lock.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => StoreError::Locked,
+            TryLockError::Error(source) => io("lock namespace", source),
         })?;
         verify_entry(&directory, LOCK, &lock)?;
         let namespace = Self {

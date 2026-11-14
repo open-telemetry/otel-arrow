@@ -250,6 +250,16 @@ impl NodeBindings {
     ) {
         self.sink = policy.map(SinkBinding::new);
     }
+
+    /// Replaces the compiled value reads.
+    ///
+    /// The reads are sorted by selector to preserve the binary-search
+    /// invariant used by [`NodeBindings::value`].
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_value_reads(&mut self, mut reads: Vec<ValueRead>) {
+        reads.sort_by(|a, b| a.selector().cmp(b.selector()));
+        self.values = reads.into_boxed_slice();
+    }
 }
 
 #[cfg(test)]

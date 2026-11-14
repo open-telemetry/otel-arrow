@@ -97,6 +97,7 @@ arrow-schema = { version = "59.3" }
 arrow-array = { version = "59.3" }
 arrow-cast = { version = "59.3" }
 arrow-select = { version = "59.3" }
+prometheus-expfmt = { version = "0.1.0", default-features = false, features = ["arrow"] }
 wasmtime = { version = "49.0.3", default-features = false, features = ["runtime", "component-model", "component-model-async", "cranelift", "std"] }
 wasmtime-wasi = { version = "49.0.3", default-features = false, features = ["p3"] }
 wat = "1.262.0"
@@ -123,7 +124,6 @@ dhat = "0.3.3"
 libtest-mimic = "0.8.2"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
-fs2 = "0.4.3"
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
@@ -147,6 +147,10 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
+# Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.
+mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
+# Match the driver's mysql_common version range for shared codec error types.
+mysql_common = { version = "0.37.1", default-features = false }
 jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
 tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
@@ -267,11 +271,11 @@ unsync = "0.2.0"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["fast-rng", "v4", "v7"] }
 x509-parser = { version = "0.18.1", default-features = false }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "039f9d246f080fac38d7141a94ea00ab2840a56f" } # v0.28.0
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "039f9d246f080fac38d7141a94ea00ab2840a56f" } # v0.28.0
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "039f9d246f080fac38d7141a94ea00ab2840a56f" } # v0.28.0
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "039f9d246f080fac38d7141a94ea00ab2840a56f" } # v0.28.0
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "039f9d246f080fac38d7141a94ea00ab2840a56f" } # v0.28.0
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "4f989fed225cf98220c88448678518cb9402d16b" } # v0.28.0
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "4f989fed225cf98220c88448678518cb9402d16b" } # v0.28.0
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "4f989fed225cf98220c88448678518cb9402d16b" } # v0.28.0
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "4f989fed225cf98220c88448678518cb9402d16b" } # v0.28.0
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "4f989fed225cf98220c88448678518cb9402d16b" } # v0.28.0
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 globset = "0.4.20"
@@ -344,6 +348,7 @@ topic = ["otel-arrow-dfe-core-nodes/topic"]
 # Core receivers.
 host-metrics = ["otel-arrow-dfe-core-nodes/host-metrics"]
 journald = ["otel-arrow-dfe-core-nodes/journald"]
+prometheus = ["otel-arrow-dfe-core-nodes/prometheus"]
 syslog-cef = ["otel-arrow-dfe-core-nodes/syslog-cef"]
 
 # Core processors.
@@ -366,6 +371,10 @@ contrib-exporters = ["otel-arrow-dfe-contrib-nodes/contrib-exporters"]
 kafka = ["otel-arrow-dfe-contrib-nodes/kafka"]
 
 # Contrib receivers.
+mysql = [
+    "otel-arrow-dfe-contrib-nodes/mysql",
+    "flat-file-user-pass-auth",
+]
 postgresql = [
     "otel-arrow-dfe-contrib-nodes/postgresql",
     "flat-file-user-pass-auth",

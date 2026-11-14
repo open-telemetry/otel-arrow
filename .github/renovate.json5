@@ -4,9 +4,7 @@
     // primary usage of Golang components is in
     // OpenTelemetry-Collector-Contrib repository which
     // currently enforces 1.25.0 compatibility
-    "go": "1.25.0",
-    // keep pip-compile refreshes aligned with CI/runtime interpreter
-    "python": "==3.14"
+    "go": "1.25.0"
   },
   // Cross-reference dependencies against the OSV database (https://osv.dev)
   // and surface resolved CVE/GHSA/RUSTSEC advisories in PR bodies.
@@ -231,8 +229,10 @@
       ]
     },
     {
-      // keep Python source + lock updates together across both tools
+      // Keep Python source and lock updates together on the current runtime.
       "groupName": "python dependencies",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
       "matchManagers": ["pip-compile"],
       "matchFileNames": [
         "tools/pipeline_perf_test/**/requirements.lock.txt",
@@ -266,6 +266,20 @@
       "matchManagers": ["pip-compile"],
       "matchDepTypes": ["indirect"],
       "enabled": false
+    },
+    {
+      // Keep Python runtime pins together, separate from package updates.
+      // pip-compile selects Python from the generated lockfile headers.
+      "matchManagers": ["dockerfile", "github-actions"],
+      "matchDepNames": ["python"],
+      "groupName": "python runtime",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "automerge": false,
+      "prBodyNotes": [
+        "For interpreter upgrades, regenerate all three pip-compile lockfiles with the target Python, include any required companion dependency upgrades, and verify compatibility before merging."
+      ],
+      "schedule": ["before 8am on Friday"]
     },
     {
       // override project groups and manager defaults for one maintenance branch

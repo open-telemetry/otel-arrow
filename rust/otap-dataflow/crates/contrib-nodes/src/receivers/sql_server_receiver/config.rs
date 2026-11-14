@@ -77,14 +77,10 @@ impl SqlServerReceiverConfig {
         &self.fingerprint
     }
 
-    /// Returns the bound TOP value, including the snapshot overflow probe.
+    /// Returns the row ceiling including the overflow or successor probe.
     #[must_use]
     pub fn page_limit(&self) -> usize {
-        self.query.max_rows()
-            + usize::from(matches!(
-                self.query.watermark(),
-                otel_arrow_dfe_scraper::database::CompiledWatermark::Snapshot
-            ))
+        self.query.max_rows() + 1
     }
 
     fn compile(mut raw: RawConfig) -> Result<Self, SqlServerConfigError> {
@@ -149,7 +145,15 @@ impl SqlServerReceiverConfig {
                 }
             }
         };
-        let statement = SqlServerStatement::compile(&raw.query.statement, &raw.watermark)?;
+        let query = CompiledQuery::compile(
+            raw.query.statement.clone(),
+            polling,
+            &raw.watermark,
+            &raw.checkpoint,
+            output,
+        )
+        .map_err(|e| SqlServerConfigError(e.to_string()))?;
+        let statement = SqlServerStatement::compile(&query)?;
         let fingerprint_input = Fingerprint {
             version: 1,
             database_system: "microsoft.sql_server",
@@ -157,7 +161,7 @@ impl SqlServerReceiverConfig {
             host: &connection.host,
             port: connection.port,
             database: &connection.database,
-            statement: statement.canonical_sql(),
+            statement: statement.fingerprint_sql(),
             watermark: FingerprintWatermark::from(&raw.watermark),
         };
         let bytes = Zeroizing::new(
@@ -165,14 +169,6 @@ impl SqlServerReceiverConfig {
                 .map_err(|_| error("failed to fingerprint SQL Server configuration"))?,
         );
         let fingerprint = blake3::hash(&bytes).to_hex().to_string();
-        let query = CompiledQuery::compile(
-            statement.canonical_sql().to_owned(),
-            polling,
-            &raw.watermark,
-            &raw.checkpoint,
-            output,
-        )
-        .map_err(|e| SqlServerConfigError(e.to_string()))?;
         Ok(Self {
             source_id: raw.source_id,
             connection,

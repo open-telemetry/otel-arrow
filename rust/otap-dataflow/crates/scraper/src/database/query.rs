@@ -102,7 +102,7 @@ pub struct CompiledQuery {
 impl CompiledQuery {
     /// Validates and compiles one operator-authored watermark query.
     ///
-    /// SQL checks here cover length and a leading SELECT keyword only.
+    /// SQL checks here cover length and nonempty input only.
     /// Before execution, [`super::DriverAdapter::validate_query`] must validate
     /// the complete vendor statement, its read-only behavior, and cursor
     /// semantics. A compiled plan is not proof that SQL is safe to execute.
@@ -122,8 +122,8 @@ impl CompiledQuery {
                 maximum: MAX_QUERY_BYTES,
             });
         }
-        if !is_read_only(&sql) {
-            return Err(QueryError::NotReadOnly);
+        if sql.trim().is_empty() {
+            return Err(QueryError::EmptyQuery);
         }
         let watermark = match watermark {
             WatermarkConfig::Snapshot {} => CompiledWatermark::Snapshot,
@@ -249,23 +249,15 @@ impl fmt::Debug for CompiledQuery {
     }
 }
 
-fn is_read_only(sql: &str) -> bool {
-    // This is only a prefix check. DriverAdapter::validate_query must enforce
-    // single-statement, read-only SQL and cursor semantics before execution.
-    sql.split_whitespace()
-        .next()
-        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("select"))
-}
-
 /// Failure while compiling a query plan.
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum QueryError {
     /// Shared receiver configuration is invalid.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// The statement does not start with the required SELECT keyword.
-    #[error("query.statement must start with SELECT")]
-    NotReadOnly,
+    /// The statement is empty; adapters validate native SQL through SourceQuery.
+    #[error("query.statement must not be empty")]
+    EmptyQuery,
     /// The statement exceeds the supported length.
     #[error("query.statement must be at most {maximum} bytes")]
     QueryTooLong {

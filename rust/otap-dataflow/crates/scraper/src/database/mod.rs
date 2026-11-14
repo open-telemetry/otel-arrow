@@ -14,6 +14,7 @@ mod page;
 mod query;
 mod row;
 mod scalar;
+mod sql;
 
 pub use config::{
     CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OnPermanentNack, OutputConfig,
@@ -36,6 +37,7 @@ mod tests;
 mod mapping_tests;
 
 pub use scalar::{CursorError, ScalarValue};
+pub use sql::{SourceQuery, SourceQueryError};
 
 #[cfg(test)]
 mod scalar_tests;

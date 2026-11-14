@@ -199,8 +199,14 @@ fn malformed_temporal_values_are_rejected() {
 /// Guarantees: Rows become shared values/cursors only under an unambiguous validated schema.
 #[test]
 fn row_conversion_checks_metadata_and_cursor() {
-    let query = config(false).query().clone();
-    let plan = ResultPlan::new(vec![column(NativeType::BigInt, 0, false)], &query).unwrap();
+    let config = config(false);
+    let query = config.query().clone();
+    let plan = ResultPlan::new(
+        vec![column(NativeType::BigInt, 0, false)],
+        &query,
+        config.statement(),
+    )
+    .unwrap();
     let row = tiberius::Row::builder()
         .column("ID", ColumnType::Int8, ColumnData::I64(Some(42)))
         .build();
@@ -211,7 +217,16 @@ fn row_conversion_checks_metadata_and_cursor() {
         .column("id", ColumnType::Int8, ColumnData::I64(Some(42)))
         .build();
     assert_eq!(plan.row(wrong), Err(Error::Metadata));
-    assert!(ResultPlan::new(vec![column(NativeType::BigInt, 0, true)], &query).is_err());
+    let nullable = ResultPlan::new(
+        vec![column(NativeType::BigInt, 0, true)],
+        &query,
+        config.statement(),
+    )
+    .unwrap();
+    let null_row = tiberius::Row::builder()
+        .column("ID", ColumnType::Int8, ColumnData::I64(None))
+        .build();
+    assert_eq!(nullable.row(null_row), Err(Error::Cursor));
 }
 
 pub(super) struct Credentials;
@@ -1000,6 +1015,74 @@ async fn stock_driver_reads_a_validated_page() {
         .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert_eq!(page.rows[1].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+    adapter.shutdown().await.unwrap();
+}
+
+/// Scenario: A duplicated cursor is the first deferred row at a row or normalized-byte boundary.
+/// Guarantees: Successor lookahead rejects the whole page instead of returning a prefix that would skip a tied row.
+#[tokio::test]
+async fn stock_driver_rejects_duplicate_boundary_cursors() {
+    use otel_arrow_dfe_scraper::database::{CursorRow, Row};
+    let one_row = Row {
+        values: vec![CellValue::Int64(1)],
+    }
+    .normalized_size()
+        + size_of::<CursorRow>() as u64;
+    for (max_rows, bytes, ids) in [
+        (1, 4096, vec![1, 1]),
+        (2, one_row, vec![1, 1]),
+        (2, 4096, vec![1, 2, 2]),
+    ] {
+        let mut raw = raw_config(false, bytes);
+        raw["query"]["max_rows_per_poll"] = json!(max_rows);
+        raw["query"]["fetch_size_rows"] = json!(1);
+        let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+        let query = config.query().clone();
+        let connector = FixtureConnector::new([vec![
+            metadata_response(),
+            metadata_response(),
+            rows_response(&ids),
+            attention_done(),
+        ]]);
+        let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        _ = adapter.begin_operation().unwrap();
+        assert_eq!(
+            adapter.execute(&query, &query.watermark().initial()).await,
+            Err(Error::Cursor)
+        );
+        adapter.shutdown().await.unwrap();
+    }
+}
+
+/// Scenario: A full incremental page has a strictly later successor row.
+/// Guarantees: The successor is checked but not emitted, and the completed bounded response permits reuse.
+#[tokio::test]
+async fn stock_driver_probes_and_defers_valid_successors() {
+    let (mut adapter, query) = adapter(
+        false,
+        vec![
+            metadata_response(),
+            metadata_response(),
+            rows_response(&[1, 2, 3]),
+            metadata_response(),
+            rows_response(&[3]),
+        ],
+    );
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    let page = adapter
+        .execute(&query, &query.watermark().initial())
+        .await
+        .unwrap();
+    assert_eq!(page.rows.len(), 2);
+    assert_eq!(page.rows[1].cursor, ScalarValue::Int64(2).into());
+    _ = adapter.begin_operation().unwrap();
+    let next = adapter.execute(&query, &page.rows[1].cursor).await.unwrap();
+    assert_eq!(next.rows.len(), 1);
+    assert_eq!(next.rows[0].cursor, ScalarValue::Int64(3).into());
     adapter.shutdown().await.unwrap();
 }
 
@@ -1826,6 +1909,7 @@ fn composite_conversion_and_binds_use_both_keys() {
     let plan = ResultPlan::new(
         vec![time_column, column(NativeType::BigInt, 0, false)],
         config.query(),
+        config.statement(),
     )
     .unwrap();
     let row = tiberius::Row::builder()
@@ -2931,7 +3015,10 @@ fn shared_controller_revalidates_database_after_reconnect() {
 fn shared_controller_rejects_invalid_metadata_before_polling() {
     for reconnect in [false, true] {
         for response in [
-            vec![metadata_response_with(true, None)],
+            vec![
+                metadata_response_with_type(false, None, 241, "xml"),
+                attention_done(),
+            ],
             vec![metadata_response_with(false, Some(11509)), attention_done()],
         ] {
             run_validation_failure(config(false), response, Error::Metadata, reconnect);
