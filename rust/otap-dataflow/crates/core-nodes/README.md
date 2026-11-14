@@ -106,6 +106,7 @@ Exporters send data out of a pipeline.
 | [`exporter:otlp_grpc`](src/exporters/otlp_grpc_exporter/README.md) | `otlp` | experimental | Sends telemetry as unary OTLP/gRPC export requests. |
 | [`exporter:otlp_http`](src/exporters/otlp_http_exporter/README.md) | `otlp` | experimental | Sends telemetry to OTLP/HTTP endpoints. |
 | [`exporter:parquet`](src/exporters/parquet_exporter/README.md) | `parquet` | experimental | Writes OTAP batches as Parquet files. |
+| [`exporter:syslog_cef`](src/exporters/syslog_cef_exporter/README.md) | `syslog-cef` | experimental | Forwards encoded syslog and CEF batches over TCP or UDP. |
 | [`exporter:topic`](src/exporters/topic_exporter/README.md) | `topic` | experimental | Publishes data to a named in-process topic. |
 
 ## Feature Aggregates
@@ -116,6 +117,7 @@ Exporters send data out of a pipeline.
 - `core-exporters`: enables all core exporters.
 - `otap`: enables the OTAP receiver and exporter.
 - `otlp`: enables the OTLP receiver plus the OTLP gRPC and HTTP exporters.
+- `syslog-cef`: enables the syslog and CEF receiver and exporter.
 - `topic`: enables the in-process topic receiver and exporter.
 
 Features describe what the build includes rather than implementation

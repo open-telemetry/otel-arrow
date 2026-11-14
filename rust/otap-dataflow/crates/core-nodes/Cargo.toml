@@ -110,6 +110,7 @@ core-exporters = [
     "otap",
     "otlp",
     "parquet",
+    "syslog-cef",
     "topic",
 ]
 
