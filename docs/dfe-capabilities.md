@@ -88,6 +88,9 @@ performance measurement, and fault injection.
 | [OpenTelemetry Transformation Language (OTTL)][ottl] | Collector users can express edits with familiar functions and per-statement conditions. Its Collector ecosystem has many functions and examples. | DFE currently implements literal assignments to log fields. Existing Collector statements may use unsupported functions, conditions, or signal contexts. |
 | [Kusto Query Language (KQL)][kql] | Tabular, pipe-oriented queries are familiar for filtering and shaping data. | DFE implements a subset against specific telemetry shapes. The Transform and Recordset KQL processors have different input contracts. |
 
+See the [OPL language specification (PDF)][opl-spec] for the language's
+syntax and semantics.
+
 The [Transform processor][transform] documents the supported syntax and
 limits. See the [OPL and OTTL comparison][opl-ottl] for examples of how
 the two languages express the same operation.
@@ -114,6 +117,7 @@ the two languages express the same operation.
     ../rust/otap-dataflow/crates/query-engine-languages/docs/opl-user-guide/src/introduction.md
 [opl-ottl]:
     ../rust/otap-dataflow/crates/query-engine-languages/docs/opl-user-guide/src/ottl_comparison.md
+[opl-spec]: ../rust/otap-dataflow/docs/opl/OPLSpec.pdf
 [ottl]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/ottl
 [prometheus]: ../rust/otap-dataflow/configs/prometheus-otlp.yaml
 [topics]: ../rust/otap-dataflow/docs/topic-architecture.md
