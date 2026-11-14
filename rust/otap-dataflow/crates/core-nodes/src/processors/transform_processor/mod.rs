@@ -2363,6 +2363,76 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: an OPL program conditionally routes batches based on the string value of a
+    /// transport header
+    /// Guarantees: transport_header_string_value is correctly planned and executed through the
+    /// full transform processor lifecycle including context declaration and node binding wiring
+    #[test]
+    fn test_route_based_on_transport_header_string_value() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"signals | if (transport_header_string_value("tenant") == "acme") {
+            route_to "acme_route"
+        } else {
+            route_to "other_route"
+        }
+        "#;
+
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let acme_rx = set_pdata_sender("acme_route", &mut processor);
+        let other_rx = set_pdata_sender("other_route", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                // batch with tenant=acme header -- should route to acme_route
+                let batch1 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build().event_name("acme_batch").finish(),
+                ])));
+                let mut transport_headers = TransportHeaders::new();
+                transport_headers.push(TransportHeader::text(
+                    ContextEntryName::try_from("tenant").unwrap(),
+                    "acme".to_string(),
+                ));
+                let mut metadata = Metadata::default();
+                metadata.set_transport_headers(transport_headers);
+                let context = Context::default().with_metadata(metadata);
+                let pdata1 = OtapPdata::new(context, batch1.into());
+
+                // batch with tenant=other header -- should route to other_route
+                let batch2 = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(vec![
+                    LogRecord::build().event_name("other_batch").finish(),
+                ])));
+                let mut transport_headers = TransportHeaders::new();
+                transport_headers.push(TransportHeader::text(
+                    ContextEntryName::try_from("tenant").unwrap(),
+                    "other".to_string(),
+                ));
+                let mut metadata = Metadata::default();
+                metadata.set_transport_headers(transport_headers);
+                let context = Context::default().with_metadata(metadata);
+                let pdata2 = OtapPdata::new(context, batch2.into());
+
+                ctx.process(Message::PData(pdata1.clone())).await.unwrap();
+                ctx.process(Message::PData(pdata2.clone())).await.unwrap();
+
+                let out = ctx.drain_pdata().await;
+                assert!(out.is_empty(), "everything should be routed");
+
+                let acme_batch = acme_rx.try_recv().unwrap();
+                assert_eq!(
+                    pdata1.payload_ref().otap_ref().unwrap(),
+                    acme_batch.payload_ref().otap_ref().unwrap()
+                );
+
+                let other_batch = other_rx.try_recv().unwrap();
+                assert_eq!(
+                    pdata2.payload_ref().otap_ref().unwrap(),
+                    other_batch.payload_ref().otap_ref().unwrap()
+                );
+            })
+            .validate(|_ctx| async move {});
+    }
+
     #[test]
     fn test_fork_with_route_to() {
         let runtime = TestRuntime::<OtapPdata>::new();

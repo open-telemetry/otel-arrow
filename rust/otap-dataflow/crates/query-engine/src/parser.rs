@@ -14,9 +14,10 @@ use otel_arrow_contrib_data_engine_parser_abstractions::ParserOptions;
 use crate::consts::SHA1_FUNC_NAME;
 use crate::consts::{
     ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME,
-    HAS_TRANSPORT_HEADER_FUNC_NAME, LOG_FUNC_NAME, LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME,
-    MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME,
-    SHA256_FUNC_NAME, SHA512_FUNC_NAME, STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME,
+    HAS_TRANSPORT_HEADER_FUNC_NAME, IS_TRANSPORT_HEADER_STRING_FUNC_NAME, LOG_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
+    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
+    STARTS_WITH_FUNC_NAME, TRANSPORT_HEADER_STRING_VALUE_FUNC_NAME, UPPER_CASE_FUNC_NAME,
     UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
 };
 
@@ -60,6 +61,16 @@ pub fn default_parser_options() -> ParserOptions {
         .with_external_function(STARTS_WITH_FUNC_NAME, param_placeholders(2), None)
         .with_external_function(ENDS_WITH_FUNC_NAME, param_placeholders(2), None)
         .with_external_function(HAS_TRANSPORT_HEADER_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(
+            IS_TRANSPORT_HEADER_STRING_FUNC_NAME,
+            param_placeholders(1),
+            None,
+        )
+        .with_external_function(
+            TRANSPORT_HEADER_STRING_VALUE_FUNC_NAME,
+            param_placeholders(1),
+            None,
+        )
         .with_external_function(
             REGEXP_SUBSTR_FUNC_NAME,
             vec![

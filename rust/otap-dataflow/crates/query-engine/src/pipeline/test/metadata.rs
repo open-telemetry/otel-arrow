@@ -44,6 +44,14 @@ fn create_logs_batch(attributes: Vec<KeyValue>) -> OtapArrowRecords {
 
 /// create node bindings with a selector for the given header name
 fn node_bindings_for_transport_header(header_name: &str) -> NodeBindings {
+    node_bindings_for_transport_header_with_take(header_name, ContextEntryTake::First)
+}
+
+/// create node bindings with a selector for the given header name and take strategy
+fn node_bindings_for_transport_header_with_take(
+    header_name: &str,
+    take: ContextEntryTake,
+) -> NodeBindings {
     let context_entry_selector = ContextEntrySelector {
         target: ContextEntryTarget::Primitive {
             domain: ContextDomain::TransportHeader,
@@ -51,7 +59,7 @@ fn node_bindings_for_transport_header(header_name: &str) -> NodeBindings {
             matching: ContextNameMatching::Exact,
         },
         form: ContextEntrySelectorForm::StoredKeyValue,
-        take: ContextEntryTake::First,
+        take,
     };
 
     let context_materialization_plan = ContextMaterializationPlan::default();
@@ -64,7 +72,7 @@ fn node_bindings_for_transport_header(header_name: &str) -> NodeBindings {
     node_bindings
 }
 
-/// insert a new transport header into the metadata
+/// insert a new transport header with a text value into the metadata
 ///
 /// note: does not replace existing with same name, so duplicates may be created.
 fn add_transport_header(metadata: &mut Metadata, header_name: &str, header_value: &str) {
@@ -72,6 +80,21 @@ fn add_transport_header(metadata: &mut Metadata, header_name: &str, header_value
         ContextEntryName::try_from(header_name).unwrap(),
         ValueKind::Text,
         header_value.as_bytes().to_vec().into_boxed_slice(),
+    );
+
+    let mut transport_headers = metadata.take_transport_headers().unwrap_or_default();
+    transport_headers.push(transport_header);
+    metadata.set_transport_headers(transport_headers);
+}
+
+/// insert a new transport header with a binary value into the metadata
+///
+/// note: does not replace existing with same name, so duplicates may be created.
+fn add_binary_transport_header(metadata: &mut Metadata, header_name: &str, header_value: &[u8]) {
+    let transport_header = TransportHeader::new(
+        ContextEntryName::try_from(header_name).unwrap(),
+        ValueKind::Binary,
+        header_value.to_vec().into_boxed_slice(),
     );
 
     let mut transport_headers = metadata.take_transport_headers().unwrap_or_default();
@@ -258,4 +281,332 @@ async fn test_simple_assign_transport_header_presence_as_property() {
         attr,
         &KeyValue::new("has_header", AnyValue::new_bool(false))
     );
+}
+
+// -- is_transport_header_string tests --
+
+/// Scenario: is_transport_header_string returns true when a text header is present
+/// Guarantees: correctly identifies a single text-valued transport header as a string
+#[tokio::test]
+async fn test_is_transport_header_string_true_when_text_header_present() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, "bar");
+
+    let result = execute_pipeline(
+        "signals | set attributes[\"is_str\"] = is_transport_header_string(\"foo\")",
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(attr, &KeyValue::new("is_str", AnyValue::new_bool(true)));
+}
+
+/// Scenario: is_transport_header_string returns false when the header is absent
+/// Guarantees: correctly returns false for missing headers
+#[tokio::test]
+async fn test_is_transport_header_string_false_when_absent() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let result = execute_pipeline(
+        "signals | set attributes[\"is_str\"] = is_transport_header_string(\"foo\")",
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        Metadata::default(),
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(attr, &KeyValue::new("is_str", AnyValue::new_bool(false)));
+}
+
+/// Scenario: is_transport_header_string returns false when the header has a binary value
+/// Guarantees: correctly distinguishes binary-valued headers from string-valued ones
+#[tokio::test]
+async fn test_is_transport_header_string_false_when_binary() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_binary_transport_header(&mut metadata, header_name, &[0xDE, 0xAD, 0xBE, 0xEF]);
+
+    let result = execute_pipeline(
+        "signals | set attributes[\"is_str\"] = is_transport_header_string(\"foo\")",
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(attr, &KeyValue::new("is_str", AnyValue::new_bool(false)));
+}
+
+/// Scenario: is_transport_header_string returns false when there are duplicate headers
+/// Guarantees: duplicate headers are not treated as a scalar string
+#[tokio::test]
+async fn test_is_transport_header_string_false_when_duplicate_headers() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, "bar");
+    add_transport_header(&mut metadata, header_name, "baz");
+
+    let result = execute_pipeline(
+        "signals | set attributes[\"is_str\"] = is_transport_header_string(\"foo\")",
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(attr, &KeyValue::new("is_str", AnyValue::new_bool(false)));
+}
+
+/// Scenario: is_transport_header_string used as a filter predicate
+/// Guarantees: filter correctly keeps batches where the header is a string
+#[tokio::test]
+async fn test_filter_by_is_transport_header_string() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let input_batch = create_logs_batch(Default::default());
+    let query = "signals | where is_transport_header_string(\"foo\")";
+
+    // with text header present -- should keep rows
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, "bar");
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata,
+    )
+    .await;
+    assert_eq!(result.num_items(), 1);
+
+    // without header -- should filter out
+    let result = execute_pipeline(query, pipeline_options, input_batch, Metadata::default()).await;
+    assert!(result.is_empty());
+}
+
+// -- transport_header_string_value tests --
+
+/// Scenario: transport_header_string_value returns the string value when a text header is present
+/// Guarantees: correctly retrieves the text value of a single transport header
+#[tokio::test]
+async fn test_transport_header_string_value_returns_value() {
+    let header_name = "foo";
+    let header_val = "my-header-value";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+
+    let result = execute_pipeline(
+        "signals | set attributes[\"hdr_val\"] = transport_header_string_value(\"foo\")",
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let attr = &result.resource_logs[0].scope_logs[0].log_records[0].attributes[0];
+    assert_eq!(
+        attr,
+        &KeyValue::new("hdr_val", AnyValue::new_string("my-header-value"))
+    );
+}
+
+/// Scenario: transport_header_string_value returns null when the header is absent
+/// Guarantees: missing headers produce null, which filters out the batch
+#[tokio::test]
+async fn test_transport_header_string_value_null_when_absent() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    // Use a filter predicate to verify the value is null: comparing null to a string should
+    // not match, so the batch is filtered out.
+    let query = "signals | where transport_header_string_value(\"foo\") == \"anything\"";
+
+    let result = execute_pipeline(
+        query,
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        Metadata::default(),
+    )
+    .await;
+
+    assert!(result.is_empty());
+}
+
+/// Scenario: transport_header_string_value returns null when the header has a binary value
+/// Guarantees: binary-valued headers are not returned as strings
+#[tokio::test]
+async fn test_transport_header_string_value_null_when_binary() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_binary_transport_header(&mut metadata, header_name, &[0xDE, 0xAD, 0xBE, 0xEF]);
+
+    // Binary header should not match a string comparison, verifying null is returned.
+    let query = "signals | where transport_header_string_value(\"foo\") == \"anything\"";
+
+    let result = execute_pipeline(
+        query,
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    assert!(result.is_empty());
+}
+
+/// Scenario: transport_header_string_value returns null when there are duplicate headers
+/// Guarantees: duplicate headers are not treated as a scalar and return null
+#[tokio::test]
+async fn test_transport_header_string_value_null_when_duplicate_headers() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, "bar");
+    add_transport_header(&mut metadata, header_name, "baz");
+
+    // Duplicate headers should yield null, so this comparison should not match.
+    let query = "signals | where transport_header_string_value(\"foo\") == \"bar\"";
+
+    let result = execute_pipeline(
+        query,
+        pipeline_options,
+        create_logs_batch(Default::default()),
+        metadata,
+    )
+    .await;
+
+    assert!(result.is_empty());
+}
+
+/// Scenario: transport_header_string_value used in a filter comparison predicate
+/// Guarantees: the string value can be compared against a literal in a where clause
+#[tokio::test]
+async fn test_filter_by_transport_header_string_value() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header_with_take(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let input_batch = create_logs_batch(Default::default());
+    let query = "signals | where transport_header_string_value(\"foo\") == \"bar\"";
+
+    // matching header value -- should keep rows
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, "bar");
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata,
+    )
+    .await;
+    assert_eq!(result.num_items(), 1);
+
+    // non-matching header value -- should filter out
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, "not-bar");
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata,
+    )
+    .await;
+    assert!(result.is_empty());
+
+    // no header -- should filter out (null != "bar")
+    let result = execute_pipeline(query, pipeline_options, input_batch, Metadata::default()).await;
+    assert!(result.is_empty());
 }
