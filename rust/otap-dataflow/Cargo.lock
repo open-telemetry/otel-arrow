@@ -13681,6 +13681,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.11.1",
  "syn 2.0.119",
  "toml",
