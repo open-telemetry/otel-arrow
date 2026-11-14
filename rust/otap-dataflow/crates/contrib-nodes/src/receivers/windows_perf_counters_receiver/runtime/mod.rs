@@ -4,7 +4,10 @@
 //! Scheduling, publishing, warnings, and shutdown for the single-core receiver.
 
 use super::config::Config;
-use super::metrics::WindowsPerfCountersMetrics;
+use super::metrics::{
+    CounterOperation, CounterOperationFailureAttributes, CounterOperationFailureMetrics,
+    WindowsPerfCountersMetrics,
+};
 use super::otap_builder::project_points;
 use super::pdh::{NativePdh, Report, Stopped, Worker};
 use async_trait::async_trait;
@@ -18,7 +21,7 @@ use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFa
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::{ReceiverPullAttempt, ReceiverPullMetrics};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
@@ -86,16 +89,21 @@ impl Diagnostics {
 struct InFlight {
     report: oneshot::Receiver<Report>,
     requested: tokio::time::Instant,
-    /// The start report, which is not a scrape.
-    start: bool,
     late: bool,
     attempt: Option<ReceiverPullAttempt>,
+}
+
+impl InFlight {
+    fn is_start(&self) -> bool {
+        self.attempt.is_none()
+    }
 }
 
 struct WindowsPerfCountersReceiver {
     config: Config,
     node: String,
     metrics: MetricSet<WindowsPerfCountersMetrics>,
+    counter_failures: MeasurementMetricSet<CounterOperationFailureMetrics>,
     diagnostics: Diagnostics,
     boundary: ReceiverPullMetrics,
 }
@@ -120,6 +128,7 @@ static WINDOWS_PERF_COUNTERS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
             config,
             node: node.name.to_string(),
             metrics: WindowsPerfCountersMetrics::register(&pipeline),
+            counter_failures: CounterOperationFailureMetrics::register(&pipeline),
             boundary: ReceiverPullMetrics::register(&pipeline),
         };
         Ok(ReceiverWrapper::local(
@@ -207,6 +216,22 @@ impl WindowsPerfCountersReceiver {
         self.metrics
             .counter_add_failures
             .add(report.add_failures.len() as u64);
+        if !report.collect_failures.is_empty() {
+            self.counter_failures
+                .with(CounterOperationFailureAttributes {
+                    operation: CounterOperation::Collect,
+                })
+                .counter_failures
+                .add(report.collect_failures.len() as u64);
+        }
+        if !report.read_failures.is_empty() {
+            self.counter_failures
+                .with(CounterOperationFailureAttributes {
+                    operation: CounterOperation::Read,
+                })
+                .counter_failures
+                .add(report.read_failures.len() as u64);
+        }
         self.metrics
             .active_counters
             .set(report.active_counters as u64);
@@ -232,14 +257,13 @@ impl WindowsPerfCountersReceiver {
         let mut in_flight = Some(InFlight {
             report: started,
             requested: tokio::time::Instant::now(),
-            start: true,
             late: false,
             attempt: None,
         });
         loop {
             // With a timeout, the overrun warning fires when it expires instead of at a skipped tick.
             let overdue_at = match (&in_flight, self.config.timeout) {
-                (Some(pending), Some(timeout)) if !pending.start && !pending.late => {
+                (Some(pending), Some(timeout)) if !pending.is_start() && !pending.late => {
                     Some(pending.requested + timeout)
                 }
                 _ => None,
@@ -249,6 +273,7 @@ impl WindowsPerfCountersReceiver {
                 message = control.recv() => match message.map_err(Error::ChannelRecvError)? {
                     NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
                         let _ = metrics_reporter.report(&mut self.metrics);
+                        let _ = self.counter_failures.report(&mut metrics_reporter);
                         let _ = self.boundary.report(&mut metrics_reporter);
                     }
                     NodeControlMsg::DrainIngress { deadline, .. } => return Ok((deadline, true)),
@@ -257,7 +282,7 @@ impl WindowsPerfCountersReceiver {
                 },
                 // Ticks are not polled during start, so the first tick stays due until start
                 // completes. Ticks come before reports so a due tick marks a scrape late first.
-                _ = ticks.tick(), if !in_flight.as_ref().is_some_and(|p| p.start) => {
+                _ = ticks.tick(), if !in_flight.as_ref().is_some_and(InFlight::is_start) => {
                     match in_flight.as_mut() {
                         Some(pending) => {
                             self.metrics.scrape_overruns.inc();
@@ -271,7 +296,6 @@ impl WindowsPerfCountersReceiver {
                             in_flight = Some(InFlight {
                                 report: worker.scrape(),
                                 requested: tokio::time::Instant::now(),
-                                start: false,
                                 late: false,
                                 attempt: Some(attempt),
                             });
@@ -290,7 +314,7 @@ impl WindowsPerfCountersReceiver {
                     let report = report.map_err(|_| {
                         receiver_error(effect_handler, "PDH worker stopped".to_owned())
                     })?;
-                    if pending.start {
+                    if pending.is_start() {
                         self.apply(&report);
                         continue;
                     }
@@ -347,6 +371,7 @@ impl WindowsPerfCountersReceiver {
             Err(error) => Err(error),
         };
         let mut snapshots = self.metrics.terminal_snapshots();
+        snapshots.extend(self.counter_failures.terminal_snapshots());
         snapshots.extend(self.boundary.terminal_snapshots());
         let terminal = TerminalState::new(deadline, snapshots);
         if let Err(error) = completion {

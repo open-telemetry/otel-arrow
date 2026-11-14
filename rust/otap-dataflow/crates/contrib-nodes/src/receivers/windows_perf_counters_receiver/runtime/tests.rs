@@ -64,6 +64,41 @@ fn counter_failures_warn_once_per_counter_episode() {
     }
 }
 
+/// Scenario: Counter collect and read failures are recorded as diagnostic operation failure metrics.
+/// Guarantees: Collect and read failures increment receiver.windows_perf_counters.counter.failures
+/// keyed by operation without changing attempt outcomes.
+#[test]
+fn counter_operation_failures_are_recorded_by_operation() {
+    let mut h = harness();
+    let mut report = Report::default();
+    report.collect_failures.push((0, 0x800007D5));
+    report.collect_failures.push((1, 0x800007D5));
+    report.read_failures.push((2, 0xC0000BC6));
+
+    h.receiver.apply(&report);
+
+    assert_eq!(
+        h.receiver
+            .counter_failures
+            .get(CounterOperationFailureAttributes {
+                operation: CounterOperation::Collect,
+            })
+            .counter_failures
+            .get(),
+        2
+    );
+    assert_eq!(
+        h.receiver
+            .counter_failures
+            .get(CounterOperationFailureAttributes {
+                operation: CounterOperation::Read,
+            })
+            .counter_failures
+            .get(),
+        1
+    );
+}
+
 /// Scenario: The overrun latch is triggered twice, released by a late completion, then by an
 /// on-time completion. This exercises only the warn-once state, not the scheduler.
 /// Guarantees: The overrun warning fires once per episode; only an on-time completion ends the
@@ -162,6 +197,7 @@ fn harness_with_reporter(metrics_reporter: MetricsReporter) -> Harness {
         config,
         node: "windows-perf-counters".to_owned(),
         metrics: WindowsPerfCountersMetrics::register(&pipeline),
+        counter_failures: CounterOperationFailureMetrics::register(&pipeline),
         boundary: ReceiverPullMetrics::register(&pipeline),
     };
     let (output_tx, output) = Channel::new(4);
