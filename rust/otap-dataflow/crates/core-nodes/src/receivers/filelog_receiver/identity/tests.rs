@@ -2442,3 +2442,6 @@ fn snapshot_capacity_defers_optional_growth() {
         b"abc"
     );
 }
+
+#[path = "../delivery/checkpoint_tests.rs"]
+mod delivery_tests;
