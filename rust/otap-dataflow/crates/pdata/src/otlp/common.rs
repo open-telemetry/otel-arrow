@@ -953,6 +953,46 @@ impl SortedBatchCursor {
     }
 }
 
+/// Minimum batch length at which [`BatchSorter`] switches from comparison sorting to stable LSD
+/// radix sort. Below this threshold, `sort_unstable_by_key` with a row-index tie-breaker has lower
+/// setup overhead than counting 256-entry byte histograms.
+const RADIX_SORT_THRESHOLD: usize = 64;
+
+/// Unsigned integer key used by [`BatchSorter`]'s hybrid stable LSD radix sort.
+pub(crate) trait RadixKey: Copy + Default + Ord {
+    const BYTES: usize;
+    fn bit_xor(self, other: Self) -> Self;
+    fn bit_or(self, other: Self) -> Self;
+    fn byte_at(self, byte_idx: usize) -> u8;
+}
+
+macro_rules! impl_radix_key {
+    ($($t:ty),*) => {
+        $(
+            impl RadixKey for $t {
+                const BYTES: usize = std::mem::size_of::<$t>();
+
+                #[inline(always)]
+                fn bit_xor(self, other: Self) -> Self {
+                    self ^ other
+                }
+
+                #[inline(always)]
+                fn bit_or(self, other: Self) -> Self {
+                    self | other
+                }
+
+                #[inline(always)]
+                fn byte_at(self, byte_idx: usize) -> u8 {
+                    (self >> (byte_idx * 8)) as u8
+                }
+            }
+        )*
+    };
+}
+
+impl_radix_key!(u16, u32, u64);
+
 /// This is used to initialize the [`SortedBatchCursor`]. It does this by sorting the IDs and then
 /// filling in the cursors indices to visit based on the sorted ID column.
 pub(crate) struct BatchSorter {
@@ -1036,10 +1076,7 @@ impl BatchSorter {
                             (i, (*r as u64) << 32 | (*s as u64) << 16 | *id as u64)
                         }),
                 );
-                self.u64_ids.sort_unstable_by_key(|&(_, v)| v);
-                cursor
-                    .sorted_indices
-                    .extend(self.u64_ids.iter().map(|(i, _)| *i));
+                Self::sort_non_null_tuples(&mut self.u64_ids, cursor);
             }
             // Pack 2 u16 IDs into a u32 for composite sorting by resource, then scope ID.
             [Some(ids1), Some(ids2), None] => {
@@ -1051,10 +1088,7 @@ impl BatchSorter {
                         .enumerate()
                         .map(|(i, (a, b))| (i, (*a as u32) << 16 | *b as u32)),
                 );
-                self.u32_ids.sort_unstable_by_key(|&(_, v)| v);
-                cursor
-                    .sorted_indices
-                    .extend(self.u32_ids.iter().map(|(i, _)| *i));
+                Self::sort_non_null_tuples(&mut self.u32_ids, cursor);
             }
             // Single ID column -- sort directly by u16 value.
             [Some(ids), None, None] => {
@@ -1091,8 +1125,52 @@ impl BatchSorter {
         ids: &MaybeDictArrayAccessor<'_, PrimitiveArray<T>>,
         cursor: &mut SortedBatchCursor,
     ) where
-        <T as ArrowPrimitiveType>::Native: Ord,
+        <T as ArrowPrimitiveType>::Native: RadixKey,
     {
+        if let MaybeDictArrayAccessor::Native(ids) = ids
+            && ids.null_count() == 0
+        {
+            let values = ids.values();
+            if values.is_sorted() {
+                cursor.sorted_indices.extend(0..values.len());
+                return;
+            }
+            if values.len() >= RADIX_SORT_THRESHOLD {
+                Self::radix_sort_native_slice(values, sort_ids_tmp, cursor);
+                return;
+            }
+        }
+
+        let len = ids.len();
+        let null_count = ids.null_count();
+
+        if null_count > 0 && len >= RADIX_SORT_THRESHOLD {
+            // Place valid row indices in `sort_ids_tmp[..valid_len].0`, keep each row's ID value
+            // at its original row slot `sort_ids_tmp[row].1`, and append null row indices at the
+            // tail of `cursor.sorted_indices[valid_len..len]` in input order.
+            let valid_len = len - null_count;
+            sort_ids_tmp.clear();
+            sort_ids_tmp.resize(len, (0, T::Native::default()));
+            cursor.sorted_indices.clear();
+            cursor.sorted_indices.resize(len, 0);
+
+            let mut valid_pos = 0;
+            let mut null_pos = valid_len;
+            for i in 0..len {
+                if let Some(val) = ids.value_at(i) {
+                    sort_ids_tmp[valid_pos].0 = i;
+                    sort_ids_tmp[i].1 = val;
+                    valid_pos += 1;
+                } else {
+                    cursor.sorted_indices[null_pos] = i;
+                    null_pos += 1;
+                }
+            }
+
+            Self::radix_sort_valid_prefix(sort_ids_tmp, valid_len, true, cursor);
+            return;
+        }
+
         sort_ids_tmp.clear();
 
         match ids {
@@ -1115,24 +1193,290 @@ impl BatchSorter {
             }
         }
 
-        if ids.null_count() == 0 {
-            // fast path, no null IDs
-            sort_ids_tmp.sort_unstable_by_key(|&(_, value)| value);
+        if null_count == 0 {
+            Self::sort_non_null_tuples(sort_ids_tmp, cursor);
         } else {
-            // sort nulls last
+            // Small batch with nulls: sort nulls last, breaking ties by input row index.
             sort_ids_tmp.sort_unstable_by(|(ia, a), (ib, b)| {
                 match (ids.is_valid(*ia), ids.is_valid(*ib)) {
-                    (true, true) => a.cmp(b),
+                    (true, true) => a.cmp(b).then_with(|| ia.cmp(ib)),
                     (true, false) => Ordering::Less,
                     (false, true) => Ordering::Greater,
-                    (false, false) => Ordering::Equal,
+                    (false, false) => ia.cmp(ib),
                 }
             });
+            cursor
+                .sorted_indices
+                .extend(sort_ids_tmp.iter().map(|(i, _)| *i));
+        }
+    }
+
+    fn sort_non_null_tuples<K: RadixKey>(
+        tuples: &mut [(usize, K)],
+        cursor: &mut SortedBatchCursor,
+    ) {
+        let len = tuples.len();
+        if len < RADIX_SORT_THRESHOLD {
+            // Small batch: include the original row index as a tie-breaker so unstable sorting
+            // stays allocation-free while preserving relative row order for equal IDs.
+            tuples.sort_unstable_by_key(|&(i, v)| (v, i));
+            cursor.sorted_indices.extend(tuples.iter().map(|(i, _)| *i));
+        } else {
+            cursor.sorted_indices.clear();
+            cursor.sorted_indices.resize(len, 0);
+            Self::radix_sort_valid_prefix(tuples, len, false, cursor);
+        }
+    }
+
+    /// Stably sorts a contiguous non-null `values` slice into `cursor.sorted_indices` using LSD
+    /// radix sort over only the non-constant bytes of `K`.
+    ///
+    /// Reads keys directly from `values` without copying them into `scratch`, and uses
+    /// `scratch[..len].0` only when multiple active byte passes require ping-ponging row indices.
+    fn radix_sort_native_slice<K: RadixKey>(
+        values: &[K],
+        scratch: &mut Vec<(usize, K)>,
+        cursor: &mut SortedBatchCursor,
+    ) {
+        let len = values.len();
+        cursor.sorted_indices.clear();
+        cursor.sorted_indices.resize(len, 0);
+        if len <= 1 {
+            return;
         }
 
-        cursor
-            .sorted_indices
-            .extend(sort_ids_tmp.iter().map(|(i, _)| *i));
+        let first = values[0];
+        let mut diff = K::default();
+        let mut counts0 = [0usize; 256];
+        for &val in values {
+            diff = diff.bit_or(val.bit_xor(first));
+            counts0[val.byte_at(0) as usize] += 1;
+        }
+
+        let mut active_bytes = [0usize; 8];
+        let mut num_passes = 0;
+        for b in 0..K::BYTES {
+            if diff.byte_at(b) != 0 {
+                active_bytes[num_passes] = b;
+                num_passes += 1;
+            }
+        }
+
+        if num_passes == 0 {
+            for (dst, slot) in cursor.sorted_indices.iter_mut().enumerate() {
+                *slot = dst;
+            }
+            return;
+        }
+
+        if num_passes >= 2 && scratch.len() < len {
+            scratch.resize(len, (0, K::default()));
+        }
+
+        for (pass, &byte_idx) in active_bytes[..num_passes].iter().enumerate() {
+            let dest_is_cursor = (num_passes - 1 - pass).is_multiple_of(2);
+
+            let counts = if byte_idx == 0 {
+                counts0
+            } else {
+                let mut c = [0usize; 256];
+                for &val in values {
+                    c[val.byte_at(byte_idx) as usize] += 1;
+                }
+                c
+            };
+
+            let mut offsets = [0usize; 256];
+            let mut sum = 0;
+            for (offset, &count) in offsets.iter_mut().zip(&counts) {
+                *offset = sum;
+                sum += count;
+            }
+
+            if pass == 0 {
+                if dest_is_cursor {
+                    let dst = &mut cursor.sorted_indices[..len];
+                    for (idx, &val) in values.iter().enumerate() {
+                        let bucket = val.byte_at(byte_idx) as usize;
+                        dst[offsets[bucket]] = idx;
+                        offsets[bucket] += 1;
+                    }
+                } else {
+                    let dst = &mut scratch[..len];
+                    for (idx, &val) in values.iter().enumerate() {
+                        let bucket = val.byte_at(byte_idx) as usize;
+                        dst[offsets[bucket]] = (idx, val);
+                        offsets[bucket] += 1;
+                    }
+                }
+            } else if dest_is_cursor {
+                let dst = &mut cursor.sorted_indices[..len];
+                for &(idx, val) in &scratch[..len] {
+                    let bucket = val.byte_at(byte_idx) as usize;
+                    dst[offsets[bucket]] = idx;
+                    offsets[bucket] += 1;
+                }
+            } else {
+                let dst = &mut scratch[..len];
+                for &idx in &cursor.sorted_indices[..len] {
+                    let val = values[idx];
+                    let bucket = val.byte_at(byte_idx) as usize;
+                    dst[offsets[bucket]] = (idx, val);
+                    offsets[bucket] += 1;
+                }
+            }
+        }
+    }
+
+    /// Stably sorts the `valid_len` non-null row indices into `cursor.sorted_indices[..valid_len]`
+    /// using LSD radix sort over only the non-constant bytes of `K`.
+    ///
+    /// ID values remain fixed at `tuples[row].1`; passes alternate row indices between
+    /// `tuples[..valid_len].0` and `cursor.sorted_indices[..valid_len]` so that the final pass
+    /// always writes directly into `cursor.sorted_indices[..valid_len]`.
+    fn radix_sort_valid_prefix<K: RadixKey>(
+        tuples: &mut [(usize, K)],
+        valid_len: usize,
+        has_nulls: bool,
+        cursor: &mut SortedBatchCursor,
+    ) {
+        if valid_len <= 1 {
+            if valid_len == 1 {
+                cursor.sorted_indices[0] = if has_nulls { tuples[0].0 } else { 0 };
+            }
+            return;
+        }
+
+        // Single scan to detect whether the valid prefix is already sorted, which bytes vary,
+        // and the byte-0 histogram.
+        let mut diff = K::default();
+        let mut is_sorted = true;
+        let mut counts0 = [0usize; 256];
+        if !has_nulls {
+            let first = tuples[0].1;
+            let mut prev = first;
+            counts0[first.byte_at(0) as usize] += 1;
+            for &(_, val) in &tuples[1..valid_len] {
+                diff = diff.bit_or(val.bit_xor(first));
+                is_sorted &= prev <= val;
+                prev = val;
+                counts0[val.byte_at(0) as usize] += 1;
+            }
+        } else {
+            let first = tuples[tuples[0].0].1;
+            let mut prev = first;
+            counts0[first.byte_at(0) as usize] += 1;
+            for &(idx, _) in &tuples[1..valid_len] {
+                let val = tuples[idx].1;
+                diff = diff.bit_or(val.bit_xor(first));
+                is_sorted &= prev <= val;
+                prev = val;
+                counts0[val.byte_at(0) as usize] += 1;
+            }
+        }
+
+        if is_sorted {
+            if !has_nulls {
+                for (dst, slot) in cursor.sorted_indices[..valid_len].iter_mut().enumerate() {
+                    *slot = dst;
+                }
+            } else {
+                for (slot, &(idx, _)) in cursor.sorted_indices[..valid_len]
+                    .iter_mut()
+                    .zip(&tuples[..valid_len])
+                {
+                    *slot = idx;
+                }
+            }
+            return;
+        }
+
+        let mut active_bytes = [0usize; 8];
+        let mut num_passes = 0;
+        for b in 0..K::BYTES {
+            if diff.byte_at(b) != 0 {
+                active_bytes[num_passes] = b;
+                num_passes += 1;
+            }
+        }
+
+        // Ensure the final pass (`pass == num_passes - 1`) always scatters into
+        // `cursor.sorted_indices[..valid_len]`. When `num_passes` is even and `has_nulls` is true,
+        // pass 0 scatters into `tuples[..valid_len].0`, so copy the initial valid indices into
+        // `cursor.sorted_indices[..valid_len]` first.
+        if has_nulls && num_passes.is_multiple_of(2) {
+            for (slot, &(idx, _)) in cursor.sorted_indices[..valid_len]
+                .iter_mut()
+                .zip(&tuples[..valid_len])
+            {
+                *slot = idx;
+            }
+        }
+
+        for (pass, &byte_idx) in active_bytes[..num_passes].iter().enumerate() {
+            let dest_is_cursor = (num_passes - 1 - pass).is_multiple_of(2);
+
+            let counts = if byte_idx == 0 {
+                counts0
+            } else {
+                let mut c = [0usize; 256];
+                if !has_nulls {
+                    for &(_, val) in &tuples[..valid_len] {
+                        c[val.byte_at(byte_idx) as usize] += 1;
+                    }
+                } else if dest_is_cursor {
+                    for &(idx, _) in &tuples[..valid_len] {
+                        c[tuples[idx].1.byte_at(byte_idx) as usize] += 1;
+                    }
+                } else {
+                    for &idx in &cursor.sorted_indices[..valid_len] {
+                        c[tuples[idx].1.byte_at(byte_idx) as usize] += 1;
+                    }
+                }
+                c
+            };
+
+            let mut offsets = [0usize; 256];
+            let mut sum = 0;
+            for (offset, &count) in offsets.iter_mut().zip(&counts) {
+                *offset = sum;
+                sum += count;
+            }
+
+            if pass == 0 && !has_nulls {
+                if dest_is_cursor {
+                    let dst = &mut cursor.sorted_indices[..valid_len];
+                    for (idx, &(_, val)) in tuples[..valid_len].iter().enumerate() {
+                        let bucket = val.byte_at(byte_idx) as usize;
+                        dst[offsets[bucket]] = idx;
+                        offsets[bucket] += 1;
+                    }
+                } else {
+                    for idx in 0..valid_len {
+                        let bucket = tuples[idx].1.byte_at(byte_idx) as usize;
+                        let pos = offsets[bucket];
+                        offsets[bucket] += 1;
+                        tuples[pos].0 = idx;
+                    }
+                }
+            } else if dest_is_cursor {
+                let dst = &mut cursor.sorted_indices[..valid_len];
+                for i in 0..valid_len {
+                    let idx = tuples[i].0;
+                    let bucket = tuples[idx].1.byte_at(byte_idx) as usize;
+                    dst[offsets[bucket]] = idx;
+                    offsets[bucket] += 1;
+                }
+            } else {
+                let src = &cursor.sorted_indices[..valid_len];
+                for &idx in src {
+                    let bucket = tuples[idx].1.byte_at(byte_idx) as usize;
+                    let pos = offsets[bucket];
+                    offsets[bucket] += 1;
+                    tuples[pos].0 = idx;
+                }
+            }
+        }
     }
 }
 
@@ -1782,5 +2126,133 @@ mod test {
             assert_eq!(b.limit(), outer, "scoped limit clamped to outer");
         });
         assert_eq!(buf.limit(), outer);
+    }
+
+    /// Scenario: an attribute parent_id column has initial per-parent rows followed by
+    /// column-major appended rows across 64 parents (matching `upsert_attributes` output).
+    /// Guarantees: `BatchSorter` preserves the relative input row order for every `parent_id`.
+    #[test]
+    fn batch_sorter_preserves_row_order_for_equal_ids() {
+        let num_parents = 64u32;
+        let mut raw_ids = Vec::with_capacity((num_parents as usize) * 16);
+        // Initial two attributes per parent_id in parent-grouped order.
+        for pid in 0..num_parents {
+            raw_ids.push(pid);
+            raw_ids.push(pid);
+        }
+        // Fourteen upserted attributes appended one attribute column at a time across all parents.
+        for _ in 0..14 {
+            for pid in 0..num_parents {
+                raw_ids.push(pid);
+            }
+        }
+
+        let ids_array = UInt32Array::from(raw_ids);
+        let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+        sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+        for pid in 0..num_parents {
+            let child_indices: Vec<usize> =
+                ChildIndexIter::new(pid, &accessor, &mut cursor).collect();
+            assert_eq!(child_indices.len(), 16);
+            assert!(
+                child_indices.is_sorted(),
+                "child row indices for parent_id={pid} must preserve input order, got {child_indices:?}"
+            );
+        }
+    }
+
+    /// Scenario: a native ID array is already sorted in non-decreasing order with no nulls.
+    /// Guarantees: `BatchSorter` populates identity indices directly without touching scratch buffers.
+    #[test]
+    fn batch_sorter_native_sorted_fast_path() {
+        let ids_array = UInt32Array::from(vec![0u32, 0, 1, 1, 2, 2, 5]);
+        let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+        sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+        assert_eq!(
+            cursor.sorted_indices,
+            (0..ids_array.len()).collect::<Vec<_>>()
+        );
+        assert!(
+            sorter.u32_ids.is_empty(),
+            "already-sorted native ID column should bypass sort scratch buffer"
+        );
+    }
+
+    /// Scenario: large batches (>= RADIX_SORT_THRESHOLD) with 1, 2, 3, and non-zero high-byte
+    /// active radix passes, including alternating parent IDs `[0, 1, 0, 1, ...]`.
+    /// Guarantees: hybrid stable LSD radix sort orders parent IDs ascending and preserves input
+    /// row order within every parent ID.
+    #[test]
+    fn batch_sorter_radix_sort_preserves_order_across_byte_patterns() {
+        let patterns: &[&[u32]] = &[
+            // 1 active pass in byte 0 (alternating 2 parents).
+            &[0, 1],
+            // 1 active pass in byte 1 only (byte 0 is constant 0).
+            &[512, 256, 0, 256],
+            // 2 active passes in bytes 0 and 1.
+            &[300, 1, 256, 0, 300, 1],
+            // 3 active passes in bytes 0, 1, and 2.
+            &[70_000, 300, 1, 0, 70_000, 300],
+        ];
+
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        for pattern in patterns {
+            let raw_ids: Vec<u32> = (0..1024).map(|i| pattern[i % pattern.len()]).collect();
+            let ids_array = UInt32Array::from(raw_ids.clone());
+            let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+
+            cursor.reset();
+            sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+            let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
+            expected.sort_by_key(|&i| raw_ids[i]);
+            assert_eq!(cursor.sorted_indices, expected);
+        }
+    }
+
+    /// Scenario: large nullable ID columns (>= RADIX_SORT_THRESHOLD) with odd and even numbers of
+    /// active radix passes.
+    /// Guarantees: valid rows are stably sorted in ascending ID order and null rows are placed at
+    /// the end in their original input order.
+    #[test]
+    fn batch_sorter_radix_sort_with_nulls() {
+        let patterns: &[&[Option<u32>]] = &[
+            // 1 active pass (odd) with nulls.
+            &[Some(2), None, Some(0), Some(2), None, Some(1), Some(0)],
+            // 2 active passes (even) with nulls.
+            &[
+                Some(300),
+                None,
+                Some(1),
+                Some(300),
+                None,
+                Some(256),
+                Some(1),
+            ],
+        ];
+
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        for pattern in patterns {
+            let raw_ids: Vec<Option<u32>> = (0..256).map(|i| pattern[i % pattern.len()]).collect();
+            let ids_array = UInt32Array::from(raw_ids.clone());
+            let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+
+            cursor.reset();
+            sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+            let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
+            expected.sort_by_key(|&i| (raw_ids[i].is_none(), raw_ids[i].unwrap_or(0)));
+            assert_eq!(cursor.sorted_indices, expected);
+        }
     }
 }
