@@ -1518,6 +1518,7 @@ impl<
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
         let telemetry_reporting_interval = engine.telemetry.reporting_interval;
+        let process_metrics_enabled = engine.telemetry.process_metrics;
         otel_info!(
             "controller.start",
             num_pipeline_groups = num_pipeline_groups,
@@ -1795,6 +1796,7 @@ impl<
                 engine_reporter,
                 engine_metrics_memory_pressure_state,
                 console_baseline,
+                process_metrics_enabled.into(),
             );
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",

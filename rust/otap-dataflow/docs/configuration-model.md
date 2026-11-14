@@ -383,6 +383,10 @@ internal telemetry receiver's default registry drain and export interval.
 `metric_unregister_grace_period` (default `0s`) keeps the metric sets of
 components that shut down visible to metric readers, such as the admin metrics
 endpoint, for that long, so a scraper can observe their final values.
+`process_metrics` (default `true`) enables the process-wide `engine` metric
+set (memory, CPU utilization, and memory limiter state); set it to `false` to
+skip sampling and reporting those metrics. Console output metrics are reported
+regardless.
 
 The internal telemetry receiver's `signals` field defaults to `[logs,
 metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
