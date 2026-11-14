@@ -31,6 +31,7 @@ pub(crate) fn parse_scalar_expression(
             ScalarExpression::Static(parse_standard_string_literal(scalar_rule)?)
         }
         Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
+        Rule::field_expression => parse_field_path_expression(scalar_rule)?,
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, _state)?,
         Rule::identifier_expression => {
             // parse this as a field on the source
@@ -48,6 +49,46 @@ pub(crate) fn parse_scalar_expression(
     };
 
     Ok(scalar)
+}
+
+fn parse_field_path_expression(
+    field_rule: Pair<'_, Rule>,
+) -> Result<ScalarExpression, ParserError> {
+    let field_location = to_query_location(&field_rule);
+
+    let mut selectors = Vec::new();
+
+    for part in field_rule.into_inner() {
+        let part_location = to_query_location(&part);
+
+        let selector = match part.as_rule() {
+            Rule::ident => ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(part_location, part.as_str()),
+            )),
+
+            Rule::string_literal => {
+                let value = parse_standard_string_literal(part)?;
+                ScalarExpression::Static(value)
+            }
+            Rule::integer_literal => {
+                let value = parse_standard_integer_literal(part)?;
+                ScalarExpression::Static(value)
+            }
+            other => {
+                return Err(ParserError::SyntaxNotSupported(
+                    part_location,
+                    format!("unexpected rule in field expression: {other:?}"),
+                ));
+            }
+        };
+
+        selectors.push(selector);
+    }
+
+    Ok(ScalarExpression::Source(SourceScalarExpression::new(
+        field_location,
+        ValueAccessor::new_with_selectors(selectors),
+    )))
 }
 
 #[cfg(test)]
@@ -111,6 +152,63 @@ mod tests {
             ScalarExpression::Static(StaticScalarExpression::Null(NullScalarExpression::new(
                 QueryLocation::new_fake(),
             ))),
+        );
+
+        run_test_success(
+            "resource.attributes.service.name",
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "service"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "name"),
+                    )),
+                ]),
+            )),
+        );
+
+        run_test_success(
+            r#"attributes["group"]"#,
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "group"),
+                    )),
+                ]),
+            )),
+        );
+
+        run_test_success(
+            "metrics.data_points[0].foo",
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "metrics"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "data_points"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
+                    )),
+                ]),
+            )),
         );
     }
 }
