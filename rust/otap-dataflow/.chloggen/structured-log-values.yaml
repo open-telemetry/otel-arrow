@@ -1,0 +1,5 @@
+change_type: enhancement
+component: observability
+note: Internal log statements support structured arguments that encode directly into a bounded buffer.
+issues: [1746]
+subtext: Truncated log text and incomplete structured values use bracketed dagger markers. Depth-limited subtrees use a bracketed diagonal ellipsis.
