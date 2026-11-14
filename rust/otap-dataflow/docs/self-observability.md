@@ -155,14 +155,21 @@ boundary outcomes, and shared control-plane metrics:
 | `detailed` | Adds per-signal item counts `items`, logical and payload byte sizes `size` and `payload.size`, node completion and local durations `node.completion.duration`, `receiver.processing.duration`, `processor.compute.duration`, and `exporter.attempted.duration`, drain duration summaries, and completion `unwind.depth`. |
 
 Per-node policies `messages`, `item_counts`, `size`, `completion_duration`, and
-`duration` enable those measurements at any `runtime_metrics` level.
-`duration_distribution` selects histogram fidelity separately and defaults to
-`normal`. `basic` uses bucketless `Mmsc` summaries, while `normal` and
-`detailed` use `HistogramNormal` and `HistogramDetailed`, which are exponential
-histograms with adaptive resolution whose scale adjusts to fit the observed
-range. Check `details.relative_error` in the JSON metrics output to see the
-resulting precision. Configure processor range `flow_metrics` under
-`policies.telemetry.flow_metrics`. See
+`duration_distribution` defaults to `normal` and selects aggregation fidelity
+for supported node-local duration instruments, including the shared
+`receiver.processing.duration` and `exporter.attempted.duration`
+instrumentation. `processor.compute.duration` and `node.completion.duration`
+currently always use `HistogramNormal`.
+
+For instruments that honor this setting, `basic` uses bucketless `Mmsc`
+summaries, while `normal` and `detailed` use `HistogramNormal` and
+`HistogramDetailed`, which are exponential histograms with adaptive resolution
+whose scale adjusts to fit the observed range. Check `details.relative_error`
+in the JSON metrics output to see the resulting precision.
+
+Configure processor range `flow_metrics` under
+`policies.telemetry.flow_metrics`. Each flow entry has its own
+`duration_distribution` setting for `compute_duration`. See
 [Node and flow metrics](node-and-flow-metrics.md).
 
 ## Prometheus and OTLP mapping rules
@@ -300,6 +307,15 @@ resulting precision. Configure processor range `flow_metrics` under
 | `tokio.runtime` | `worker.poll.count` | `worker_poll_count_total` | `ObserveCounter<u64>` | `{poll}` | none | Task polls across runtime workers. |
 | `tokio.runtime` | `worker.steal.attempt.count` | `worker_steal_attempt_count_total` | `ObserveCounter<u64>` | `{steal}` | none | Work-stealing attempts across workers. |
 | `tokio.runtime` | `worker.steal.success.count` | `worker_steal_success_count_total` | `ObserveCounter<u64>` | `{steal}` | none | Successful work-stealing operations across workers. |
+
+Within `tokio.runtime`, `worker.count`, `task.active.count`,
+`global.task.queue.size`, `worker.busy.time`, `worker.park.count`, and
+`worker.park.unpark.count` are available without `tokio_unstable`. All other
+`tokio.runtime` instruments listed above require a build with
+`RUSTFLAGS="--cfg tokio_unstable" cargo build --release`, run from
+`rust/otap-dataflow`. The cumulative Tokio runtime counters also require
+64-bit atomics. Enabling `tokio_metrics` or increasing `runtime_metrics`
+does not enable instruments omitted at compile time.
 
 ### Channels, nodes, and flows
 
