@@ -138,7 +138,7 @@ fn decode_test_metrics(bytes: &[u8]) -> ((String, String, i64), i64) {
                 continue;
             }
             for metric in scope_metrics.metrics {
-                if metric.name != VIEWED_METRIC_NAME && metric.name != "emitted" {
+                if metric.name != VIEWED_METRIC_NAME && metric.name != "test.its.pipeline.emitted" {
                     continue;
                 }
                 let metric_name = metric.name;
