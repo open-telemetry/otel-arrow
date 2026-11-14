@@ -12,7 +12,7 @@ use crate::{
     error::{Error, Result},
     otlp::{
         ProtoBuffer,
-        attributes::{Attribute32Arrays, encode_key_value},
+        attributes::{Attribute32Arrays, encode_attribute},
         common::{ChildIndexIter, SortedBatchCursor},
     },
     proto::consts::{
@@ -90,9 +90,7 @@ pub fn encode_span_link(
     {
         let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attrs_index_iter {
-            result_buf.encode_len_delimited(SPAN_LINK_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(SPAN_LINK_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 

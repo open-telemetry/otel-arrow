@@ -8,7 +8,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otlp::{
     ProtoBuffer,
-    attributes::{Attribute32Arrays, encode_key_value},
+    attributes::{Attribute32Arrays, encode_attribute},
     common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
     metrics::exemplar::{ExemplarArrays, proto_encode_exemplar},
 };
@@ -155,9 +155,7 @@ pub(crate) fn proto_encode_histogram_data_point(
     {
         let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attrs_index_iter {
-            result_buf.encode_len_delimited(HISTOGRAM_DP_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(HISTOGRAM_DP_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 
