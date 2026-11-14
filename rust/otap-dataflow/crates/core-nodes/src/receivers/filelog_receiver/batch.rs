@@ -29,6 +29,8 @@ use super::{
 pub const RECORD_OVERHEAD: u64 = 128;
 /// One progress-only WAL transaction must cover the entire batch.
 pub const MAX_DISTINCT_FILES: usize = cp::WAL_MAX_OPS_PER_TX as usize;
+/// Logical batch cap that keeps every Arrow value buffer within signed 32-bit offsets.
+pub const MAX_ARROW_BATCH_BYTES: u64 = i32::MAX as u64;
 
 const FRAGMENT_KEYS: [&str; 7] = [
     "otel.arrow.filelog.fragment.id",
@@ -62,6 +64,14 @@ pub(super) fn logical_size(body_bytes: u64, attribute_bytes: u64) -> Option<u64>
     body_bytes
         .checked_add(attribute_bytes)?
         .checked_add(RECORD_OVERHEAD)
+}
+
+pub(super) fn fragment_attribute_size() -> u64 {
+    FRAGMENT_KEYS
+        .iter()
+        .zip([64, 8, 1, 8, 8, 8, 8])
+        .map(|(key, bytes)| key.len() as u64 + bytes)
+        .sum()
 }
 
 /// Owned primitive output, without any checkpoint authorization.
@@ -184,11 +194,9 @@ impl Record {
         };
         let mut attrs = metadata_size(&self.metadata);
         if self.frame.fragment().is_some() {
-            for (key, bytes) in FRAGMENT_KEYS.iter().zip([64, 8, 1, 8, 8, 8, 8]) {
-                attrs = attrs
-                    .checked_add(key.len() as u64 + bytes)
-                    .ok_or(BatchError::RecordSize)?;
-            }
+            attrs = attrs
+                .checked_add(fragment_attribute_size())
+                .ok_or(BatchError::RecordSize)?;
         }
         if self.frame.terminal() {
             attrs = attrs
@@ -771,6 +779,9 @@ impl BatchBuilder {
         if attrs.num_rows() != 0 {
             records.set(ArrowPayloadType::LogAttrs, attrs)?;
         }
+        // Omitted adaptive columns retain their null prefixes across finish().
+        self.logs = LogsRecordBatchBuilder::new();
+        self.attrs = StrKeysAttributesRecordBatchBuilder::new_with_known_keys(&ATTRIBUTE_KEYS);
         Ok(records)
     }
 }

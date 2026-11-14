@@ -49,7 +49,7 @@ pub(crate) struct Rejected {
 /// no eligible victim, then resolve progress before retrying protected readers.
 pub(crate) trait BatchSink {
     fn preflight(&mut self, key: ReaderKey, epoch: u32) -> Flow;
-    /// Composition supplies the monotonic turn clock before any work or deadline check.
+    /// Service batch timers before starting a turn; concrete sinks sample their own clock.
     fn poll(&mut self, _now: Instant) -> Flow {
         Flow::Continue
     }
@@ -88,23 +88,27 @@ struct Source {
 }
 
 /// One worker's source context and concrete batch storage; no extra handoff queue.
-pub(crate) struct Batcher {
+pub(crate) struct Batcher<C = fn() -> Instant> {
     pub builder: BatchBuilder,
     sources: HashMap<ReaderKey, Source>,
     max_sources: usize,
-    now: Instant,
+    monotonic_time: C,
     observed_time: fn() -> u64,
     metadata_policy: FileMetadata,
     failure: Option<BatchError>,
 }
 
-impl Batcher {
-    pub(crate) fn new(inputs: &ValidatedInputs, now: Instant, observed_time: fn() -> u64) -> Self {
+impl<C: Fn() -> Instant> Batcher<C> {
+    pub(crate) fn new(
+        inputs: &ValidatedInputs,
+        monotonic_time: C,
+        observed_time: fn() -> u64,
+    ) -> Self {
         Self {
             builder: BatchBuilder::new(inputs),
             sources: HashMap::new(),
             max_sources: inputs.settings().limits.max_tracked_files as usize,
-            now,
+            monotonic_time,
             observed_time,
             metadata_policy: inputs.settings().include_file_metadata,
             failure: None,
@@ -161,13 +165,14 @@ impl Batcher {
     }
 }
 
-impl BatchSink for Batcher {
-    fn poll(&mut self, now: Instant) -> Flow {
-        self.now = now;
+impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
+    fn poll(&mut self, _now: Instant) -> Flow {
         if self.failure().is_some() {
             return Flow::Stop;
         }
-        self.builder.poll(now).unwrap_or(Flow::Stop)
+        self.builder
+            .poll((self.monotonic_time)())
+            .unwrap_or(Flow::Stop)
     }
 
     fn next_deadline(&self) -> Option<Instant> {
@@ -190,11 +195,16 @@ impl BatchSink for Batcher {
             self.failure = Some(BatchError::Progress);
             return Flow::Stop;
         };
-        // Empty bodies are legal; configured metadata is the known minimum.
+        // Empty bodies are legal, but continuation fragment attributes are mandatory.
         let minimum = super::super::batch::RECORD_OVERHEAD
-            + super::super::batch::metadata_size(&source.metadata);
+            + super::super::batch::metadata_size(&source.metadata)
+            + if matches!(source.resume, super::cp::FramingResume::Continuation { .. }) {
+                super::super::batch::fragment_attribute_size()
+            } else {
+                0
+            };
         self.builder
-            .preflight(source.file_id, epoch, minimum, self.now)
+            .preflight(source.file_id, epoch, minimum, (self.monotonic_time)())
             .unwrap_or(Flow::Stop)
     }
 
@@ -221,7 +231,7 @@ impl BatchSink for Batcher {
             observed_time_unix_nano: (self.observed_time)(),
             metadata: Rc::clone(&source.metadata),
         };
-        match self.builder.offer(record, self.now) {
+        match self.builder.offer(record, (self.monotonic_time)()) {
             Ok(flow) => {
                 source.next_offset = end;
                 source.resume = resume;

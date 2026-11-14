@@ -510,7 +510,10 @@ impl<I: ReaderIo> Scheduler<I> {
             turn.reason = Reason::Terminal(Fault::SinkRejected);
             return turn;
         }
-        if !permission.allowed() || self.sink_stopped || flow == Flow::Stop {
+        if flow == Flow::Stop {
+            self.sink_stopped = true;
+        }
+        if !permission.allowed() || self.sink_stopped {
             self.clear_probe(None);
             self.resources_changed();
             turn.reason = Reason::Paused;

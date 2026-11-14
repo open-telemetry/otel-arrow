@@ -202,6 +202,83 @@ fn first_record_deadline_is_not_extended() {
     assert_eq!(builder.retained().unwrap().record_count, 2);
 }
 
+/// Scenario: Released batches repeatedly switch body and file-metadata value types.
+/// Guarantees: Each batch decodes independently without replaying omitted-column prefixes from earlier batches.
+#[test]
+fn successive_batches_reset_adaptive_columns() {
+    let mut config = config(10, 32 * 1024);
+    config.include_file_metadata = super::super::config::FileMetadata::Native;
+    let inputs = config
+        .compile(
+            "g",
+            "p",
+            "filelog",
+            Path::new(if cfg!(windows) { "C:\\" } else { "/" }),
+        )
+        .unwrap()
+        .into_parts()
+        .0;
+    let mut builder = BatchBuilder::new(&inputs);
+    let now = Instant::now();
+    let path = cp::AdvisoryPath::from_unix_bytes(b"/logs/app").unwrap();
+    for batch in 0..64 {
+        let mut next = record(1, batch * 2, "x");
+        if batch % 2 != 0 {
+            let Frame::Line(frame) = &mut next.frame else {
+                unreachable!()
+            };
+            frame.body = LineBody::Bytes(vec![0xff]);
+        }
+        let policy = match batch % 3 {
+            0 => super::super::config::FileMetadata::None,
+            1 => super::super::config::FileMetadata::Name,
+            _ => super::super::config::FileMetadata::Native,
+        };
+        next.metadata = Rc::new(FileMetadataAttributes::project(policy, &path));
+        let expected_metadata = Rc::clone(&next.metadata);
+        assert_eq!(builder.offer(next, now).unwrap(), Flow::Continue);
+        builder.seal().unwrap();
+        let sealed = builder.retained().unwrap();
+        let request = decode(sealed);
+        let logs = &request.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].body.as_ref().unwrap().value,
+            Some(if batch % 2 == 0 {
+                Value::StringValue("x".into())
+            } else {
+                Value::BytesValue(vec![0xff])
+            })
+        );
+        assert_eq!(logs[0].attributes.len(), expected_metadata.as_slice().len());
+        for (key, value) in expected_metadata.as_slice() {
+            assert!(logs[0].attributes.iter().any(|attribute| {
+                attribute.key == *key
+                    && attribute.value.as_ref().unwrap().value.as_ref() == Some(value)
+            }));
+        }
+        let applied = sealed.progress.clone();
+        builder.release_applied(&applied, now).unwrap();
+    }
+}
+
+/// Scenario: A source's known minimum exceeds the Arrow-compatible batch ceiling.
+/// Guarantees: Admission fails before appending or retaining any record.
+#[test]
+fn arrow_oversized_minimum_is_rejected_before_append() {
+    let mut builder = BatchBuilder::new(&inputs(10, MAX_ARROW_BATCH_BYTES));
+    assert_eq!(
+        builder.preflight(
+            cp::FileId::from_bytes([1; 16]),
+            7,
+            MAX_ARROW_BATCH_BYTES + 1,
+            Instant::now(),
+        ),
+        Err(BatchError::RecordSize)
+    );
+    assert_eq!(builder.abort().records, 0);
+}
+
 /// Scenario: A source attempts an offset gap, overlap, regression or epoch change.
 /// Guarantees: Rejection returns the exact frame, leaves prior progress untouched and makes admission terminal.
 #[test]

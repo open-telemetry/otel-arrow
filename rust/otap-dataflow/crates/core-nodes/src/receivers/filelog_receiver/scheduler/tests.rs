@@ -42,6 +42,7 @@ struct FakeIo {
     metadata_calls: usize,
     open_error: Option<i32>,
     read_error: Option<i32>,
+    advance_on_read: Option<(Rc<Cell<Instant>>, Duration)>,
     calls: Rc<RefCell<Vec<(usize, u64, usize)>>>,
 }
 impl ReaderIo for FakeIo {
@@ -94,6 +95,9 @@ impl ReaderIo for FakeIo {
             ));
         }
         self.reads += 1;
+        if let Some((clock, delay)) = self.advance_on_read.take() {
+            clock.set(clock.get() + delay);
+        }
         self.calls.borrow_mut().push((h.id, offset, bytes.len()));
         let f = &self.files[h.id].bytes;
         let offset = (offset as usize).min(f.len());
@@ -181,6 +185,7 @@ fn scheduler(
         peak: 0,
         reads: 0,
         metadata_calls: 0,
+        advance_on_read: None,
         open_error: None,
         read_error: None,
         calls: Rc::new(RefCell::new(Vec::new())),
@@ -2217,10 +2222,10 @@ fn peer_capacity_wait_preserves_pending_probe_handoff() {
 
 fn batcher(
     s: &Scheduler<FakeIo>,
-    now: Instant,
+    clock: Rc<Cell<Instant>>,
     max_bytes: u64,
     metadata: super::super::config::FileMetadata,
-) -> batch::Batcher {
+) -> batch::Batcher<impl Fn() -> Instant + use<>> {
     use super::super::{config::Config, framer::OversizeBehavior};
     let mut config = Config {
         include: vec!["/logs/*.log".into()],
@@ -2231,12 +2236,20 @@ fn batcher(
     config.framing.max_record_bytes = 128;
     config.framing.max_log_size_behavior = OversizeBehavior::Truncate;
     config.batch.max_bytes = max_bytes;
+    batcher_with_config(s, clock, config)
+}
+
+fn batcher_with_config(
+    s: &Scheduler<FakeIo>,
+    clock: Rc<Cell<Instant>>,
+    config: super::super::config::Config,
+) -> batch::Batcher<impl Fn() -> Instant + use<>> {
     let inputs = config
         .compile("g", "p", "filelog", std::path::Path::new("/"))
         .unwrap()
         .into_parts()
         .0;
-    let mut sink = batch::Batcher::new(&inputs, now, || 123);
+    let mut sink = batch::Batcher::new(&inputs, move || clock.get(), || 123);
     for r in s.readers.iter().flatten() {
         sink.register(
             r.key,
@@ -2257,7 +2270,13 @@ fn batcher(
 fn concrete_batch_deadline_flushes_without_ready_reader_work() {
     let mut s = scheduler(&[b"a\n"], 8, 64, 1, 1, FramingConfig::Line(line()));
     let now = Instant::now();
-    let mut sink = batcher(&s, now, 1024, super::super::config::FileMetadata::None);
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
     let first = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
     assert!(!matches!(first.reason, Reason::Terminal(_)));
     let at = sink.builder.next_deadline().unwrap();
@@ -2267,11 +2286,143 @@ fn concrete_batch_deadline_flushes_without_ready_reader_work() {
     };
     assert_eq!(s.next_deadline(paused, &sink), Some(at));
     let reads = s.io.reads;
+    clock.set(at);
     let turn = s.turn(at, paused, &mut sink, Waker::noop(), || false);
     assert!(matches!(turn.reason, Reason::Paused));
     assert_eq!(s.io.reads, reads);
     assert_eq!(sink.builder.retained().unwrap().record_count, 1);
     assert!(sink.failure().is_none());
+}
+
+/// Scenario: Batch expiry occurs with reading enabled and an already-expired EOF timer.
+/// Guarantees: Ack waits hide reader deadlines and perform no I/O until applied release and explicit resume.
+#[test]
+fn concrete_deadline_stop_hides_expired_reader_timers() {
+    let mut s = scheduler(&[b"a\n"], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    let batch_deadline = sink.builder.next_deadline().unwrap();
+    let eof = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(eof.reason, Reason::Eof), "{eof:?}");
+    let reader_deadline = s.deadlines.first().unwrap().0;
+    assert!(reader_deadline < batch_deadline);
+    clock.set(batch_deadline);
+    let reads = s.io.reads;
+    for _ in 0..4 {
+        let turn = s.turn(
+            batch_deadline,
+            permission(),
+            &mut sink,
+            Waker::noop(),
+            || false,
+        );
+        assert!(matches!(turn.reason, Reason::Paused));
+        assert_eq!(s.next_deadline(permission(), &sink), None);
+    }
+    assert_eq!(s.io.reads, reads);
+    let applied = sink.builder.retained().unwrap().progress.clone();
+    sink.builder.release_applied(&applied, clock.get()).unwrap();
+    assert_eq!(s.next_deadline(permission(), &sink), None);
+    s.resume_sink();
+    assert_eq!(s.next_deadline(permission(), &sink), Some(reader_deadline));
+}
+
+/// Scenario: Reading the first record advances a controlled clock beyond the turn's captured time.
+/// Guarantees: The flush period starts when the record is ready, and polling ignores a stale turn timestamp.
+#[test]
+fn concrete_batch_clock_is_sampled_after_source_work() {
+    let mut s = scheduler(&[b"a\n"], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    s.io.advance_on_read = Some((Rc::clone(&clock), Duration::from_secs(5)));
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(!matches!(turn.reason, Reason::Terminal(_)));
+    let deadline = clock.get() + Duration::from_secs(1);
+    assert_eq!(sink.builder.next_deadline(), Some(deadline));
+    clock.set(deadline);
+    assert_eq!(sink.poll(now), Flow::Stop);
+    assert_eq!(sink.builder.retained().unwrap().record_count, 1);
+}
+
+/// Scenario: A second reader's source operation crosses an open batch's flush deadline.
+/// Guarantees: The next preflight uses fresh time and seals before framing or admitting the second record.
+#[test]
+fn concrete_preflight_detects_expiry_during_source_work() {
+    let mut s = scheduler(&[b"a\n", b"b\n"], 8, 64, 2, 2, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(sink.builder.next_deadline().is_some());
+    s.io.advance_on_read = Some((Rc::clone(&clock), Duration::from_secs(5)));
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(turn.reason, Reason::Paused));
+    let batch = sink.builder.retained().unwrap();
+    assert_eq!(batch.record_count, 1);
+    assert_eq!(
+        batch.progress[0].file_id,
+        s.readers[0].as_ref().unwrap().file_id
+    );
+    assert_eq!(sink.builder.abort().records, 1);
+}
+
+/// Scenario: Only an empty clean record, not a continuation's mandatory attributes, fits after a fragment.
+/// Guarantees: Preflight seals before further source work and does not create an avoidable carry-over.
+#[test]
+fn concrete_continuation_minimum_seals_before_source_work() {
+    use super::super::{batch::RECORD_OVERHEAD, config::Config};
+    let mut s = scheduler(&[&[b'x'; 256]], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let minimum = RECORD_OVERHEAD + super::super::batch::fragment_attribute_size();
+    let mut config = Config {
+        include: vec!["/logs/*.log".into()],
+        ..Config::default()
+    };
+    config.framing.max_line_bytes = 128;
+    config.framing.max_record_bytes = 128;
+    config.batch.max_bytes = minimum * 2 + 128 - 1;
+    let mut sink = batcher_with_config(&s, Rc::new(Cell::new(now)), config);
+    let mut collector = Sink {
+        stop_at: Some(1),
+        ..Sink::default()
+    };
+    for _ in 0..32 {
+        let _ = tick(&mut s, &mut collector, now);
+        if !collector.frames.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(collector.frames.len(), 1);
+    assert_eq!(
+        sink.offer(collector.frames.remove(0))
+            .unwrap_or_else(|_| panic!("valid fragment")),
+        Flow::Continue
+    );
+    let reads = s.io.reads;
+    s.resume_sink();
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(turn.reason, Reason::Paused));
+    assert_eq!(s.io.reads, reads);
+    assert_eq!(sink.builder.retained().unwrap().record_count, 1);
+    assert_eq!(sink.builder.abort().records, 1);
 }
 
 /// Scenario: A variable-size output becomes carry-over, then its mutable source disappears during delivery.
@@ -2283,7 +2434,12 @@ fn concrete_carry_over_survives_source_change_and_delivery_wait() {
     source.extend_from_slice(b"\ntail\n");
     let mut s = scheduler(&[&source], 32, 64, 1, 1, FramingConfig::Line(line()));
     let now = Instant::now();
-    let mut sink = batcher(&s, now, 300, super::super::config::FileMetadata::None);
+    let mut sink = batcher(
+        &s,
+        Rc::new(Cell::new(now)),
+        300,
+        super::super::config::FileMetadata::None,
+    );
     for _ in 0..100 {
         let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
         assert!(!matches!(t.reason, Reason::Terminal(_)));
@@ -2329,7 +2485,12 @@ fn concrete_carry_over_survives_source_change_and_delivery_wait() {
 fn concrete_batch_flush_breaks_unresolved_descriptor_pressure() {
     let mut s = scheduler(&[b"a\n", b"b\n"], 8, 64, 2, 1, FramingConfig::Line(line()));
     let now = Instant::now();
-    let mut sink = batcher(&s, now, 1024, super::super::config::FileMetadata::None);
+    let mut sink = batcher(
+        &s,
+        Rc::new(Cell::new(now)),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
     let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
     assert!(sink.builder.retained().is_none());
     let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
@@ -2364,7 +2525,12 @@ fn concrete_carry_over_freezes_projected_metadata() {
     let source = [vec![b'x'; 128], vec![b'\n']].concat().repeat(40);
     let mut s = scheduler(&[&source], 32, 64, 1, 1, FramingConfig::Line(line()));
     let now = Instant::now();
-    let mut sink = batcher(&s, now, 6500, super::super::config::FileMetadata::Name);
+    let mut sink = batcher(
+        &s,
+        Rc::new(Cell::new(now)),
+        6500,
+        super::super::config::FileMetadata::Name,
+    );
     for _ in 0..2000 {
         let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
         assert!(!matches!(t.reason, Reason::Terminal(_)));
