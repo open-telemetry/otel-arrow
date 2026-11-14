@@ -1,0 +1,7 @@
+change_type: enhancement
+component: pdata
+note: OTLP logs produced from OTAP data now use a protobuf field order that compresses better.
+issues: [4720]
+subtext: |
+  Attribute values are now written before their keys, and log record timestamps are written last.
+  Compressed OTLP logs are smaller. The data itself is unchanged.

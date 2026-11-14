@@ -85,10 +85,6 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
     index: usize,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(key) = attr_arrays.attr_key.str_at(index) {
-        result_buf.encode_string(KEY_VALUE_KEY, key)?;
-    }
-
     if let Some(value_type) = attr_arrays.anyval_arrays.attr_type.value_at(index)
         && let Ok(value_type) = AttributeValueType::try_from(value_type)
     {
@@ -98,6 +94,10 @@ pub(crate) fn encode_key_value<T: ArrowPrimitiveType>(
         result_buf.encode_len_delimited(KEY_VALUE_VALUE, |result_buf| {
             encode_any_value(&attr_arrays.anyval_arrays, index, value_type, result_buf)
         })?;
+    }
+
+    if let Some(key) = attr_arrays.attr_key.str_at(index) {
+        result_buf.encode_string(KEY_VALUE_KEY, key)?;
     }
 
     Ok(())

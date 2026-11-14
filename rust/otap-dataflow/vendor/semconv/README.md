@@ -9,8 +9,10 @@ Tests and benchmarks that generate semantic-convention traffic with the
 `traffic_generator` receiver (`data_source: semantic_conventions`) load this
 copy, so they don't need network access or a TLS crypto provider to clone
 the upstream registry. The receiver's built-in default `registry_path` still
-points at the upstream git repository. A unit test in the `dev-nodes` crate
-checks that its pinned tag matches [VERSION](VERSION).
+points at the upstream git repository. The docker-based perf suites in
+`tools/pipeline_perf_test/test_suites` bind-mount this directory into their
+load generator containers (see that directory's README). A unit test in the
+`dev-nodes` crate checks that its pinned tag matches [VERSION](VERSION).
 
 Don't edit these files by hand. To refresh or bump the vendored copy, run this
 from `rust/otap-dataflow` (it needs `git` and network access):
