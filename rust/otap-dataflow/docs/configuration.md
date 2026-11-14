@@ -669,12 +669,17 @@ no migration is required: the built-in observability pipeline consumes metrics
 with a noop exporter.
 
 For exact engine-level fields, see
-[Engine Section](configuration-model.md#engine-section).
+[Engine Section](configuration-model.md#engine-section). For the embedded
+debugging UI, admin telemetry endpoints, Prometheus mapping rules, and the
+engine and runtime metrics reference, see
+[Self-observability](self-observability.md).
 
 ## Other Information
 
 Useful adjacent docs:
 
+- [Self-observability](self-observability.md): embedded debugging UI, admin
+  telemetry endpoints, and engine and runtime metrics reference.
 - [Core-node catalog](../crates/core-nodes/README.md): node list and links to
   per-node configuration docs beside the implementation.
 - [Contrib-node catalog](../crates/contrib-nodes/README.md): optional
@@ -735,6 +740,7 @@ in the root model, use the
 ## Reference
 
 - [Runnable examples](../configs/README.md)
+- [Self-observability](self-observability.md)
 - [Core-node catalog](../crates/core-nodes/README.md)
 - [Contrib-node catalog](../crates/contrib-nodes/README.md)
 - [Configuration model reference](configuration-model.md)
