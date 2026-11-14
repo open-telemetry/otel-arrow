@@ -23,6 +23,8 @@ incrementally expanding the project's capabilities and scope.
 - OpenTelemetry Technical Committee sponsorship by @jmacd.
 - Laurent Qu&eacute;rel authored [OTEP-0156][otep-0156], the OpenTelemetry
   Enhancement Proposal for the columnar encoding behind OTAP.
+- In January 2023, F5 [proposed donating the OTel Arrow Adapter][donation]
+  to OpenTelemetry. The donation was [completed in July 2023][donation-complete].
 
 **Success Criteria:**
 
@@ -138,6 +140,9 @@ based on the outcome of earlier phases.
 
 Phase N+1 planning will be discussed when Phase N comes to a close.
 
+[donation]: https://github.com/open-telemetry/community/issues/1332
+[donation-complete]:
+    https://github.com/open-telemetry/community/issues/1332#issuecomment-1654401308
 [otep-0156]:
     https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0156-columnar-encoding.md
 [phase-2-report]: https://opentelemetry.io/blog/2026/otel-arrow-phase-2/

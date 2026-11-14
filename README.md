@@ -156,12 +156,57 @@ change which pipeline is a good fit.
 
 Try a representative workload and share what you learn. Report bugs and
 propose improvements in [GitHub issues][issues], or start with the
-[contribution guide][contributing] and [project team][team].
+[contribution guide][contributing] and [project board][board].
 
 On CNCF Slack, join [`#otel-arrow`][slack] for general discussion or
-[`#otel-arrow-dev`][slack-dev] for contributor discussions. Find the next
-SIG meeting on the [OpenTelemetry community calendar][calendar], and see
-the [meeting notes][notes] and [project board][board] for ongoing work.
+[`#otel-arrow-dev`][slack-dev] for contributor discussions.
+
+### Arrow SIG meetings
+
+The Arrow SIG meets weekly and welcomes everyone. Meetings alternate between
+[Tuesday at 4:00 p.m. Pacific time][zoom-tuesday] and
+[Thursday at 8:00 a.m. Pacific time][zoom-thursday]. See the
+[SIG agenda and meeting notes][notes] in Google Docs and the
+[OpenTelemetry community calendar][calendar] for dates and schedule changes.
+
+## Project team
+
+See the [contribution guide's project team][team] for the roster and the
+[OpenTelemetry membership guide][membership] for role definitions.
+
+### Maintainers
+
+- [Albert Lockett](https://github.com/albertlockett), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
+- [Laurent Qu&eacute;rel](https://github.com/lquerel), F5
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
+
+### Approvers
+
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
+- [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Gokhan Uslu](https://github.com/gouslu), Microsoft
+
+### Triagers
+
+Triagers review new issues and help contributors find work. The
+[issue triage guide][triage] explains how to get involved.
+
+### Emeritus
+
+- [Alex Boten](https://github.com/codeboten), Approver
+- [Lei Huang](https://github.com/v0y4g3r), Approver
+- [Moh Osman](https://github.com/moh-osman3), Approver
+- [Tom Tan](https://github.com/ThomsonTan), Triager
+
+## Thanks to all our contributors
+
+[![OpenTelemetry Arrow contributors][contributors-image]][contributors]
+
+See the [full list of contributors][contributors] on GitHub.
 
 [admin]: rust/otap-dataflow/docs/admin/README.md
 [admin-crate]: https://crates.io/crates/otel-arrow-dfe-admin-api
@@ -177,6 +222,9 @@ the [meeting notes][notes] and [project board][board] for ongoing work.
 [config-model]: rust/otap-dataflow/docs/configuration-model.md
 [continuous]: https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/
 [contributing]: CONTRIBUTING.md
+[contributors]: https://github.com/open-telemetry/otel-arrow/graphs/contributors
+[contributors-image]:
+    https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow
 [conversion-talk]: https://www.youtube.com/watch?v=w9fGmBeTj5c
 [data-model]: docs/data_model.md
 [demo]: rust/otap-dataflow/configs/trafficgen-attributes-metrics-demo.yaml
@@ -192,6 +240,7 @@ the [meeting notes][notes] and [project board][board] for ongoing work.
 [intro-blog]: https://opentelemetry.io/blog/2023/otel-arrow/
 [issues]: https://github.com/open-telemetry/otel-arrow/issues
 [languages]: docs/dfe-capabilities.md#processing-languages
+[membership]: https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md
 [nightly]: https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/
 [notes]:
     https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs
@@ -224,5 +273,10 @@ the [meeting notes][notes] and [project board][board] for ongoing work.
 [slack]: https://cloud-native.slack.com/archives/C07S4Q67LTF
 [slack-dev]: https://cloud-native.slack.com/archives/C08RRSJR7FD
 [team]: CONTRIBUTING.md#project-team
+[triage]: ISSUE_TRIAGE.md#triagers
 [validation]: docs/validation_process.md
 [wasm]: rust/otap-dataflow/crates/wasm-host/README.md
+[zoom-thursday]:
+    https://zoom-lfx.platform.linuxfoundation.org/meeting/96949674563?password=0f34c1e9-e49d-498d-b4e1-53ddb1a4c914
+[zoom-tuesday]:
+    https://zoom-lfx.platform.linuxfoundation.org/meeting/97781334652?password=6b0821e6-624c-42a4-8900-5d3c9993119c
