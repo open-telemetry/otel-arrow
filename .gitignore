@@ -71,6 +71,7 @@ venv
 
 # Visual Studio
 /.vs
+/data_analysis/.vs
 
 # Syncthing
 **/~syncthing~**

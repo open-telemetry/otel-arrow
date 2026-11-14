@@ -29,8 +29,8 @@ groups:
               - action: rename
                 source_key: name
                 destination_key: name2
-                apply_to:
-                - scope
+              apply_to:
+              - scope
           exporter:
             {%- if exporter_type == "otap" %}
             type: urn:otel:exporter:otap
