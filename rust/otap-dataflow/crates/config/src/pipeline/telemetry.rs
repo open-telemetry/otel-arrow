@@ -27,6 +27,11 @@ pub struct TelemetryConfig {
     #[serde(with = "humantime_serde", default)]
     #[schemars(with = "String")]
     pub metric_unregister_grace_period: Duration,
+    /// Enable capture of process-wide engine metrics (the `engine` metric set:
+    /// memory, CPU utilization, and memory limiter state). Defaults to `true`.
+    /// Console output metrics are reported regardless of this setting.
+    #[serde(default = "default_true")]
+    pub process_metrics: bool,
     /// Internal logs configuration.
     #[serde(default)]
     pub logs: LogsConfig,
@@ -78,8 +83,13 @@ impl Default for TelemetryConfig {
             reporting_channel_size: default_reporting_channel_size(),
             reporting_interval: default_reporting_interval(),
             metric_unregister_grace_period: Duration::ZERO,
+            process_metrics: true,
         }
     }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 const fn default_reporting_channel_size() -> usize {
@@ -504,8 +514,22 @@ mod tests {
         assert_eq!(config.reporting_channel_size, 100);
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
         assert_eq!(config.metric_unregister_grace_period, Duration::ZERO);
+        assert!(config.process_metrics);
         assert!(config.resource.is_empty());
         assert!(!config.routes_logs_through_its());
+    }
+
+    /// Scenario: an operator sets `process_metrics: false`, or omits it.
+    /// Guarantees: the explicit value is honored and omission keeps process metrics enabled.
+    #[test]
+    fn test_telemetry_config_process_metrics_switch() {
+        let disabled: TelemetryConfig =
+            serde_yaml::from_str("process_metrics: false").expect("valid telemetry config");
+        assert!(!disabled.process_metrics);
+
+        let omitted: TelemetryConfig =
+            serde_yaml::from_str("reporting_interval: 1s").expect("valid telemetry config");
+        assert!(omitted.process_metrics);
     }
 
     #[test]

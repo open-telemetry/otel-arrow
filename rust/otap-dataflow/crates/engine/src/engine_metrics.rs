@@ -193,13 +193,35 @@ impl ConsoleOutputMetrics {
     }
 }
 
+/// Whether [`EngineMetricsMonitor`] samples and reports the process-wide
+/// `engine` metric set. Console output metrics are reported either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessMetrics {
+    /// Register, sample, and report the `engine` metric set.
+    Enabled,
+    /// Never register the `engine` metric set.
+    Disabled,
+}
+
+impl From<bool> for ProcessMetrics {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
 /// Monitors and reports engine-wide metrics.
 ///
 /// Created by the controller and driven by a periodic timer in a dedicated
 /// background task. Call [`update`](Self::update) to sample current values
 /// and [`report`](Self::report) to flush them to the metrics pipeline.
 pub struct EngineMetricsMonitor {
-    metrics: MetricSet<EngineMetrics>,
+    /// Process-wide metrics; `None` when disabled by
+    /// `engine.telemetry.process_metrics`.
+    metrics: Option<MetricSet<EngineMetrics>>,
     /// Both console streams as buckets of one registration, so the registry never
     /// holds two sets with the same metric identity for the engine entity.
     console_output: MeasurementMetricSet<ConsoleOutputMetrics>,
@@ -237,11 +259,14 @@ impl EngineMetricsMonitor {
             reporter,
             memory_pressure_state,
             OutputService::stats(),
+            ProcessMetrics::Enabled,
         )
     }
 
     /// Creates a monitor whose console output metrics count activity after `console_baseline`.
     /// A controller run supplies its start snapshot to include startup diagnostics.
+    /// With [`ProcessMetrics::Disabled`], the process-wide `engine` metric set is
+    /// neither registered nor sampled; console output metrics are still reported.
     #[must_use]
     pub fn with_console_baseline(
         registry: TelemetryRegistryHandle,
@@ -249,8 +274,10 @@ impl EngineMetricsMonitor {
         reporter: MetricsReporter,
         memory_pressure_state: MemoryPressureState,
         console_baseline: ServiceStats,
+        process_metrics: ProcessMetrics,
     ) -> Self {
-        let metrics = registry.register_metric_set_for_entity::<EngineMetrics>(entity_key);
+        let metrics = (process_metrics == ProcessMetrics::Enabled)
+            .then(|| registry.register_metric_set_for_entity::<EngineMetrics>(entity_key));
         let console_output = registry
             .register_metric_set_with_measurement_attributes_for_entity::<ConsoleOutputMetrics>(
                 entity_key,
@@ -277,7 +304,16 @@ impl EngineMetricsMonitor {
     }
 
     fn update_with_console_stats(&mut self, console_stats: ServiceStats) {
-        self.metrics.observe_memory(memory_stats::memory_stats());
+        self.update_process_metrics();
+        self.observe_console_output(console_stats);
+    }
+
+    /// Samples process-wide metrics when they are enabled.
+    fn update_process_metrics(&mut self) {
+        let Some(metrics) = self.metrics.as_mut() else {
+            return;
+        };
+        metrics.observe_memory(memory_stats::memory_stats());
 
         // Compute process-wide CPU utilization normalized across all cores.
         let now_wall = Instant::now();
@@ -288,23 +324,22 @@ impl EngineMetricsMonitor {
         if wall_secs > 0.0 {
             let utilization =
                 (cpu_delta.as_secs_f64() / (wall_secs * self.num_cores as f64)).clamp(0.0, 1.0);
-            self.metrics.cpu_utilization.set(utilization);
+            metrics.cpu_utilization.set(utilization);
         } else {
-            self.metrics.cpu_utilization.set(0.0);
+            metrics.cpu_utilization.set(0.0);
         }
-        self.metrics
+        metrics
             .memory_pressure_state
             .set(self.memory_pressure_state.level() as u64);
-        self.metrics
+        metrics
             .process_memory_usage_bytes
             .set(self.memory_pressure_state.usage_bytes());
-        self.metrics
+        metrics
             .process_memory_soft_limit_bytes
             .set(self.memory_pressure_state.soft_limit_bytes());
-        self.metrics
+        metrics
             .process_memory_hard_limit_bytes
             .set(self.memory_pressure_state.hard_limit_bytes());
-        self.observe_console_output(console_stats);
         self.wall_start = now_wall;
         self.cpu_start = now_cpu;
     }
@@ -329,7 +364,9 @@ impl EngineMetricsMonitor {
     /// Returns an error only if the metrics channel is permanently closed.
     /// A full channel is silently tolerated (non-blocking, try-send semantics).
     pub fn report(&mut self) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
-        self.reporter.report(&mut self.metrics)?;
+        if let Some(metrics) = self.metrics.as_mut() {
+            self.reporter.report(metrics)?;
+        }
         self.reporter.report_measurement(&mut self.console_output)
     }
 
@@ -345,10 +382,12 @@ impl EngineMetricsMonitor {
     ) -> Result<ServiceStats, otel_arrow_dfe_telemetry::error::Error> {
         let console_stats = OutputService::stats();
         self.update_with_console_stats(console_stats);
-        let _ = self
-            .reporter
-            .report_reliably_until(&mut self.metrics, deadline)
-            .await?;
+        if let Some(metrics) = self.metrics.as_mut() {
+            let _ = self
+                .reporter
+                .report_reliably_until(metrics, deadline)
+                .await?;
+        }
         let _ = self
             .reporter
             .report_measurement_reliably_until(&mut self.console_output, deadline)
@@ -358,12 +397,20 @@ impl EngineMetricsMonitor {
     }
 }
 
+#[cfg(test)]
+impl EngineMetricsMonitor {
+    fn process_metrics(&self) -> &MetricSet<EngineMetrics> {
+        self.metrics.as_ref().expect("process metrics are enabled")
+    }
+}
+
 impl Drop for EngineMetricsMonitor {
     fn drop(&mut self) {
-        for key in [
-            self.metrics.metric_set_key(),
-            self.console_output.metric_set_key(),
-        ] {
+        let process_key = self.metrics.as_ref().map(MetricSet::metric_set_key);
+        for key in process_key
+            .into_iter()
+            .chain([self.console_output.metric_set_key()])
+        {
             let _ = self.registry.unregister_metric_set(key);
         }
     }
@@ -400,12 +447,12 @@ mod tests {
         monitor.update();
 
         assert!(
-            monitor.metrics.memory_rss.get() > 0,
+            monitor.process_metrics().memory_rss.get() > 0,
             "process RSS should be nonzero"
         );
         #[cfg(windows)]
         assert!(
-            monitor.metrics.memory_commit.get() > 0,
+            monitor.process_metrics().memory_commit.get() > 0,
             "process private commit should be nonzero"
         );
     }
@@ -476,7 +523,7 @@ mod tests {
         }
 
         monitor.update();
-        let util = monitor.metrics.cpu_utilization.get();
+        let util = monitor.process_metrics().cpu_utilization.get();
         assert!(
             (0.0..=1.0).contains(&util),
             "cpu_utilization should be in [0, 1], got {util}"
@@ -506,10 +553,11 @@ mod tests {
 
         monitor.update();
 
-        assert_eq!(monitor.metrics.memory_pressure_state.get(), 1);
-        assert_eq!(monitor.metrics.process_memory_usage_bytes.get(), 95);
-        assert_eq!(monitor.metrics.process_memory_soft_limit_bytes.get(), 90);
-        assert_eq!(monitor.metrics.process_memory_hard_limit_bytes.get(), 100);
+        let metrics = monitor.process_metrics();
+        assert_eq!(metrics.memory_pressure_state.get(), 1);
+        assert_eq!(metrics.process_memory_usage_bytes.get(), 95);
+        assert_eq!(metrics.process_memory_soft_limit_bytes.get(), 90);
+        assert_eq!(metrics.process_memory_hard_limit_bytes.get(), 100);
     }
 
     /// Sink whose writes block until the test releases them.
@@ -572,6 +620,7 @@ mod tests {
             reporter,
             controller.memory_pressure_state(),
             ServiceStats::default(),
+            ProcessMetrics::Enabled,
         );
 
         let stalled = Arc::new(AtomicBool::new(true));
@@ -646,6 +695,7 @@ mod tests {
             first_reporter,
             first_controller.memory_pressure_state(),
             ServiceStats::default(),
+            ProcessMetrics::Enabled,
         );
         first_run.observe_console_output(first_run_totals);
         assert_eq!(
@@ -685,6 +735,7 @@ mod tests {
             second_reporter,
             second_controller.memory_pressure_state(),
             first_run_totals,
+            ProcessMetrics::Enabled,
         );
         second_run.observe_console_output(second_run_totals);
 
@@ -720,6 +771,7 @@ mod tests {
             reporter,
             controller.memory_pressure_state(),
             ServiceStats::default(),
+            ProcessMetrics::Enabled,
         );
         // One `engine` set and one `engine.console_output` set for both streams.
         assert_eq!(registry.metric_set_count(), registered_before + 2);
@@ -781,5 +833,57 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// Scenario: the controller disables process metrics via
+    /// `engine.telemetry.process_metrics: false`.
+    /// Guarantees: the `engine` metric set is neither registered nor exported,
+    /// console output metrics are still reported, and dropping the monitor
+    /// unregisters everything it registered.
+    #[test]
+    fn disabled_process_metrics_report_only_console_output() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let entity_key = controller.register_engine_entity();
+        let (rx, reporter) = MetricsReporter::create_new_and_receiver(16);
+        let registered_before = registry.metric_set_count();
+        let mut monitor = EngineMetricsMonitor::with_console_baseline(
+            registry.clone(),
+            entity_key,
+            reporter,
+            controller.memory_pressure_state(),
+            ServiceStats::default(),
+            ProcessMetrics::Disabled,
+        );
+        // Only the `engine.console_output` set is registered.
+        assert_eq!(registry.metric_set_count(), registered_before + 1);
+
+        monitor.update();
+        monitor.report().expect("the metrics channel is open");
+        for snapshot in rx.try_iter() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let batch = registry.drain_metric_export_batch();
+        let names: Vec<_> = batch
+            .metric_sets
+            .iter()
+            .map(|set| set.descriptor.name)
+            .collect();
+        assert!(
+            !names.contains(&"engine"),
+            "unexpected engine set: {names:?}"
+        );
+        assert!(
+            names.contains(&"engine.console_output"),
+            "missing console output set: {names:?}"
+        );
+
+        drop(monitor);
+        assert_eq!(registry.metric_set_count(), registered_before);
     }
 }
