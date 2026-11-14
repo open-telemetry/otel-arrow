@@ -9,8 +9,8 @@ pub(super) const DEFAULT_TIME_BUCKET: u64 = 63_524_174_400;
 
 pub(super) fn dimension(name: &str, value: &str) -> Dimension {
     Dimension {
-        name: name.to_string(),
-        value: value.to_string(),
+        name: name.into(),
+        value: value.into(),
     }
 }
 
@@ -39,7 +39,7 @@ pub(super) fn double_values(sum: f64, count: u64) -> MetricValues {
 pub(super) fn standard_metric(values: MetricValues, sampling_type: u32) -> Metric {
     Metric {
         time_bucket: DEFAULT_TIME_BUCKET as i64,
-        namespace: "MetricNamespace".to_string(),
+        namespace: "MetricNamespace".into(),
         name: "MetricName".to_string(),
         dimensions: vec![
             dimension("Dim1Name", "Dim1Value"),

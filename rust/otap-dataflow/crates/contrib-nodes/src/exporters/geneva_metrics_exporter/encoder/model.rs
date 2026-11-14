@@ -3,6 +3,7 @@
 
 //! Geneva Metrics ingestion protocol version 6 data model and flags.
 
+use std::rc::Rc;
 use thiserror::Error;
 
 pub(super) const PROTOCOL_VERSION: u16 = 6;
@@ -84,8 +85,8 @@ pub struct Packet {
 pub struct Metric {
     /// Metric timestamp as whole seconds since the .NET epoch.
     pub time_bucket: i64,
-    /// Metric namespace.
-    pub namespace: String,
+    /// Metric namespace, shared by points that inherit it.
+    pub namespace: Rc<str>,
     /// Metric name.
     pub name: String,
     /// Ordered dimension name/value pairs.
@@ -98,13 +99,13 @@ pub struct Metric {
     pub exemplars: Vec<MetricExemplar>,
 }
 
-/// A metric dimension.
+/// A metric dimension whose strings are shared when inherited by data points.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dimension {
     /// Dimension name.
-    pub name: String,
+    pub name: Rc<str>,
     /// Dimension value.
-    pub value: String,
+    pub value: Rc<str>,
 }
 
 /// Numeric data carried by a metric.
@@ -180,6 +181,14 @@ pub struct MetricExemplar {
 /// Geneva Metrics ingestion packet encoding failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum EncodeError {
+    /// One metric cannot fit within the publication size limit.
+    #[error("Geneva metrics packet size {size} exceeds the {maximum}-byte limit")]
+    PacketSizeOverflow {
+        /// Complete encoded size, including metadata and strings.
+        size: usize,
+        /// Maximum permitted packet size.
+        maximum: usize,
+    },
     /// A sampling flag requires a value that was not supplied.
     #[error("sampling flag {flag:#x} requires {field}")]
     MissingValue {

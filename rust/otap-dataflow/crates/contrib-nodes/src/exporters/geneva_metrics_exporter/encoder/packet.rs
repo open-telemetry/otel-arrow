@@ -9,7 +9,7 @@ use super::exemplar::{validate_exemplars, write_exemplars};
 use super::histogram::{validate_histogram_encoding, write_histogram};
 use super::model::*;
 use super::numeric::{can_store_double_values_as_long, required, write_double_or_long};
-use super::writer::Writer;
+use super::writer::{Writer, unsigned_base128_size};
 
 const MAX_DIMENSIONS: usize = 74;
 const MAX_METRIC_NAME_LENGTH: usize = 512;
@@ -22,10 +22,54 @@ const MAX_TIME_BUCKET: u64 = u64::MAX / TICKS_PER_SECOND;
 
 /// Encodes a packet using Geneva Metrics ingestion protocol version 6.
 pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
-    validate_timestamp("packet", packet.current_time_bucket, 0)?;
-    let metric_count = u32::try_from(packet.metrics.len())
-        .map_err(|_| EncodeError::MetricCountOverflow(packet.metrics.len()))?;
+    encode_metrics(packet.current_time_bucket, &packet.metrics)
+}
+
+/// One independently decodable publication and its mapped data point count.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct EncodedPacket {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) item_count: u64,
+}
+
+/// Encodes independently decodable packets bounded by their complete wire size.
+pub(crate) fn encode_bounded(
+    packet: &Packet,
+    maximum: usize,
+) -> Result<Vec<EncodedPacket>, EncodeError> {
+    let mut packets = Vec::new();
+    let mut remaining = packet.metrics.as_slice();
+    while !remaining.is_empty() {
+        let count = write_metrics(
+            &mut Writer::counting(),
+            packet.current_time_bucket,
+            remaining,
+            Some(maximum),
+        )?;
+        packets.push(EncodedPacket {
+            bytes: encode_metrics(packet.current_time_bucket, &remaining[..count])?,
+            item_count: count as u64,
+        });
+        remaining = &remaining[count..];
+    }
+    Ok(packets)
+}
+
+fn encode_metrics(current_time_bucket: u64, metrics: &[Metric]) -> Result<Vec<u8>, EncodeError> {
     let mut writer = Writer::default();
+    _ = write_metrics(&mut writer, current_time_bucket, metrics, None)?;
+    Ok(writer.finish())
+}
+
+fn write_metrics(
+    writer: &mut Writer,
+    current_time_bucket: u64,
+    metrics: &[Metric],
+    maximum: Option<usize>,
+) -> Result<usize, EncodeError> {
+    validate_timestamp("packet", current_time_bucket, 0)?;
+    let metric_count = u32::try_from(metrics.len())
+        .map_err(|_| EncodeError::MetricCountOverflow(metrics.len()))?;
     writer.write_u16(PROTOCOL_VERSION);
     let crc_position = writer.reserve(size_of::<u32>());
     writer.write_u32(TYPE_SERIALIZER_FLAGS);
@@ -33,15 +77,17 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     let string_offset_position = writer.reserve(size_of::<u64>());
 
     let mut metadata_table = OrderedInterner::<MetadataKey>::default();
-    let mut string_table = OrderedInterner::<String>::default();
+    let mut string_table = OrderedInterner::<&str>::default();
+    let mut metadata_bytes = 0;
+    let mut string_bytes = 0;
 
-    writer.write_unsigned_base128(packet.current_time_bucket);
+    writer.write_unsigned_base128(current_time_bucket);
     writer.write_u32(metric_count);
 
-    for (metric_index, metric) in packet.metrics.iter().enumerate() {
-        validate_metric_for_packet(metric_index, metric, packet.current_time_bucket)?;
-        let namespace_index = string_table.intern_borrowed(&metric.namespace)?;
-        let name_index = string_table.intern_borrowed(&metric.name)?;
+    for (metric_index, metric) in metrics.iter().enumerate() {
+        validate_metric_for_packet(metric_index, metric, current_time_bucket)?;
+        let namespace_index = string_table.intern_borrowed(&metric.namespace, &mut string_bytes)?;
+        let name_index = string_table.intern_borrowed(&metric.name, &mut string_bytes)?;
         let metadata = MetadataKey {
             namespace_index,
             name_index,
@@ -52,18 +98,29 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
                     if dimension.name.is_empty() {
                         Ok(None)
                     } else {
-                        string_table.intern_borrowed(&dimension.name).map(Some)
+                        string_table
+                            .intern_borrowed(&dimension.name, &mut string_bytes)
+                            .map(Some)
                     }
                 })
                 .collect::<Result<Vec<_>, EncodeError>>()?,
         };
-        let metadata_index = metadata_table.intern(metadata)?;
+        let metadata_index = match metadata_table.indexes.get(&metadata) {
+            Some(index) => *index,
+            None => {
+                if maximum.is_some() {
+                    let mut size = Writer::counting();
+                    write_metadata(&mut size, &metadata);
+                    metadata_bytes += size.len();
+                }
+                metadata_table.insert_new(metadata)?
+            }
+        };
         writer.write_unsigned_base128(metadata_index as u64);
-        let time_difference =
-            i128::from(packet.current_time_bucket) - i128::from(metric.time_bucket);
+        let time_difference = i128::from(current_time_bucket) - i128::from(metric.time_bucket);
         writer.write_signed_base128(i64::try_from(time_difference).map_err(|_| {
             EncodeError::TimeDifferenceOverflow {
-                current_time_bucket: packet.current_time_bucket,
+                current_time_bucket,
                 metric_time_bucket: metric.time_bucket,
             }
         })?);
@@ -73,13 +130,29 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
             .iter()
             .filter(|dimension| !dimension.name.is_empty())
         {
-            let string_index = string_table.intern_borrowed(&dimension.value)?;
+            let string_index = string_table.intern_borrowed(&dimension.value, &mut string_bytes)?;
             writer.write_unsigned_base128(string_index as u64);
         }
 
-        write_metric(&mut writer, metric)?;
+        write_metric(writer, metric)?;
+        if let Some(maximum) = maximum {
+            let size = writer.len()
+                + metadata_bytes
+                + string_bytes
+                + unsigned_base128_size(metadata_table.indexes.len() as u64)
+                + unsigned_base128_size(string_table.indexes.len() as u64);
+            if size > maximum {
+                if metric_index == 0 {
+                    return Err(EncodeError::PacketSizeOverflow { size, maximum });
+                }
+                return Ok(metric_index);
+            }
+        }
     }
 
+    if maximum.is_some() {
+        return Ok(metrics.len());
+    }
     let metadata_offset =
         u64::try_from(writer.len()).map_err(|_| EncodeError::OffsetOverflow(writer.len()))?;
     writer.write_u64_at(metadata_offset_position, metadata_offset);
@@ -87,13 +160,7 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     writer.write_unsigned_base128(metadata_values.len() as u64);
 
     for metadata in &metadata_values {
-        writer.write_unsigned_base128(metadata.namespace_index as u64);
-        writer.write_unsigned_base128(metadata.name_index as u64);
-        let dimension_count = metadata.dimension_name_indexes.iter().flatten().count();
-        writer.write_unsigned_base128(dimension_count as u64);
-        for dimension_index in metadata.dimension_name_indexes.iter().flatten() {
-            writer.write_unsigned_base128(*dimension_index as u64);
-        }
+        write_metadata(writer, metadata);
     }
 
     let string_offset =
@@ -108,7 +175,17 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
 
     let crc = crc32fast::hash(&writer.bytes()[CRC_INPUT_OFFSET..]);
     writer.write_u32_at(crc_position, crc);
-    Ok(writer.finish())
+    Ok(metrics.len())
+}
+
+fn write_metadata(writer: &mut Writer, metadata: &MetadataKey) {
+    writer.write_unsigned_base128(metadata.namespace_index as u64);
+    writer.write_unsigned_base128(metadata.name_index as u64);
+    let dimension_count = metadata.dimension_name_indexes.iter().flatten().count();
+    writer.write_unsigned_base128(dimension_count as u64);
+    for dimension_index in metadata.dimension_name_indexes.iter().flatten() {
+        writer.write_unsigned_base128(*dimension_index as u64);
+    }
 }
 
 /// Validates one metric against packet-level encoding constraints.
@@ -541,14 +618,6 @@ impl<T> OrderedInterner<T>
 where
     T: Eq + std::hash::Hash,
 {
-    fn intern(&mut self, value: T) -> Result<u32, EncodeError> {
-        if let Some(index) = self.indexes.get(&value) {
-            return Ok(*index);
-        }
-
-        self.insert_new(value)
-    }
-
     fn insert_new(&mut self, value: T) -> Result<u32, EncodeError> {
         let index = u32::try_from(self.indexes.len())
             .map_err(|_| EncodeError::DictionaryCountOverflow(self.indexes.len()))?;
@@ -570,13 +639,19 @@ where
     }
 }
 
-impl OrderedInterner<String> {
-    fn intern_borrowed(&mut self, value: &str) -> Result<u32, EncodeError> {
+impl<'a> OrderedInterner<&'a str> {
+    fn intern_borrowed(
+        &mut self,
+        value: &'a str,
+        encoded_bytes: &mut usize,
+    ) -> Result<u32, EncodeError> {
         if let Some(index) = self.indexes.get(value) {
             return Ok(*index);
         }
 
-        self.insert_new(value.to_owned())
+        let index = self.insert_new(value)?;
+        *encoded_bytes += unsigned_base128_size(value.len() as u64) + value.len();
+        Ok(index)
     }
 }
 
@@ -634,6 +709,129 @@ mod tests {
             .collect()
     }
 
+    /// Scenario: A packet's full wire size is exactly at or just beyond its publication limit.
+    /// Guarantees: Splitting accounts for tables and CRC, preserves order and counts, and rejects an indivisible oversized metric.
+    #[test]
+    fn bounds_complete_packets_without_losing_metrics() {
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: (0..16)
+                .map(|index| {
+                    let mut metric = standard_metric(unsigned_values(index, 1), SUM | COUNT);
+                    metric.dimensions[0].value = format!("{index:04}{}", "x".repeat(100)).into();
+                    metric
+                })
+                .collect(),
+        };
+        let complete = encode(&packet).expect("packet should encode");
+        let exact = encode_bounded(&packet, complete.len()).expect("exact limit should fit");
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].bytes, complete);
+
+        let split = encode_bounded(&packet, complete.len() - 1).expect("packet should split");
+        assert!(split.len() > 1);
+        let mut offset = 0;
+        for encoded in split {
+            assert!(encoded.bytes.len() < complete.len());
+            let end = offset + encoded.item_count as usize;
+            let expected = encode_metrics(packet.current_time_bucket, &packet.metrics[offset..end])
+                .expect("independent packet should encode");
+            assert_eq!(encoded.bytes, expected);
+            offset = end;
+        }
+        assert_eq!(offset, packet.metrics.len());
+
+        let single = Packet {
+            current_time_bucket: packet.current_time_bucket,
+            metrics: vec![packet.metrics[0].clone()],
+        };
+        let size = encode(&single).expect("single metric should encode").len();
+        assert_eq!(
+            encode_bounded(&single, size - 1).expect_err("indivisible metric must be rejected"),
+            EncodeError::PacketSizeOverflow {
+                size,
+                maximum: size - 1
+            },
+        );
+        assert!(
+            encode_bounded(
+                &Packet {
+                    current_time_bucket: packet.current_time_bucket,
+                    metrics: Vec::new()
+                },
+                size,
+            )
+            .expect("empty input should succeed")
+            .is_empty()
+        );
+    }
+
+    /// Scenario: A single histogram with exemplars exceeds the publication limit.
+    /// Guarantees: Preflight reports the exact full packet size without allocating a packet buffer.
+    #[test]
+    fn preflights_oversized_metric_without_packet_allocation() {
+        let mut metric = standard_metric(
+            double_values(1.0, 1),
+            SUM | COUNT | HISTOGRAM | EXEMPLAR | METRIC_TYPE_DELTA_HISTOGRAM,
+        );
+        if let MetricValues::Double(values) = &mut metric.values {
+            values.histogram = Some(MetricHistogram::Explicit(vec![(1.0, 1); 1_000]));
+        }
+        metric.exemplars.push(MetricExemplar {
+            value: 1.0,
+            time_unix_nano: None,
+            trace_id: None,
+            span_id: None,
+            sample_count: None,
+            filtered_attributes: vec![("key".to_string(), "value".to_string())],
+        });
+        let metrics = [metric];
+        let size = encode_metrics(DEFAULT_TIME_BUCKET, &metrics)
+            .expect("reference packet")
+            .len();
+        let mut writer = Writer::counting();
+        assert_eq!(
+            write_metrics(&mut writer, DEFAULT_TIME_BUCKET, &metrics, Some(256)),
+            Err(EncodeError::PacketSizeOverflow { size, maximum: 256 })
+        );
+        assert_eq!(writer.finish().capacity(), 0);
+    }
+
+    /// Scenario: String and metadata dictionaries cross base-128 count, index, and string-length boundaries.
+    /// Guarantees: Preflight packs the exact fitting prefix and preserves every packet's complete wire bytes and point order.
+    #[test]
+    fn bounds_packets_across_dictionary_boundaries() {
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: (0..256)
+                .map(|index| {
+                    let mut metric = standard_metric(unsigned_values(index, 1), SUM | COUNT);
+                    metric.name = format!("metric{index}");
+                    metric.dimensions[0].value = format!("value{index}{}", "x".repeat(128)).into();
+                    metric
+                })
+                .collect(),
+        };
+        let limit = encode_metrics(packet.current_time_bucket, &packet.metrics[..160])
+            .expect("reference packet")
+            .len();
+        let packets = encode_bounded(&packet, limit).expect("bounded packets");
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].item_count, 160);
+        let mut offset = 0;
+        for encoded in packets {
+            assert!(encoded.bytes.len() <= limit);
+            let end = offset + encoded.item_count as usize;
+            assert_eq!(
+                encoded.bytes,
+                encode_metrics(packet.current_time_bucket, &packet.metrics[offset..end])
+                    .expect("reference packet")
+            );
+            offset = end;
+        }
+        assert_eq!(offset, packet.metrics.len());
+    }
+
     /// Scenario: Core OTLP gauge and sum metric types are encoded as raw protocol v6 entries.
     /// Guarantees: Sampling flags, value encodings, metadata interning, string interning, offsets, and CRC match the C++ packet.
     #[test]
@@ -641,7 +839,7 @@ mod tests {
         let dimensions = vec![dimension("region", "eastus")];
         let metric = |name: &str, sampling_type: u32, values: MetricValues| Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64,
-            namespace: "Compatibility".to_string(),
+            namespace: "Compatibility".into(),
             name: name.to_string(),
             dimensions: dimensions.clone(),
             sampling_type,
@@ -715,7 +913,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: DEFAULT_TIME_BUCKET as i64 + 12,
-                namespace: "MetricNamespace".to_string(),
+                namespace: "MetricNamespace".into(),
                 name: "MetricName".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -738,7 +936,7 @@ mod tests {
             include_bytes!("fixtures/CompatibilityFixtureRawTypedMetricsWithMilliseconds.bin");
         let metric = |values: [&str; 2], seconds: i64, sum: f64, milliseconds: u32| Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64 + seconds,
-            namespace: "MetricNamespace".to_string(),
+            namespace: "MetricNamespace".into(),
             name: "MetricName".to_string(),
             dimensions: vec![
                 dimension("DimensionName1", values[0]),
@@ -789,7 +987,7 @@ mod tests {
     fn removes_empty_histogram_flag() {
         let metric = Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64,
-            namespace: "namespace".to_string(),
+            namespace: "namespace".into(),
             name: "metric".to_string(),
             dimensions: Vec::new(),
             sampling_type: SUM | COUNT | HISTOGRAM,
@@ -1102,7 +1300,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: DEFAULT_TIME_BUCKET as i64,
-                namespace: "namespace".to_string(),
+                namespace: "namespace".into(),
                 name: "metric".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -1330,7 +1528,7 @@ mod tests {
             current_time_bucket: MAX_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: (MAX_TIME_BUCKET + 1) as i64,
-                namespace: "namespace".to_string(),
+                namespace: "namespace".into(),
                 name: "metric".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -1358,7 +1556,7 @@ mod tests {
 
         let metric = |milliseconds| Metric {
             time_bucket: MAX_TIME_BUCKET as i64,
-            namespace: "namespace".to_string(),
+            namespace: "namespace".into(),
             name: "metric".to_string(),
             dimensions: Vec::new(),
             sampling_type: SUM | COUNT | HIGH_RESOLUTION_TIMESTAMP,
@@ -1400,7 +1598,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: -1,
-                namespace: "namespace".to_string(),
+                namespace: "namespace".into(),
                 name: "metric".to_string(),
                 dimensions: Vec::new(),
                 sampling_type: SUM | COUNT,
@@ -1417,7 +1615,7 @@ mod tests {
     #[test]
     fn rejects_nul_in_dimension_value() {
         let mut metric = standard_metric(unsigned_values(1, 1), SUM | COUNT);
-        metric.dimensions[1].value = "invalid\0value".to_string();
+        metric.dimensions[1].value = "invalid\0value".into();
         let packet = Packet {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![metric],
@@ -1503,14 +1701,14 @@ mod tests {
             "dimension name",
             MAX_DIMENSION_NAME_LENGTH,
             |metric, value| {
-                metric.dimensions[0].name = value;
+                metric.dimensions[0].name = value.into();
             },
         );
         assert_limit(
             "dimension value",
             MAX_DIMENSION_VALUE_LENGTH,
             |metric, value| {
-                metric.dimensions[0].value = value;
+                metric.dimensions[0].value = value.into();
             },
         );
     }
@@ -1571,30 +1769,28 @@ mod tests {
     /// Guarantees: Duplicate lookups reuse the original index and first-seen ordering stores each unique string once.
     #[test]
     fn borrowed_string_interning_reuses_indexes_and_preserves_order() {
-        let mut interner = OrderedInterner::<String>::default();
+        let mut interner = OrderedInterner::<&str>::default();
+        let mut encoded_bytes = 0;
 
         assert_eq!(
             interner
-                .intern_borrowed("namespace")
+                .intern_borrowed("namespace", &mut encoded_bytes)
                 .expect("first string should intern"),
             0
         );
         assert_eq!(
             interner
-                .intern_borrowed("metric")
+                .intern_borrowed("metric", &mut encoded_bytes)
                 .expect("second string should intern"),
             1
         );
         assert_eq!(
             interner
-                .intern_borrowed("namespace")
+                .intern_borrowed("namespace", &mut encoded_bytes)
                 .expect("duplicate string should reuse its index"),
             0
         );
-        assert_eq!(
-            interner.into_values(),
-            ["namespace".to_string(), "metric".to_string()]
-        );
+        assert_eq!(interner.into_values(), ["namespace", "metric"]);
     }
 
     /// Scenario: Two metrics have identical namespace, name, and dimension names but different values.
@@ -1603,7 +1799,7 @@ mod tests {
     fn interns_shared_metadata_and_distinct_values() {
         let metric = |value: &str| Metric {
             time_bucket: DEFAULT_TIME_BUCKET as i64,
-            namespace: "namespace".to_string(),
+            namespace: "namespace".into(),
             name: "metric".to_string(),
             dimensions: vec![dimension("region", value)],
             sampling_type: SUM | COUNT,

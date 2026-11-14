@@ -285,7 +285,7 @@ mod tests {
             current_time_bucket: DEFAULT_TIME_BUCKET,
             metrics: vec![Metric {
                 time_bucket: DEFAULT_TIME_BUCKET as i64 + 60,
-                namespace: "MetricNamespace".to_string(),
+                namespace: "MetricNamespace".into(),
                 name: "MetricName".to_string(),
                 dimensions: vec![
                     dimension("DimensionName1", "DimensionValue11"),
