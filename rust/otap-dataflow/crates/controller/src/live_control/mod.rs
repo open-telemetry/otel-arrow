@@ -113,6 +113,18 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
     state_changed: Condvar,
+    /// One-shot test handoff after recording an exit but before publishing its failure.
+    #[cfg(test)]
+    after_instance_exit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// One-shot test handoff while a recovery worker owns a pending replacement.
+    #[cfg(test)]
+    before_recovery_backoff: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// One-shot test handoff before publishing a fatal recovery error.
+    #[cfg(test)]
+    before_recovery_failure: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Retains recovery thread handles so tests can join all background work.
+    #[cfg(test)]
+    recovery_workers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 /// Keeps observability alive until controller-owned telemetry has been handed off.
@@ -215,6 +227,8 @@ impl<
                 latest_context_bindings: context_bindings,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
+                launching_instances: HashMap::new(),
+                pending_instance_failures: HashSet::new(),
                 runtime_recoveries: HashMap::new(),
                 deferred_runtime_recoveries: HashMap::new(),
                 pipeline_operation_reservations: HashMap::new(),
@@ -243,6 +257,14 @@ impl<
                 controller_telemetry_pending: false,
             }),
             state_changed: Condvar::new(),
+            #[cfg(test)]
+            after_instance_exit: Mutex::new(None),
+            #[cfg(test)]
+            before_recovery_backoff: Mutex::new(None),
+            #[cfg(test)]
+            before_recovery_failure: Mutex::new(None),
+            #[cfg(test)]
+            recovery_workers: Mutex::new(Vec::new()),
         }
     }
 
@@ -321,9 +343,13 @@ impl<
         pipeline_key: &DeployedPipelineKey,
         exit: &RuntimeInstanceExit,
     ) -> bool {
-        if let Some(instance) = state.runtime_instances.get_mut(pipeline_key) {
-            instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
+        let Some(instance) = state.runtime_instances.get_mut(pipeline_key) else {
+            return false;
+        };
+        if !matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active) {
+            return false;
         }
+        instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
         state.active_instances = state.active_instances.saturating_sub(1);
         let logical_pipeline_key = PipelineKey::new(
             pipeline_key.pipeline_group_id.clone(),
