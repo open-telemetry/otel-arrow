@@ -619,9 +619,14 @@ fn scoped_actions_reject_unknown_fields() {
             _ = AttributesProcessor::from_config(declared_pipeline_context(&config), &config)
                 .unwrap();
 
-            for unknown in ["extra", "singals", "from_headers"] {
+            for (unknown, value) in [
+                ("extra", json!(true)),
+                ("singals", json!(true)),
+                ("from_headers", json!(true)),
+                ("apply_to", json!(["signal"])),
+            ] {
                 let mut invalid = action.clone();
-                invalid[unknown] = json!(true);
+                invalid[unknown] = value;
                 let error = serde_json::from_value::<ScopedAction>(invalid.clone()).unwrap_err();
                 assert!(error.to_string().contains("unknown field"), "{error}");
                 let config = json!({"actions":[invalid]});
@@ -631,6 +636,51 @@ fn scoped_actions_reject_unknown_fields() {
                     "{config}"
                 );
             }
+        }
+    }
+}
+
+/// Scenario: CI performance pipeline templates configure the attributes processor.
+/// Guarantees: Every continuous or backpressure template constructs a signal-only rename processor.
+#[test]
+fn pipeline_benchmark_templates_have_valid_attribute_configuration() {
+    let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../../../tools/pipeline_perf_test/test_suites/integration/templates/configs/engine",
+    );
+    for (scenario, names) in [
+        (
+            "continuous",
+            &[
+                "otlp-attr-otlp",
+                "otlp-attr-otap",
+                "otap-attr-otlp",
+                "otap-attr-otap",
+                "otlp-attr-otlp-idle",
+            ][..],
+        ),
+        (
+            "backpressure",
+            &[
+                "otlp-attr-otlp",
+                "otlp-attr-otap",
+                "otap-attr-otlp",
+                "otap-attr-otap",
+            ][..],
+        ),
+    ] {
+        for name in names {
+            let path = templates.join(scenario).join(format!("{name}.yaml.j2"));
+            let template = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let pipeline: Value = serde_yaml::from_str(&template).unwrap();
+            let config =
+                &pipeline["groups"]["default"]["pipelines"]["main"]["nodes"]["attr"]["config"];
+            validate_config(config).unwrap();
+            let processor = AttributesProcessor::from_config(pipeline_context(), config).unwrap();
+            assert!(processor.has_signal_domain);
+            assert!(!processor.has_resource_domain);
+            assert!(!processor.has_scope_domain);
+            assert!(processor.plans.iter().all(|plan| !plan.is_noop()));
         }
     }
 }
