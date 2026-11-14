@@ -90,3 +90,11 @@ required-features = ["testing"]
 [[test]]
 name = "test_count_items_allocation"
 harness = false
+
+[[bench]]
+name = "metrics_view"
+harness = false
+
+[[bench]]
+name = "metrics_view_allocations"
+harness = false

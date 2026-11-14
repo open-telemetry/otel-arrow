@@ -3,7 +3,7 @@
 
 //! Zero-copy view implementation for OTAP Arrow RecordBatches (Metrics)
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
 
 #[allow(unused_imports)]
 use arrow::array::Array;
@@ -64,6 +64,46 @@ fn build_attr32_index(attrs: &Attribute32Arrays<'_>) -> BTreeMap<u32, Vec<usize>
     build_u32_parent_index(&attrs.parent_id)
 }
 
+/// Borrow ordered plain parent IDs instead of building a temporary row index.
+/// Dictionary, null and unordered parents retain the general vector index.
+struct OrderedAttributeParents<'a> {
+    ids: &'a [u32],
+    descending: bool,
+}
+
+impl<'a> OrderedAttributeParents<'a> {
+    fn new(attrs: &Attribute32Arrays<'a>) -> Option<Self> {
+        let MaybeDictArrayAccessor::Native(parents) = &attrs.parent_id else {
+            return None;
+        };
+        let parents = *parents;
+        if parents.null_count() != 0 {
+            return None;
+        }
+        let ids = parents.values().as_ref();
+        let descending = if ids.is_sorted() {
+            false
+        } else if ids.windows(2).all(|pair| pair[0] >= pair[1]) {
+            true
+        } else {
+            return None;
+        };
+        Some(Self { ids, descending })
+    }
+
+    fn matching_rows(&self, parent: u32) -> Range<usize> {
+        let start = if self.descending {
+            self.ids.partition_point(|&id| id > parent)
+        } else {
+            self.ids.partition_point(|&id| id < parent)
+        };
+        // At the lower bound, equal parents form a prefix of the remaining
+        // slice in either sort direction. Missing parents yield an empty range.
+        let len = self.ids[start..].partition_point(|&id| id == parent);
+        start..start + len
+    }
+}
+
 // ===== Main View =====
 
 /// Zero-copy view over OTAP metrics Arrow RecordBatches.
@@ -113,6 +153,7 @@ pub struct OtapMetricsView<'a> {
 
     // Data-point attribute indexes: dp_id (u32) -> [attr_row_idx]
     number_dp_attrs_index: BTreeMap<u32, Vec<usize>>,
+    number_dp_attrs_ordered: Option<OrderedAttributeParents<'a>>,
     hist_dp_attrs_index: BTreeMap<u32, Vec<usize>>,
     exp_hist_dp_attrs_index: BTreeMap<u32, Vec<usize>>,
     summary_dp_attrs_index: BTreeMap<u32, Vec<usize>>,
@@ -249,8 +290,12 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
             .unwrap_or_default();
 
         // Data point attribute indexes
+        let number_dp_attrs_ordered = number_dp_attrs
+            .as_ref()
+            .and_then(OrderedAttributeParents::new);
         let number_dp_attrs_index = number_dp_attrs
             .as_ref()
+            .filter(|_| number_dp_attrs_ordered.is_none())
             .map(build_attr32_index)
             .unwrap_or_default();
         let hist_dp_attrs_index = hist_dp_attrs
@@ -331,6 +376,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
             exp_hist_dp_index,
             summary_dp_index,
             number_dp_attrs_index,
+            number_dp_attrs_ordered,
             hist_dp_attrs_index,
             exp_hist_dp_attrs_index,
             summary_dp_attrs_index,
@@ -1170,14 +1216,19 @@ impl<'a> NumberDataPointView for OtapNumberDataPointView<'a> {
             .number_dp_arrays
             .as_ref()
             .and_then(|a| a.id.value_at(self.row_idx));
-        let matching_rows = dp_id
-            .and_then(|id| self.view.number_dp_attrs_index.get(&id))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
+        let matching_rows = match (dp_id, &self.view.number_dp_attrs_ordered) {
+            (Some(id), Some(parents)) => RowGroupIter::Contiguous(parents.matching_rows(id)),
+            _ => RowGroupIter::Scattered(
+                dp_id
+                    .and_then(|id| self.view.number_dp_attrs_index.get(&id))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter(),
+            ),
+        };
         Otap32AttributeIter {
             attrs: self.view.number_dp_attrs.as_ref(),
             matching_rows,
-            current_idx: 0,
         }
     }
 
@@ -1282,8 +1333,7 @@ impl<'a> HistogramDataPointView for OtapHistogramDpView<'a> {
             .unwrap_or(&[]);
         Otap32AttributeIter {
             attrs: self.view.hist_dp_attrs.as_ref(),
-            matching_rows,
-            current_idx: 0,
+            matching_rows: RowGroupIter::Scattered(matching_rows.iter()),
         }
     }
 
@@ -1469,8 +1519,7 @@ impl<'a> ExponentialHistogramDataPointView for OtapExpHistogramDpView<'a> {
             .unwrap_or(&[]);
         Otap32AttributeIter {
             attrs: self.view.exp_hist_dp_attrs.as_ref(),
-            matching_rows,
-            current_idx: 0,
+            matching_rows: RowGroupIter::Scattered(matching_rows.iter()),
         }
     }
 
@@ -1686,8 +1735,7 @@ impl<'a> SummaryDataPointView for OtapSummaryDpView<'a> {
             .unwrap_or(&[]);
         Otap32AttributeIter {
             attrs: self.view.summary_dp_attrs.as_ref(),
-            matching_rows,
-            current_idx: 0,
+            matching_rows: RowGroupIter::Scattered(matching_rows.iter()),
         }
     }
 
@@ -1907,8 +1955,7 @@ impl<'a> ExemplarView for OtapExemplarView<'a> {
             .unwrap_or(&[]);
         Otap32AttributeIter {
             attrs: self.exemplar_attrs,
-            matching_rows,
-            current_idx: 0,
+            matching_rows: RowGroupIter::Scattered(matching_rows.iter()),
         }
     }
 

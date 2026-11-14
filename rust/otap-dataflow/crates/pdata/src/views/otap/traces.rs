@@ -737,8 +737,7 @@ impl<'a> EventView for OtapEventView<'a> {
 
         Otap32AttributeIter {
             attrs: self.view.event_attrs.as_ref(),
-            matching_rows,
-            current_idx: 0,
+            matching_rows: RowGroupIter::Scattered(matching_rows.iter()),
         }
     }
 
@@ -867,8 +866,7 @@ impl<'a> LinkView for OtapLinkView<'a> {
 
         Otap32AttributeIter {
             attrs: self.view.link_attrs.as_ref(),
-            matching_rows,
-            current_idx: 0,
+            matching_rows: RowGroupIter::Scattered(matching_rows.iter()),
         }
     }
 

@@ -229,8 +229,7 @@ impl<'a> Iterator for OtapAttributeIter<'a> {
 /// Iterator over attributes with u32 parent_id (event attrs, link attrs per OTAP spec sec.5.4.1).
 pub struct Otap32AttributeIter<'a> {
     pub(crate) attrs: Option<&'a Attribute32Arrays<'a>>,
-    pub(crate) matching_rows: &'a [usize],
-    pub(crate) current_idx: usize,
+    pub(crate) matching_rows: RowGroupIter<'a>,
 }
 
 impl<'a> Iterator for Otap32AttributeIter<'a> {
@@ -241,12 +240,7 @@ impl<'a> Iterator for Otap32AttributeIter<'a> {
         let attrs_cols = self.attrs?;
 
         loop {
-            if self.current_idx >= self.matching_rows.len() {
-                return None;
-            }
-
-            let attr_row_idx = self.matching_rows[self.current_idx];
-            self.current_idx += 1;
+            let attr_row_idx = self.matching_rows.next()?;
 
             if let Some(key) = get_attribute_key(&attrs_cols.attr_key, attr_row_idx) {
                 let value = get_attribute_value(&attrs_cols.anyval_arrays, attr_row_idx);
