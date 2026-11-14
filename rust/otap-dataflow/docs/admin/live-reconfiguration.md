@@ -493,9 +493,13 @@ Behavior:
 - When `deleteMissing=false`, omitted live pipelines and groups are preserved.
 - Engine-level and group-level metadata is committed only after the
   reconciliation succeeds.
+- Desired pipeline rollouts start concurrently and each one commits or rolls
+  back its own pipeline. A failed rollout does not stop the others; the
+  reconciliation waits for all of them and reports each one in `changes`.
 - Reconciliation is not atomic across pipelines. Pipeline rollouts that
-  succeeded before a later rollout failure remain applied and are reflected in
-  the committed live config.
+  succeeded remain applied and are reflected in the committed live config even
+  when another rollout fails. If any rollout fails, `deleteMissing` deletions
+  and engine/group metadata commits are skipped.
 - Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
 - Runtime memory limiter mutation is rejected with `422 Unprocessable Entity`.
 

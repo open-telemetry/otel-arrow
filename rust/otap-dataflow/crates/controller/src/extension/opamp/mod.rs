@@ -3036,6 +3036,67 @@ mod test {
         assert_eq!(health.status, health_status::STOPPING);
     }
 
+    /// Scenario: an incumbent is stopped while its replacement is still starting,
+    /// and compaction retains that active candidate.
+    /// Guarantees: OpAMP preserves its existing STARTING lifecycle report rather
+    /// than reporting STOPPED based only on the selected incumbent.
+    #[tokio::test]
+    async fn pipeline_health_reports_starting_candidate_after_incumbent_stops() {
+        use otel_arrow_dfe_config::DeployedPipelineKey;
+        use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+        use otel_arrow_dfe_state::pipeline_status::RuntimeInstanceKey;
+        use otel_arrow_dfe_state::store::ObservedStateStore;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
+
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::default(),
+        );
+        let pipeline_key = PipelineKey::new("group1".into(), "pipeline1".into());
+        store.set_pipeline_active_generation(pipeline_key.clone(), 0);
+        store.set_pipeline_active_cores(pipeline_key.clone(), [0]);
+        let reporter = store.engine_reporter(Default::default());
+        let incumbent = DeployedPipelineKey {
+            pipeline_group_id: "group1".into(),
+            pipeline_id: "pipeline1".into(),
+            core_id: 0,
+            deployment_generation: 0,
+        };
+        let candidate = DeployedPipelineKey {
+            deployment_generation: 1,
+            ..incumbent.clone()
+        };
+        reporter.report(EngineEvent::admitted(incumbent.clone(), None));
+        reporter.report(EngineEvent::ready(incumbent.clone(), None));
+        reporter.report(EngineEvent::shutdown_requested(incumbent.clone(), None));
+        reporter.report(EngineEvent::drained(incumbent, None));
+        reporter.report(EngineEvent::admitted(candidate, None));
+
+        // A cancelled consumer drains queued events without background work or sleeps.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        store
+            .clone()
+            .run(cancel)
+            .await
+            .expect("queued lifecycle events should apply");
+        store.compact_pipeline_instances(
+            &pipeline_key,
+            [RuntimeInstanceKey {
+                core_id: 0,
+                deployment_generation: 1,
+            }],
+        );
+        let status = store
+            .handle()
+            .pipeline_status(&pipeline_key)
+            .expect("compacted status should exist");
+        assert_eq!(status.per_instance().len(), 2);
+        let health = pipeline_health(&status);
+        assert!(!health.healthy);
+        assert_eq!(health.status, health_status::STARTING);
+    }
+
     #[tokio::test]
     async fn test_component_health_empty_snapshot() {
         let session_state = SessionState::try_new(

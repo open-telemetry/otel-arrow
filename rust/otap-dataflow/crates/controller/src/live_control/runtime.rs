@@ -316,8 +316,7 @@ impl<
                 launched.pipeline_key.pipeline_group_id.clone(),
                 launched.pipeline_key.pipeline_id.clone(),
             );
-            self.observed_state_store
-                .compact_pipeline_instances(&logical_pipeline_key);
+            self.compact_pipeline_observed_instances(&logical_pipeline_key);
         }
         if let Some(RuntimeInstanceExit::Error(error)) = pending_exit {
             self.schedule_runtime_recovery(launched.pipeline_key, context_bindings, error);
@@ -376,8 +375,7 @@ impl<
                 pipeline_key.pipeline_group_id.clone(),
                 pipeline_key.pipeline_id.clone(),
             );
-            self.observed_state_store
-                .compact_pipeline_instances(&logical_pipeline_key);
+            self.compact_pipeline_observed_instances(&logical_pipeline_key);
         }
         self.state_changed.notify_all();
         if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
@@ -1390,6 +1388,16 @@ impl<
                 return Ok(());
             }
 
+            // Global shutdown already sent stop to this instance; waiting for it
+            // to drain would only delay the caller's cleanup.
+            if self.global_shutdown_requested() {
+                return Err(format!(
+                    "engine shutdown requested before pipeline reported ready on core {} \
+                     (generation {})",
+                    deployed_key.core_id, deployed_key.deployment_generation
+                ));
+            }
+
             let mut observed_terminal_phase = false;
             if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
                 && let Some(instance) =
@@ -1429,6 +1437,14 @@ impl<
             }
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Returns whether engine-wide shutdown has started.
+    pub(super) fn global_shutdown_requested(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .global_shutdown_requested
     }
 
     /// Returns the terminal exit result for one deployed instance, if any.

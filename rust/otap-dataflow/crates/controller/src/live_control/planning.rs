@@ -1442,6 +1442,10 @@ impl<
                 .runtime_recoveries
                 .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
         }
+        self.observed_state_store.register_pipeline_health_policy(
+            plan.pipeline_key.clone(),
+            plan.target_deployment.resolved.policies.health.clone(),
+        );
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
             plan.target_deployment
@@ -2062,16 +2066,38 @@ impl<
         status.state == ApiPipelineRolloutState::Succeeded
     }
 
-    fn wait_for_rollout_terminal(&self, initial_status: RolloutStatus) -> RolloutStatus {
-        let mut status = initial_status;
-        while !Self::rollout_terminal(&status) {
+    /// Waits for every rollout, refreshing all of them on each tick so each
+    /// terminal snapshot is captured before history retention can evict it.
+    fn wait_for_rollouts_terminal(&self, mut statuses: Vec<RolloutStatus>) -> Vec<RolloutStatus> {
+        let mut settled = statuses
+            .iter()
+            .map(Self::rollout_terminal)
+            .collect::<Vec<_>>();
+        while settled.iter().any(|done| !done) {
             thread::sleep(Duration::from_millis(50));
-            let Some(next_status) = self.rollout_status_snapshot(&status.rollout_id) else {
-                return status;
-            };
-            status = next_status;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self::prune_terminal_operation_history_locked(&mut state, Instant::now());
+            for (status, done) in statuses.iter_mut().zip(settled.iter_mut()) {
+                if *done {
+                    continue;
+                }
+                match state
+                    .rollouts
+                    .get(&status.rollout_id)
+                    .map(RolloutRecord::status)
+                {
+                    Some(next_status) => {
+                        *done = Self::rollout_terminal(&next_status);
+                        *status = next_status;
+                    }
+                    None => *done = true,
+                }
+            }
         }
-        status
+        statuses
     }
 
     fn wait_for_shutdown_terminal(&self, initial_status: ShutdownStatus) -> ShutdownStatus {
@@ -2527,10 +2553,37 @@ impl<
             rollout_plans.push((pipeline_key, action, plan));
         }
 
+        // Every placement above was checked against current reservations and
+        // against earlier desired placements, so no rollout depends on another
+        // one finishing first. Start them all, then wait for all of them; each
+        // rollout commits or rolls back its own pipeline independently.
+        let mut spawned_rollouts = Vec::with_capacity(rollout_plans.len());
+        let mut spawn_error = None;
         for (pipeline_key, action, plan) in rollout_plans {
-            let initial_rollout =
-                self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
-            let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
+            match self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id())) {
+                Ok(initial_rollout) => {
+                    spawned_rollouts.push((pipeline_key, action, initial_rollout))
+                }
+                Err(error) => {
+                    spawn_error = Some(error);
+                    break;
+                }
+            }
+        }
+
+        // Rollouts that already started must reach a terminal state before the
+        // engine operation guard is released, even when a later spawn failed.
+        let (spawned_keys, initial_rollouts): (Vec<_>, Vec<_>) = spawned_rollouts
+            .into_iter()
+            .map(|(pipeline_key, action, initial_rollout)| {
+                ((pipeline_key, action), initial_rollout)
+            })
+            .unzip();
+        let terminal_rollouts = self.wait_for_rollouts_terminal(initial_rollouts);
+        let mut first_failure_reason = None;
+        for ((pipeline_key, action), terminal_rollout) in
+            spawned_keys.into_iter().zip(terminal_rollouts)
+        {
             let succeeded = Self::rollout_succeeded(&terminal_rollout);
             let failure_reason = terminal_rollout.failure_reason.clone();
             status.changes.push(ConfigChangeStatus {
@@ -2547,12 +2600,19 @@ impl<
                 detail: failure_reason.clone(),
             });
             status.updated_at = timestamp_now();
-            if !succeeded {
-                status.state = EngineConfigReconcileState::Failed;
-                status.failure_reason = failure_reason
-                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
-                return Ok(status);
+            if !succeeded && first_failure_reason.is_none() {
+                first_failure_reason = Some(failure_reason.unwrap_or_else(|| {
+                    "pipeline rollout did not complete successfully".to_owned()
+                }));
             }
+        }
+        if let Some(error) = spawn_error {
+            return Err(error);
+        }
+        if let Some(failure_reason) = first_failure_reason {
+            status.state = EngineConfigReconcileState::Failed;
+            status.failure_reason = Some(failure_reason);
+            return Ok(status);
         }
 
         if request.delete_missing {
