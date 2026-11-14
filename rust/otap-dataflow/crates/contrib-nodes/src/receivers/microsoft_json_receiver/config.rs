@@ -770,8 +770,10 @@ pub(crate) struct FieldRule {
     /// becomes `"ext.dt.traceId"` after flattening).
     pub path: String,
 
-    /// Where to place the resolved value.  If omitted (only valid when
-    /// `children` is set), defaults to `Drop`.
+    /// Where to place the resolved value. May be omitted for containers with
+    /// children or rules carrying validation, allowed-key, required-field or
+    /// additional-target metadata. Such rules preserve normal unmapped behavior;
+    /// use an explicit `Drop` target to suppress unmapped values.
     #[serde(default)]
     pub target: Option<MappingTarget>,
 
@@ -1110,17 +1112,16 @@ impl ValueTransform {
         match self {
             Self::SplitTake { delimiter, index } => {
                 let s = val.as_str()?;
-                let parts: Vec<&str> = s.split(delimiter.as_str()).collect();
+                let mut parts = s.split(delimiter.as_str());
                 let idx = if *index < 0 {
-                    let pos = parts.len() as i32 + *index;
-                    if pos < 0 {
-                        return None;
-                    }
-                    pos as usize
+                    parts
+                        .clone()
+                        .count()
+                        .checked_sub(index.unsigned_abs() as usize)?
                 } else {
                     *index as usize
                 };
-                parts.get(idx).map(|p| Value::String((*p).to_owned()))
+                parts.nth(idx).map(|p| Value::String(p.to_owned()))
             }
             Self::Format { template } => {
                 let s = match val {
@@ -1151,7 +1152,7 @@ impl ValueTransform {
 
 /// Find the first `-` that is immediately followed by an ASCII digit and
 /// split there. E.g. `"1DS-Web-JS-4.4.1"` -> `("1DS-Web-JS", "4.4.1")`.
-fn split_dash_semver(raw: &str) -> (&str, &str) {
+pub(super) fn split_dash_semver(raw: &str) -> (&str, &str) {
     let bytes = raw.as_bytes();
     for i in 0..bytes.len().saturating_sub(1) {
         if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {
