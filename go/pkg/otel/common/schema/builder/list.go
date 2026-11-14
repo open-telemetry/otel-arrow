@@ -66,6 +66,13 @@ func (lb *ListBuilder) Reserve(numItems int) {
 	// If the builder is nil, then the transform node is not optional.
 	if numItems > 0 && lb.updateRequest != nil {
 		lb.transformNode.RemoveOptional()
+		// The element field must be made visible as well. A list whose
+		// element field is still dropped has no valid Arrow representation
+		// (its item type is nil), so the schema update requested below would
+		// panic (see schema.NewFieldFrom). This is a no-op when an element
+		// append already un-drops the element field (e.g. the first non-zero
+		// bucket count).
+		lb.transformNode.Children[0].RemoveOptional()
 		lb.updateRequest.Inc(&update.NewFieldEvent{FieldName: lb.transformNode.Path()})
 		lb.updateRequest = nil // No need to report this again.
 	}

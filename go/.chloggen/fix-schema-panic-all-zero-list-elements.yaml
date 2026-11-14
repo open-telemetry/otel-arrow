@@ -1,0 +1,7 @@
+change_type: bug_fix
+
+component: pkg/otel/arrow
+
+note: Stop encoder panic on histogram data points whose bucket counts are all zero; the batch is now encoded with the bucket structure preserved.
+
+issues: [4397]
