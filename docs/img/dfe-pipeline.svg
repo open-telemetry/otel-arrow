@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="498" viewBox="0 0 620 498"
+     role="img" aria-labelledby="title description">
+  <title id="title">Telemetry flow through the OpenTelemetry Arrow Dataflow Engine</title>
+  <desc id="description">
+    Applications, collectors, and infrastructure send telemetry to receivers.
+    The engine can process Arrow batches and then export them to collectors,
+    backends, and storage. The right column maps each stage to supported
+    component examples. Receivers include OTLP, OTAP, Syslog/CEF, journald,
+    Kafka, and Prometheus. Processors include Batch, Filter, Transform,
+    Durable buffer, Fan-out, and Retry. Exporters include OTLP, OTAP, Kafka,
+    ClickHouse, Parquet, and Console.
+  </desc>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: #162b3b; }
+    .label { font-size: 18px; font-weight: 700; }
+    .detail { font-size: 16px; fill: #364f61; }
+    .examples { font-size: 16px; font-weight: 550; }
+    .endpoint { fill: #f0f4f7; stroke: #cfdae2; }
+    .stage { fill: #fff; stroke: #b9ccda; }
+    .process { fill: #e0f4f0; stroke: #82bdb5; }
+    .example-card { fill: #f0f4f7; stroke: #cfdae2; }
+    .arrow { fill: none; stroke: #43697c; stroke-width: 2; marker-end: url(#arrowhead); }
+    .mapping { fill: none; stroke: #5b7f91; stroke-width: 2; stroke-dasharray: 4 4; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#43697c"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="618" height="496" rx="20" fill="#f9fbfc" stroke="#c5d2dd"/>
+
+  <rect class="endpoint" x="26" y="24" width="270" height="56" rx="12"/>
+  <text class="label" x="44" y="47">Telemetry sources</text>
+  <text class="detail" x="44" y="68">Apps, collectors, infrastructure</text>
+
+  <rect x="16" y="106" width="290" height="290" rx="15" fill="#eaf2f8" stroke="#c5d2dd"/>
+  <text class="label" x="30" y="133">Arrow Dataflow Engine</text>
+  <text class="label" x="326" y="133">Component examples</text>
+
+  <g>
+    <rect class="stage" x="26" y="147" width="270" height="62" rx="10"/>
+    <text class="label" x="44" y="172">Receive</text>
+    <text class="detail" x="44" y="194">Ingest telemetry</text>
+    <rect class="example-card" x="326" y="147" width="280" height="62" rx="10"/>
+    <text class="examples" x="342" y="173">OTLP, OTAP, Syslog/CEF</text>
+    <text class="examples" x="342" y="195">journald, Kafka, Prometheus</text>
+  </g>
+
+  <g>
+    <rect class="stage process" x="26" y="231" width="270" height="62" rx="10"/>
+    <text class="label" x="44" y="256">Process</text>
+    <text class="detail" x="44" y="278">Operate on Arrow batches</text>
+    <rect class="example-card process" x="326" y="231" width="280" height="62" rx="10"/>
+    <text class="examples" x="342" y="257">Batch, Filter, Transform</text>
+    <text class="examples" x="342" y="279">Durable buffer, Fan-out, Retry</text>
+  </g>
+
+  <g>
+    <rect class="stage" x="26" y="315" width="270" height="62" rx="10"/>
+    <text class="label" x="44" y="340">Export</text>
+    <text class="detail" x="44" y="362">Send telemetry downstream</text>
+    <rect class="example-card" x="326" y="315" width="280" height="62" rx="10"/>
+    <text class="examples" x="342" y="341">OTLP, OTAP, Kafka</text>
+    <text class="examples" x="342" y="363">ClickHouse, Parquet, Console</text>
+  </g>
+
+  <rect class="endpoint" x="26" y="421" width="270" height="56" rx="12"/>
+  <text class="label" x="44" y="444">Telemetry destinations</text>
+  <text class="detail" x="44" y="465">Collectors, backends, storage</text>
+
+  <path class="arrow" d="M 161 80 V 103"/>
+  <path class="arrow" d="M 161 209 V 228"/>
+  <path class="arrow" d="M 161 293 V 312"/>
+  <path class="arrow" d="M 161 377 V 418"/>
+  <path class="mapping" d="M 296 178 H 326 M 296 262 H 326 M 296 346 H 326"/>
+</svg>

@@ -84,7 +84,7 @@ performance measurement, and fault injection.
 
 | Language | Philosophy and strengths | Tradeoffs in DFE |
 | --- | --- | --- |
-| [OpenTelemetry Processing Language (OPL)][opl] | Signal-aware pipelines compose filtering, transformation, and routing in pipe order. The language is designed around OpenTelemetry's data model and Arrow execution. | The language, tooling, and ecosystem are evolving. Check operators and signal behavior before depending on them. |
+| [OpenTelemetry Processing Language (OPL)][opl] | An easy-to-read, strongly typed pipeline language for filtering, transforming, and routing telemetry. Programs operate on the OpenTelemetry data model and can only produce valid OpenTelemetry streams. The language is designed for Arrow execution. | The language, tooling, and ecosystem are evolving. Check operators and signal behavior before depending on them. |
 | [OpenTelemetry Transformation Language (OTTL)][ottl] | Collector users can express edits with familiar functions and per-statement conditions. Its Collector ecosystem has many functions and examples. | DFE currently implements literal assignments to log fields. Existing Collector statements may use unsupported functions, conditions, or signal contexts. |
 | [Kusto Query Language (KQL)][kql] | Tabular, pipe-oriented queries are familiar for filtering and shaping data. | DFE implements a subset against specific telemetry shapes. The Transform and Recordset KQL processors have different input contracts. |
 

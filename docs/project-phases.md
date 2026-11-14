@@ -102,10 +102,6 @@ in the Collector, for access to the Arrow ecosystem.
 - OTAP/Rust gains 2x to 10x in data processing speed compared with
   OTLP/Golang, depending on pipeline configuration and complexity, at
   lower memory cost, and with better compression
-- Summarize what it would look like to implement OTAP pipelines
-  directly in Golang
-- Feasibility study: how to integrate Rust OTAP pipelines as foreign
-  function calls from Golang
 - Demonstration of the value of integrating OpenTelemetry data with
   Apache Arrow.
 
@@ -114,16 +110,26 @@ in the Collector, for access to the Arrow ecosystem.
 - We are not building a Rust Collector; we are building OTAP pipelines
   as embeddable software libraries with access to the Apache Arrow
   ecosystem in Rust
-- We are not building a Rust Collector; we are evaluating an
-  end-to-end OTAP pipeline, including an experimental "OTAP-direct"
-  SDK in Rust
-- We will not publish software in source or binary form that acts like
-  a stand-alone Collector
 - We will (intentionally) not support parsing YAML configuration files
   to configure pipeline graphs
 - We will not interfere with OpenTelemetry Collector or OpenTelemetry
   Rust during this phase by asking those teams to review/approve our
   work.
+
+The [Phase 2 benchmark report][phase-2-report] documents the results and
+lists Laurent Qu&eacute;rel and Joshua MacDonald as project leads.
+
+## Phase 3: Stabilizing the Dataflow Engine
+
+**Target:** April&ndash;May 2027.
+
+The goal is to stabilize the configuration model, core components, and
+core self-telemetry. This covers the configuration and behavior users
+depend on, along with essential engine and pipeline metrics and structured
+diagnostic events. API stability is outside this milestone.
+
+See the [DFE roadmap](../rust/otap-dataflow/ROADMAP.md) for the operational
+priorities that support this work.
 
 ## Future Phases
 
@@ -134,3 +140,4 @@ Phase N+1 planning will be discussed when Phase N comes to a close.
 
 [otep-0156]:
     https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0156-columnar-encoding.md
+[phase-2-report]: https://opentelemetry.io/blog/2026/otel-arrow-phase-2/

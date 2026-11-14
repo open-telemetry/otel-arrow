@@ -1,10 +1,10 @@
-# OpenTelemetry Arrow
+# OpenTelemetry Arrow Dataflow Engine
 
-The **OpenTelemetry Arrow Dataflow Engine (DFE)** is an embeddable Rust
-engine for collecting, processing, and exporting telemetry. It uses the
-**OpenTelemetry Arrow Protocol (OTAP)** to keep logs, metrics, and traces in
-Apache Arrow columns during transport and processing. It also speaks OTLP, so
-you can try it with existing OpenTelemetry senders and backends.
+The Dataflow Engine (DFE) is an embeddable Rust engine for collecting,
+processing, and exporting telemetry. It uses the **OpenTelemetry Arrow
+Protocol (OTAP)** to keep logs, metrics, and traces in Apache Arrow columns
+during transport and processing. It also speaks OTLP, so you can try it with
+existing OpenTelemetry senders and backends.
 
 **Status: incubating.** DFE is ready for experimentation. Configuration,
 components, and APIs are still evolving. The team is working with the
@@ -48,15 +48,11 @@ forward its encoded payload as-is, DFE can also avoid decoding it. See the
 [OTAP specification][otap-spec], [telemetry data model][data-model], and
 [codec guide][codecs].
 
-```mermaid
-flowchart TD
-    Sources["OTLP or OTAP senders"] --> Receive["Receive telemetry"]
-    Receive --> Process["DFE processes Arrow batches"]
-    Process --> Export["Export telemetry"]
-    Export --> Endpoints["OTLP or OTAP endpoints, Parquet, and more"]
-```
+![DFE pipeline from telemetry sources through receivers, Arrow processing, and exporters to downstream destinations, with component examples at each stage.](docs/img/dfe-pipeline.svg)
 
-The diagram shows a path that processes telemetry as Arrow batches.
+The [component matrix][capabilities] lists the full set of components and
+their build requirements.
+
 The engine builds on lessons from existing telemetry pipelines and explores
 how much work a pipeline can avoid when transport and processing share a data
 representation. Its [architecture][architecture] and
@@ -104,20 +100,25 @@ OpenTelemetry deployments.
 
 The team is targeting **April&ndash;May 2027** for stabilization of the
 **configuration model, main components, and core self-telemetry**.
-API stability is outside that milestone. Near-term work emphasizes delivery
-and recovery, resource controls, and live and fleet operations. The
-[DFE roadmap][roadmap] also tracks future work on OpenTelemetry coverage and
-programmability.
+API stability is outside that milestone. Near-term work includes delivery
+and recovery, resource controls, live and fleet operations, experimental
+[WASM processor plugins][wasm], and the [pluggable codec infrastructure][codecs].
+The [DFE roadmap][roadmap] tracks these priorities and future work.
 
 ### Project phases
 
-OTel Arrow began with Laurent Qu&eacute;rel's 2021 prototype. He authored
-[OTEP-0156][otep-0156], which proposed OTAP, and continues to serve as a
-[project lead][phase2-blog]. Phase 1 delivered OTAP transport and the Go
-Collector Contrib components. Phase 2 explores keeping telemetry columnar
-through processing with DFE. See the [project phases][phases] and the
-[OpenTelemetry project definition][project] for the original goals and
-project history.
+- **Phase 0 &mdash; Protocol prototype.** Created and demonstrated the first
+  prototype in 2021 and authored [OTEP-0156][otep-0156] (Laurent Qu&eacute;rel).
+- **Phase 1 &mdash; OTAP transport.** Delivered OTAP on the wire and the Go
+  Collector Contrib receiver and exporter (Laurent Qu&eacute;rel,
+  Joshua MacDonald).
+- **Phase 2 &mdash; End-to-end OTAP.** Built a columnar Rust dataflow engine
+  and [demonstrated its value through benchmarks][phase2-blog].
+- **Phase 3 &mdash; Stabilization.** Target April&ndash;May 2027 to stabilize
+  the configuration model, core components, and core self-telemetry.
+
+See the [project phases][phases] and the [OpenTelemetry project
+definition][project] for the original goals and project history.
 
 ## Benchmarks and talks
 
@@ -144,7 +145,7 @@ change which pipeline is a good fit.
 
 ## Documentation
 
-| Use DFE | Build with DFE |
+| Configure and run the engine | Develop, extend, or embed the engine |
 | --- | --- |
 | [Configuration guide][config] and [model reference][config-model] | [Engine architecture][architecture] and [design principles][principles] |
 | [Examples][examples] and [components][capabilities] | [Embedding and custom distributions][embedding] |
@@ -157,9 +158,10 @@ Try a representative workload and share what you learn. Report bugs and
 propose improvements in [GitHub issues][issues], or start with the
 [contribution guide][contributing] and [project team][team].
 
-Join [`#otel-arrow` on CNCF Slack][slack] or find the next SIG meeting on the
-[OpenTelemetry community calendar][calendar]. See the [meeting notes][notes]
-and [project board][board] for ongoing work.
+On CNCF Slack, join [`#otel-arrow`][slack] for general discussion or
+[`#otel-arrow-dev`][slack-dev] for contributor discussions. Find the next
+SIG meeting on the [OpenTelemetry community calendar][calendar], and see
+the [meeting notes][notes] and [project board][board] for ongoing work.
 
 [admin]: rust/otap-dataflow/docs/admin/README.md
 [admin-crate]: https://crates.io/crates/otel-arrow-dfe-admin-api
@@ -220,5 +222,7 @@ and [project board][board] for ongoing work.
 [rust]: https://rustup.rs/
 [rust-contributing]: rust/otap-dataflow/CONTRIBUTING.md
 [slack]: https://cloud-native.slack.com/archives/C07S4Q67LTF
+[slack-dev]: https://cloud-native.slack.com/archives/C08RRSJR7FD
 [team]: CONTRIBUTING.md#project-team
 [validation]: docs/validation_process.md
+[wasm]: rust/otap-dataflow/crates/wasm-host/README.md
