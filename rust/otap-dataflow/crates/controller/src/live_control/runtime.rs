@@ -808,38 +808,13 @@ impl<
                     // Readiness is observed outside the controller mutex and can
                     // race an exit or cancellation. Promotion therefore rechecks
                     // worker ownership and runtime liveness atomically.
-                    let promoted = {
-                        let mut state = self
-                            .state
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        let target_active =
-                            state
-                                .runtime_instances
-                                .get(&target_key)
-                                .is_some_and(|instance| {
-                                    matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
-                                });
-                        let preempted = state.recovery_preempted(&pipeline_key);
-                        let Some(recovery) = state
-                            .runtime_recoveries
-                            .get_mut(&(pipeline_key.clone(), core_id))
-                        else {
-                            return;
-                        };
-                        if recovery.worker_id != Some(worker_id)
-                            || recovery.cancel_requested
-                            || preempted
-                            || !target_active
-                        {
-                            false
-                        } else {
-                            recovery.serving_generation = target_key.deployment_generation;
-                            recovery.ready_since = Some(Instant::now());
-                            recovery.worker_id = None;
-                            recovery.candidate_generation = None;
-                            true
-                        }
+                    let Some(promoted) = self.promote_runtime_recovery_candidate(
+                        &pipeline_key,
+                        core_id,
+                        worker_id,
+                        &target_key,
+                    ) else {
+                        return;
                     };
                     self.state_changed.notify_all();
                     if !promoted {
@@ -885,14 +860,10 @@ impl<
                         continue;
                     }
 
-                    // Publish the serving overlay only after controller state has
-                    // accepted the candidate. Until then, status continues to
-                    // select the failed generation rather than an unready runtime.
-                    self.observed_state_store.set_pipeline_serving_generation(
-                        pipeline_key.clone(),
-                        core_id,
-                        target_key.deployment_generation,
-                    );
+                    // The serving overlay was published above, only after
+                    // controller state accepted the candidate. Until then, status
+                    // continued to select the failed generation rather than an
+                    // unready runtime.
                     self.prune_pipeline_runtime_and_history(&pipeline_key);
                     otel_info!(
                         "otelcol.pipeline.recovery.complete",
@@ -931,6 +902,78 @@ impl<
                 }
             }
         }
+    }
+
+    /// Promotes a ready replacement to the serving generation for one core.
+    ///
+    /// Returns None when its recovery record is gone, Some(false) when the
+    /// worker lost ownership, and Some(true) after successful publication.
+    pub(super) fn promote_runtime_recovery_candidate(
+        &self,
+        pipeline_key: &PipelineKey,
+        core_id: usize,
+        worker_id: u64,
+        target_key: &DeployedPipelineKey,
+    ) -> Option<bool> {
+        self.promote_runtime_recovery_candidate_with_hook(
+            pipeline_key,
+            core_id,
+            worker_id,
+            target_key,
+            || {},
+        )
+    }
+
+    /// The hook marks the end of the promotion critical section for
+    /// deterministic test coordination; production supplies an empty closure.
+    /// It runs after worker ownership is released and the serving overlay is
+    /// published, immediately before the controller mutex is released, so a
+    /// test can verify that no sibling can prune between the two.
+    pub(super) fn promote_runtime_recovery_candidate_with_hook(
+        &self,
+        pipeline_key: &PipelineKey,
+        core_id: usize,
+        worker_id: u64,
+        target_key: &DeployedPipelineKey,
+        before_unlock: impl FnOnce(),
+    ) -> Option<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let target_active = state
+            .runtime_instances
+            .get(target_key)
+            .is_some_and(|instance| matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active));
+        let preempted = state.recovery_preempted(pipeline_key);
+        let recovery = state
+            .runtime_recoveries
+            .get_mut(&(pipeline_key.clone(), core_id))?;
+        if recovery.worker_id != Some(worker_id)
+            || recovery.cancel_requested
+            || preempted
+            || !target_active
+        {
+            return Some(false);
+        }
+        recovery.serving_generation = target_key.deployment_generation;
+        recovery.ready_since = Some(Instant::now());
+        recovery.worker_id = None;
+        recovery.candidate_generation = None;
+
+        // Publish while still owning the controller lock. Otherwise a sibling
+        // prune could discard this ready candidate before its overlay exists.
+        self.observed_state_store.set_pipeline_serving_generation(
+            pipeline_key.clone(),
+            core_id,
+            target_key.deployment_generation,
+        );
+
+        // Test hook: runs at the end of the critical section, so a test can
+        // observe the published overlay while the controller lock is held.
+        before_unlock();
+        drop(state);
+        Some(true)
     }
 
     /// Reserves the next generation and tentative restart ordinal.
