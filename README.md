@@ -103,18 +103,21 @@ OpenTelemetry deployments.
 ## Roadmap
 
 The team is targeting **April&ndash;May 2027** for stabilization of the
-**configuration model and main components**. API stability is outside that
-milestone. Near-term work emphasizes delivery and recovery, resource controls,
-and live and fleet operations. The [DFE roadmap][roadmap] also tracks future
-work on OpenTelemetry coverage and programmability.
+**configuration model, main components, and core self-telemetry**.
+API stability is outside that milestone. Near-term work emphasizes delivery
+and recovery, resource controls, and live and fleet operations. The
+[DFE roadmap][roadmap] also tracks future work on OpenTelemetry coverage and
+programmability.
 
 ### Project phases
 
-Phase 0 established the proposal and early prototypes. Phase 1 delivered OTAP
-transport and the Go Collector Contrib components. Phase 2 explores keeping
-telemetry columnar through processing with DFE. See the
-[project phases][phases] and the [OpenTelemetry project definition][project]
-for the original goals and project history.
+OTel Arrow began with Laurent Qu&eacute;rel's 2021 prototype. He authored
+[OTEP-0156][otep-0156], which proposed OTAP, and continues to serve as a
+[project lead][phase2-blog]. Phase 1 delivered OTAP transport and the Go
+Collector Contrib components. Phase 2 explores keeping telemetry columnar
+through processing with DFE. See the [project phases][phases] and the
+[OpenTelemetry project definition][project] for the original goals and
+project history.
 
 ## Benchmarks and talks
 
@@ -197,6 +200,8 @@ and [project board][board] for ongoing work.
 [opamp]: rust/otap-dataflow/docs/opamp.md
 [otap-basics]: docs/otap_basics.md
 [otap-spec]: docs/otap-spec.md
+[otep-0156]:
+    https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0156-columnar-encoding.md
 [otlp]: https://opentelemetry.io/docs/specs/otlp/
 [phase2-announcement]: https://opentelemetry.io/blog/2025/otel-arrow-phase-2/
 [phase2-blog]: https://opentelemetry.io/blog/2026/otel-arrow-phase-2/

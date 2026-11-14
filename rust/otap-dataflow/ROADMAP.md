@@ -2,8 +2,8 @@
 
 The [OpenTelemetry Arrow Dataflow Engine](../../README.md) is incubating.
 The team is targeting **April&ndash;May 2027** for stabilization of the
-**configuration model and main components**. The Rust and admin APIs
-continue to evolve beyond the scope of this milestone.
+**configuration model, main components, and core self-telemetry**.
+API stability is outside that milestone.
 
 The [capabilities reference][capabilities] describes what users can try today.
 The [project phases][phases] document the history of the OTAP protocol and
@@ -14,6 +14,7 @@ the engine exploration.
 | Priority | Work |
 | --- | --- |
 | Configuration and core components | Exercise the [configuration model][config] and main pipeline components with representative deployments. Improve validation, diagnostics, and examples as their contracts settle. See the [pipeline linting RFC][linting]. |
+| Core self-telemetry | Stabilize essential engine and pipeline metrics and structured diagnostic events. Preserve the names, units, attributes, and meanings that dashboards, alerts, and queries depend on. See the [self-observability guide][self-observability] and [telemetry compatibility guide][telemetry-compatibility]. |
 | Delivery and recovery | Harden acknowledgements, retry, and [durable buffering][buffer] under overload, restart, and downstream failure. Continue work on [filelog discovery and checkpoints][filelog]. |
 | Resource control | Refine [memory protection and admission control][memory] and explore [retained-work accounting][accounting] to attribute pressure to the work that causes it. |
 | Live and fleet operations | Improve the experience of [rolling reconfiguration][reconfiguration], rollback, and diagnosis. Exercise the early [OpAMP agent][opamp] with remote configuration and health reporting. |
@@ -51,4 +52,6 @@ progress. Share workloads, issues, and feedback through the
     https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/4738-telemetry-policy.md
 [reconfiguration]: docs/admin/live-reconfiguration.md
 [rfcs]: rfcs/README.md
+[self-observability]: docs/self-observability.md
+[telemetry-compatibility]: docs/telemetry/stability-compatibility-guide.md
 [wasm]: crates/wasm-host/README.md

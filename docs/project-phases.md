@@ -17,11 +17,12 @@ incrementally expanding the project's capabilities and scope.
 
 **Key Deliverables:**
 
-- Initial demo created by @lquerel showcasing the concept ([YouTube
-  presentation](https://www.youtube.com/watch?v=9dGGjREaggY), December 2021)
-- OpenTelemetry Technical Committee sponsorship by @jmacd
-- OpenTelemetry Enhancement Proposal (OTEP) for columnar encoding
-  ([OTEP-0156](https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0156-columnar-encoding.md)).
+- [Laurent Qu&eacute;rel](https://github.com/lquerel) created the initial
+  prototype and demonstrated it in
+  [December 2021](https://www.youtube.com/watch?v=9dGGjREaggY).
+- OpenTelemetry Technical Committee sponsorship by @jmacd.
+- Laurent Qu&eacute;rel authored [OTEP-0156][otep-0156], the OpenTelemetry
+  Enhancement Proposal for the columnar encoding behind OTAP.
 
 **Success Criteria:**
 
@@ -130,3 +131,6 @@ Additional project phases will be defined as the project evolves,
 based on the outcome of earlier phases.
 
 Phase N+1 planning will be discussed when Phase N comes to a close.
+
+[otep-0156]:
+    https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0156-columnar-encoding.md
