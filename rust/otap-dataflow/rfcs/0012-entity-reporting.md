@@ -125,7 +125,8 @@ Using a UUID v7 as the identity has useful properties:
 
 #### Descriptive attributes
 
-All attributes other than the `uid` are descriptive. They fall into two tiers:
+All attributes other than the `uid` are descriptive, but are divided into two
+categories:
 
 - **Navigational attributes** are descriptive attributes that are fixed for
   the lifetime of the entity. They let users find the entity and act on it.
@@ -142,28 +143,19 @@ infrastructure.
 
 The navigational attributes of an entity, combined with those of the entities
 that contain it (see [Entity Containment Chain](#entity-containment-chain)),
-make up its [telescoping identity][otel-telescoping]. OpenTelemetry describes
-identity as a spectrum: at one end an entity is identified by a single opaque
-UUID, and every other attribute is joined from a side channel; at the other end
-every identifying and navigational attribute travels with the signal.
-OpenTelemetry defaults to a [blended approach][otel-navigation] in which a
-resource carries both identity and navigation. The DFE takes the same blended
-approach for its own entities: the `uid` carries identity, and the
-navigational attributes carry navigation, so that users can find and act on the
-entity without a join.
+make up its [telescoping identity][otel-telescoping].
 
 > [!NOTE]
 > Many of the navigational attributes look like identifiers, and some of
 > them (for example `pipeline.group.id` + `pipeline.id` + `core.id` +
-> `deployment.generation`) were effectively used as a compound identity before
+> `deployment.generation`) were used as a compound identity before
 > this RFC. Because the UUID is already minimally sufficient, the
 > [minimally sufficient identity][otel-minimal-identity] rule requires every
 > one of these attributes to be descriptive rather than identifying. Adding
 > them to the identity would add nothing to uniqueness.
 
-The two tiers differ in where they are reported. Navigational attributes
-appear on every signal related to the entity, while state attributes appear
-only in entity events. The reasons are explained in
+Navigational attributes appear on every signal related to the entity, while state
+attributes appear only in entity events. The reasons are explained in
 [Signal modeling and Entity Refs](#signal-modeling-and-entity-refs) and
 [Entity Events](#entity-events).
 
@@ -174,57 +166,6 @@ and are injected via resource/entity detectors and entities that are owned and
 operated by the DFE
   - TODO(agent): Need words to describe entities above and below this boundary
 - TODO(agent): introduce the concept of entity containment within the DFE and how descriptive
-
-#### Ambient and internal entities
-
-The DFE distinguishes entities by where they come from:
-
-- **Ambient entities** describe the environment the DFE runs in: the host,
-  container, process, service instance, and so on. The DFE does not create or
-  own them. They are discovered by resource detectors, provided through
-  [entity propagation][otel-entity-propagation] (`OTEL_ENTITIES`), or
-  configured explicitly under `engine.telemetry.resource`.
-- **Internal entities** are created, owned, and deleted by the DFE: the
-  engine, pipeline groups, pipelines, pipeline instances, nodes, channels, and
-  extensions. All of the entity types in [Entity types](#entity-types) are
-  internal.
-
-Separately, entities are named by where they are placed on a signal:
-
-- **Resource entities** are reported on the OpenTelemetry `Resource`.
-- **Scope entities** are reported on the `InstrumentationScope`.
-
-The mapping between the two is:
-
-- Every ambient entity is a resource entity.
-- Every internal entity is a scope entity, **except the `engine`**. The engine
-  is the root of all internal entities and is reported as a resource entity.
-
-```text
-          AMBIENT                              INTERNAL
-  (detected / propagated / configured)  (created and owned by the DFE)
-
-  host    container    process    service.instance
-    |         |           |              |
-    +---------+-----------+--------------+------- engine ------+
-    |                                                  ^       |
-    |              resource entities                   |       |
-    +--------------------------------------------------+       |
-                                                    root of    |
-                                                    internal   |
-  -------------------------------------------------------------+-------
-                                                               |
-                         scope entities                        v
-                pipeline.group -> pipeline -> pipeline.instance -> node
-                                                               -> channel
-                                                               -> extension
-```
-
-The engine is the exception because it is the boundary between the two. It is the
-last entity forming the root of the tree, and it gives every internal entity a
-single root that can be referenced from the resource. Telemetry about the engine
-as a whole (for example the existing `engine` metric set) already carries no scope
-attributes, which is consistent with the engine being a resource entity.
 
 #### Containment
 
@@ -264,8 +205,19 @@ are unioned into each scope
 - TODO(agent): Explain how logs and metrics are attached to explicit entities based on
 the narrowest containing entity in the scope
 
-The DFE emits logs and metrics using standard OTLP messages. Entities are
-placed in these messages as follows.
+The DFE distinguishes between two types of entities:
+
+- **Ambient entities** describe the environment the DFE runs in: the host,
+  container, process, service instance, and so on. The DFE does not create or
+  own them. They are discovered by resource detectors, provided through
+  [entity propagation][otel-entity-propagation] (`OTEL_ENTITIES`), or
+  configured explicitly under `engine.telemetry.resource`.
+- **Internal entities** are created, owned, and deleted by the DFE: the
+  engine, pipeline groups, pipelines, pipeline instances, nodes, channels, and
+  extensions. All of the entity types in [Entity types](#entity-types) are
+  internal.
+
+Entities are modeled in OpenTelemetry signals as follows.
 
 #### Resource
 
@@ -297,15 +249,14 @@ Resource:
 
 #### Scope
 
-Scope entities are reported on the `InstrumentationScope` attributes. The DFE
-already places entity attributes on the scope rather than repeating them on
-every log record or data point. This RFC keeps that approach and further specifies
-what goes into the scope.
+The DFE already places internal entity attributes on the scope rather than repeating
+them on every log record or data point. This RFC keeps that approach and further
+specifies what goes into the scope.
 
-The scope attributes for a signal are the flattened union, over every scope
-entity in the containment chain of the entity the signal belongs to, of:
+Every signal belongs to an entity. The scope attributes for a signal are the union,
+over every internal entity in the containment chain of:
 
-- the entity's `uid`, and
+- the entity's identifying attributes (`uid`)
 - the entity's navigational attributes.
 
 For example, a log emitted by a node, or a metric from a node's metric set,
@@ -409,7 +360,7 @@ scope.
 
 #### Entity state events
 
-The DFE emits an `entity.state` event for an internal entity when:
+The DFE may emit an `entity.state` event for an internal entity when:
 
 - the entity is created,
 - any of its state attributes changes, or
@@ -520,7 +471,7 @@ Possible reasons include:
 | --- | --- |
 | `deleted` | A pipeline or pipeline group was removed from configuration. |
 | `replaced` | A pipeline instance was superseded by a newer deployment generation. |
-| `scaled_down` | A pipeline instance was removed because the pipeline's core allocation shrank. |
+| `scaled` | A pipeline instance was removed because the pipeline's core allocation shrank. |
 | `failed` | A pipeline instance stopped because of an unrecoverable error. |
 | `shutdown` | The engine is shutting down. |
 
@@ -556,9 +507,6 @@ engine:
 The configured value is reported in each state event as
 `entity.report.interval`. A value of `0` matches the OpenTelemetry meaning:
 no periodic state events will be sent.
-
-- TODO: Settle the default `report_interval`, and whether it can be
-  overridden per entity type or per pipeline.
 
 The way periodic events are spread over the interval, the behavior under
 backpressure, and the ordering guarantees are described in the
