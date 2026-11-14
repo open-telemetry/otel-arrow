@@ -231,6 +231,8 @@ pub enum MessageFormat {
     Plaintext,
     /// Syslog encoding for Kafka log records.
     Syslog,
+    /// JSON documents interpreted by the pipeline-selected JSON codec (logs only).
+    Json,
     // others eventually
 }
 
@@ -401,6 +403,9 @@ pub const MSG_FORMAT_PLAINTEXT: &[u8] = b"plaintext";
 
 /// header value for Syslog format in bytes
 pub const MSG_FORMAT_SYSLOG: &[u8] = b"syslog";
+
+/// Header value for registered JSON decoding.
+pub const MSG_FORMAT_JSON: &[u8] = b"json";
 
 /// Maximum length of a Kafka topic name.
 ///

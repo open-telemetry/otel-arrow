@@ -18,6 +18,45 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use crate::CodecError;
 
+/// Receipt metadata needed to interpret deferred, yearless timestamps.
+///
+/// The sentinel keeps this context within the encoded envelope's existing
+/// alignment padding. It is not a valid calendar year.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodeContext {
+    received_local_year: i32,
+}
+
+impl Default for DecodeContext {
+    fn default() -> Self {
+        Self {
+            received_local_year: i32::MIN,
+        }
+    }
+}
+
+impl DecodeContext {
+    /// Captures the receiver's local year without consulting the decoding clock.
+    pub fn with_received_local_year(year: i32) -> Result<Self, CodecError> {
+        if year == i32::MIN {
+            return Err(CodecError::configuration("invalid receipt year"));
+        }
+        Ok(Self {
+            received_local_year: year,
+        })
+    }
+
+    /// Returns the local year captured at receipt, when supplied by the receiver.
+    #[must_use]
+    pub const fn received_local_year(self) -> Option<i32> {
+        if self.received_local_year == i32::MIN {
+            None
+        } else {
+            Some(self.received_local_year)
+        }
+    }
+}
+
 /// Amount of format validation requested when decoding encoded pdata.
 ///
 /// `BestEffort` permits codecs to use a faster parser that may not discover
@@ -77,6 +116,26 @@ impl DecodePolicy {
 /// borrow mutable decoder state: the service releases that instance before the
 /// first suspension, and other nodes may use it while the job is pending.
 pub trait PdataDecoder: Send {
+    /// Starts decoding with receipt metadata retained by the encoded envelope.
+    fn start_decode_with_context(
+        &mut self,
+        signal: SignalType,
+        bytes: &Bytes,
+        _context: DecodeContext,
+    ) -> Result<DecodeTask, CodecError> {
+        self.start_decode(signal, bytes)
+    }
+
+    /// Decodes synchronously with receipt metadata, if the format needs it.
+    fn decode_with_context(
+        &mut self,
+        signal: SignalType,
+        bytes: &Bytes,
+        _context: DecodeContext,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        self.decode(signal, bytes)
+    }
+
     /// Starts a decode without allocating a future for ordinary synchronous codecs.
     ///
     /// The default completes immediately. Incremental implementations return an

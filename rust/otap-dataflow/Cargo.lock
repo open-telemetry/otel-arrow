@@ -8103,6 +8103,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror 2.0.21",
  "tokio",

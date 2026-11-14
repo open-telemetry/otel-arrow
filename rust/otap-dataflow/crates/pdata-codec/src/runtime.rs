@@ -298,7 +298,12 @@ impl CodecService {
 
     /// Decodes admitted bytes through a lazily reused decoder instance.
     pub fn decode(&self, encoded: &EncodedPdata) -> Result<OtapArrowRecords, CodecError> {
-        self.decode_parts(encoded.codec(), encoded.signal_type(), encoded.bytes())
+        self.decode_parts_with_context(
+            encoded.codec(),
+            encoded.signal_type(),
+            encoded.bytes(),
+            encoded.decode_context(),
+        )
     }
 
     /// Decodes encoded parts without constructing an envelope.
@@ -308,13 +313,23 @@ impl CodecService {
         signal: otel_arrow_dfe_config::SignalType,
         bytes: &Bytes,
     ) -> Result<OtapArrowRecords, CodecError> {
+        self.decode_parts_with_context(codec, signal, bytes, crate::DecodeContext::default())
+    }
+
+    fn decode_parts_with_context(
+        &self,
+        codec: ResolvedCodec,
+        signal: otel_arrow_dfe_config::SignalType,
+        bytes: &Bytes,
+        context: crate::DecodeContext,
+    ) -> Result<OtapArrowRecords, CodecError> {
         let prepared = self.prepared(codec)?;
         let codec = prepared.codec;
         codec.require_decoder(signal)?;
         let mut runtime = self.lock()?;
         let records = runtime
             .decoder(prepared)?
-            .decode(signal, bytes)
+            .decode_with_context(signal, bytes, context)
             .map_err(|error| {
                 error.with_operation_context(codec.encoding(), CodecOperation::Decode)
             })?;
@@ -348,7 +363,7 @@ impl CodecService {
             let mut runtime = self.lock()?;
             runtime
                 .decoder(prepared)?
-                .start_decode(signal, encoded.bytes())
+                .start_decode_with_context(signal, encoded.bytes(), encoded.decode_context())
                 .map_err(|error| {
                     error.with_operation_context(codec.encoding(), CodecOperation::Decode)
                 })?
@@ -380,12 +395,14 @@ impl CodecService {
         encoded: &'a EncodedPdata,
         accepted_encodings: &AcceptedEncodings,
     ) -> Result<PdataView<'a>, CodecError> {
-        self.view_parts(
-            encoded.codec(),
-            encoded.signal_type(),
-            encoded.bytes(),
-            accepted_encodings,
-        )
+        if accepted_encodings.accepts(encoded.codec()) {
+            return Ok(PdataView::Encoded(
+                crate::EncodedView::new(encoded.encoding(), encoded.signal_type(), encoded.bytes())
+                    .with_decode_context(encoded.decode_context()),
+            ));
+        }
+        self.decode(encoded)
+            .map(|records| PdataView::Native(std::borrow::Cow::Owned(records)))
     }
 
     /// Views encoded parts without constructing an envelope.

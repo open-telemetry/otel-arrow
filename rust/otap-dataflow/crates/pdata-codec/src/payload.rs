@@ -263,11 +263,10 @@ impl PdataPayload {
     #[must_use]
     pub fn encoded_view(&self) -> Option<EncodedView<'_>> {
         match &self.storage {
-            PayloadStorage::Encoded(encoded) => Some(EncodedView::new(
-                encoded.encoding(),
-                encoded.signal_type(),
-                encoded.bytes(),
-            )),
+            PayloadStorage::Encoded(encoded) => Some(
+                EncodedView::new(encoded.encoding(), encoded.signal_type(), encoded.bytes())
+                    .with_decode_context(encoded.decode_context()),
+            ),
             PayloadStorage::OtapRecords(_) => None,
         }
     }

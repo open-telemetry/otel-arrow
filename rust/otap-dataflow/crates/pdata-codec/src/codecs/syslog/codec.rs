@@ -490,11 +490,37 @@ fn append_syslog_frame(
     frame: Result<Frame<'_>, SyslogFramingError>,
 ) -> Result<usize, CodecError> {
     let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
-    let parsed = parser::parse(frame.message)
-        .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
-        .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-    builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
-    Ok(frame.message.len())
+    append_syslog_message(
+        builder,
+        frame.message,
+        frame.observed_time,
+        Some(frame.received_local_year),
+    )
+    .map_err(|error| operation_error(CodecOperation::Decode, error))
+}
+
+pub(super) fn append_syslog_message(
+    builder: &mut ReceivedArrowRecordsBuilder,
+    message: &[u8],
+    observed_time: i64,
+    received_local_year: Option<i32>,
+) -> Result<usize, SyslogFramingError> {
+    if message.len() > MAX_MESSAGE_SIZE {
+        return Err(framing_error("syslog message exceeds the byte limit"));
+    }
+    let parsed = parser::parse(message)
+        .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))?;
+    if received_local_year.is_none()
+        && matches!(
+            parsed,
+            parser::parsed_message::ParsedSyslogMessage::Rfc3164(_)
+                | parser::parsed_message::ParsedSyslogMessage::CefWithRfc3164(_, _)
+        )
+    {
+        return Err(framing_error("RFC 3164 decoding requires the receipt year"));
+    }
+    builder.append_syslog(parsed, observed_time, received_local_year.unwrap_or(0));
+    Ok(message.len())
 }
 
 #[derive(Default)]

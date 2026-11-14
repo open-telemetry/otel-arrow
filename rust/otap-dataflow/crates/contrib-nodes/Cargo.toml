@@ -144,6 +144,7 @@ contrib-exporters = [
 
 # Integrations with both sources and destinations.
 kafka = [
+    "dep:chrono",
     "otel-arrow-dfe-pdata-codec/syslog-cef",
     "dep:rdkafka",
     "dep:futures-channel",
