@@ -1,214 +1,194 @@
-# OpenTelemetry Protocol with Apache Arrow
+# OpenTelemetry Arrow Dataflow Engine
 
-[![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
-[![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
-[![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
-[![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10684/badge)](https://www.bestpractices.dev/projects/10684)
-[![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=7u3gFLH54G)](https://codecov.io/gh/open-telemetry/otel-arrow)
+The Dataflow Engine (DFE) is an embeddable Rust engine for collecting,
+processing, and exporting telemetry. It uses the **OpenTelemetry Arrow
+Protocol (OTAP)** to keep logs, metrics, and traces in Apache Arrow columns
+during transport and processing. It also speaks OTLP, so you can try it with
+existing OpenTelemetry senders and backends.
 
-**The OTel-Arrow project is building a high-performance, end-to-end
-column-oriented telemetry pipeline for
-[OpenTelemetry](https://opentelemetry.io/) data based on [Apache
-Arrow](https://arrow.apache.org/).**
+**Status: incubating.** DFE is ready for experimentation. Configuration,
+components, and APIs are still evolving. The team is working with the
+[OpenTelemetry Governance Committee][governance] to define the engine's
+longer-term role and next steps in OpenTelemetry.
 
-The OpenTelemetry Protocol with Apache Arrow (OTAP) is designed as the
-column-oriented equivalent of OpenTelemetry Protocol (OTLP) that
-dramatically reduces network usage, and our [protocol
-specification](./docs/otap-spec.md) ensures that OTAP and OTLP are
-always convertible, without loss, in both directions.
+[Try the engine](#quick-start) &middot; [Check capabilities][capabilities] &middot;
+[Explore benchmarks](#benchmarks-and-talks) &middot; [Contribute](#contributing)
 
-The [OTAP Dataflow Engine](./rust/otap-dataflow/README.md) is our new
-Rust OpenTelemetry code base, a pipeline engine that dramatically
-reduces network, memory, and CPU usage, gaining efficiency through a
-number of optimizations, including the **shared-nothing** and
-**thread-per-core** design patterns and extensive use of **zero-copy**
-data types.
+## Quick start
 
-The OTAP Dataflow Engine is **embeddable software**. Our repo builds a
-demonstration `df_engine` artifact with core nodes included and
-features YAML configuration, but really it's designed for safely
-adding OpenTelemetry features and capabilities in other programs,
-anywhere that Rust can be compiled, with fine-grained control over
-memory and CPU resources.
+With [Rust and Cargo][rust] installed, build the engine from source and run the
+[synthetic telemetry demo][demo]. It generates logs locally and runs them through
+three attribute processors.
 
-The OTAP Dataflow Engine has built-in support for OTAP and OTLP,
-receivers and exporters, and built-in processors featuring batching,
-fanout, failover, retry, and routing by signal type. It has processors
-for common forms of filtering, transforming, sampling, and temporal
-aggregation. We have a **durable buffer** processor, based on the
-[Arrow IPC format][ARROW-IPC],
-introducing disk-based storage into pipelines for reliable delivery,
-and there are others such as a Syslog receiver and a Console exporter.
-
-Our transform processor is built using [Apache
-Datafusion](https://datafusion.apache.org/), the industry-leading
-embedded query engine, itself based on [Apache
-Arrow](https://arrow.apache.org/), and our Parquet exporter for OTAP
-makes OpenTelemetry data directly accessible to a wide range of tools,
-thanks to the [Apache Parquet](https://parquet.apache.org/) ecosystem.
-
-The transform and query primitives are developed in the contrib
-[Data Engine](./rust/contrib/data_engine/README.md) workspace. Although
-the OTAP Dataflow Engine consumes these crates, the Data Engine is
-general-purpose and has no architectural dependency on OTAP or OpenTelemetry
-data. Its published crates use the `otel-arrow-contrib-data-engine-*` prefix
-while the workspace is hosted and maintained in this repository.
-
-We're [self-instrumenting
-ourselves](./rust/otap-dataflow/crates/telemetry/README.md) with an
-experimental OpenTelemetry SDK that emits OTAP directly, meaning we
-have an **end-to-end column-oriented telemetry pipeline** in Rust.
-
-Our Golang Collector components [`otelarrowreceiver`][RECEIVER] and
-[`otelarrowexporter`][EXPORTER] have been included in the
-OpenTelemetry Collector-Contrib distribution since [the July 2024
-release of v0.104.0][ARROW-RELEASED].
-
-Our project is growing, new contributors are welcome.  **[Join us in
-`#otel-arrow` on the CNCF Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
-If you are new to the CNCF Slack community, you can
-[create an account](https://slack.cncf.io/).
-
-## What is Apache Arrow?
-
-The [Apache Arrow](https://arrow.apache.org/) is a major open-source
-project for in-memory and on-wire data exchange using a
-column-oriented representation. For OpenTelemetry readers, Apache
-Arrow is a lot like us, as the project encompasses a data format, a
-set of libraries, and an ecosystem.
-
-The Apache Arrow format is a specification for the in-memory layout of
-a **record batch**, including details about the schema, the column
-names and types, and a length, and then a set of Arrays, one per
-column of the correct type and matching length. Arrow record batches
-support a number of types, including scalars of various width, strings
-and binary data, arrays, lists, structs, maps, as well as
-dictionary-encodings over the other types.
-
-With Apache Arrow, we can build a record batch in one language and
-pass it to another language using shared memory. Apache Arrow
-specifies [Arrow IPC][ARROW-IPC], an encoding for column-oriented data
-that extends zero-copy to network and file-based communications.
-
-## What is OTAP?
-
-OTAP is formally the **OpenTelemetry Protocol with Apache Arrow**,
-abbreviated **OTAP** for OTel-Arrow Protocol, a column-oriented
-representation for OpenTelemetry data supporting efficient in-memory
-and on-wire telemetry exchange. Where OpenTelemetry's OTLP is a
-row-oriented protocol, OTel-Arrow's OTAP protocol uses Apache Arrow to
-encode telemetry in a columnar format that is more efficient for CPUs
-to work with, because of vectorization, and compresses dramatically
-better, especially over long-lived streams with the use of [Arrow
-IPC][ARROW-IPC] stream encoding.
-
-OTAP maintains 100% compatibility with the OpenTelemetry data model
-for logs, traces, and metrics, with a straight-forward and non-lossy
-round trip from OTLP to OTAP and back, and support for the
-OpenTelemetry Profiles signal in OTAP is important future work.
-
-In the OTAP Dataflow Engine, batches of OTAP data are represented
-using **multiple record batches** in an arrangement referred to as a
-"star schema". The number of record batches varies by OpenTelemetry
-signal type, see our [data model documentation](./docs/data_model.md)
-for details. OTAP Dataflow Engine also transports OTLP protocol bytes
-directly and efficiently by avoiding protocol message objects.
-
-Adapter libraries for conversion between OTAP and OTLP representations
-are provided in [Rust](./rust/otap-dataflow/crates/pdata/README.md)
-and [Golang](./go/README.md) in this repository.
-
-## Quick Start
-
-### OpenTelemetry Collector example
-
-OTel-Arrow components ship in the [OpenTelemetry
-Collector-Contrib][COLLECTOR-CONTRIB] distribution. The two components
-extend the configuration model and settings of the core OTLP receiver
-and exporter. By design, you can swap `otlp` for `otelarrow` in your
-Collector configuration.  To locate one, see [OpenTelemetry Collector
-releases](https://opentelemetry.io/docs/collector/#releases).
-
-See the [Exporter][EXPORTER] and [Receiver][RECEIVER] docs for
-complete and up-to-date configuration details and Collector-specific
-examples.
-
-### OTAP Dataflow Engine example
-
-**We are not at this time providing pre-built OTAP Dataflow Engine
-releases.** Developers can build the OTAP Dataflow Engine with the
-following:
-
-```bash
+```sh
 git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo build --bin df_engine
+cargo build --locked --bin df_engine
+./target/debug/df_engine --config configs/trafficgen-attributes-metrics-demo.yaml \
+  --num-cores 1 --http-admin-bind 127.0.0.1:8080
 ```
 
-A [directory of example configurations][EXAMPLE-CONFIGS] provides a
-number of examples (e.g.,
-[syslog-console.yaml][SYSLOG-CONSOLE-YAML]). For example, to receive
-syslog messages with our [Syslog/CEF receiver][SYSLOG-CEF] on port
-5140 and print them to the console:
+Open <http://127.0.0.1:8080/> to see pipeline topology and live metrics. Stop
+the engine with Ctrl+C.
 
-```bash
-./target/debug/df_engine -c ./configs/syslog-console.yaml
-```
+![DFE admin UI showing a synthetic log pipeline, its attribute processors, and live metrics](docs/img/dfe-admin-demo.png)
 
-Linux/MacOS users can test this with:
+To run your own pipeline, start with the [configuration guide][config],
+[example pipelines][examples], and [admin documentation][admin].
+For Rust integration, see the [engine crate][engine-crate] and
+[admin SDK][admin-crate] on crates.io and the full list of crates in
+the [release notes][releases].
 
-```bash
-logger -n 127.0.0.1 -P 5140 -d --rfc3164 "hello world"
-```
+## How it works
 
-PowerShell users can test this with:
+OTAP represents telemetry as related Arrow record batches and streams them via
+Arrow IPC over gRPC. An OTAP path can preserve the columnar representation
+across hops, reducing serialization and allocation. When an OTLP pipeline can
+forward its encoded payload as-is, DFE can also avoid decoding it. See the
+[OTAP specification][otap-spec], [telemetry data model][data-model], and
+[codec guide][codecs].
 
-```powershell
-$t=Get-Date -Format 'MMM dd HH:mm:ss';$u=New-Object Net.Sockets.UdpClient;$b=[Text.Encoding]::ASCII.GetBytes("<14>$t powershell test: hello world");$u.Send($b,$b.Length,'127.0.0.1',5140);$u.Close()
-```
+![DFE pipeline from telemetry sources through receivers, Arrow processing, and exporters to downstream destinations, with component examples at each stage.](docs/img/dfe-pipeline.svg)
 
-See the admin console on port 8080, or visit
-`http://127.0.0.1:8080/api/v1/metrics` to see engine metrics in Prometheus
-format.
+The [component matrix][capabilities] lists the full set of components and
+their build requirements.
 
-![syslog-to-console admin console page](./docs/img/df_engine_screen.png)
+The engine builds on lessons from existing telemetry pipelines and explores
+how much work a pipeline can avoid when transport and processing share a data
+representation. Its [architecture][architecture] and
+[design principles][principles] prioritize:
 
-See the [OTAP Dataflow Engine
-documentation](rust/otap-dataflow/README.md) for more details.
+- **Performance.** Thread-per-core execution keeps data and work local.
+  Columnar batches can share work across records.
+- **Reliability.** Bounded queues and backpressure limit work in flight.
+  Acknowledgements, retry, and durable buffering support delivery.
+- **Security and privacy.** Rust provides memory safety, and supported
+  transports offer TLS and authentication options.
+- **Serviceability.** [Self-observability][self-observability] exposes
+  pipeline behavior. [Live reconfiguration][reconfiguration] can roll out
+  changes core by core.
+
+## What works today
+
+| Capability | Status | Scope |
+| --- | --- | --- |
+| [OTLP][otlp] | Available | Logs, metrics, and traces over gRPC and HTTP. Profiles and entities are outside current coverage. |
+| [OTAP][otap-spec] | Available | Logs, metrics, and traces over Arrow IPC/gRPC, with lossless OTLP round-trips for those signals. |
+| [Delivery and resource control][resources] | Available; evolving | Bounded queues, backpressure, acknowledgements, retry, and process memory protection. Durable buffering is experimental. |
+| [Pipeline operations][admin] | Available; evolving | Health, metrics, the embedded UI, and live reconfiguration. In-process topics and the [OpAMP agent][opamp] are early capabilities. |
+| [Programmability][languages] | Experimental | The Transform processor accepts OPL, OTTL, and KQL with different coverage. WASM processor plugins are opt-in. |
+| [OpenTelemetry Telemetry Policies][policies] | Early exploration | The OpenTelemetry proposal describes portable, intent-based policies. DFE's scoped runtime policies are documented in the [configuration model][config-model]. |
+
+The [component matrix][capabilities] lists receivers, processors, exporters,
+and extensions, including build requirements and work in progress. It also
+compares OPL, OTTL, and KQL.
+
+## How it fits with the OpenTelemetry Collector
+
+The Go-based [OpenTelemetry Collector][collector] is the general-purpose
+reference implementation with a broad component ecosystem. Its Contrib
+distribution includes the [OTel Arrow receiver][go-receiver] and
+[exporter][go-exporter]. Those components let Collector deployments use OTAP
+between hops and interoperate with DFE. The [Go libraries][go] provide
+OTLP/OTAP conversion for Go applications.
+
+DFE explores a columnar data path and ways to embed it in Rust applications.
+Interoperability lets users evaluate that design within existing
+OpenTelemetry deployments.
 
 ## Roadmap
 
-See our [project phases document](./docs/project-phases.md) for
-project goals and history. Phase 1 established the OTAP representation
-and proved that a column-oriented representation for OpenTelemetry is
-good for compression performance.
+The team is targeting **April&ndash;May 2027** for stabilization of the
+**configuration model, main components, and core self-telemetry**.
+API stability is outside that milestone. Near-term work includes delivery
+and recovery, resource controls, live and fleet operations, experimental
+[WASM processor plugins][wasm], and the [pluggable codec infrastructure][codecs].
+The [DFE roadmap][roadmap] tracks these priorities and future work.
 
-We are currently completing Phase 2, delivering the OTAP Dataflow
-engine. Phase 2 has demonstrated that a column-oriented, Arrow-based
-pipeline delivers new levels of performance for OpenTelemetry. See our
-[live continuous benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)
-and [nightly benchmark suite](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/).
+### Project phases
 
-As a community, we are planning phase 3, see the links below to join us.
+- **Phase 0 &mdash; Protocol prototype.** Created and demonstrated the first
+  prototype in 2021 and authored [OTEP-0156][otep-0156] (Laurent Qu&eacute;rel).
+- **Phase 1 &mdash; OTAP transport.** Delivered OTAP on the wire and the Go
+  Collector Contrib receiver and exporter (Laurent Qu&eacute;rel,
+  Joshua MacDonald).
+- **Phase 2 &mdash; End-to-end OTAP.** Built a columnar Rust dataflow engine
+  and [demonstrated its value through benchmarks][phase2-blog].
+- **Phase 3 &mdash; Stabilization.** Target April&ndash;May 2027 to stabilize
+  the configuration model, core components, and core self-telemetry.
+
+See the [project phases][phases] and the [OpenTelemetry project
+definition][project] for the original goals and project history.
+
+## Benchmarks and talks
+
+| Benchmark | What it shows |
+| --- | --- |
+| [Continuous][continuous] | Performance trends and regressions on a fixed set of scenarios. |
+| [Nightly][nightly] | Scheduled runs across a broader set of workloads and configurations. |
+| [Compare engines][compare] | Results across engines, protocols, and compression settings. |
+
+Use the [benchmark methodology and scenarios][benchmarks] to interpret the
+results. Batch size, signal mix, transformations, and latency budgets can
+change which pipeline is a good fit.
+
+- **Rethinking Telemetry Pipelines**, Laurent Qu&eacute;rel and Joshua MacDonald,
+  KubeCon + CloudNativeCon North America Observability Day 2026.
+  [Session][observability-day] &middot; [Slides][observability-slides]
+- **The Invisible Tax**, Cijo Thomas and Joshua MacDonald, Observability
+  Summit North America 2026. [Recording][conversion-talk]
+- OpenTelemetry blog.
+  [Phase 2 results][phase2-blog] &middot;
+  [Phase 2 announcement][phase2-announcement] &middot;
+  [OTAP in production][production-blog] &middot;
+  [Project introduction][intro-blog]
+
+## Documentation
+
+| Configure and run the engine | Develop, extend, or embed the engine |
+| --- | --- |
+| [Configuration guide][config] and [model reference][config-model] | [Engine architecture][architecture] and [design principles][principles] |
+| [Examples][examples] and [components][capabilities] | [Embedding and custom distributions][embedding] |
+| [Admin UI, CLI, and live operations][admin] | [Rust contributor guide][rust-contributing] and [design proposals][rfcs] |
+| [OTAP basics][otap-basics] and [protocol specification][otap-spec] | [Arrow data model][data-model] and [encoding validation][validation] |
 
 ## Contributing
 
-We meet weekly, alternating between Tuesday at 4:00 PM PT and Thursday
-at 8:00 AM PT. Check the [OpenTelemetry community calendar][OTELCAL]
-for dates and Zoom links.
+Try a representative workload and share what you learn. Report bugs and
+propose improvements in [GitHub issues][issues], or start with the
+[contribution guide][contributing] and [project board][board].
 
-The meeting is open for all to join. We invite everyone to join our
-meeting, regardless of your experience level. Whether you're a
-seasoned OpenTelemetry developer, just starting your journey, or
-simply curious about the work we do, you're more than welcome to
-participate!
+On CNCF Slack, join [`#otel-arrow`][slack] for general discussion or
+[`#otel-arrow-dev`][slack-dev] for contributor discussions.
 
-- [Contribution guidelines](CONTRIBUTING.md)
-- [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
-- CNCF Slack:
-  [`#otel-arrow`](https://cloud-native.slack.com/archives/C07S4Q67LTF).
-  New users can [create an account](https://slack.cncf.io/).
+### AI-assisted contributions
+
+The maintainers welcome AI-assisted contributions. We use AI to improve code
+quality, strengthen testing and validation, and make the engine more secure,
+reliable, and efficient.
+
+As the author, you are responsible for the entire change. Before opening a
+pull request, review the full diff, verify what it does, and be ready to explain
+and defend your design choices with evidence. Respect the time of approvers
+and maintainers by bringing them a focused change you understand and can
+answer questions about.
+
+Use the [project design principles][principles] to guide your changes and
+read the [AI-assisted pull request review instructions][ai-review] for what
+reviewers look for.
+
+### Arrow SIG meetings
+
+The Arrow SIG meets weekly and welcomes everyone. Meetings alternate between
+[Tuesday at 4:00 p.m. Pacific time][zoom-tuesday] and
+[Thursday at 8:00 a.m. Pacific time][zoom-thursday]. See the
+[SIG agenda and meeting notes][notes] in Google Docs and the
+[OpenTelemetry community calendar][calendar] for dates and schedule changes.
+
+## Project team
+
+See the [contribution guide's project team][team] for the roster and the
+[OpenTelemetry membership guide][membership] for role definitions.
 
 ### Maintainers
 
@@ -217,11 +197,8 @@ participate!
 - [Jake Dern](https://github.com/JakeDern), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Laurent Qu&eacute;rel](https://github.com/lquerel), F5
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
-
-For more information about the maintainer role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
 
 ### Approvers
 
@@ -229,13 +206,10 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 - [Gokhan Uslu](https://github.com/gouslu), Microsoft
 
-For more information about the approver role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
-
 ### Triagers
 
-For more information about the triager role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+Triagers review new issues and help contributors find work. The
+[issue triage guide][triage] explains how to get involved.
 
 ### Emeritus
 
@@ -244,46 +218,82 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 - [Moh Osman](https://github.com/moh-osman3), Approver
 - [Tom Tan](https://github.com/ThomsonTan), Triager
 
-### Thanks to all of our contributors
+## Thanks to all our contributors
 
-[![OTel-Arrow
-contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
+[![OpenTelemetry Arrow contributors][contributors-image]][contributors]
 
-## Documentation
+See the [full list of contributors][contributors] on GitHub.
 
-Here are some of our important documents. You can find more
-work-in-progress [design documentation for the OTAP Dataflow
-Engine](./rust/otap-dataflow/docs).
-
-| Document | Description |
-| --- | --- |
-| [OTAP Spec](docs/otap-spec.md) | Formal protocol specification |
-| [OTAP Basics](docs/otap_basics.md) | Introduction to the OTAP protocol |
-| [Data Model](docs/data_model.md) | Arrow schema mappings for OTLP entities |
-| [Phase 1 Overview](docs/phase1-overview.md) | Wire protocol details and historical benchmarks |
-| [Phase 2 Design](docs/phase2-design.md) | End-to-end pipeline architecture |
-| [Engine Design](rust/otap-dataflow/crates/engine/README.md) | Engine architecture |
-| [Benchmarks](docs/benchmarks.md) | Current performance results |
-| [Validation Process](docs/validation_process.md) | Encoding/decoding validation process |
-| [Dataflow Engine](rust/otap-dataflow/README.md) | Rust crate architecture and component reference |
-
-## References
-
-- [OpenTelemetry Project](https://opentelemetry.io/)
-- [OpenTelemetry Specification](https://github.com/open-telemetry/opentelemetry-specification)
-- [Apache Arrow](https://arrow.apache.org/)
-- [Project definition](https://github.com/open-telemetry/community/blob/main/projects/otelarrow.md)
-- [OTEP-0156: Columnar Encoding](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md)
-- [Donation request](https://github.com/open-telemetry/community/issues/1332)
-- [OTel-Arrow blog: Introduction](https://opentelemetry.io/blog/2023/otel-arrow/)
-- [OTel-Arrow blog: Production Readiness](https://opentelemetry.io/blog/2024/otel-arrow-production)
-
-[COLLECTOR-CONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
-[RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
-[EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
-[ARROW-IPC]: https://arrow.apache.org/docs/format/IPC.html
-[ARROW-RELEASED]: https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.104.0
-[SYSLOG-CEF]: ./rust/otap-dataflow/crates/core-nodes/src/receivers/syslog_cef_receiver/README.md
-[SYSLOG-CONSOLE-YAML]: ./rust/otap-dataflow/configs/syslog-console.yaml
-[EXAMPLE-CONFIGS]: ./rust/otap-dataflow/configs/README.md
-[OTELCAL]: https://github.com/open-telemetry/community/blob/main/README.md#calendar
+[admin]: rust/otap-dataflow/docs/admin/README.md
+[admin-crate]: https://crates.io/crates/otel-arrow-dfe-admin-api
+[ai-review]: rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md
+[architecture]: rust/otap-dataflow/crates/engine/README.md
+[benchmarks]: docs/benchmarks.md
+[board]: https://github.com/orgs/open-telemetry/projects/139
+[calendar]: https://github.com/open-telemetry/community/blob/main/README.md#calendar
+[capabilities]: docs/dfe-capabilities.md
+[codecs]: rust/otap-dataflow/docs/codecs.md
+[collector]: https://opentelemetry.io/docs/collector/
+[compare]: https://open-telemetry.github.io/otel-arrow/compare/
+[config]: rust/otap-dataflow/docs/configuration.md
+[config-model]: rust/otap-dataflow/docs/configuration-model.md
+[continuous]: https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/
+[contributing]: CONTRIBUTING.md
+[contributors]: https://github.com/open-telemetry/otel-arrow/graphs/contributors
+[contributors-image]:
+    https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow
+[conversion-talk]: https://www.youtube.com/watch?v=w9fGmBeTj5c
+[data-model]: docs/data_model.md
+[demo]: rust/otap-dataflow/configs/trafficgen-attributes-metrics-demo.yaml
+[embedding]: rust/otap-dataflow/README.md#embedding-in-custom-distributions
+[engine-crate]: https://crates.io/crates/otel-arrow-dfe-engine
+[examples]: rust/otap-dataflow/configs/README.md
+[go]: go/README.md
+[go-exporter]:
+    https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/otelarrowexporter
+[go-receiver]:
+    https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/otelarrowreceiver
+[governance]: https://github.com/open-telemetry/community/blob/main/governance-charter.md
+[intro-blog]: https://opentelemetry.io/blog/2023/otel-arrow/
+[issues]: https://github.com/open-telemetry/otel-arrow/issues
+[languages]: docs/dfe-capabilities.md#processing-languages
+[membership]: https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md
+[nightly]: https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/
+[notes]:
+    https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs
+[observability-day]:
+    https://events.linuxfoundation.org/kubecon-cloudnativecon-north-america/co-located-events/cncf-hosted-co-located-schedule/?id=1264694
+[observability-slides]:
+    https://sessionize.com/download/ikbamhec~JSPrm3XVBmNnKHsiTH8zQz.pdf~rethinking_telemetry_pipelines_obsday.pdf
+[opamp]: rust/otap-dataflow/docs/opamp.md
+[otap-basics]: docs/otap_basics.md
+[otap-spec]: docs/otap-spec.md
+[otep-0156]:
+    https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0156-columnar-encoding.md
+[otlp]: https://opentelemetry.io/docs/specs/otlp/
+[phase2-announcement]: https://opentelemetry.io/blog/2025/otel-arrow-phase-2/
+[phase2-blog]: https://opentelemetry.io/blog/2026/otel-arrow-phase-2/
+[phases]: docs/project-phases.md
+[policies]:
+    https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/4738-telemetry-policy.md
+[principles]: rust/otap-dataflow/docs/design-principles.md
+[project]: https://github.com/open-telemetry/community/blob/main/projects/otelarrow.md
+[production-blog]: https://opentelemetry.io/blog/2024/otel-arrow-production
+[reconfiguration]: rust/otap-dataflow/docs/admin/live-reconfiguration.md
+[releases]: https://github.com/open-telemetry/otel-arrow/releases
+[self-observability]: rust/otap-dataflow/docs/self-observability.md
+[resources]: rust/otap-dataflow/docs/memory-resource-management.md
+[rfcs]: rust/otap-dataflow/rfcs/README.md
+[roadmap]: rust/otap-dataflow/ROADMAP.md
+[rust]: https://rustup.rs/
+[rust-contributing]: rust/otap-dataflow/CONTRIBUTING.md
+[slack]: https://cloud-native.slack.com/archives/C07S4Q67LTF
+[slack-dev]: https://cloud-native.slack.com/archives/C08RRSJR7FD
+[team]: CONTRIBUTING.md#project-team
+[triage]: ISSUE_TRIAGE.md#triagers
+[validation]: docs/validation_process.md
+[wasm]: rust/otap-dataflow/crates/wasm-host/README.md
+[zoom-thursday]:
+    https://zoom-lfx.platform.linuxfoundation.org/meeting/96949674563?password=0f34c1e9-e49d-498d-b4e1-53ddb1a4c914
+[zoom-tuesday]:
+    https://zoom-lfx.platform.linuxfoundation.org/meeting/97781334652?password=6b0821e6-624c-42a4-8900-5d3c9993119c
