@@ -100,7 +100,8 @@ named `<type>.uid`, for example `engine.uid`, `pipeline.uid`,
 This follows the Kubernetes convention, where `k8s.pod.uid` identifies a pod
 and `k8s.pod.name` is a human-friendly, descriptive name. The DFE keeps its
 existing human-friendly identifiers (`pipeline.id`, `node.id`, ...) as
-descriptive attributes alongside the new `uid` attributes.
+navigational attributes (see [Descriptive attributes](#descriptive-attributes))
+alongside the new `uid` attributes.
 
 Using a UUID v7 as the identity has useful properties:
 
@@ -126,27 +127,33 @@ Using a UUID v7 as the identity has useful properties:
 
 All attributes other than the `uid` are descriptive. They fall into two tiers:
 
-- **Stable descriptive attributes** are fixed for the lifetime of the entity.
+- **Navigational attributes** are descriptive attributes that are fixed for
+  the lifetime of the entity. They let users find the entity and act on it.
   Examples: `pipeline.id`, `pipeline.group.id`, `node.id`, `node.urn`,
   `node.type`, `core.id`, `deployment.generation`.
-- **State descriptive attributes** may change during the lifetime of the
-  entity. Examples: the lifecycle phase of a pipeline instance (`Running`,
-  `Draining`, ...), its conditions, or its last heartbeat time.
+- **State attributes** are descriptive attributes that may change during the
+  lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
+  (`Running`, `Draining`, ...), its conditions, or its last heartbeat time.
 
-The stable descriptive attributes of an entity, combined with those of the
-entities that contain it (see
-[Entity Containment Chain](#entity-containment-chain)), make up its
-[telescoping identity][otel-telescoping]. OpenTelemetry describes identity as a
-spectrum: at one end an entity is identified by a single opaque UUID, and every
-other attribute is joined from a side channel; at the other end every
-identifying and navigational attribute travels with the signal. OpenTelemetry
-defaults to a [blended approach][otel-navigation] in which a resource carries
-both identity and navigation. The DFE takes the same blended approach for its
-own entities: the `uid` carries identity, and the stable descriptive attributes
-carry navigation, so that users can find and act on the entity without a join.
+The term "navigational" comes from the [Navigation][otel-navigation] section of
+the OpenTelemetry Resource specification, which distinguishes attributes that
+identify an entity from attributes that help users find it in their
+infrastructure.
+
+The navigational attributes of an entity, combined with those of the entities
+that contain it (see [Entity Containment Chain](#entity-containment-chain)),
+make up its [telescoping identity][otel-telescoping]. OpenTelemetry describes
+identity as a spectrum: at one end an entity is identified by a single opaque
+UUID, and every other attribute is joined from a side channel; at the other end
+every identifying and navigational attribute travels with the signal.
+OpenTelemetry defaults to a [blended approach][otel-navigation] in which a
+resource carries both identity and navigation. The DFE takes the same blended
+approach for its own entities: the `uid` carries identity, and the
+navigational attributes carry navigation, so that users can find and act on the
+entity without a join.
 
 > [!NOTE]
-> Many of the stable descriptive attributes look like identifiers, and some of
+> Many of the navigational attributes look like identifiers, and some of
 > them (for example `pipeline.group.id` + `pipeline.id` + `core.id` +
 > `deployment.generation`) were effectively used as a compound identity before
 > this RFC. Because the UUID is already minimally sufficient, the
@@ -154,9 +161,9 @@ carry navigation, so that users can find and act on the entity without a join.
 > one of these attributes to be descriptive rather than identifying. Adding
 > them to the identity would add nothing to uniqueness.
 
-The two tiers differ in where they are reported. Stable descriptive attributes
-appear on every signal related to the entity, while state descriptive
-attributes appear only in entity events. The reasons are explained in
+The two tiers differ in where they are reported. Navigational attributes
+appear on every signal related to the entity, while state attributes appear
+only in entity events. The reasons are explained in
 [Signal modeling and Entity Refs](#signal-modeling-and-entity-refs) and
 [Entity Events](#entity-events).
 
@@ -239,8 +246,8 @@ The **containment chain** of an entity is the path from the engine to that
 entity. For example, the containment chain of a node is
 `engine -> pipeline.group -> pipeline -> pipeline.instance -> node`.
 
-Stable descriptive attributes accumulate along the chain. The full description
-of a node is its own stable descriptive attributes (`node.id`, `node.urn`,
+Navigational attributes accumulate along the chain. The full description of a
+node is its own navigational attributes (`node.id`, `node.urn`,
 `node.type`) together with those of its pipeline instance, pipeline, pipeline
 group, and engine. The chain is used for navigation and for inferring which entity
 a signal belongs to (see
@@ -299,7 +306,7 @@ The scope attributes for a signal are the flattened union, over every scope
 entity in the containment chain of the entity the signal belongs to, of:
 
 - the entity's `uid`, and
-- the entity's stable descriptive attributes.
+- the entity's navigational attributes.
 
 For example, a log emitted by a node, or a metric from a node's metric set,
 carries:
@@ -360,11 +367,11 @@ to the `engine`.
 
 #### State attributes are never placed on the scope
 
-State descriptive attributes are reported only in entity events and never on
+State attributes are reported only in entity events and never on
 the scope. Scope attributes are part of the identity of a metric stream. If a
 value that changes, such as a pipeline instance's phase, were placed on the
 scope, every change would start a new metric stream (and, for Prometheus, a
-new series with different `otel_scope_*` labels). Stable descriptive
+new series with different `otel_scope_*` labels). Navigational
 attributes do not have this problem because they never change during the
 lifetime of the entity, and the entity's `uid` already scopes the stream.
 
@@ -384,7 +391,7 @@ event emission rates
 Logs and metrics give each internal entity's identity and stable description,
 but they leave three things out:
 
-- the state descriptive attributes,
+- the state attributes,
 - relationships other than containment, and
 - an explicit signal that the entity has been created or deleted.
 
@@ -405,14 +412,14 @@ scope.
 The DFE emits an `entity.state` event for an internal entity when:
 
 - the entity is created,
-- any of its state descriptive attributes changes, or
+- any of its state attributes changes, or
 - the periodic report interval elapses (see
   [Periodic emission](#periodic-emission)).
 
 Each event carries the complete current state of the entity:
 
 - `entity.type` and `entity.id` (the `uid`),
-- `entity.description`, containing both the stable and the state descriptive
+- `entity.description`, containing both the navigational and the state
   attributes,
 - `entity.relationships`, and
 - `entity.report.interval`.
@@ -443,11 +450,11 @@ LogRecord:
     entity.report.interval: 60
 ```
 
-- TODO: Define the exact state descriptive attributes for each entity type,
+- TODO: Define the exact state attributes for each entity type,
   and how they map from the status that `/api/v1/status` reports today.
 
-The description includes the stable descriptive attributes of the entity
-itself. It also includes the stable descriptive attributes of the containing
+The description includes the navigational attributes of the entity itself.
+It also includes the navigational attributes of the containing
 entities that it already carries on its scope today (for example
 `pipeline.id` on a pipeline instance). This keeps entity events self-contained
 for consumers that do not reconstruct the containment chain.
@@ -664,9 +671,9 @@ be redefined against the principles here:
 
 ### Telescoping identity on the wire
 
-This RFC places every stable descriptive attribute on the scope. A deployment
+This RFC places every navigational attribute on the scope. A deployment
 could instead choose to send only the `uid`s and rely on entity events to join
-the descriptive attributes back in. That would mean moving toward the
+the navigational attributes back in. That would mean moving toward the
 UUID-only end of the [telescoping identity][otel-telescoping] spectrum. Should
 this be configurable, and at what granularity?
 
@@ -684,6 +691,5 @@ record ideas that are out of scope now but worth remembering.
 [otel-entity-delete]: https://opentelemetry.io/docs/specs/otel/entities/entity-events/#entity-delete-event
 [otel-telescoping]: https://github.com/open-telemetry/opentelemetry-specification/blob/a4e05d9704fc5218d85a4154fb5b143ea3f5340e/specification/resource/README.md#telescoping
 [otel-navigation]: https://github.com/open-telemetry/opentelemetry-specification/blob/a4e05d9704fc5218d85a4154fb5b143ea3f5340e/specification/resource/README.md#navigation
-[otep-0256]: https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/entities/0256-entities-data-model.md
 [otlp-entity-ref]: https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/common/v1/common.proto
 [uuid-v7]: https://www.rfc-editor.org/rfc/rfc9562#name-uuid-version-7
