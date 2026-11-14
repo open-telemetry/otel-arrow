@@ -804,10 +804,17 @@ still running do not count as attempts.
 | --- | --- | --- |
 | `receiver.windows_perf_counters.scrape.overruns` | `{tick}` | Collections skipped because the previous collection was still running. |
 | `receiver.windows_perf_counters.counter.add.failures` | `{failure}` | Failures to add a counter, including retries. |
+| `receiver.windows_perf_counters.counter.failures` | `{failure}` | Failures to collect or read individual counter values, dimensioned by `operation` (`collect`, `read`). |
 | `receiver.windows_perf_counters.active.counters` | `{counter}` | Counters currently added, whether or not they produce values. |
 | `receiver.windows_perf_counters.batches.dropped` | `{batch}` | Batches dropped because downstream was full or closed. |
 
 <!-- markdownlint-enable MD013 -->
+
+Attributes for `counter.failures`:
+
+| Attribute | Values | Description |
+| --- | --- | --- |
+| `operation` | `collect`, `read` | Counter operation that failed. |
 
 ### Events
 
