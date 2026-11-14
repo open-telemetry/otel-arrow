@@ -290,9 +290,8 @@ mod tests {
     use super::*;
     use otel_arrow_dfe_telemetry::attributes::{AttributeEnum, AttributeSetHandler};
 
-    /// Distinct `(group, pipeline)` pairs must not collide on attribute
-    /// values: flattening into a single `/`-separated string allows two
-    /// real scopes to register the same telemetry entity.
+    /// Scenario: distinct `(group, pipeline)` pairs have the same slash-joined representation.
+    /// Guarantees: separate attribute values keep the two scope identities distinct.
     #[test]
     fn pipeline_scope_ids_are_unambiguous_across_group_pipeline_splits() {
         let a = ExtensionScopeAttributeSet::pipeline(PipelineAttributeSet {
@@ -305,10 +304,8 @@ mod tests {
             pipeline_id: "b/c".into(),
             ..PipelineAttributeSet::default()
         });
-        // `attribute_values` reuses a thread-local buffer; copy each set
-        // before invoking the next.
-        let a_values = a.attribute_values().to_vec();
-        let b_values = b.attribute_values().to_vec();
+        let a_values = a.attribute_values();
+        let b_values = b.attribute_values();
         assert_ne!(
             a_values, b_values,
             "distinct (group, pipeline) pairs must not collide on attribute values; \

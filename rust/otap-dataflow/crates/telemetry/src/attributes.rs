@@ -14,10 +14,8 @@ use std::collections::BTreeMap;
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
 /// Stored values are borrowed without allocation; generated snapshots are consumed by value.
 pub struct AttributeIterator<'a> {
-    fields: &'static [AttributeField],
+    fields: std::slice::Iter<'static, AttributeField>,
     values: AttributeValuesIterator<'a>,
-    idx: usize,
-    len: usize,
 }
 
 enum AttributeValuesIterator<'a> {
@@ -37,20 +35,17 @@ impl<'a> AttributeIterator<'a> {
     }
 
     fn from_values(fields: &'static [AttributeField], values: Cow<'a, [AttributeValue]>) -> Self {
-        let len = values.len();
         assert_eq!(
             fields.len(),
-            len,
+            values.len(),
             "descriptor.fields and attribute values length must match"
         );
         Self {
-            fields,
+            fields: fields.iter(),
             values: match values {
                 Cow::Borrowed(values) => AttributeValuesIterator::Borrowed(values.iter()),
                 Cow::Owned(values) => AttributeValuesIterator::Owned(values.into_iter()),
             },
-            idx: 0,
-            len,
         }
     }
 }
@@ -60,51 +55,25 @@ impl<'a> Iterator for AttributeIterator<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.len {
-            let i = self.idx;
-            self.idx += 1;
+        let field = self.fields.next()?;
+        let value = match &mut self.values {
+            AttributeValuesIterator::Borrowed(values) => values.next().map(Cow::Borrowed),
+            AttributeValuesIterator::Owned(values) => values.next().map(Cow::Owned),
+        };
 
-            // Use unchecked indexing when the feature is enabled, otherwise use safe indexing
-            let field = {
-                #[cfg(feature = "unchecked-index")]
-                {
-                    // SAFETY: We know `i` is valid because:
-                    // 1. `i` was captured from `self.idx` before incrementing
-                    // 2. Loop condition ensures `self.idx < self.len` when we enter
-                    // 3. fields.len() == values.len() is asserted in new()
-                    #[allow(unsafe_code)]
-                    unsafe {
-                        self.fields.get_unchecked(i)
-                    }
-                }
-                #[cfg(not(feature = "unchecked-index"))]
-                {
-                    &self.fields[i]
-                }
-            };
-
-            let value = match &mut self.values {
-                AttributeValuesIterator::Borrowed(values) => values.next().map(Cow::Borrowed),
-                AttributeValuesIterator::Owned(values) => values.next().map(Cow::Owned),
-            };
-
-            value.map(|value| (field.key, value))
-        } else {
-            None
-        }
+        value.map(|value| (field.key, value))
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.len.saturating_sub(self.idx);
-        (remaining, Some(remaining))
+        self.fields.size_hint()
     }
 }
 
 impl<'a> ExactSizeIterator for AttributeIterator<'a> {
     #[inline]
     fn len(&self) -> usize {
-        self.len.saturating_sub(self.idx)
+        self.fields.len()
     }
 }
 
@@ -308,6 +277,7 @@ impl AttributeValue {
 }
 
 #[cfg(test)]
+#[forbid(unsafe_code, static_mut_refs)]
 mod tests {
     use super::*;
 
@@ -448,6 +418,16 @@ mod tests {
         };
         let first = make(10);
         let second = make(20);
+        assert!(std::ptr::eq(first.descriptor(), second.descriptor()));
+        assert_eq!(
+            first
+                .descriptor()
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            ["active", "label", "count", "label", "count"]
+        );
         let snapshot = first.attribute_values();
         let retained = snapshot.as_ref();
         let mut iter = first.iter_attributes();
@@ -750,11 +730,11 @@ mod tests {
         assert_eq!(*collected[3].1, AttributeValue::Boolean(false));
     }
 
+    /// Scenario: attribute iteration runs with unchecked-index enabled elsewhere in the crate.
+    /// Guarantees: the same borrowed values and exhaustion behavior are preserved.
     #[cfg(feature = "unchecked-index")]
     #[test]
-    fn test_attribute_iterator_unchecked_optimization() {
-        // This test ensures that the unchecked indexing path is exercised
-        // when the feature is enabled. The behavior should be identical to safe indexing.
+    fn test_attribute_iterator_with_unchecked_index_feature() {
         let fields = &[AttributeField {
             key: "test_attr",
             r#type: AttributeValueType::String,

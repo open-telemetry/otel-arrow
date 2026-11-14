@@ -717,48 +717,43 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         };
         generated.into()
     } else {
-        // Complex case: composition - use lazy_static pattern
+        // Composed descriptors are initialized once and shared as immutable metadata.
         let local_fields_len = attr_field_idents.len();
 
         let generated = quote! {
             impl #generics #attr_handler_path for #struct_ident #generics {
                 fn descriptor(&self) -> &'static #descriptor_path {
-                    use ::std::sync::Once;
-                    static INIT: Once = Once::new();
-                    static mut #desc_ident: Option<#descriptor_path> = None;
+                    static #desc_ident: ::std::sync::OnceLock<#descriptor_path> =
+                        ::std::sync::OnceLock::new();
 
-                    unsafe {
-                        INIT.call_once(|| {
-                            // Calculate total field count
-                            let mut total_fields = #local_fields_len;
-                            #( total_fields += self.#composed_field_idents.descriptor().fields.len(); )*
+                    #desc_ident.get_or_init(|| {
+                        // Calculate total field count
+                        let mut total_fields = #local_fields_len;
+                        #( total_fields += self.#composed_field_idents.descriptor().fields.len(); )*
 
-                            // Create a vector to hold all fields
-                            let mut all_fields = ::std::vec::Vec::with_capacity(total_fields);
+                        // Create a vector to hold all fields
+                        let mut all_fields = ::std::vec::Vec::with_capacity(total_fields);
 
-                            // Add local fields
-                            all_fields.extend_from_slice(&[
-                                #( #field_path {
-                                    key: #attr_field_keys,
-                                    brief: #attr_field_descriptions,
-                                    r#type: #attr_field_types
-                                } ),*
-                            ]);
+                        // Add local fields
+                        all_fields.extend_from_slice(&[
+                            #( #field_path {
+                                key: #attr_field_keys,
+                                brief: #attr_field_descriptions,
+                                r#type: #attr_field_types
+                            } ),*
+                        ]);
 
-                            // Add fields from composed sets
-                            #( all_fields.extend_from_slice(self.#composed_field_idents.descriptor().fields); )*
+                        // Add fields from composed sets
+                        #( all_fields.extend_from_slice(self.#composed_field_idents.descriptor().fields); )*
 
-                            // Leak the vector to get a 'static reference
-                            let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
+                        // Leak the vector to get a 'static reference
+                        let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
 
-                            #desc_ident = Some(#descriptor_path {
-                                name: #attributes_name,
-                                fields: fields_slice,
-                            });
-                        });
-
-                        #desc_ident.as_ref().unwrap()
-                    }
+                        #descriptor_path {
+                            name: #attributes_name,
+                            fields: fields_slice,
+                        }
+                    })
                 }
 
                 fn attribute_values(&self) -> ::std::borrow::Cow<'_, [#attr_value_path]> {
