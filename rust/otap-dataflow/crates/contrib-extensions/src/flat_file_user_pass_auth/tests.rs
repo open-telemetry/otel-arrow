@@ -11,7 +11,6 @@ use otel_arrow_dfe_engine::shared::capability::auth::basic_auth_provider::BasicA
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::shared::message::SharedReceiver;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::{ExposeSecret, SecretString};
 use tempfile::NamedTempFile;
 
@@ -418,8 +417,8 @@ fn make_extension_with_config(config: Config) -> FlatFileUserPassAuthExtension {
 
 fn make_tracker() -> BackgroundProviderMetricsTracker<FlatFileUserPassAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
-    let metric_set = registry.register_metric_set::<FlatFileUserPassAuthMetrics>(EmptyAttributes());
-    BackgroundProviderMetricsTracker::new(metric_set)
+    let metrics = FlatFileUserPassAuthMetrics::new_test(&registry);
+    BackgroundProviderMetricsTracker::new(metrics)
 }
 
 /// Scenario: Credentials are acquired from an inline password secret.

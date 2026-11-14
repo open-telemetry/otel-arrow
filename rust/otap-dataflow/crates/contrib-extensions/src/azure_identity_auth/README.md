@@ -183,14 +183,13 @@ Config validation rejects:
 
 ## Telemetry
 
-Metric set: `extension.azure_identity_auth`.
+Metric set: `extension.auth` (shared).
 
-| Metric | Type | Unit | Description |
-| --- | --- | --- | --- |
-| `auth_successes` | Counter | `{acquisition}` | Successful credential acquisitions. |
-| `auth_failures` | Counter | `{acquisition}` | Failed credential acquisitions. |
-| `auth_token_publish` | Counter | `{token}` | Tokens published to consumers. |
-| `auth_success_latency` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
+| Metric | Metric set | Type | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Credential acquisitions partitioned by `outcome` (`success`, `failure`). |
+| `publishes` | `extension.auth` | Counter | `{publication}` | Credentials or tokens published to consumers via the watch channel partitioned by `outcome`. |
+| `duration` | `extension.auth` | Mmsc | `s` | Acquisition duration in seconds partitioned by `outcome` (min/max/sum/count). |
 
 Events:
 
@@ -206,7 +205,18 @@ Events:
 | Startup aborts with a readiness timeout | The first token was not acquired within `startup_timeout`. Check identity assignment, network reachability of IMDS or Entra ID, and the `azure_identity_auth.token_refresh_failed` event. |
 | Config rejected at startup | See [Validation rules](#validation-rules); the error names the offending field. |
 | `403` from the Azure service despite successful acquisition | The identity lacks a role assignment on the target resource, or `scope` targets the wrong resource. |
-| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `auth_failures` and the refresh-failure event. |
+| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `acquisitions` (with `outcome="failure"`) and the refresh-failure event. |
+
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+- `publishes`: Counter of credentials or tokens published to consumers via the
+  watch channel partitioned by `outcome`, unit `{publication}`.
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
 
 ## Related Docs
 

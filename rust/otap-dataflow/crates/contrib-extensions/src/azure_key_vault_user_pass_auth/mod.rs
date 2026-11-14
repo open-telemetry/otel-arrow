@@ -89,8 +89,7 @@ fn create(
         error: error.to_string(),
     })?;
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metrics =
-        ext_ctx.register_metric_set_for_entity::<AzureKeyVaultUserPassAuthMetrics>(entity_key);
+    let metrics = AzureKeyVaultUserPassAuthMetrics::register(ext_ctx, entity_key);
     let (tx, _rx) = watch::channel(None);
     let extension = AzureKeyVaultUserPassAuthExtension::new(
         &name,

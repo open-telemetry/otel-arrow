@@ -1,0 +1,9 @@
+change_type: breaking
+component: observability
+note: "Migrate background auth extensions to dimensional outcome attributes"
+issues: [3530]
+subtext: |
+  Migration: Consolidate background auth metrics into shared `extension.auth`
+  metric set partitioned by `outcome` (`success`, `failure`), including
+  `acquisitions`, `publishes`, and `duration` (seconds). Removes
+  extension-specific operational metric sets.
