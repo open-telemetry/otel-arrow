@@ -48,7 +48,7 @@ forward its encoded payload as-is, DFE can also avoid decoding it. See the
 [OTAP specification][otap-spec], [telemetry data model][data-model], and
 [codec guide][codecs].
 
-![DFE pipeline from telemetry sources through receivers, Arrow processing, and exporters to downstream destinations, with component examples at each stage.](docs/img/dfe-pipeline.svg)
+![OpenTelemetry Arrow Dataflow Engine overview showing the columnar pipeline, component examples, runtime capabilities, and Phase 2 benchmark results.](docs/img/dfe-pipeline.svg)
 
 The [component matrix][capabilities] lists the full set of components and
 their build requirements.
