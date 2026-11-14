@@ -161,6 +161,22 @@ propose improvements in [GitHub issues][issues], or start with the
 On CNCF Slack, join [`#otel-arrow`][slack] for general discussion or
 [`#otel-arrow-dev`][slack-dev] for contributor discussions.
 
+### AI-assisted contributions
+
+The maintainers welcome AI-assisted contributions. We use AI to improve code
+quality, strengthen testing and validation, and make the engine more secure,
+reliable, and efficient.
+
+As the author, you are responsible for the entire change. Before opening a
+pull request, review the full diff, verify what it does, and be ready to explain
+and defend your design choices with evidence. Respect the time of approvers
+and maintainers by bringing them a focused change you understand and can
+answer questions about.
+
+Use the [project design principles][principles] to guide your changes and
+read the [AI-assisted pull request review instructions][ai-review] for what
+reviewers look for.
+
 ### Arrow SIG meetings
 
 The Arrow SIG meets weekly and welcomes everyone. Meetings alternate between
@@ -210,6 +226,7 @@ See the [full list of contributors][contributors] on GitHub.
 
 [admin]: rust/otap-dataflow/docs/admin/README.md
 [admin-crate]: https://crates.io/crates/otel-arrow-dfe-admin-api
+[ai-review]: rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md
 [architecture]: rust/otap-dataflow/crates/engine/README.md
 [benchmarks]: docs/benchmarks.md
 [board]: https://github.com/orgs/open-telemetry/projects/139
