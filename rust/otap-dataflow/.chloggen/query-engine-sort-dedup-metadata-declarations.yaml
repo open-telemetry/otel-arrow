@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: query-engine
+note: Sort and deduplicate metadata access declarations in the transform processor query visitor.
+issues: [4731]
