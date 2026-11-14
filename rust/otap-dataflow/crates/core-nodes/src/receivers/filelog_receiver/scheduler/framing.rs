@@ -5,8 +5,8 @@ pub(crate) use super::super::partial_state::Partial;
 use super::super::partial_state::{self, Framing};
 use super::*;
 use crate::receivers::filelog_receiver::{
-    framer::{LineConfig, LineError, LineFrame, LineFramer, LineStart},
-    multiline::{MultilineConfig, MultilineError, MultilineFramer, RecordFrame, RecordStart},
+    framer::{LineConfig, LineError, LineFramer, LineStart},
+    multiline::{MultilineConfig, MultilineError, MultilineFramer, RecordStart},
     multiline_pattern::{BoundaryMatcher, BoundaryPattern},
 };
 
@@ -113,38 +113,7 @@ impl FramingConfig {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum Frame {
-    Line(LineFrame),
-    Multiline(RecordFrame),
-}
-
-impl Frame {
-    pub(crate) fn retained_capacity(&self) -> usize {
-        let (body, source) = match self {
-            Self::Line(f) => (&f.body, f.source_body.as_ref().map_or(0, Vec::capacity)),
-            Self::Multiline(f) => (&f.body, 0),
-        };
-        source
-            + match body {
-                super::super::framer::LineBody::Text(s) => s.capacity(),
-                super::super::framer::LineBody::Bytes(b) => b.capacity(),
-            }
-    }
-
-    pub(crate) fn range(&self) -> super::super::decoder::SourceRange {
-        match self {
-            Self::Line(f) => f.frame_range,
-            Self::Multiline(f) => f.frame_range,
-        }
-    }
-    pub(crate) fn complete_record(&self) -> bool {
-        match self {
-            Self::Line(f) => f.fragment.is_none_or(|f| f.is_last),
-            Self::Multiline(f) => f.fragment.is_none_or(|f| f.is_last),
-        }
-    }
-}
+pub(crate) use super::super::batch::Frame;
 
 #[derive(Debug)]
 pub(crate) enum FramingFailure {

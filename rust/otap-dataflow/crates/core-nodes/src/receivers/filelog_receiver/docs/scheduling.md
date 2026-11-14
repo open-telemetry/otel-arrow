@@ -79,6 +79,42 @@ Probe-deferred readers reactivate within processing budgets when the request
 completes or clears; protected-descriptor waiters need their own resource event.
 The scheduler does not authorize delivery, checkpoint or lifecycle transitions.
 
+## OTAP batch integration
+
+The concrete `Batcher` registers each scheduler key with the file ID, epoch,
+initial offset and continuation from that reader's identity seed. It projects
+the configured file metadata once per registration or metadata update, using
+immutable worker-local ownership. An accepted carry-over keeps its original
+metadata and observed timestamp even if the source changes while delivery waits.
+Raw frame payloads are copied directly into the existing Arrow builders; there
+is no additional record queue. Per-row source ranges and bounded decoding,
+truncation and fallback evidence remain internal, independent of attributes.
+
+`turn` polls the batch deadline before servicing readers, and `next_deadline`
+includes the sink deadline even when source permission is absent. Worker hosting
+must service this combined deadline without waiting for another file event.
+Known record, byte and distinct-file bounds seal before another source turn.
+When every possible descriptor victim owns unresolved progress, the scheduler
+requests an open-batch flush instead of waiting indefinitely.
+
+After sealing, `retained()` exposes one immutable payload and one complete
+progress transaction. Composition owns completion correlation, retries and
+checkpoint writes. Only after matching aggregate completion (or an explicit
+authorized loss policy) and successful application of the entire transaction
+may it call `release_applied`. A Nack alone never permits release. Refresh
+reader evidence through `observe_applied`, then call `resume_sink`; release
+has already seeded any carry-over before this can permit another read.
+Unfinished decoder/framer state stays charged to the logical reader under the
+existing slot/yield rules. The batch builder does not create a second copy.
+
+Inspect `Batcher::failure` on terminal scheduler failure. On direct shutdown,
+`BatchBuilder::abort` reports the records and logical bytes abandoned without
+advancing progress; do not treat dropping in-memory payload as capture success.
+The batch size model is logical, not an Arrow allocation or total process-memory
+limit. Source contexts, Arrow buffers and per-row provenance remain bounded by
+the validated file/record/byte limits; aggregate memory qualification remains
+the memory-admission task's responsibility.
+
 See the [behavioral specification][spec] for scheduling and resource rules;
 implementation details and tests live beside the code.
 
