@@ -1,0 +1,378 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Dead-letter-queue configuration parsing, validation, and resolution tests.
+
+use super::*;
+use otel_arrow_dfe_config::SignalType;
+
+/// Build a base config JSON with a manual-commit traces receiver and a `dlq`
+/// block merged in.
+fn manual_with_dlq(dlq: serde_json::Value) -> serde_json::Value {
+    json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": dlq,
+    })
+}
+
+fn parse(json: serde_json::Value) -> Result<KafkaReceiverConfig, serde_json::Error> {
+    serde_json::from_value(json)
+}
+
+/// Extract the [`KafkaReceiverError`] from a serde deserialization failure by
+/// re-running validation on the builder, so tests can assert on the exact
+/// validation variant.
+fn expect_dlq_error(json: serde_json::Value) -> String {
+    let err = parse(json).expect_err("expected DLQ config validation to fail");
+    err.to_string()
+}
+
+/// Scenario: a DLQ block is present but commit mode is `auto`.
+/// Guarantees: validation fails, since DLQ delivery requires the receiver to
+/// control offset commits (manual mode only).
+#[test]
+fn dlq_requires_manual_commit() {
+    let json = json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "auto", "interval_ms": 1000},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {"topic": "otel_dlq"},
+    });
+    let msg = expect_dlq_error(json);
+    assert!(
+        msg.contains("commit.mode manual"),
+        "unexpected error: {msg}"
+    );
+}
+
+/// Scenario: a DLQ with only a global topic under manual commit.
+/// Guarantees: the topic resolves for the ingesting traces signal and capture
+/// defaults to all three categories.
+#[test]
+fn dlq_global_topic_resolves_and_defaults_capture() {
+    let cfg = parse(manual_with_dlq(json!({"topic": "otel_dlq"})))
+        .expect("valid DLQ config should deserialize");
+    let dlq = cfg.dlq().expect("dlq enabled");
+    assert_eq!(dlq.topic_for(SignalType::Traces), Some("otel_dlq"));
+    assert!(dlq.capture_decode);
+    assert!(dlq.capture_excluded_topic);
+    assert!(dlq.capture_permanent_nack);
+}
+
+/// Scenario: a per-signal DLQ topic override is set for traces.
+/// Guarantees: the override wins over the global topic for that signal.
+#[test]
+fn dlq_per_signal_override_wins() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "per_signal": {"traces": "otel_dlq_traces"},
+    })))
+    .expect("valid DLQ config");
+    let dlq = cfg.dlq().expect("dlq enabled");
+    assert_eq!(dlq.topic_for(SignalType::Traces), Some("otel_dlq_traces"));
+}
+
+/// Scenario: an ingesting signal has neither a global nor per-signal DLQ topic.
+/// Guarantees: validation fails with a missing-topic error for that signal.
+#[test]
+fn dlq_missing_topic_for_ingesting_signal_fails() {
+    let json = json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {"per_signal": {"metrics": "otel_dlq_metrics"}},
+    });
+    let msg = expect_dlq_error(json);
+    assert!(
+        msg.contains("no topic for signal 'traces'"),
+        "unexpected: {msg}"
+    );
+}
+
+/// Scenario: a DLQ topic equals a configured ingest topic on the same cluster.
+/// Guarantees: validation fails (loop prevention), since the receiver would
+/// consume its own dead-letter output.
+#[test]
+fn dlq_topic_overlapping_ingest_literal_fails() {
+    let json = manual_with_dlq(json!({"topic": "otlp_spans"}));
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: a DLQ topic is matched by an ingest regex pattern on the same cluster.
+/// Guarantees: validation fails (loop prevention) for regex ingest topics too.
+#[test]
+fn dlq_topic_matching_ingest_regex_fails() {
+    let json = json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["^otlp_.*$"], "exclude_topics": []},
+        "dlq": {"topic": "otlp_dlq"},
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: a DLQ topic equals an ingest topic but points at a different cluster.
+/// Guarantees: validation succeeds, since a separate cluster cannot create a loop.
+#[test]
+fn dlq_topic_overlap_on_different_cluster_ok() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otlp_spans",
+        "connection": {"brokers": "dlq-broker:9092"},
+    })))
+    .expect("overlap on a separate cluster is allowed");
+    assert!(cfg.dlq().is_some());
+}
+
+/// Scenario: a DLQ topic is matched by an ingest regex and is also listed in
+/// `exclude_topics` for that signal on the same cluster.
+/// Guarantees: validation fails (loop prevention). `exclude_topics` does not
+/// unsubscribe the topic from Kafka -- the receiver still consumes it and would
+/// re-dead-letter it -- so an include-pattern match is rejected regardless of
+/// exclusion.
+#[test]
+fn dlq_topic_excluded_but_included_fails() {
+    let json = json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["^otlp_.*$"], "exclude_topics": ["^otlp_dlq$"]},
+        "dlq": {"topic": "otlp_dlq"},
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ connection names the same brokers as the source but in a
+/// different order and with extra whitespace.
+/// Guarantees: it is treated as the same cluster, so an overlapping topic is
+/// still rejected (broker strings are compared as sets).
+#[test]
+fn dlq_same_cluster_reordered_brokers_overlap_fails() {
+    let json = json!({
+        "brokers": "b1:9092,b2:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {
+            "topic": "otlp_spans",
+            "connection": {"brokers": " b2:9092 , b1:9092 "},
+        },
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ connection lists a subset of the source brokers (`b1` vs
+/// `b1,b2`) on what is really the same cluster, with an overlapping topic.
+/// Guarantees: validation fails -- broker lists are bootstrap hints, so any
+/// shared endpoint is treated as the same cluster to prevent a self-consuming
+/// loop.
+#[test]
+fn dlq_same_cluster_subset_brokers_overlap_fails() {
+    let json = json!({
+        "brokers": "b1:9092,b2:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {
+            "topic": "otlp_spans",
+            "connection": {"brokers": "b1:9092"},
+        },
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ connection brokers are fully disjoint from the source
+/// brokers, with a topic name that equals a source ingest topic.
+/// Guarantees: validation succeeds -- with no shared endpoint the DLQ cannot be
+/// the source cluster, so no loop is possible.
+#[test]
+fn dlq_disjoint_cluster_overlap_ok() {
+    let cfg = parse(json!({
+        "brokers": "b1:9092,b2:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {
+            "topic": "otlp_spans",
+            "connection": {"brokers": "other1:9092,other2:9092"},
+        },
+    }))
+    .expect("fully disjoint brokers cannot form a loop");
+    assert!(cfg.dlq().is_some());
+}
+
+/// Scenario: an explicit empty capture list is provided.
+/// Guarantees: validation fails, since at least one category must be captured.
+#[test]
+fn dlq_empty_capture_fails() {
+    let json = manual_with_dlq(json!({"topic": "otel_dlq", "capture": []}));
+    let msg = expect_dlq_error(json);
+    assert!(
+        msg.contains("capture must not be empty"),
+        "unexpected: {msg}"
+    );
+}
+
+/// Scenario: a narrowed capture set with only `decode` is provided.
+/// Guarantees: only decode is captured; the other categories are disabled.
+#[test]
+fn dlq_narrowed_capture_set() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "capture": ["decode"],
+    })))
+    .expect("valid DLQ config");
+    let dlq = cfg.dlq().expect("dlq enabled");
+    assert!(dlq.capture_decode);
+    assert!(!dlq.capture_excluded_topic);
+    assert!(!dlq.capture_permanent_nack);
+}
+
+/// Scenario: an invalid DLQ topic name is configured.
+/// Guarantees: validation rejects it with an invalid-topic error.
+#[test]
+fn dlq_invalid_topic_name_fails() {
+    let json = manual_with_dlq(json!({"topic": "bad topic!"}));
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("dlq topic"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ connection auth is malformed.
+/// Guarantees: validation surfaces the connection error.
+#[test]
+fn dlq_invalid_connection_tls_fails() {
+    let json = manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "connection": {"tls": {"cert_file": "cert.pem"}},
+    }));
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("dlq.connection"), "unexpected: {msg}");
+}
+
+/// Scenario: the DLQ producer client config is built for a valid DLQ.
+/// Guarantees: the producer `client.id` is auto-derived as `{client_id}-dlq`,
+/// `message.timeout.ms` matches the DLQ operation deadline, and no other
+/// producer tuning is set so librdkafka's own defaults apply elsewhere.
+#[test]
+fn dlq_producer_client_id_auto_derived_and_timeout_aligned() {
+    use crate::receivers::kafka_receiver::config::DLQ_OP_TIMEOUT_MS;
+    let cfg = parse(manual_with_dlq(json!({"topic": "otel_dlq"}))).expect("valid");
+    let producer = cfg
+        .build_dlq_producer_config()
+        .expect("dlq present implies producer config");
+    assert_eq!(producer.get("client.id"), Some("c-dlq"));
+    // Delivery deadline is aligned with the application operation deadline.
+    assert_eq!(
+        producer.get("message.timeout.ms"),
+        Some(DLQ_OP_TIMEOUT_MS.to_string().as_str())
+    );
+    // No other producer tuning is set -> librdkafka defaults apply.
+    assert_eq!(producer.get("compression.type"), None);
+    assert_eq!(producer.get("request.required.acks"), None);
+}
+
+/// Scenario: the DLQ connection overrides both brokers and SASL/PLAIN auth.
+/// Guarantees: the built producer client config uses the override brokers (not
+/// the source brokers) and the override security settings, so a DLQ pointed at a
+/// different cluster/credentials is wired correctly.
+#[test]
+fn dlq_producer_connection_override_is_applied() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "connection": {
+            "brokers": "dlq-broker:9092",
+            "auth": {"sasl": {"mechanism": "PLAIN", "username": "u", "password": "p"}},
+        },
+    })))
+    .expect("valid");
+    let producer = cfg
+        .build_dlq_producer_config()
+        .expect("dlq present implies producer config");
+    // Override brokers win over the source brokers ("b:9092").
+    assert_eq!(producer.get("bootstrap.servers"), Some("dlq-broker:9092"));
+    assert_eq!(producer.get("client.id"), Some("c-dlq"));
+    // SASL-without-TLS resolves to SASL_PLAINTEXT with the override credentials.
+    assert_eq!(producer.get("security.protocol"), Some("SASL_PLAINTEXT"));
+    assert_eq!(producer.get("sasl.mechanism"), Some("PLAIN"));
+    assert_eq!(producer.get("sasl.username"), Some("u"));
+    assert_eq!(producer.get("sasl.password"), Some("p"));
+}
+
+/// Scenario: no DLQ connection override is set.
+/// Guarantees: the producer defaults to the source brokers, so an unspecified
+/// DLQ connection reuses the source consumer's connection.
+#[test]
+fn dlq_producer_defaults_to_source_brokers() {
+    let cfg = parse(manual_with_dlq(json!({"topic": "otel_dlq"}))).expect("valid");
+    let producer = cfg
+        .build_dlq_producer_config()
+        .expect("dlq present implies producer config");
+    assert_eq!(producer.get("bootstrap.servers"), Some("b:9092"));
+    // Source has no TLS/auth, so the DLQ producer is plaintext.
+    assert_eq!(producer.get("security.protocol"), Some("PLAINTEXT"));
+}
+
+/// Scenario: the DLQ producer connection overrides the brokers, but the DLQ
+/// re-read consumer must recover the ORIGINAL bytes from the source cluster.
+/// Guarantees: the re-read consumer config always targets the source brokers
+/// (never the producer override) and is a manual-assignment, no-auto-commit
+/// consumer with the derived `-dlq-reread` client and group ids.
+#[test]
+fn dlq_reread_consumer_always_uses_source_connection() {
+    let cfg = parse(manual_with_dlq(json!({
+        "topic": "otel_dlq",
+        "connection": {"brokers": "dlq-broker:9092"},
+    })))
+    .expect("valid");
+    let reread = cfg
+        .build_dlq_reread_consumer_config()
+        .expect("dlq present implies reread config");
+    // The re-read consumer reads source topics, so it must use the SOURCE
+    // brokers regardless of the producer-only connection override.
+    assert_eq!(reread.get("bootstrap.servers"), Some("b:9092"));
+    assert_eq!(reread.get("client.id"), Some("c-dlq-reread"));
+    assert_eq!(reread.get("group.id"), Some("g-dlq-reread"));
+    assert_eq!(reread.get("enable.auto.commit"), Some("false"));
+    assert_eq!(reread.get("enable.auto.offset.store"), Some("false"));
+}
+
+/// Scenario: no `dlq` block is present.
+/// Guarantees: the DLQ is disabled (accessor returns None).
+#[test]
+fn no_dlq_block_disables_dlq() {
+    let json = json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+    });
+    let cfg = parse(json).expect("valid");
+    assert!(cfg.dlq().is_none());
+}
+
+/// Scenario: an unknown field is present in the dlq block.
+/// Guarantees: deserialization fails (deny_unknown_fields), catching typos.
+#[test]
+fn dlq_unknown_field_rejected() {
+    let json = manual_with_dlq(json!({"topic": "otel_dlq", "bogus": true}));
+    assert!(parse(json).is_err());
+}

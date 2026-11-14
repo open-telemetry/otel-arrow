@@ -75,7 +75,11 @@ pub mod error;
 pub mod exporter;
 pub mod metrics;
 pub mod partitioner;
-mod producer;
+// DLQ-PHASE-2 (Change): revert to `mod producer;` once the Kafka receiver's
+// dead-letter-queue path no longer reuses this producer.
+/// Vendored rdkafka future/threaded producer port. Public so the Kafka
+/// receiver's dead-letter-queue path can reuse the same low-CPU producer.
+pub mod producer;
 mod topic_regex;
 pub mod topic_router;
 
