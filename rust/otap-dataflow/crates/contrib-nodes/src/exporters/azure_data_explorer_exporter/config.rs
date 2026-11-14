@@ -603,6 +603,7 @@ mod tests {
             config.network_requests.flush_interval,
             Duration::from_secs(1)
         );
+        config.validate().expect("valid coalescing configuration");
     }
 
     /// Scenario: the retained-message limit is configured as zero.

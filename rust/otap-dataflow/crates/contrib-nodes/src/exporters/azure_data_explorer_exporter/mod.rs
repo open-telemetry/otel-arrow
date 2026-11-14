@@ -29,6 +29,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 mod client;
 /// Configuration types for the Azure Data Explorer Exporter.
 pub mod config;
+mod decode;
 mod encoding;
 mod error;
 mod exporter;
