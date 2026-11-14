@@ -1,0 +1,35 @@
+[package]
+name = "otel-arrow-dfe-policy-engine"
+description = "Telemetry policy evaluation engine for OTAP Dataflow"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+keywords = ["opentelemetry", "otlp", "otap", "policy", "telemetry"]
+categories = ["data-structures"]
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow.workspace = true
+otel-arrow-dfe-config.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+policy-rs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+prost.workspace = true
+tokio.workspace = true
+
+[[example]]
+name = "basic_usage"
+
+[[bench]]
+name = "engine"
+harness = false
+
+[lints]
+workspace = true
