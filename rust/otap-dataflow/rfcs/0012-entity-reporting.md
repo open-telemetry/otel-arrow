@@ -10,14 +10,20 @@ Tracking Issue: open-telemetry/otel-arrow#0000
 ## Summary
 
 The Dataflow Engine (DFE) has a well-defined entity model. The goal of this RFC is
-to formalize that hierarchy in OpenTelemetry terms and outline how the DFE will 
+to formalize that model in OpenTelemetry terms and outline how the DFE will 
 communicate it using OpenTelemetry signals.
 
 For the sake of completeness, this RFC consolidates some information already
 present about entities in the following documents:
 
-- TODO(agent): Link to relevant ITS/Entity documents
-- TODO(agent): Link to relevant OpenTelemetry Entity documentation
+- TODO: Link to relevant ITS/Entity documents
+- TODO: Link to relevant OpenTelemetry Entity documentation
+
+Reviewers familiar with the existing DFE entity model and OpenTelemetry Entity
+work may want to focus on the following sections which highlight important changes
+to our existing model:
+
+- TODO: Link to relevant sections that are proposing new work
 
 ## Motivation
 
@@ -26,8 +32,8 @@ and troubleshooting. Entity status is available via the `/api/v1/status` admin
 endpoint, but it's in a bespoke format. This data is also not exported via the
 Internal Telemetry System (ITS).
 
-We want entity information to be readily available for DFE users like any other
-internal telemetry. This includes:
+We want entity information to be readily available for DFE telemetry consumers
+like any other internal telemetry. This includes:
 
 - Status of existing entities and their types
 - Lifecycle events including deletion
@@ -50,10 +56,10 @@ There are also certain problems with the existing entity model in the engine:
 
 ### Entity modeling
 
-- TODO(agent): Explain entity types
-- TODO(agent): Explain that all entities inside the engine are assigned a UUID V7 as
+- TODO: Explain entity types
+- TODO: Explain that all entities inside the engine are assigned a UUID V7 as
 their sole identifying attribute
-- TODO(agent): Explain that remaining attributes are descriptive and mention the signal
+- TODO: Explain that remaining attributes are descriptive and mention the signal
 modeling section
 
 Every entity reported by the DFE follows the abstract OpenTelemetry
@@ -161,11 +167,11 @@ attributes appear only in entity events. The reasons are explained in
 
 ### Entity Containment Chain
 
-- TODO(agent): explain the boundary between Resources and Entities that enclose the DFE
+- TODO: explain the boundary between Resources and Entities that enclose the DFE
 and are injected via resource/entity detectors and entities that are owned and
 operated by the DFE
-  - TODO(agent): Need words to describe entities above and below this boundary
-- TODO(agent): introduce the concept of entity containment within the DFE and how descriptive
+  - TODO: Need words to describe entities above and below this boundary
+- TODO: introduce the concept of entity containment within the DFE and how descriptive
 
 #### Containment
 
@@ -196,13 +202,13 @@ a signal belongs to (see
 
 ### Signal modeling and Entity Refs
 
-- TODO(agent): Explain how entities above the boundary and the engine itself are unioned
+- TODO: Explain how entities above the boundary and the engine itself are unioned
 up into the resource
-- TODO(agent): Explain how entity refs are only used for resources above the boundary
-- TODO(agent): Explain how entities internal to the engine are represented via scope
-- TODO(agent): Explain how descriptive and identifying attributes for internal entities
+- TODO: Explain how entity refs are only used for resources above the boundary
+- TODO: Explain how entities internal to the engine are represented via scope
+- TODO: Explain how descriptive and identifying attributes for internal entities
 are unioned into each scope
-- TODO(agent): Explain how logs and metrics are attached to explicit entities based on
+- TODO: Explain how logs and metrics are attached to explicit entities based on
 the narrowest containing entity in the scope
 
 The DFE distinguishes between two types of entities:
@@ -328,15 +334,15 @@ lifetime of the entity, and the entity's `uid` already scopes the stream.
 
 ### Entity Events
 
-- TODO(agent): Explain how entity events are used to communicate internal entities below
+- TODO: Explain how entity events are used to communicate internal entities below
 the boundary
-- TODO(agent): Explain how entities are emitted as entity status events
-- TODO(agent): Describe entity relationships
-  - TODO(agent): This might need it's own section before this similar to entity containment
+- TODO: Explain how entities are emitted as entity status events
+- TODO: Describe entity relationships
+  - TODO: This might need it's own section before this similar to entity containment
   chain or embedded therein. Trying to describe NUMA nodes and cores is probably 
   going to be a doozy here
-- TODO(agent): Explain deletion entity events
-- TODO(agent): Address periodic emission, probably introduce ITS settings for entity
+- TODO: Explain deletion entity events
+- TODO: Address periodic emission, probably introduce ITS settings for entity
 event emission rates
 
 Logs and metrics give each internal entity's identity and stable description,
