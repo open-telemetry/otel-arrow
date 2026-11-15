@@ -1,12 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::receivers::syslog_cef_receiver::parser::ParseError;
+use crate::codecs::syslog::parser::ParseError;
 
 /// RFC 5424 message structure
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rfc5424Message<'a> {
-    pub(super) priority: crate::receivers::syslog_cef_receiver::parser::Priority,
+    pub(super) priority: crate::codecs::syslog::parser::Priority,
     pub(super) version: u8,
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
@@ -20,7 +20,7 @@ pub struct Rfc5424Message<'a> {
 
 /// Parse an RFC 5424 message given a pre-parsed priority and the remaining bytes after `>`.
 pub(super) fn parse_rfc5424<'a>(
-    priority: crate::receivers::syslog_cef_receiver::parser::Priority,
+    priority: crate::codecs::syslog::parser::Priority,
     mut remaining: &'a [u8],
     input: &'a [u8],
 ) -> Result<Rfc5424Message<'a>, ParseError> {
@@ -228,8 +228,8 @@ pub(super) fn parse_rfc5424<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::syslog_cef_receiver::parser::parse;
-    use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
+    use crate::codecs::syslog::parser::parse;
+    use crate::codecs::syslog::parser::parsed_message::ParsedSyslogMessage;
 
     /// Helper: parse through the production `parse()` entry point and unwrap the
     /// RFC 5424 variant, panicking if a different variant (or error) is returned.

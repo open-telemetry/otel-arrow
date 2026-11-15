@@ -815,15 +815,18 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
 }
 
 impl ConfigNodeContextDeclaration for Config {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        self.transport_headers()
+    fn context_declarations(
+        &self,
+    ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+        Ok(self
+            .transport_headers()
             .keys()
             .cloned()
             .map(|entry| ContextDeclaration::Produces {
                 domain: ContextDomain::TransportHeader,
                 entry,
             })
-            .collect()
+            .collect())
     }
 }
 

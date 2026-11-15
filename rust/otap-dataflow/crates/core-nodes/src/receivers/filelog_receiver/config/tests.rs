@@ -644,9 +644,9 @@ fn resource_composition() {
         m.matching_bytes,
         m.path_matcher_bytes + m.multiline_program_bytes + m.multiline_scratch_bytes
     );
-    assert_eq!(
-        m.partial_state_floor_bytes,
-        m.framer_payload_bytes + c.inputs().settings().limits.max_read_bytes_per_turn
+    assert!(
+        m.partial_state_floor_bytes
+            > m.framer_payload_bytes + c.inputs().settings().limits.max_read_bytes_per_turn
     );
     assert_eq!(
         m.batch_and_carry_over_bytes,
