@@ -395,6 +395,25 @@ attributes, not scope attributes.
 
 #### Channels and their endpoints
 
+Entities and metrics reflect the channels the engine actually builds, not the
+connections as written in configuration. Operators care about the resolved
+queues: how many there are, which nodes share them, and how full they are.
+
+The engine resolves the configured connections of a pipeline into
+**hyperedges**. A hyperedge is a set of source `(node, output port)` pairs, a
+set of destination nodes, and a dispatch policy. Connections with the same
+destination set and dispatch policy are merged into one hyperedge, so a single
+hyperedge can collect output ports from several nodes. Each output port
+belongs to exactly one hyperedge, so a node with several output ports takes
+part in one hyperedge per port.
+
+Each hyperedge is backed by exactly **one queue**, and a `channel` entity is
+that queue. When a hyperedge has several destinations, they are competing
+consumers of the same queue (`one_of` dispatch). Broadcast to more than one
+destination is not supported today, so no hyperedge creates a queue per
+destination. A control channel is likewise one queue, owned by its node or
+extension.
+
 Channel metrics belong to the `channel`. The scope of a channel metric carries
 the channel's containment chain (`engine -> pipeline.group -> pipeline ->
 pipeline.instance -> channel`) and nothing else. In particular, it no longer
@@ -407,8 +426,12 @@ Whether an endpoint is a sender or a receiver is given by the metric set name
 points across endpoints gives a meaningful total for the channel, for example
 all messages sent into it.
 
-Metrics that describe the channel as a whole, such as its queue depth and
-capacity, have no endpoint attributes and are reported once per channel.
+Metrics that describe a queue, such as its depth and capacity, carry exactly
+the dimensions that distinguish the channel's physical queues. Today every
+channel has one queue, so these metrics have no endpoint attributes and are
+reported once per channel. If a future dispatch policy gives a channel one
+queue per destination, its queue metrics would gain the receiving `node.id`
+as a dimension.
 
 The changes to the existing channel metric sets are described in
 [Changes to existing metric sets](#changes-to-existing-metric-sets).
@@ -708,7 +731,17 @@ registers its own `ChannelReceiverStateMetrics` (`crates/engine/src/lib.rs`)
 while all receivers read the same queue. With endpoints as dimensions, adding
 these gauges across receivers would report a multiple of the real queue.
 Queue state is therefore registered once per channel, without endpoint
-dimensions. Only the `messages` counters keep per-endpoint dimensions.
+dimensions, matching the single queue behind each hyperedge. Only the
+`messages` counters keep per-endpoint dimensions.
+
+- TODO: A node that is a destination of more than one hyperedge (for example
+  `a -> [c]` and `b -> [c, d]`) passes configuration validation but is not
+  supported by the engine. A node holds a single pdata receiver, so the
+  second hyperedge's queue replaces the first: debug builds panic during
+  pipeline build, and release builds silently fail every send into the
+  replaced queue. This is tracked separately from this RFC. The channel model
+  is unaffected by the fix: either such topologies are rejected, or the node
+  appears as a receiver endpoint of several channels.
 
 **Control channels.** Both the sender and receiver control channel metric sets
 are registered on the owner's endpoint today, with `node.port` fixed to
