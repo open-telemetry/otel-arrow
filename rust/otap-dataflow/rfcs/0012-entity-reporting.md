@@ -106,7 +106,7 @@ tables and how CPU cores and NUMA nodes are modeled) is refined separately.
 | `pipeline` | Pipeline creation to deletion | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements. |
 | `pipeline.instance` | One deployment generation on one core | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline. |
 | `node` | Same as its pipeline instance | A receiver, processor, or exporter running inside a pipeline instance. |
-| `channel` | Same as its pipeline instance | A control or pdata channel connecting nodes in a pipeline instance. |
+| `channel` | Same as its pipeline instance | A control or pdata channel owned by a pipeline instance. Its endpoints are not entities (see [Channels and their endpoints](#channels-and-their-endpoints)). |
 | `extension` | Same as its hosting scope | An extension, currently hosted by a pipeline instance. |
 
 The distinction between `pipeline` and `pipeline.instance` is new. The existing
@@ -214,6 +214,13 @@ engine
                     +-- extension
 ```
 
+Channels are contained by the pipeline instance, not by the nodes or
+extensions they connect. This holds for both kinds of channel. A pdata channel
+spans several nodes, so no single node can own it. A control channel has a
+single owning node or extension, but it is modeled the same way so that every
+channel has the same containing entity type. The owner of a control channel
+is still visible through its `channel.id` (`{owner}:control`).
+
 The **containment chain** of an entity is the path from the engine to that
 entity. For example, the containment chain of a node is
 `engine -> pipeline.group -> pipeline -> pipeline.instance -> node`.
@@ -319,13 +326,40 @@ looking at the dfe containment chain and referencing the uid attributes present.
 | ... `channel.uid` | `channel` |
 | ... `extension.uid` | `extension` |
 
-This works because containment is a tree: each entity type has one parent
-type, so the deepest `uid` present identifies the entity unambiguously.
-Whether the scope should also mark the entity type explicitly is an open
-question (see [Unresolved questions](#unresolved-questions)).
+This works because containment is a tree, and a scope only ever carries the
+`uid`s of a single containment chain. Sibling types such as `node`, `channel`,
+and `extension` never appear on the same scope, so the deepest `uid` present
+identifies the entity unambiguously. Whether the scope should also mark the
+entity type explicitly is an open question (see
+[Unresolved questions](#unresolved-questions)).
 
 Signals with an empty scope, such as the existing `engine` metric set, belong
 to the `engine`.
+
+Only attributes of the entities in the containment chain appear on the scope.
+When a signal describes a population inside its entity, such as the endpoints of a
+channel, the attributes that distinguish the population are data point
+attributes, not scope attributes.
+
+#### Channels and their endpoints
+
+Channel metrics belong to the `channel`. The scope of a channel metric carries
+the channel's containment chain (`engine -> pipeline.group -> pipeline ->
+pipeline.instance -> channel`) and nothing else. In particular, it no longer
+carries the attributes of the node or extension at either end of the channel.
+
+The endpoints of a channel are not entities. They are populations within the
+channel, identified by the data point attributes `node.id` and `node.port`.
+Whether an endpoint is a sender or a receiver is given by the metric set name
+(`channel.sender` or `channel.receiver`), as it is today. Adding the data
+points across endpoints gives a meaningful total for the channel, for example
+all messages sent into it.
+
+Metrics that describe the channel as a whole, such as its queue depth and
+capacity, have no endpoint attributes and are reported once per channel.
+
+The changes to the existing channel metric sets are described in
+[Changes to existing metric sets](#changes-to-existing-metric-sets).
 
 #### State attributes are never placed on the scope
 
@@ -487,7 +521,8 @@ relationships between channels and the nodes they connect (for example
 `channel -> connects -> node`).
 
 - TODO: Decide whether channel topology is reported as entity relationships,
-  and in which direction.
+  and in which direction. This includes the owner of a control channel, which
+  today is only encoded in its `channel.id`.
 
 #### Periodic emission
 
@@ -553,6 +588,87 @@ design makes them work.
   `engine.telemetry.entities`, and its interaction with the internal telemetry
   receiver.
 
+### Changes to existing metric sets
+
+#### Channel metric sets
+
+Today, channel metrics are registered per endpoint. Each endpoint registers a
+channel entity whose attribute set composes the full attributes of the node or
+extension at that end (`NodeChannelAttributeSet`,
+`NodeWithCustomChannelAttributeSet`, `ExtensionChannelAttributeSet` in
+`crates/engine/src/attributes.rs`). Under this RFC the channel entity carries
+only its own attributes, and the endpoint becomes a data point dimension (see
+[Channels and their endpoints](#channels-and-their-endpoints)).
+
+**Scope.** The channel attribute set drops the composed node and extension
+attributes and `node.port`. It composes the pipeline instance attributes
+instead, and adds `channel.uid`. The remaining attributes (`channel.id`,
+`channel.kind`, `channel.mode`, `channel.type`, `channel.impl`) are
+navigational. All endpoints of a channel build an identical attribute set, so
+the entity registry deduplicates them into a single entity key with a
+reference count per endpoint.
+
+**Endpoint dimensions.** Each endpoint registers its metric sets against the
+shared channel entity and supplies `node.id` and `node.port` as fixed data
+point attributes. The `registration_attributes` option of `#[metric_set]`
+already supports this: registration attributes are fixed for the lifetime of a
+registration, may be strings, and are combined with the existing measurement
+attributes (`signal`, `outcome`, `error.type`). `node.id` is sufficient
+without `node.uid` because node ids are unique within a pipeline instance and
+nodes are not recreated within an instance. Consumers that need `node.uid` can
+join it in from entity events.
+
+```text
+InstrumentationScope:
+  name: channel.sender
+  attributes:
+    # pipeline.group, pipeline, pipeline.instance attributes as for a node
+    channel.uid: 0193a1d8-...
+    channel.id: hyperedge:3f9a...
+    channel.kind: pdata
+    channel.mode: shared
+    channel.type: mpmc
+    channel.impl: flume
+Metric: channel.sender.messages
+  data points:
+    - {node.id: otlp_in, node.port: default, signal: logs, outcome: success}
+    - {node.id: filelog_in, node.port: default, signal: logs, outcome: success}
+```
+
+**Queue state.** `queue_depth` and `capacity` describe the queue, not an
+endpoint. Today each receiving endpoint of a shared multi-consumer channel
+registers its own `ChannelReceiverStateMetrics` (`crates/engine/src/lib.rs`)
+while all receivers read the same queue. With endpoints as dimensions, adding
+these gauges across receivers would report a multiple of the real queue.
+Queue state is therefore registered once per channel, without endpoint
+dimensions. Only the `messages` counters keep per-endpoint dimensions.
+
+**Control channels.** Both the sender and receiver control channel metric sets
+are registered on the owner's endpoint today, with `node.port` fixed to
+`input` (`crates/engine/src/channel_mode.rs`). Individual senders are not
+distinguished. Control channel metrics therefore need no endpoint dimensions:
+they belong to the channel, and the owner remains identifiable through
+`channel.id`. Extension-hosted control channels are handled the same way.
+
+**Custom node attributes.** Today the custom attributes configured under a
+node's `entity.extend.identity_attributes` are copied onto that node's channel
+scopes. Because the channel scope no longer carries node attributes, they are
+dropped from channel metrics. Consumers can join them in through `node.id`.
+
+- TODO: Investigate replacing `entity.extend.identity_attributes` with
+  `entity.extend.descriptive_attributes`. Under this RFC the `uid` is the only
+  identifying attribute, so user-supplied attributes can only ever be
+  descriptive, and it is not clear that user-supplied identity is ever
+  necessary.
+
+**Compatibility.** Moving `node.*` and `node.port` from the scope to data
+point attributes changes the identity of every channel metric stream. For stable
+signals the [stability guide][dfe-stability-guide] treats this as a breaking
+change that requires a migration plan. The
+on-the-wire size is expected to stay roughly the same: each data point gains
+`node.id` and `node.port`, while the per-endpoint scopes of a channel collapse
+into one.
+
 ## Drawbacks
 
 - TODO: Explain that consumers have to interpret events to get internal DFE
@@ -566,6 +682,10 @@ a standard
 - TODO: Explain the expected byte size difference due to additional uid attributes
 on a typical signal. Summarize per entity how many extra bytes and also for a typical
 resource log how many bytes
+- Channel metrics change stream identity, because endpoint attributes move from
+  the scope to data point attributes. This is a breaking change for existing
+  dashboards and alerts on channel metrics. See
+  [Changes to existing metric sets](#changes-to-existing-metric-sets).
 
 ## Rationale and alternatives
 
@@ -646,6 +766,7 @@ record ideas that are out of scope now but worth remembering.
 [dfe-attributes-guide]: ../docs/telemetry/attributes-guide.md
 [dfe-events-guide]: ../docs/telemetry/events-guide.md
 [dfe-implementation-gaps]: ../docs/telemetry/implementation-gaps.md
+[dfe-stability-guide]: ../docs/telemetry/stability-compatibility-guide.md
 [otel-entity-data-model]: https://opentelemetry.io/docs/specs/otel/entities/data-model/
 [otel-minimal-identity]: https://opentelemetry.io/docs/specs/otel/entities/data-model/#minimally-sufficient-identity
 [otel-repeatable-identity]: https://opentelemetry.io/docs/specs/otel/entities/data-model/#repeatable-identity
