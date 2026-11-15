@@ -63,7 +63,7 @@ it behind an authenticated reverse proxy. See the
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | Status and conditions for a single logical pipeline. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | Per-pipeline liveness probe. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | Per-pipeline readiness probe. |
-| `GET /api/v1/debug/pprof/heap` | Sampled heap profile in pprof protobuf format, `application/x-protobuf`. Enable [mimalloc](../PROFILING.md#heap-profiling-mimalloc-pprof) or [jemalloc](../PROFILING.md#live-heap-profiling-jemalloc-pprof) profiling at startup. |
+| `GET /api/v1/debug/pprof/heap` | Sampled heap profile in pprof protobuf format, `application/x-protobuf`. Enable [mimalloc](../PROFILING.md#heap-profiling-mimalloc-pprof), [jemalloc](../PROFILING.md#live-heap-profiling-jemalloc-pprof), or [snmalloc](../PROFILING.md#live-heap-profiling-snmalloc-pprof) profiling at startup. |
 | `GET /api/v1/debug/pprof/profile` | Sampled CPU profile in pprof protobuf format, `application/x-protobuf`, on non-Windows targets. Accepts `seconds`, default `30`, and `frequency` in Hz, default `100`. |
 
 ### Metrics query parameters
@@ -234,6 +234,8 @@ reported by its active allocator even when heap profiling is disabled.
 - **jemalloc** reports `allocated`, `active`, `resident`, `mapped`, and
   `retained`. `resident` is jemalloc's estimate for its own memory.
 - **mimalloc v3** reports `committed`, `reserved`, and `reserved_peak`.
+- **snmalloc** reports `reserved` and `reserved_peak` at slab and chunk
+  granularity.
 
 Use the process RSS series to compare residency across allocators. Allocator
 reservation measures address space managed by the allocator.

@@ -55,7 +55,8 @@ For the operator guide to live pipeline mutation, see
 
 - `GET /api/v1/debug/pprof/heap` returns a live sampled heap profile as
   `application/x-protobuf`. Enable profiling with `MIMALLOC_PROFILE` in mimalloc
-  builds or through the allocator configuration in jemalloc builds. Returns
+  builds, `SNMALLOC_PROFILE=1` in snmalloc builds, or the allocator
+  configuration in jemalloc builds. Returns
   HTTP 429 while another snapshot is running and HTTP 500 if profiling is
   unavailable or inactive. See [heap profiling](../../PROFILING.md#heap-profiling-mimalloc-pprof).
 - `GET /api/v1/debug/pprof/profile`: collect a CPU profile in pprof format.

@@ -51,6 +51,9 @@ otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+snmalloc-rs = { workspace = true, optional = true }
+rustfs-mimalloc-profiling = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
@@ -155,6 +158,8 @@ local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 # Microsoft's bindings use the corresponding vendored C sources with the pprof fixes.
 mimalloc = { version = "=3.6.1", path = "third-party/mimalloc/contrib/rust" }
+snmalloc-rs = { version = "=0.7.6", default-features = false, features = ["build_cc", "usewait-on-address"] }
+rustfs-mimalloc-profiling = { version = "=0.7.2", default-features = false }
 # Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
 # Match the driver's mysql_common version range for shared codec error types.
@@ -457,6 +462,7 @@ jemalloc = [
     "otel-arrow-dfe-controller/jemalloc-pprof",
 ]
 mimalloc = ["dep:mimalloc", "dep:serde_json"]
+snmalloc = ["dep:snmalloc-rs", "dep:rustfs-mimalloc-profiling", "dep:prost"]
 
 # Unsafe performance optimizations.
 unsafe-optimizations = ["unchecked-arithmetic", "unchecked-index"]

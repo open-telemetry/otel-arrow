@@ -30,6 +30,8 @@ use otel_arrow_dfe_wasm_host as _;
 mod allocator_metrics;
 #[cfg(feature = "mimalloc")]
 mod mimalloc_profile;
+#[cfg(feature = "snmalloc")]
+mod snmalloc_profile;
 
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
@@ -46,14 +48,18 @@ const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.txt
     any(
         all(feature = "dhat-heap", feature = "mimalloc"),
         all(feature = "dhat-heap", feature = "jemalloc"),
+        all(feature = "dhat-heap", feature = "snmalloc"),
         all(feature = "jemalloc", feature = "mimalloc"),
+        all(feature = "jemalloc", feature = "snmalloc"),
+        all(feature = "mimalloc", feature = "snmalloc"),
     )
 ))]
 compile_error!(
-    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`. \
+    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`, `snmalloc`. \
     Example: \
         (mimalloc): cargo build --release --no-default-features --features mimalloc. \
         (jemalloc): cargo build --release --no-default-features --features jemalloc. \
+        (snmalloc): cargo build --release --no-default-features --features snmalloc. \
         (dhat): cargo build --profile profiling --no-default-features --features dhat-heap."
 );
 
@@ -97,6 +103,13 @@ cfg_select! {
         static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
     }
 
+    feature = "snmalloc" => {
+        const MEMORY_ALLOCATOR: &str = "snmalloc";
+        #[global_allocator]
+        static GLOBAL: rustfs_mimalloc_profiling::SamplingAllocator<snmalloc_rs::SnMalloc> =
+            rustfs_mimalloc_profiling::SamplingAllocator::with_allocator(snmalloc_rs::SnMalloc);
+    }
+
     _ => {
         const MEMORY_ALLOCATOR: &str = "system";
     }
@@ -106,6 +119,8 @@ fn heap_profile_provider() -> Option<otel_arrow_dfe_controller::HeapProfileProvi
     match MEMORY_ALLOCATOR {
         #[cfg(feature = "mimalloc")]
         "mimalloc" => Some(mimalloc_profile::snapshot),
+        #[cfg(feature = "snmalloc")]
+        "snmalloc" => Some(snmalloc_profile::snapshot),
         // An omitted provider lets the admin server use its native jemalloc path.
         _ => None,
     }
@@ -312,6 +327,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if validate_and_exit {
         println!("Configuration '{}' is valid.", resolved.source);
         std::process::exit(0);
+    }
+
+    #[cfg(feature = "snmalloc")]
+    if MEMORY_ALLOCATOR == "snmalloc" {
+        snmalloc_profile::initialize()?;
     }
 
     // Applied to the accepted configuration before any pipeline starts, so a

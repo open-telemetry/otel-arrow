@@ -149,7 +149,36 @@ curl http://localhost:8080/api/v1/debug/pprof/heap -o heap.pprof
 go tool pprof -http=:18080 ./target/debug/df_engine ./heap.pprof
 ```
 
-Both allocator builds expose process RSS and their available native memory
+## Live heap profiling (snmalloc pprof)
+
+Select snmalloc alongside the other default engine features.
+
+```bash
+cargo build --bin df_engine --no-default-features \
+  --features core-nodes,dev-tools,admin-live-logs-ws,snmalloc,crypto-ring
+```
+
+Set `SNMALLOC_PROFILE=1` before starting the engine to sample Rust allocations
+made through its global allocator. Start the admin server and fetch a live
+protobuf profile using the same endpoint as the other allocators.
+
+```bash
+SNMALLOC_PROFILE=1 ./target/debug/df_engine --config ./configs/otap-noop.yaml \
+  --http-admin-bind 127.0.0.1:8080
+```
+
+```bash
+curl --fail http://127.0.0.1:8080/api/v1/debug/pprof/heap -o heap.pb
+pprof -sample_index=inuse_space -http=localhost:18080 \
+  ./target/debug/df_engine heap.pb
+```
+
+Sampling starts during engine startup. It covers Rust global allocations from
+that point forward. The endpoint returns live and interval allocation
+samples and limits the response to 16 MiB. Direct C allocations are outside
+the Rust global allocator's coverage.
+
+All three builds expose process RSS and their available native memory
 statistics through [engine metrics](docs/self-observability.md#engine-pipeline-and-runtime)
 independently of heap sampling.
 

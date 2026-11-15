@@ -4,7 +4,11 @@
 //! Native process memory observations for the allocator selected by the binary.
 
 use otel_arrow_dfe_engine::engine_metrics::AllocatorMemoryProvider;
-#[cfg(any(feature = "mimalloc", all(not(windows), feature = "jemalloc")))]
+#[cfg(any(
+    feature = "mimalloc",
+    feature = "snmalloc",
+    all(not(windows), feature = "jemalloc")
+))]
 use otel_arrow_dfe_engine::engine_metrics::{Allocator, AllocatorMemoryStats};
 
 pub(crate) fn provider(name: &str) -> Option<AllocatorMemoryProvider> {
@@ -18,6 +22,11 @@ pub(crate) fn provider(name: &str) -> Option<AllocatorMemoryProvider> {
         "mimalloc" => Some(AllocatorMemoryProvider {
             allocator: Allocator::Mimalloc,
             read: mimalloc_memory,
+        }),
+        #[cfg(feature = "snmalloc")]
+        "snmalloc" => Some(AllocatorMemoryProvider {
+            allocator: Allocator::Snmalloc,
+            read: snmalloc_memory,
         }),
         _ => None,
     }
@@ -53,6 +62,16 @@ fn mimalloc_memory() -> AllocatorMemoryStats {
         committed: stats["committed"]["current"].as_u64(),
         reserved: stats["reserved"]["current"].as_u64(),
         reserved_peak: stats["reserved"]["peak"].as_u64(),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "snmalloc")]
+fn snmalloc_memory() -> AllocatorMemoryStats {
+    let stats = snmalloc_rs::SnMalloc::memory_stats();
+    AllocatorMemoryStats {
+        reserved: Some(stats.current_memory_usage as u64),
+        reserved_peak: Some(stats.peak_memory_usage as u64),
         ..Default::default()
     }
 }

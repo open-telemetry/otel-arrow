@@ -7434,7 +7434,10 @@ dependencies = [
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-wasm-host",
  "pprof",
+ "prost 0.14.4",
+ "rustfs-mimalloc-profiling",
  "serde_json",
+ "snmalloc-rs",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -9998,6 +10001,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustfs-mimalloc-profiling"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1e7d8cbf9e0afb8eff0bd1f6023973148505102402b76c051f56e8c5c232172"
+dependencies = [
+ "backtrace",
+ "findshlibs",
+ "libc",
+ "log",
+ "object 0.40.0",
+ "prost 0.14.4",
+]
+
+[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10732,6 +10749,24 @@ name = "smawk"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8e2fb0f499abb4d162f2bedad68f5ef91a1682b5a03596ddb67efd37768d100"
+
+[[package]]
+name = "snmalloc-rs"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6eb149316ee1778b65c2bdadc923e7df7025f86f096bfe52a2289db2c166d2a2"
+dependencies = [
+ "snmalloc-sys",
+]
+
+[[package]]
+name = "snmalloc-sys"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f09c93c55f9a2b8dab75738a83c771231c5f408af65b8657433fe5bc93cc76cb"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "socket2"

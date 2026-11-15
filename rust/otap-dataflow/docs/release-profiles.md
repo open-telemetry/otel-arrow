@@ -48,7 +48,8 @@ Heap profiling requires runtime activation and an allocator with profiling
 support. The live endpoint supports
 [jemalloc](../PROFILING.md#live-heap-profiling-jemalloc-pprof), the default
 on Linux and macOS, as well as
-[mimalloc](../PROFILING.md#heap-profiling-mimalloc-pprof) builds. The minimal
+[mimalloc](../PROFILING.md#heap-profiling-mimalloc-pprof) and
+[snmalloc](../PROFILING.md#live-heap-profiling-snmalloc-pprof) builds. The minimal
 feature selection measured below uses the system allocator.
 
 ## Build

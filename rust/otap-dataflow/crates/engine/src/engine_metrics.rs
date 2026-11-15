@@ -117,6 +117,8 @@ pub enum Allocator {
     Jemalloc,
     /// mimalloc.
     Mimalloc,
+    /// snmalloc.
+    Snmalloc,
 }
 
 /// Meaning of an allocator-reported byte count.
