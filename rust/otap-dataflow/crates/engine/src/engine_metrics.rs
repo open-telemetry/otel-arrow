@@ -30,12 +30,25 @@
 //!   `process_memory_hard_limit_bytes` (`Gauge<u64>`, `{By}`):
 //!   Process-wide memory limiter sample and effective limits.
 //!
-//!   We emit utilization directly (rather than a cumulative `cpu_time` counter)
-//!   so that users can read the metric as-is without requiring PromQL `rate()`
-//!   or similar query-time derivations.
+//!   We emit utilization directly alongside a cumulative `cpu.time` counter so
+//!   that users can either read the utilization gauge as-is or compute rates at
+//!   query time (`rate(cpu_time_seconds_total[5m])`).
 //!
-//!   TODO: Also emit a cumulative `cpu_time` counter (like the Go Collector's
-//!   `process_cpu_seconds_total`) for users who prefer query-time computation.
+//! - `cpu.time` (`ObserveCounter<f64>`, `s`):
+//!   Cumulative process-wide CPU time (combined user + system) consumed since
+//!   the engine metrics monitor started.
+//!
+//! - `engine.log_tap`:
+//!   In-memory internal log tap retention and drop metrics (`retained.entries`,
+//!   `retained.bytes`, `dropped.on.ingest`, `dropped.on.retention`) when the
+//!   internal log tap is enabled.
+//!
+//! - `engine.observed_state`:
+//!   Controller observed-state summary metrics for logical pipelines, serving
+//!   cores, and cumulative lifecycle events (`pipelines.tracked`,
+//!   `pipelines.accepted`, `pipelines.live`, `pipelines.ready`,
+//!   `cores.serving`, `cores.running`, `events.request`, `events.success`,
+//!   `events.error`).
 //!
 //! - `engine.console_output` (`ObserveCounter<u64>`), one bucket per `console.stream`
 //!   (`stdout` or `stderr`) in a single registration: activity of the process-wide
@@ -50,7 +63,9 @@
 
 use crate::memory_limiter::MemoryPressureState;
 use cpu_time::ProcessTime;
+use otel_arrow_dfe_state::store::{ObservedStateHandle, ObservedStateSummary};
 use otel_arrow_dfe_telemetry::instrument::{Gauge, ObserveCounter, ObserveUpDownCounter};
+use otel_arrow_dfe_telemetry::log_tap::{InternalLogTapHandle, LogTapStats};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otel_arrow_dfe_telemetry::output_service::{OutputService, OutputStats, ServiceStats};
 use otel_arrow_dfe_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
@@ -79,6 +94,11 @@ pub struct EngineMetrics {
     /// The `cpu.mode` attribute is not set; this reports combined user + system time.
     #[metric(unit = "{1}")]
     pub cpu_utilization: Gauge<f64>,
+
+    /// Cumulative CPU time consumed by the engine process since the monitor started,
+    /// in seconds (combined user + system time).
+    #[metric(unit = "s")]
+    pub cpu_time: ObserveCounter<f64>,
 
     /// Process-wide memory limiter state encoded as `0=normal`, `1=soft`, `2=hard`.
     #[metric(unit = "{state}")]
@@ -193,6 +213,92 @@ impl ConsoleOutputMetrics {
     }
 }
 
+/// Retention and drop metrics for the in-memory internal log tap.
+#[metric_set(name = "engine.log_tap")]
+#[derive(Debug, Default, Clone)]
+pub struct LogTapMetrics {
+    /// Number of internal log entries currently retained in the in-memory ring buffer.
+    #[metric(unit = "{log}")]
+    pub retained_entries: Gauge<u64>,
+
+    /// Estimated memory in bytes currently used by retained internal log entries.
+    #[metric(unit = "By")]
+    pub retained_bytes: Gauge<u64>,
+
+    /// Cumulative internal log events dropped before entering retention due to channel pressure.
+    #[metric(unit = "{log}")]
+    pub dropped_on_ingest: ObserveCounter<u64>,
+
+    /// Cumulative retained internal log events evicted due to entry or byte retention limits.
+    #[metric(unit = "{log}")]
+    pub dropped_on_retention: ObserveCounter<u64>,
+}
+
+impl LogTapMetrics {
+    fn observe(&mut self, stats: &LogTapStats) {
+        self.retained_entries.set(stats.retained_entries);
+        self.retained_bytes.set(stats.retained_bytes);
+        self.dropped_on_ingest.observe(stats.dropped_on_ingest);
+        self.dropped_on_retention
+            .observe(stats.dropped_on_retention);
+    }
+}
+
+/// Pipeline status, core phase, and lifecycle event metrics from the observed-state store.
+#[metric_set(name = "engine.observed_state")]
+#[derive(Debug, Default, Clone)]
+pub struct ObservedStateMetrics {
+    /// Total number of logical pipelines tracked in the observed-state store.
+    #[metric(unit = "{pipeline}")]
+    pub pipelines_tracked: Gauge<u64>,
+
+    /// Number of logical pipelines whose `Accepted` condition is `True`.
+    #[metric(unit = "{pipeline}")]
+    pub pipelines_accepted: Gauge<u64>,
+
+    /// Number of logical pipelines currently satisfying their liveness quorum.
+    #[metric(unit = "{pipeline}")]
+    pub pipelines_live: Gauge<u64>,
+
+    /// Number of logical pipelines currently satisfying their readiness quorum.
+    #[metric(unit = "{pipeline}")]
+    pub pipelines_ready: Gauge<u64>,
+
+    /// Total number of serving cores across all tracked logical pipelines.
+    #[metric(unit = "{core}")]
+    pub cores_serving: Gauge<u64>,
+
+    /// Number of serving cores currently in the `Running` phase.
+    #[metric(unit = "{core}")]
+    pub cores_running: Gauge<u64>,
+
+    /// Cumulative engine lifecycle request events observed by the store.
+    #[metric(unit = "{event}")]
+    pub events_request: ObserveCounter<u64>,
+
+    /// Cumulative engine lifecycle success events observed by the store.
+    #[metric(unit = "{event}")]
+    pub events_success: ObserveCounter<u64>,
+
+    /// Cumulative engine lifecycle error events observed by the store.
+    #[metric(unit = "{event}")]
+    pub events_error: ObserveCounter<u64>,
+}
+
+impl ObservedStateMetrics {
+    fn observe(&mut self, summary: &ObservedStateSummary) {
+        self.pipelines_tracked.set(summary.pipelines_total);
+        self.pipelines_accepted.set(summary.pipelines_accepted);
+        self.pipelines_live.set(summary.pipelines_live);
+        self.pipelines_ready.set(summary.pipelines_ready);
+        self.cores_serving.set(summary.cores_total);
+        self.cores_running.set(summary.cores_running);
+        self.events_request.observe(summary.events_request);
+        self.events_success.observe(summary.events_success);
+        self.events_error.observe(summary.events_error);
+    }
+}
+
 /// Monitors and reports engine-wide metrics.
 ///
 /// Created by the controller and driven by a periodic timer in a dedicated
@@ -205,10 +311,17 @@ pub struct EngineMetricsMonitor {
     console_output: MeasurementMetricSet<ConsoleOutputMetrics>,
     /// Process-wide console output totals at the start of this run or monitor.
     console_baseline: ServiceStats,
+    /// Optional internal log tap handle and its registered metric set.
+    log_tap: Option<(InternalLogTapHandle, MetricSet<LogTapMetrics>)>,
+    /// Optional observed-state handle and its registered metric set.
+    observed_state: Option<(ObservedStateHandle, MetricSet<ObservedStateMetrics>)>,
+    entity_key: EntityKey,
     reporter: MetricsReporter,
     registry: TelemetryRegistryHandle,
     /// Wall-clock anchor for the current measurement interval.
     wall_start: Instant,
+    /// Process-wide CPU time anchor at monitor construction for cumulative CPU seconds.
+    cpu_origin: ProcessTime,
     /// Process-wide CPU time anchor for the current measurement interval.
     cpu_start: ProcessTime,
     /// Total number of logical CPU cores available on the system.
@@ -258,17 +371,55 @@ impl EngineMetricsMonitor {
         let num_cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
+        let now_cpu = ProcessTime::now();
         Self {
             metrics,
             console_output,
             console_baseline,
+            log_tap: None,
+            observed_state: None,
+            entity_key,
             reporter,
             registry,
             wall_start: Instant::now(),
-            cpu_start: ProcessTime::now(),
+            cpu_origin: now_cpu,
+            cpu_start: now_cpu,
             num_cores,
             memory_pressure_state,
         }
+    }
+
+    /// Attaches an internal log tap so each sample updates `engine.log_tap` metrics.
+    #[must_use]
+    pub fn with_log_tap(mut self, log_tap: Option<InternalLogTapHandle>) -> Self {
+        if let Some((_, existing)) = self.log_tap.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(existing.metric_set_key());
+        }
+        self.log_tap = log_tap.map(|handle| {
+            let metrics = self
+                .registry
+                .register_metric_set_for_entity::<LogTapMetrics>(self.entity_key);
+            (handle, metrics)
+        });
+        self
+    }
+
+    /// Attaches the observed-state store handle so each sample updates
+    /// `engine.observed_state` metrics.
+    #[must_use]
+    pub fn with_observed_state(mut self, observed_state: ObservedStateHandle) -> Self {
+        if let Some((_, existing)) = self.observed_state.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(existing.metric_set_key());
+        }
+        let metrics = self
+            .registry
+            .register_metric_set_for_entity::<ObservedStateMetrics>(self.entity_key);
+        self.observed_state = Some((observed_state, metrics));
+        self
     }
 
     /// Samples current engine-wide metrics (process memory, CPU utilization, etc.).
@@ -279,9 +430,13 @@ impl EngineMetricsMonitor {
     fn update_with_console_stats(&mut self, console_stats: ServiceStats) {
         self.metrics.observe_memory(memory_stats::memory_stats());
 
-        // Compute process-wide CPU utilization normalized across all cores.
+        // Compute process-wide CPU utilization normalized across all cores and
+        // record cumulative process CPU time since monitor construction.
         let now_wall = Instant::now();
         let now_cpu = ProcessTime::now();
+        self.metrics
+            .cpu_time
+            .observe(now_cpu.duration_since(self.cpu_origin).as_secs_f64());
         let wall_delta = now_wall.duration_since(self.wall_start);
         let cpu_delta = now_cpu.duration_since(self.cpu_start);
         let wall_secs = wall_delta.as_secs_f64();
@@ -305,6 +460,12 @@ impl EngineMetricsMonitor {
             .process_memory_hard_limit_bytes
             .set(self.memory_pressure_state.hard_limit_bytes());
         self.observe_console_output(console_stats);
+        if let Some((handle, metrics)) = &mut self.log_tap {
+            metrics.observe(&handle.stats());
+        }
+        if let Some((handle, metrics)) = &mut self.observed_state {
+            metrics.observe(&handle.summary());
+        }
         self.wall_start = now_wall;
         self.cpu_start = now_cpu;
     }
@@ -330,7 +491,14 @@ impl EngineMetricsMonitor {
     /// A full channel is silently tolerated (non-blocking, try-send semantics).
     pub fn report(&mut self) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         self.reporter.report(&mut self.metrics)?;
-        self.reporter.report_measurement(&mut self.console_output)
+        self.reporter.report_measurement(&mut self.console_output)?;
+        if let Some((_, metrics)) = &mut self.log_tap {
+            self.reporter.report(metrics)?;
+        }
+        if let Some((_, metrics)) = &mut self.observed_state {
+            self.reporter.report(metrics)?;
+        }
+        Ok(())
     }
 
     /// Samples and reliably hands off final values without exceeding `deadline`.
@@ -353,6 +521,18 @@ impl EngineMetricsMonitor {
             .reporter
             .report_measurement_reliably_until(&mut self.console_output, deadline)
             .await?;
+        if let Some((_, metrics)) = &mut self.log_tap {
+            let _ = self
+                .reporter
+                .report_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((_, metrics)) = &mut self.observed_state {
+            let _ = self
+                .reporter
+                .report_reliably_until(metrics, deadline)
+                .await?;
+        }
         self.reporter.flush_until(deadline).await?;
         Ok(console_stats)
     }
@@ -365,6 +545,16 @@ impl Drop for EngineMetricsMonitor {
             self.console_output.metric_set_key(),
         ] {
             let _ = self.registry.unregister_metric_set(key);
+        }
+        if let Some((_, metrics)) = &self.log_tap {
+            let _ = self
+                .registry
+                .unregister_metric_set(metrics.metric_set_key());
+        }
+        if let Some((_, metrics)) = &self.observed_state {
+            let _ = self
+                .registry
+                .unregister_metric_set(metrics.metric_set_key());
         }
     }
 }
@@ -543,6 +733,8 @@ mod tests {
         for descriptor in [
             EngineMetrics::default().descriptor(),
             ConsoleOutputMetrics::default().descriptor(),
+            LogTapMetrics::default().descriptor(),
+            ObservedStateMetrics::default().descriptor(),
         ] {
             for field in descriptor.metrics {
                 let row = format!("| `{}` | `{}` |", descriptor.name, field.name);
@@ -781,5 +973,70 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// Scenario: An engine metrics monitor is configured with both an internal log tap
+    /// and an observed-state store handle, samples process CPU, log tap stats, and
+    /// observed-state summaries, and is then dropped.
+    /// Guarantees: `cpu.time`, `engine.log_tap`, and `engine.observed_state` metrics
+    /// reflect the sampled values and all registered metric sets are unregistered on drop.
+    #[test]
+    fn engine_metrics_sample_cpu_time_log_tap_and_observed_state() {
+        use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+        use otel_arrow_dfe_config::settings::telemetry::logs::InternalLogTapConfig;
+        use otel_arrow_dfe_state::store::ObservedStateStore;
+        use otel_arrow_dfe_telemetry::log_tap;
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let entity_key = controller.register_engine_entity();
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(16);
+
+        let tap = log_tap::build(&InternalLogTapConfig {
+            enabled: true,
+            max_entries: 16,
+            max_bytes: 64 * 1024,
+        });
+        tap.ingest_drop_counter().increment();
+
+        let store = ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
+        let obs_handle = store.handle();
+
+        let registered_before = registry.metric_set_count();
+        let mut monitor = EngineMetricsMonitor::with_console_baseline(
+            registry.clone(),
+            entity_key,
+            reporter,
+            controller.memory_pressure_state(),
+            ServiceStats::default(),
+        )
+        .with_log_tap(Some(tap))
+        .with_observed_state(obs_handle);
+
+        assert_eq!(registry.metric_set_count(), registered_before + 4);
+
+        let start = Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(10) {
+            let _ = std::hint::black_box(0u64.wrapping_add(1));
+        }
+
+        monitor.update();
+
+        assert!(
+            monitor.metrics.cpu_time.get() >= 0.0,
+            "cpu_time should be non-negative"
+        );
+        let (_, log_tap_metrics) = monitor.log_tap.as_ref().expect("log tap attached");
+        assert_eq!(log_tap_metrics.dropped_on_ingest.get(), 1);
+
+        let (_, obs_metrics) = monitor
+            .observed_state
+            .as_ref()
+            .expect("observed state attached");
+        assert_eq!(obs_metrics.pipelines_tracked.get(), 0);
+        assert!(monitor.report().is_ok());
+
+        drop(monitor);
+        assert_eq!(registry.metric_set_count(), registered_before);
     }
 }

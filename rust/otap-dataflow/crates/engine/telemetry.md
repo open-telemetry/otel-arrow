@@ -92,6 +92,7 @@ per-engine output.
 | `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
 | `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS once per engine about every five seconds. |
 | `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `cpu.time` | Cumulative CPU time in seconds (combined user + system) consumed by the engine process since the monitor started. | The engine is running; sampled once per engine about every five seconds. |
 | `engine` | `memory.pressure.state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
 | `engine` | `process.memory.usage.bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
 | `engine` | `process.memory.soft.limit.bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
@@ -102,6 +103,19 @@ per-engine output.
 | `engine.console_output` | `bytes.written` | Bytes written to a console stream. | The engine is running and console output was written. |
 | `engine.console_output` | `write.errors` | Failed console writes or flushes. Each one stops that stream's writer; a transient `WouldBlock` is retried instead. | The engine is running and a console write failed. |
 | `engine.console_output` | `diagnostics.dropped` | Best-effort diagnostics dropped because a console stream's queue was full or the frame exceeded its byte budget. | The engine is running and a diagnostic did not fit in the queue. |
+| `engine.log_tap` | `retained.entries` | Number of internal log entries currently retained in the in-memory ring buffer. | The internal log tap is enabled (`logs.tap.enabled: true`) and the engine is running. |
+| `engine.log_tap` | `retained.bytes` | Estimated memory in bytes currently used by retained internal log entries. | Same conditions as `engine.log_tap` `retained.entries`. |
+| `engine.log_tap` | `dropped.on.ingest` | Cumulative internal log events dropped before entering retention due to channel pressure. | The internal log tap is enabled and at least one log event was dropped before ingest. |
+| `engine.log_tap` | `dropped.on.retention` | Cumulative retained internal log events evicted due to entry or byte retention limits. | The internal log tap is enabled and retention evicted at least one entry. |
+| `engine.observed_state` | `pipelines.tracked` | Total number of logical pipelines tracked in the observed-state store. | The engine is running; sampled once per engine about every five seconds. |
+| `engine.observed_state` | `pipelines.accepted` | Number of logical pipelines whose `Accepted` condition is `True`. | Same conditions as `engine.observed_state` `pipelines.tracked`. |
+| `engine.observed_state` | `pipelines.live` | Number of logical pipelines currently satisfying their liveness quorum. | Same conditions as `engine.observed_state` `pipelines.tracked`. |
+| `engine.observed_state` | `pipelines.ready` | Number of logical pipelines currently satisfying their readiness quorum. | Same conditions as `engine.observed_state` `pipelines.tracked`. |
+| `engine.observed_state` | `cores.serving` | Total number of serving cores across all tracked logical pipelines. | Same conditions as `engine.observed_state` `pipelines.tracked`. |
+| `engine.observed_state` | `cores.running` | Number of serving cores currently in the `Running` phase. | Same conditions as `engine.observed_state` `pipelines.tracked`. |
+| `engine.observed_state` | `events.request` | Cumulative engine lifecycle request events observed by the store. | The engine is running and at least one lifecycle request event has been observed. |
+| `engine.observed_state` | `events.success` | Cumulative engine lifecycle success events observed by the store. | The engine is running and at least one lifecycle success event has been observed. |
+| `engine.observed_state` | `events.error` | Cumulative engine lifecycle error events observed by the store. | The engine is running and at least one lifecycle error event has been observed. |
 
 #### Node, channel, and flow metrics
 

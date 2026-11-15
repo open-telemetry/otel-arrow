@@ -24,10 +24,42 @@ use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
+
+/// Cumulative engine lifecycle event counters tracked across the store's lifetime.
+#[derive(Debug, Default)]
+struct ObservedEventCounts {
+    request: AtomicU64,
+    success: AtomicU64,
+    error: AtomicU64,
+}
+
+/// Aggregated observed-state summary for engine self-observability metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedStateSummary {
+    /// Total number of logical pipelines tracked in the observed-state store.
+    pub pipelines_total: u64,
+    /// Number of logical pipelines whose `Accepted` condition is `True`.
+    pub pipelines_accepted: u64,
+    /// Number of logical pipelines currently satisfying their liveness quorum.
+    pub pipelines_live: u64,
+    /// Number of logical pipelines currently satisfying their readiness quorum.
+    pub pipelines_ready: u64,
+    /// Total number of serving cores across all tracked logical pipelines.
+    pub cores_total: u64,
+    /// Number of serving cores currently in the `Running` phase.
+    pub cores_running: u64,
+    /// Cumulative number of engine request lifecycle events observed.
+    pub events_request: u64,
+    /// Cumulative number of engine success lifecycle events observed.
+    pub events_success: u64,
+    /// Cumulative number of engine error lifecycle events observed.
+    pub events_error: u64,
+}
 
 /// Event-driven observed state store representing what we know about the state of the
 /// pipelines (DAG executors) controlled by the controller.
@@ -68,6 +100,9 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     log_tap: Option<InternalLogTapHandle>,
 
+    #[serde(skip)]
+    event_counts: Arc<ObservedEventCounts>,
+
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
 
@@ -75,6 +110,8 @@ pub struct ObservedStateStore {
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateHandle {
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
+    #[serde(skip)]
+    event_counts: Arc<ObservedEventCounts>,
 }
 
 impl ObservedStateHandle {
@@ -91,6 +128,50 @@ impl ObservedStateHandle {
                 poisoned.into_inner().clone()
             }
         }
+    }
+
+    /// Computes a lightweight summary of observed pipeline, core, and lifecycle event counts
+    /// without cloning per-pipeline condition messages or event ring buffers.
+    #[must_use]
+    pub fn summary(&self) -> ObservedStateSummary {
+        let guard = match self.pipelines.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                otel_error!(
+                    "state.mutex_poisoned",
+                    action = "continuing with stale summary"
+                );
+                poisoned.into_inner()
+            }
+        };
+
+        let mut summary = ObservedStateSummary {
+            pipelines_total: guard.len() as u64,
+            events_request: self.event_counts.request.load(Ordering::Relaxed),
+            events_success: self.event_counts.success.load(Ordering::Relaxed),
+            events_error: self.event_counts.error.load(Ordering::Relaxed),
+            ..ObservedStateSummary::default()
+        };
+
+        for status in guard.values() {
+            if status.accepted() {
+                summary.pipelines_accepted = summary.pipelines_accepted.saturating_add(1);
+            }
+            if status.liveness() {
+                summary.pipelines_live = summary.pipelines_live.saturating_add(1);
+            }
+            if status.readiness() {
+                summary.pipelines_ready = summary.pipelines_ready.saturating_add(1);
+            }
+            summary.cores_total = summary
+                .cores_total
+                .saturating_add(status.total_cores() as u64);
+            summary.cores_running = summary
+                .cores_running
+                .saturating_add(status.running_cores() as u64);
+        }
+
+        summary
     }
 }
 
@@ -121,6 +202,7 @@ impl ObservedStateStore {
             console: ConsoleWriter::color(),
             registry,
             log_tap,
+            event_counts: Arc::new(ObservedEventCounts::default()),
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -329,6 +411,7 @@ impl ObservedStateStore {
     pub fn handle(&self) -> ObservedStateHandle {
         ObservedStateHandle {
             pipelines: self.pipelines.clone(),
+            event_counts: self.event_counts.clone(),
         }
     }
 
@@ -395,6 +478,7 @@ impl ObservedStateStore {
     fn report_engine(&self, observed_event: EngineEvent) -> Result<ApplyOutcome, Error> {
         match &observed_event.r#type {
             EventType::Request(req) => {
+                let _ = self.event_counts.request.fetch_add(1, Ordering::Relaxed);
                 otel_info!("state.observed_event",
                     pipeline_group_id = %observed_event.key.pipeline_group_id,
                     pipeline_id = %observed_event.key.pipeline_id,
@@ -404,6 +488,7 @@ impl ObservedStateStore {
                 );
             }
             EventType::Error(err) => {
+                let _ = self.event_counts.error.fetch_add(1, Ordering::Relaxed);
                 let event_type = err.kind();
                 let summary = err.summary();
                 let node = summary.and_then(|summary| summary.node());
@@ -422,7 +507,9 @@ impl ObservedStateStore {
                     message = observed_event.message.as_deref().unwrap_or(""),
                 );
             }
-            EventType::Success(_) => {}
+            EventType::Success(_) => {
+                let _ = self.event_counts.success.fetch_add(1, Ordering::Relaxed);
+            }
         };
 
         // Events without a pipeline key don't update state.
@@ -1053,5 +1140,69 @@ mod tests {
         });
         assert_eq!(result.logs.len(), 1);
         assert!(result.logs[0].event.to_string().contains("shutdown drain"));
+    }
+
+    /// Scenario: Lifecycle request, success, and error events are reported across cores.
+    /// Guarantees: `ObservedStateHandle::summary()` reports current pipeline/core status
+    /// counts and cumulative lifecycle event counts without cloning condition buffers.
+    #[test]
+    fn summary_aggregates_pipeline_core_and_lifecycle_event_counts() {
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::new(),
+        );
+        let handle = store.handle();
+
+        let _ = store
+            .report_engine(EngineEvent::start_requested(make_key(0), None))
+            .expect("start requested succeeds");
+        let _ = store
+            .report_engine(EngineEvent::admitted(make_key(0), None))
+            .expect("admitted succeeds");
+        let _ = store
+            .report_engine(EngineEvent::ready(make_key(0), None))
+            .expect("ready succeeds");
+
+        assert_eq!(
+            handle.summary(),
+            ObservedStateSummary {
+                pipelines_total: 1,
+                pipelines_accepted: 1,
+                pipelines_live: 1,
+                pipelines_ready: 1,
+                cores_total: 1,
+                cores_running: 1,
+                events_request: 1,
+                events_success: 2,
+                events_error: 0,
+            }
+        );
+
+        let _ = store
+            .report_engine(EngineEvent::pipeline_runtime_error(
+                make_key(0),
+                "Pipeline encountered a runtime error.",
+                otel_arrow_dfe_telemetry::event::ErrorSummary::Pipeline {
+                    error_kind: "runtime".into(),
+                    message: "boom".to_string(),
+                    source: None,
+                },
+            ))
+            .expect("runtime error transition succeeds");
+
+        assert_eq!(
+            handle.summary(),
+            ObservedStateSummary {
+                pipelines_total: 1,
+                pipelines_accepted: 1,
+                pipelines_live: 1,
+                pipelines_ready: 0,
+                cores_total: 1,
+                cores_running: 0,
+                events_request: 1,
+                events_success: 2,
+                events_error: 1,
+            }
+        );
     }
 }

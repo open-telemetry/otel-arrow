@@ -415,6 +415,16 @@ impl PipelineStatus {
         }
     }
 
+    /// Returns true if all selected serving cores have accepted their configuration.
+    #[must_use]
+    pub fn accepted(&self) -> bool {
+        let selected = self.selected_runtimes();
+        !selected.is_empty()
+            && selected
+                .into_iter()
+                .all(|(_, runtime)| runtime.accepted_condition().status == ConditionStatus::True)
+    }
+
     /// Returns a boolean representing the liveness across serving cores.
     #[must_use]
     pub fn liveness(&self) -> bool {
