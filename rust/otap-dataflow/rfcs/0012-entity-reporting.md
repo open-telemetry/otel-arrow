@@ -10,60 +10,78 @@ Tracking Issue: open-telemetry/otel-arrow#0000
 ## Summary
 
 The Dataflow Engine (DFE) has a well-defined entity model. The goal of this RFC is
-to formalize that model in OpenTelemetry terms and outline how the DFE will 
+to formalize that model in OpenTelemetry terms and outline how the DFE will
 communicate it using OpenTelemetry signals.
 
 For the sake of completeness, this RFC consolidates some information already
 present about entities in the following documents:
 
-- TODO: Link to relevant ITS/Entity documents
-- TODO: Link to relevant OpenTelemetry Entity documentation
+- DFE: [Entity model][dfe-entity-model],
+  [Attributes guide][dfe-attributes-guide],
+  [Events guide][dfe-events-guide], and
+  [Implementation gaps][dfe-implementation-gaps]
+- OpenTelemetry: [Entity data model][otel-entity-data-model],
+  [Entity events][otel-entity-events], and
+  [Entity propagation][otel-entity-propagation]
 
 Reviewers familiar with the existing DFE entity model and OpenTelemetry Entity
 work may want to focus on the following sections which highlight important changes
 to our existing model:
 
-- TODO: Link to relevant sections that are proposing new work
+- [Entity types](#entity-types): the logical `pipeline` is separated from its
+  runtime `pipeline.instance`.
+- [Identity](#identity): every internal entity gets a UUID v7 `uid` as its sole
+  identifying attribute.
+- [Descriptive attributes](#descriptive-attributes): existing identifiers become
+  navigational attributes, distinct from state attributes.
+- [Scope](#scope) and
+  [Attaching signals to entities](#attaching-signals-to-entities): which
+  attributes go on the scope and how a signal is tied to one entity.
+- [Entity Events](#entity-events): state, delete, and relationship reporting,
+  and the new `engine.telemetry.entities` setting.
 
 ## Motivation
 
-Dataflow Engine entities have status information that is valuable for monitoring
-and troubleshooting. Entity status is available via the `/api/v1/status` admin
-endpoint, but it's in a bespoke format. This data is also not exported via the
-Internal Telemetry System (ITS).
+DFE entities have status information that is valuable for monitoring and
+troubleshooting. That status is available through the `/api/v1/status` admin
+endpoint, but in a bespoke format, and it is not exported through the Internal
+Telemetry System (ITS).
 
-We want entity information to be readily available for DFE telemetry consumers
-like any other internal telemetry. This includes:
+We want entity information to be available to DFE telemetry consumers like any
+other internal telemetry. This includes:
 
-- Status of existing entities and their types
-- Lifecycle events including deletion
-- Relationships between entities
+- the current state of each entity,
+- lifecycle events, including creation and deletion, and
+- relationships between entities.
 
-The natural thing to do is to align ourselves with OpenTelemetry Entities, which
-are in the process of being defined. To that end we place the following
-restrictions on ourselves:
+The natural approach is to align with OpenTelemetry Entities, which are still
+being defined. To that end this RFC places the following constraints on
+itself:
 
-- DFE Entities are defined according to the abstract notion of OpenTelemetry
-entities e.g. type, identifying attributes, and descriptive attributes.
-- 
+- DFE entities follow the OpenTelemetry [entity data model][otel-entity-data-model]:
+  each has a type, identifying attributes, and descriptive attributes.
+- Entity state, lifecycle, and relationships are reported with OpenTelemetry
+  [entity events][otel-entity-events] rather than a DFE-specific format.
+- No changes to the OTLP protocol are required. Internal entities are carried
+  in existing fields (resource, scope, and log record attributes).
 
-There are also certain problems with the existing entity model in the engine:
+The existing entity model also has problems that this RFC addresses:
 
-- Can't dismbiguate between a pipeline/node that was deleted and recreated :( 
-- There is no way to order entities in time other than to infer existing from
-  their signals
-- 
-- TODO: consider removing this section
+- **Ambiguous identity.** A pipeline or node that is deleted and recreated with
+  the same configuration produces the same attribute values as the original, so
+  consumers cannot tell the two apart.
+- **No ordering in time.** There is no way to order entities by creation other
+  than inferring it from when their signals first appeared.
+- **Conflated lifetimes.** The `pipeline` attribute set describes a runtime
+  instance (it carries `core.id` and `deployment.generation`), and nothing
+  describes the logical pipeline that outlives those instances.
+- **Implicit relationships.** Relationships are only implied by attribute sets
+  that appear together on the same signal. A relationship cannot be observed
+  while the entities involved emit no telemetry.
 
 ## Guide-level explanation
 
 ### Entity modeling
-
-- TODO: Explain entity types
-- TODO: Explain that all entities inside the engine are assigned a UUID V7 as
-their sole identifying attribute
-- TODO: Explain that remaining attributes are descriptive and mention the signal
-modeling section
 
 Every entity reported by the DFE follows the abstract OpenTelemetry
 [entity data model][otel-entity-data-model]: it has a **type**, a set of
@@ -170,13 +188,17 @@ attributes appear only in entity events. The reasons are explained in
 
 ### Entity Containment Chain
 
-- TODO: explain the boundary between Resources and Entities that enclose the DFE
-and are injected via resource/entity detectors and entities that are owned and
-operated by the DFE
-  - TODO: Need words to describe entities above and below this boundary
-- TODO: introduce the concept of entity containment within the DFE and how descriptive
+The DFE distinguishes between two kinds of entities:
 
-#### Containment
+- **Ambient entities** describe the environment the DFE runs in: the host,
+  container, process, service instance, and so on. The DFE does not create or
+  own them. They are discovered by resource detectors, provided through
+  [entity propagation][otel-entity-propagation] (`OTEL_ENTITIES`), or
+  configured explicitly under `engine.telemetry.resource`.
+- **Internal entities** are created, owned, and deleted by the DFE: the
+  engine, pipeline groups, pipelines, pipeline instances, nodes, channels, and
+  extensions. All of the entity types in [Entity types](#entity-types) are
+  internal.
 
 Internal entities form a containment tree rooted at the `engine`. Each internal
 entity other than the engine has exactly one containing entity (the engine may
@@ -205,28 +227,8 @@ a signal belongs to (see
 
 ### Signal modeling and Entity Refs
 
-- TODO: Explain how entities above the boundary and the engine itself are unioned
-up into the resource
-- TODO: Explain how entity refs are only used for resources above the boundary
-- TODO: Explain how entities internal to the engine are represented via scope
-- TODO: Explain how descriptive and identifying attributes for internal entities
-are unioned into each scope
-- TODO: Explain how logs and metrics are attached to explicit entities based on
-the narrowest containing entity in the scope
-
-The DFE distinguishes between two types of entities:
-
-- **Ambient entities** describe the environment the DFE runs in: the host,
-  container, process, service instance, and so on. The DFE does not create or
-  own them. They are discovered by resource detectors, provided through
-  [entity propagation][otel-entity-propagation] (`OTEL_ENTITIES`), or
-  configured explicitly under `engine.telemetry.resource`.
-- **Internal entities** are created, owned, and deleted by the DFE: the
-  engine, pipeline groups, pipelines, pipeline instances, nodes, channels, and
-  extensions. All of the entity types in [Entity types](#entity-types) are
-  internal.
-
-Entities are modeled in OpenTelemetry signals as follows.
+Ambient entities and the `engine` are carried on the resource. All other
+internal entities are carried on the instrumentation scope.
 
 #### Resource
 
@@ -336,17 +338,6 @@ attributes do not have this problem because they never change during the
 lifetime of the entity, and the entity's `uid` already scopes the stream.
 
 ### Entity Events
-
-- TODO: Explain how entity events are used to communicate internal entities below
-the boundary
-- TODO: Explain how entities are emitted as entity status events
-- TODO: Describe entity relationships
-  - TODO: This might need it's own section before this similar to entity containment
-  chain or embedded therein. Trying to describe NUMA nodes and cores is probably 
-  going to be a doozy here
-- TODO: Explain deletion entity events
-- TODO: Address periodic emission, probably introduce ITS settings for entity
-event emission rates
 
 Logs and metrics give each internal entity's identity and stable description,
 but they leave three things out:
@@ -521,11 +512,11 @@ The way periodic events are spread over the interval, the behavior under
 backpressure, and the ordering guarantees are described in the
 [Reference-level explanation](#reference-level-explanation).
 
-### api/v1/metrics
+### `/api/v1/status`
 
 - TODO: Explain how we're going to represent status. Should we change the shape
-of engine status to be aligned to the entity model more explicitly? This could maybe
-be in the "unresolved questions" or "future possibilities" section
+  of engine status to be aligned to the entity model more explicitly? This could
+  maybe be in the "unresolved questions" or "future possibilities" section
 
 ## Reference-level explanation
 
@@ -651,6 +642,10 @@ this be configurable, and at what granularity?
 What natural extensions or follow-ups does this enable? This is a place to
 record ideas that are out of scope now but worth remembering.
 
+[dfe-entity-model]: ../docs/telemetry/entity-model.md
+[dfe-attributes-guide]: ../docs/telemetry/attributes-guide.md
+[dfe-events-guide]: ../docs/telemetry/events-guide.md
+[dfe-implementation-gaps]: ../docs/telemetry/implementation-gaps.md
 [otel-entity-data-model]: https://opentelemetry.io/docs/specs/otel/entities/data-model/
 [otel-minimal-identity]: https://opentelemetry.io/docs/specs/otel/entities/data-model/#minimally-sufficient-identity
 [otel-repeatable-identity]: https://opentelemetry.io/docs/specs/otel/entities/data-model/#repeatable-identity
