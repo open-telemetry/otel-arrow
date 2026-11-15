@@ -23,8 +23,9 @@ use std::future::{Future, poll_fn};
 use std::hint::black_box;
 use std::pin::Pin;
 use std::task::Poll;
-use tokio::runtime::Builder;
-use tokio::task::LocalSet;
+
+#[path = "../support/local_runtime.rs"]
+mod local_runtime;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -317,18 +318,21 @@ async fn run_control_aware_canceled_sender_churn() -> usize {
     let (tx, mut rx) =
         node_channel(control_aware_channel_config()).expect("control-aware channel config valid");
 
-    let _ = tx
-        .try_send(ControlCmd::Ack(ControlAwareAckMsg::new(0)))
-        .expect("seed completion should enqueue");
+    for idx in 0..CHANNEL_CAPACITY {
+        let _ = tx
+            .try_send(ControlCmd::Ack(ControlAwareAckMsg::new(idx)))
+            .expect("seed completion should enqueue");
+    }
 
     for idx in 0..CANCELED_BLOCKED_SENDS {
-        let mut blocked =
-            std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(idx + 1))));
+        let mut blocked = std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(
+            CHANNEL_CAPACITY + idx,
+        ))));
         assert!(is_pending_once(blocked.as_mut()).await);
     }
 
     let mut live = std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(
-        CANCELED_BLOCKED_SENDS + 1,
+        CHANNEL_CAPACITY + CANCELED_BLOCKED_SENDS,
     ))));
     assert!(is_pending_once(live.as_mut()).await);
 
@@ -350,10 +354,7 @@ async fn run_control_aware_canceled_sender_churn() -> usize {
 }
 
 fn bench_control_channels(c: &mut Criterion) {
-    let rt = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build tokio runtime");
+    let rt = local_runtime::build_local_runtime("control-channel-bench");
 
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
     let core = cores.iter().last().expect("no cores found");
@@ -366,11 +367,9 @@ fn bench_control_channels(c: &mut Criterion) {
         let _ = group.bench_function(
             BenchmarkId::new("current_local", scenario.bench_name()),
             |b| {
-                b.to_async(&rt).iter(|| async {
-                    let local = LocalSet::new();
-                    let observed = local
-                        .run_until(async { run_current_local_workload(scenario).await })
-                        .await;
+                b.iter(|| {
+                    let observed =
+                        rt.block_on(async { run_current_local_workload(scenario).await });
                     let _ = black_box(observed);
                 });
             },
@@ -379,11 +378,9 @@ fn bench_control_channels(c: &mut Criterion) {
         let _ = group.bench_function(
             BenchmarkId::new("control_aware", scenario.bench_name()),
             |b| {
-                b.to_async(&rt).iter(|| async {
-                    let local = LocalSet::new();
-                    let observed = local
-                        .run_until(async { run_control_aware_workload(scenario).await })
-                        .await;
+                b.iter(|| {
+                    let observed =
+                        rt.block_on(async { run_control_aware_workload(scenario).await });
                     let _ = black_box(observed);
                 });
             },
@@ -392,9 +389,11 @@ fn bench_control_channels(c: &mut Criterion) {
         let _ = group.bench_function(
             BenchmarkId::new("current_shared", scenario.bench_name()),
             |b| {
-                b.to_async(&rt).iter(|| async {
-                    let observed = run_current_shared_workload(scenario).await;
-                    let _ = black_box(observed);
+                b.iter(|| {
+                    rt.block_on(async {
+                        let observed = run_current_shared_workload(scenario).await;
+                        let _ = black_box(observed);
+                    });
                 });
             },
         );
@@ -405,11 +404,8 @@ fn bench_control_channels(c: &mut Criterion) {
     let mut churn_group = c.benchmark_group("control_channel_blocked_sender_churn");
     let _ = churn_group.throughput(Throughput::Elements(CANCELED_BLOCKED_SENDS as u64));
     let _ = churn_group.bench_function("control_aware", |b| {
-        b.to_async(&rt).iter(|| async {
-            let local = LocalSet::new();
-            let churned = local
-                .run_until(async { run_control_aware_canceled_sender_churn().await })
-                .await;
+        b.iter(|| {
+            let churned = rt.block_on(async { run_control_aware_canceled_sender_churn().await });
             let _ = black_box(churned);
         });
     });

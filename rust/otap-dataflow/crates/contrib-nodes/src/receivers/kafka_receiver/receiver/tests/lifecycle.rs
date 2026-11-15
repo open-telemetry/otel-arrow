@@ -8,7 +8,7 @@
 //! These regression tests exercise the drain and shutdown paths (and the bounded
 //! consumer close / lag-worker teardown) with the librdkafka `MockCluster` (the
 //! repo's in-process Kafka "integration" harness, no Docker). They run on the
-//! current-thread `LocalSet` provided by [`with_cluster`] and use manual-commit
+//! current-thread `LocalRuntime` provided by [`with_cluster`] and use manual-commit
 //! receivers so the rebalance-aware commit path stays active. The
 //! drain-under-rebalance cases model the reference multi-receiver test
 //! `rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit`.
@@ -18,7 +18,7 @@ use super::*;
 /// Records produced per partition in the drain-under-rebalance tests.
 const DRAIN_RECORDS_PER_PARTITION: i32 = 5;
 
-/// Scenario (drain under rebalance): a manual-commit receiver A owns every
+/// Scenario: (drain under rebalance) a manual-commit receiver A owns every
 /// partition of a multi-partition topic, is put into ingress drain via
 /// DrainIngress, and then a second group member joins and forces a rebalance
 /// that revokes A's partitions.
@@ -26,7 +26,7 @@ const DRAIN_RECORDS_PER_PARTITION: i32 = 5;
 /// partition and never re-acquires any of them -- is_partition_assigned stays false for
 /// all partitions across a bounded stability window -- so a drain that overlaps
 /// a rebalance cannot pull the receiver back to a non-empty assignment.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn draining_receiver_does_not_reacquire_partitions_after_new_member_joins() {
     const TOPIC: &str = "drain-rebalance-no-reacquire-traces";
     let group = "drain-rebalance-no-reacquire-group";
@@ -95,13 +95,13 @@ async fn draining_receiver_does_not_reacquire_partitions_after_new_member_joins(
     .await;
 }
 
-/// Scenario (drain under rebalance): a manual-commit receiver A owning every
+/// Scenario: (drain under rebalance) a manual-commit receiver A owning every
 /// partition is put into ingress drain with a short deadline while a sequence
 /// of joining-and-leaving group members churns the consumer group, forcing
 /// repeated rebalances that are still in flight *concurrently* with A's drain.
 /// Guarantees: A's receive loop reaches its terminal state strictly before the
 /// drain deadline elapses
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn() {
     const TOPIC: &str = "drain-rebalance-churn-traces";
     let group = "drain-rebalance-churn-group";
@@ -180,7 +180,7 @@ async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn(
     .await;
 }
 
-/// Scenario (drain under rebalance): two manual-commit receivers A and B share
+/// Scenario: (drain under rebalance) two manual-commit receivers A and B share
 /// a group; A is established owning every partition, then A drains and reaches
 /// its terminal state, after which a fresh wave of records is produced to every
 /// partition.
@@ -188,7 +188,7 @@ async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn(
 /// a bounded window -- direct proof that a draining receiver authoritatively
 /// leaves the consumer group (releasing its partitions to a peer) rather than
 /// lingering and re-winning them.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn draining_receiver_leaves_group_so_peer_gains_partitions() {
     const TOPIC: &str = "drain-rebalance-peer-gains-traces";
     let group = "drain-rebalance-peer-gains-group";
@@ -270,13 +270,13 @@ async fn draining_receiver_leaves_group_so_peer_gains_partitions() {
 
 // ---- Lifecycle: drain and shutdown (moved from receiver.rs) ----
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver consumes and acks an initial batch,
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver consumes and acks an initial batch,
 /// then receives `DrainIngress`; more records are produced after the drain.
 /// Guarantees: the receiver emits `RuntimeControlMsg::ReceiverDrained`, stops
 /// forwarding new records (no pdata arrives post-drain), commits the
 /// pre-drain offsets (committed offset >= INITIAL), and terminates as part
 /// of the receiver-first drain (via `await_stopped` returning).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_ingress_stops_polling_and_notifies_drained() {
     const TOPIC: &str = "drain-ingress-traces";
     const INITIAL: usize = 3;
@@ -349,7 +349,7 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a consumer-lag worker holding an
+/// Scenario: (lifecycle: drain and shutdown) a consumer-lag worker holding an
 /// `Arc` clone of the consumer is still in flight at Shutdown, but it honors
 /// cooperative cancellation and returns within the bounded drain.
 /// Guarantees: after the shutdown handler's bounded drain
@@ -358,7 +358,7 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
 /// remains (`strong_count == 1`). The subsequent consumer drop is therefore
 /// the last `Arc` and is what triggers the leave-group/close -- the happy
 /// path the shutdown ordering relies on.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before_close() {
     let start = tokio::time::Instant::now();
     // Worker deadline far out (15s); shutdown deadline near (1s). The worker
@@ -408,7 +408,7 @@ async fn shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before
     );
 }
 
-/// Scenario (lifecycle: drain and shutdown): a consumer-lag worker holding an
+/// Scenario: (lifecycle: drain and shutdown) a consumer-lag worker holding an
 /// `Arc` clone of the consumer is parked mid-librdkafka-call at Shutdown and
 /// does NOT observe cancellation before the bounded drain expires.
 /// Guarantees: the bounded drain
@@ -418,7 +418,7 @@ async fn shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before
 /// consumer drop in the shutdown handler is NOT guaranteed to be the last
 /// `Arc` -- the leave-group/close then runs when the abandoned worker later
 /// releases its clone, not necessarily at that drop.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two() {
     let start = tokio::time::Instant::now();
     // Shutdown deadline near (1s); worker deadline far (15s). The bound is the
@@ -477,7 +477,9 @@ async fn shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two() 
 // Guarantees: the drain bound is the tighter (lag) deadline, so `min` selects
 // the lag deadline and the drain still cannot run to the later shutdown
 // deadline.
-#[tokio::test(start_paused = true)]
+/// Scenario: receiver shutdown and consumer-lag draining have different deadlines.
+/// Guarantees: lag cleanup uses the earlier applicable deadline rather than extending shutdown.
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn shutdown_lag_drain_bound_selects_the_earlier_lag_deadline() {
     let start = tokio::time::Instant::now();
     // Worker deadline is near (2s); shutdown deadline is far (30s).
@@ -512,13 +514,13 @@ async fn shutdown_lag_drain_bound_selects_the_earlier_lag_deadline() {
     );
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver spawns a lag refresh for a consumer
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver spawns a lag refresh for a consumer
 /// that owns no partitions (empty assignment).
 /// Guarantees: `spawn_consumer_lag_refresh` still spawns a task (manual mode)
 /// and the task returns `Some(0.0)` -- the documented empty-assignment
 /// sentinel -- so the caller resets `receiver.kafka.consumer.group.lag` to 0
 /// rather than leaving a stale value.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn spawn_consumer_lag_refresh_resets_to_zero_when_unassigned() {
     const TOPIC: &str = "lag-empty";
     with_cluster(
@@ -551,10 +553,10 @@ async fn spawn_consumer_lag_refresh_resets_to_zero_when_unassigned() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): auto-commit receiver requests a lag refresh.
+/// Scenario: (lifecycle: drain and shutdown) auto-commit receiver requests a lag refresh.
 /// Guarantees: `spawn_consumer_lag_refresh` returns `None` (no task, no
 /// broker work) because offset management is owned by librdkafka.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
     const TOPIC: &str = "lag-auto";
     with_cluster(
@@ -586,7 +588,7 @@ async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver
 /// consumes and acks records while a producer keeps sending throughout; the
 /// receiver is then drained, with more records produced after the drain
 /// begins.
@@ -594,7 +596,7 @@ async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
 /// `ReceiverDrained`, stops forwarding new records once drained, commits the
 /// offsets acked before the drain (committed offset >= the pre-drain acked
 /// count), and terminates cleanly as part of ingress drain.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
     const TOPIC: &str = "drain-sustained-traces";
     const PRE_DRAIN: usize = 5;
@@ -664,14 +666,14 @@ async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver holds
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver holds
 /// in-flight records that are never acked (their downstream acks are still
 /// pending) when `DrainIngress` arrives.
 /// Guarantees: the receiver signals `ReceiverDrained` promptly without
 /// blocking on the un-acked in-flight records -- codifying the documented
 /// design that drain does not wait for in-flight downstream acks and relies
 /// on at-least-once redelivery for the un-committed offsets.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_does_not_wait_for_inflight_downstream_acks() {
     const TOPIC: &str = "drain-inflight-traces";
     const RECORDS: usize = 4;
@@ -723,7 +725,7 @@ async fn drain_does_not_wait_for_inflight_downstream_acks() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver with
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver with
 /// tracked, un-committed offsets is shut down while every broker is marked
 /// down, so the shutdown-time consumer unsubscribe/close cannot reach the
 /// broker.
@@ -731,7 +733,7 @@ async fn drain_does_not_wait_for_inflight_downstream_acks() {
 /// bounded wait rather than hanging the pipeline on an unreachable broker --
 /// the synchronous librdkafka close runs off the loop thread bounded by the
 /// shutdown deadline, so it cannot stall termination.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_with_broker_unavailable_does_not_hang() {
     const TOPIC: &str = "shutdown-broker-down-traces";
     const RECORDS: usize = 3;
@@ -785,7 +787,7 @@ async fn shutdown_with_broker_unavailable_does_not_hang() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver with
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver with
 /// the opt-in consumer-lag refresh timer armed (so a lag-refresh worker is
 /// periodically spawned and holds its own `Arc` clone of the consumer) is
 /// shut down after the timer has had time to spawn a refresh.
@@ -797,7 +799,7 @@ async fn shutdown_with_broker_unavailable_does_not_hang() {
 /// by the unit test
 /// `shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two`
 /// (the harness exposes no access to the receiver's private consumer `Arc`).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() {
     const TOPIC: &str = "shutdown-lag-inflight-traces";
     const RECORDS: usize = 3;
@@ -839,7 +841,7 @@ async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() 
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver has
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver has
 /// consumed and acked records (so it has tracked offsets to commit), then is
 /// drained with a short deadline while the broker round-trip is stalled far
 /// past that deadline, so the drain-time async offset commit and the
@@ -849,7 +851,7 @@ async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() 
 /// broker stall, so a stalled offset commit at drain time cannot block the
 /// receiver-first drain past its deadline (the bounded off-loop-thread close
 /// caps termination, not the broker's round-trip latency).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_deadline_forces_drained_when_commit_stalls() {
     const TOPIC: &str = "drain-deadline-commit-stall-traces";
     const RECORDS: usize = 3;
@@ -916,7 +918,7 @@ async fn drain_deadline_forces_drained_when_commit_stalls() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver
 /// consumes and ACKS every record (so it holds a committable offset past the
 /// whole batch), then is drained while the broker rejects every OffsetCommit
 /// RPC. The receiver's commits are issued asynchronously (`CommitMode::Async`)
@@ -927,7 +929,7 @@ async fn drain_deadline_forces_drained_when_commit_stalls() {
 /// and a fresh consumer in the SAME group re-reads every acked record
 /// (duplicate delivery), so acked-but-uncommitted records are redelivered
 /// rather than lost across a drain whose commit did not persist.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_unflushed_commit_redelivers_acked_records() {
     const TOPIC: &str = "drain-unflushed-commit-redeliver-traces";
     const RECORDS: usize = 3;
@@ -1019,7 +1021,7 @@ async fn drain_unflushed_commit_redelivers_acked_records() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver
 /// consumes an initial batch, is drained, and then -- after the drain
 /// deadline has elapsed -- more records are produced while the broker's fetch
 /// path is failing transient errors.
@@ -1028,7 +1030,7 @@ async fn drain_unflushed_commit_redelivers_acked_records() {
 /// downstream (`try_recv_pdata` yields `None`), even while librdkafka retries
 /// the failing fetch -- proving ingress fully stops at the deadline and is
 /// not resumed by fetch-path retries.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_stops_polling_no_pdata_after_deadline() {
     const TOPIC: &str = "drain-no-pdata-after-deadline-traces";
     const INITIAL: usize = 3;
@@ -1083,14 +1085,14 @@ async fn drain_stops_polling_no_pdata_after_deadline() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver is
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver is
 /// drained before it has consumed anything, so it holds no tracked offsets at
 /// drain time.
 /// Guarantees: the receiver still emits `RuntimeControlMsg::ReceiverDrained`
 /// and terminates cleanly -- the drain notification is unconditional and does
 /// not depend on there being offsets to commit, so an idle receiver still
 /// participates in the receiver-first drain.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_with_no_tracked_offsets_still_notifies_drained() {
     const TOPIC: &str = "drain-no-offsets-traces";
     let group = "drain-no-offsets-group";
@@ -1119,14 +1121,14 @@ async fn drain_with_no_tracked_offsets_still_notifies_drained() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver
 /// consumes three records but acks them out of order, leaving the lowest
 /// offset (0) un-acked while acking offsets 1 and 2, then is drained.
 /// Guarantees: the drain-time commit advances only to the lowest contiguous
 /// acked offset -- because offset 0 is still un-acked, nothing is committed
 /// past it (committed offset stays below the first gap), so at-least-once
 /// redelivery covers the un-acked prefix after a restart.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_commits_only_lowest_contiguous_offset() {
     const TOPIC: &str = "drain-lowest-contiguous-traces";
     const RECORDS: usize = 3;
@@ -1176,7 +1178,7 @@ async fn drain_commits_only_lowest_contiguous_offset() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver is sent
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver is sent
 /// a `DrainIngress` immediately followed by a second `DrainIngress` and a
 /// `Shutdown` on the same control channel.
 /// Guarantees: the receiver drains once (emits a single
@@ -1185,7 +1187,7 @@ async fn drain_commits_only_lowest_contiguous_offset() {
 /// the drain handler returns terminal state on the first drain -- documenting
 /// that a duplicate drain / drain-then-shutdown sequence is idempotent by
 /// termination and cannot double-notify or panic.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_then_shutdown_drain_wins() {
     const TOPIC: &str = "drain-then-shutdown-traces";
     const RECORDS: usize = 2;
@@ -1233,13 +1235,13 @@ async fn drain_then_shutdown_drain_wins() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): an auto-commit receiver (offset
+/// Scenario: (lifecycle: drain and shutdown) an auto-commit receiver (offset
 /// management owned by librdkafka) consumes a batch and is then drained.
 /// Guarantees: the drain skips the manual final-commit path entirely yet
 /// still emits `RuntimeControlMsg::ReceiverDrained`, stops forwarding new
 /// records, and terminates cleanly -- so the receiver-first drain contract
 /// holds identically under auto-commit.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_under_auto_commit_terminates_cleanly() {
     const TOPIC: &str = "drain-auto-commit-traces";
     const INITIAL: usize = 3;
@@ -1301,14 +1303,14 @@ async fn drain_under_auto_commit_terminates_cleanly() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a single manual-commit receiver
+/// Scenario: (lifecycle: drain and shutdown) a single manual-commit receiver
 /// owns every partition of a multi-partition topic, consumes and acks every
 /// record, and is then drained.
 /// Guarantees: the drain-time commit advances each owned partition to its own
 /// lowest-contiguous acked offset in one final commit, so every partition
 /// ends with a committed offset accounting for all its records (no partition
 /// is left behind by a multi-partition drain).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_multi_partition_commits_each_partition() {
     const TOPIC: &str = "drain-multi-partition-traces";
     let group = "drain-multi-partition-group";
@@ -1364,7 +1366,7 @@ async fn drain_multi_partition_commits_each_partition() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): following the engine's live-
+/// Scenario: (lifecycle: drain and shutdown) following the engine's live-
 /// reconfiguration order -- the OLD receiver (A) owns both partitions and acks
 /// their records; the NEW receiver (B) is started in the SAME group (distinct
 /// `group.instance.id`) and provably ACQUIRES a partition via a normal
@@ -1376,7 +1378,7 @@ async fn drain_multi_partition_commits_each_partition() {
 /// the pre-revoke commit-before-revoke) so no progress is lost, and the NEW
 /// receiver continues to own and consume its acquired partition after the OLD
 /// instance drains cleanly.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_same_group_acquires_partition_before_old_drains() {
     const TOPIC: &str = "cutover-same-group-handoff-traces";
     let group = "cutover-same-group-handoff-group";
@@ -1496,7 +1498,7 @@ async fn cutover_new_receiver_same_group_acquires_partition_before_old_drains() 
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover on
+/// Scenario: (lifecycle: drain and shutdown) live-reconfiguration cutover on
 /// the SAME broker with DISTINCT consumer groups -- the OLD receiver (A, group
 /// A) is serving when the NEW receiver (B, group B) is started, reads and
 /// commits from the same topic (NEW Ready), and only THEN is A drained.
@@ -1504,7 +1506,7 @@ async fn cutover_new_receiver_same_group_acquires_partition_before_old_drains() 
 /// independently of the OLD instance and keeps working after A has fully
 /// drained -- an independent-group cutover on one broker does not disturb the
 /// new instance.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_same_broker_distinct_group_starts_before_old_drains() {
     const TOPIC: &str = "cutover-distinct-group-traces";
     const PRE: usize = 3;
@@ -1580,7 +1582,7 @@ async fn cutover_new_receiver_same_broker_distinct_group_starts_before_old_drain
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover on
+/// Scenario: (lifecycle: drain and shutdown) live-reconfiguration cutover on
 /// a single-core deployment where the OLD receiver (A) and the NEW receiver
 /// (B) share the SAME operator `group.instance.id` in the SAME group but run
 /// at DISTINCT deployment generations (A at generation 0, B at generation 1),
@@ -1596,7 +1598,7 @@ async fn cutover_new_receiver_same_broker_distinct_group_starts_before_old_drain
 /// instance make progress during a cutover (contrast with
 /// `cutover_same_generation_same_instance_id_stalls_new_receiver`, which shows
 /// an IDENTICAL resolved id starves the new receiver).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_distinct_generation_is_not_stalled() {
     const TOPIC: &str = "cutover-distinct-gen-liveness-traces";
     let group = "cutover-distinct-gen-liveness-group";
@@ -1705,7 +1707,7 @@ async fn cutover_new_receiver_distinct_generation_is_not_stalled() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): the hazard the deployment-
+/// Scenario: (lifecycle: drain and shutdown) the hazard the deployment-
 /// generation suffix on `group.instance.id` prevents. On a single-core
 /// deployment, the OLD receiver (A) and the NEW receiver (B) share the SAME
 /// operator `group.instance.id` AND the SAME deployment generation, so both
@@ -1721,7 +1723,7 @@ async fn cutover_new_receiver_distinct_generation_is_not_stalled() {
 /// would instead fence the OLD member via `FENCED_INSTANCE_ID`; either way an
 /// identical static id is unsafe for a cutover). Contrast with
 /// `cutover_new_receiver_distinct_generation_is_not_stalled`.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_same_generation_same_instance_id_stalls_new_receiver() {
     const TOPIC: &str = "cutover-same-gen-stall-traces";
     let group = "cutover-same-gen-stall-group";
@@ -1820,7 +1822,7 @@ async fn cutover_same_generation_same_instance_id_stalls_new_receiver() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover
+/// Scenario: (lifecycle: drain and shutdown) live-reconfiguration cutover
 /// where the NEW receiver (B) points at a DIFFERENT broker than the OLD
 /// receiver (A). B is started against broker B, consumes from it (NEW Ready),
 /// and only THEN is A drained on broker A.
@@ -1828,7 +1830,7 @@ async fn cutover_same_generation_same_instance_id_stalls_new_receiver() {
 /// independently and keeps working after A drains -- brokers are fully
 /// isolated across the cutover, so draining the old instance cannot affect
 /// the new one.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
     const TOPIC_A: &str = "cutover-broker-a-traces";
     const TOPIC_B: &str = "cutover-broker-b-traces";
@@ -1837,7 +1839,7 @@ async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
     with_cluster(
         KafkaTestCluster::builder().topic(TOPIC_A),
         |cluster_a| async move {
-            // Build the SECOND broker on the same LocalSet thread.
+            // Build the SECOND broker on the same LocalRuntime thread.
             let cluster_b = KafkaTestCluster::builder().topic(TOPIC_B).build();
 
             let bytes = encoded_trace_fixture();
@@ -1913,14 +1915,14 @@ async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): the different-broker cutover
+/// Scenario: (lifecycle: drain and shutdown) the different-broker cutover
 /// where the OLD receiver (A) is terminated via a bare `Shutdown` instead of
 /// `DrainIngress`. The NEW receiver (B) on broker B is started and consuming
 /// (NEW Ready) before A is shut down.
 /// Guarantees: the NEW receiver on the second broker is unaffected regardless
 /// of whether the OLD instance receives `DrainIngress` or `Shutdown` -- it
 /// keeps consuming+acking+committing on broker B after A stops.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_different_broker_shutdown_variant_starts_before_old_stops() {
     const TOPIC_A: &str = "cutover-broker-a-shutdown-traces";
     const TOPIC_B: &str = "cutover-broker-b-shutdown-traces";
@@ -1998,7 +2000,7 @@ async fn cutover_new_receiver_different_broker_shutdown_variant_starts_before_ol
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): following the engine's live-
+/// Scenario: (lifecycle: drain and shutdown) following the engine's live-
 /// reconfiguration order on a single-partition topic -- the OLD receiver (A)
 /// consumes records but leaves them un-acked; the NEW receiver (B) is started
 /// in the SAME group and joins BEFORE A is drained; only THEN is A drained
@@ -2009,7 +2011,7 @@ async fn cutover_new_receiver_different_broker_shutdown_variant_starts_before_ol
 /// the handoff the NEW receiver re-receives every un-acked record (at-least-
 /// once redelivery, no data loss across the cutover), while the OLD receiver
 /// drains cleanly.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_single_partition() {
     const TOPIC: &str = "cutover-redeliver-1p-traces";
     const RECORDS: usize = 3;
@@ -2090,7 +2092,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_si
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): the multi-partition analogue of
+/// Scenario: (lifecycle: drain and shutdown) the multi-partition analogue of
 /// the cutover redelivery test -- the OLD receiver (A) owns every partition
 /// and consumes records un-acked; the NEW receiver (B) is started in the SAME
 /// group and provably ACQUIRES a partition (strong "NEW Ready", a true
@@ -2099,7 +2101,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_si
 /// cutover the NEW receiver re-receives the un-acked records from the
 /// partition handed off to it (at-least-once redelivery, no loss), while the
 /// OLD receiver drains cleanly.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_multi_partition() {
     const TOPIC: &str = "cutover-redeliver-mp-traces";
     let group = "cutover-redeliver-mp-group";
@@ -2205,7 +2207,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_mu
     .await;
 }
 
-/// Scenario (lifecycle: drain and shutdown): a manual-commit receiver owns
+/// Scenario: (lifecycle: drain and shutdown) a manual-commit receiver owns
 /// both partitions of a multi-partition topic and acks a DIFFERENT prefix on
 /// each -- one partition fully acked, the other left with an un-acked gap at
 /// its first offset -- then is drained.
@@ -2214,7 +2216,7 @@ async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_mu
 /// gap-at-offset-0 partition commits nothing past offset 0 (the broker
 /// receives no commit past any partition's un-acked prefix), so a
 /// multi-partition drain preserves per-partition at-least-once boundaries.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn drain_multi_partition_commits_halt_at_each_partition_gap() {
     const TOPIC: &str = "drain-multi-gap-traces";
     // Partition that is fully acked, and the one left with a leading gap.
