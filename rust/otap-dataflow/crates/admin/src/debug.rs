@@ -4,7 +4,7 @@
 //! Debug endpoints.
 //!
 //! - /api/v1/debug/pprof/heap -- dump profile of unfreed heap allocations.
-//!   Returns pprof-format data when jemalloc profiling is available, or
+//!   Returns pprof-format data when allocator profiling is available, or
 //!   HTTP 500 when the feature is not compiled in or profiling is not enabled.
 //!   Concurrent dumps are rejected with HTTP 429 to keep health checks and
 //!   shutdown responsive.
@@ -18,10 +18,9 @@ use axum::routing::get;
 #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
 use std::panic::AssertUnwindSafe;
 
-#[cfg(not(windows))]
 use axum::{body::Body, http::header};
 
-use crate::AppState;
+use crate::{AppState, HeapProfileError};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -30,93 +29,73 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 async fn get_heap_profile(State(state): State<AppState>) -> Result<Response, (StatusCode, String)> {
-    #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
-    {
-        // Only one heap dump at a time -- reject excess requests immediately
-        // so health checks and shutdown remain responsive.
-        let permit = state
-            .heap_profile_permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "A heap profile dump is already in progress".into(),
-                )
-            })?;
+    let permit = state
+        .heap_profile_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| heap_error(HeapProfileError::Busy))?;
+    let snapshot = state.heap_profile_provider.unwrap_or(dump_jemalloc);
 
-        // Accessing `PROF_CTL` can panic if jemalloc is not the active
-        // allocator or was compiled without the profiling feature. Catch
-        // this panic so we return a proper HTTP error instead.
-        let prof_ctl =
-            std::panic::catch_unwind(AssertUnwindSafe(|| jemalloc_pprof::PROF_CTL.as_ref()));
-        let prof_ctl = match prof_ctl {
-            Ok(Some(ctl)) => ctl.clone(),
-            Ok(None) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Memory Profiling not activated".into(),
-                ));
-            }
-            Err(_) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Heap profiling not available \
-                     (jemalloc with profiling support is not the active allocator)."
-                        .into(),
-                ));
-            }
-        };
+    // Keep both the dump and the permit on the blocking worker even if the
+    // client disconnects. Health checks can continue on the admin runtime.
+    let profile = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        snapshot()
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Heap profile task failed to join: {err}"),
+        )
+    })?
+    .map_err(heap_error)?;
 
-        // Offload the blocking native dump to a dedicated thread so the
-        // admin server's async runtime stays responsive.
-        let pprof = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            let mut guard = prof_ctl.blocking_lock();
-            if !guard.activated() {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Memory Profiling not activated".into(),
-                ));
-            }
-            guard.dump_pprof().map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not dump heap pprof: {e}"),
-                )
-            })
-        })
-        .await
-        .map_err(|e| {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(Body::from(profile))
+        .map_err(|err| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Heap profile task failed to join: {e}"),
+                format!("Could not build heap pprof response: {err}"),
             )
-        })??;
+        })
+}
 
-        let body = Body::from(pprof);
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/x-protobuf")
-            .body(body)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not build heap pprof response: {e}"),
-                )
-            })
+fn heap_error(err: HeapProfileError) -> (StatusCode, String) {
+    let status = match err {
+        HeapProfileError::Busy => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, err.to_string())
+}
+
+fn dump_jemalloc() -> Result<Vec<u8>, HeapProfileError> {
+    #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
+    {
+        // Some embedders enable this feature without selecting jemalloc.
+        const INACTIVE: &str = "Memory Profiling not activated";
+        let prof_ctl =
+            std::panic::catch_unwind(AssertUnwindSafe(|| jemalloc_pprof::PROF_CTL.as_ref()))
+                .map_err(|_| {
+                    HeapProfileError::Unavailable(
+                        "Heap profiling not available (jemalloc with profiling support is not the active allocator).",
+                    )
+                })?
+                .ok_or(HeapProfileError::Unavailable(INACTIVE))?;
+        let mut guard = prof_ctl.blocking_lock();
+        if !guard.activated() {
+            return Err(HeapProfileError::Unavailable(INACTIVE));
+        }
+        guard
+            .dump_pprof()
+            .map_err(|err| HeapProfileError::Failed(format!("Could not dump heap pprof: {err}")))
     }
 
     #[cfg(not(all(feature = "jemalloc-pprof", not(windows))))]
-    {
-        // Suppress dead-code warning for the semaphore field when the
-        // jemalloc-pprof feature is not compiled in.
-        let _ = &state.heap_profile_permits;
-        Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Heap profiling is not available in this build".into(),
-        ))
-    }
+    Err(HeapProfileError::Unavailable(
+        "Heap profiling is not available in this build",
+    ))
 }
 
 /// Querystring parameters for /profile endpoint

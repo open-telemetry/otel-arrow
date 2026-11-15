@@ -44,6 +44,23 @@ use otel_arrow_dfe_telemetry::log_tap::InternalLogTapHandle;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::{otel_info, otel_warn};
 
+/// A synchronous heap snapshot from the allocator selected by the binary.
+pub type HeapProfileProvider = fn() -> Result<Vec<u8>, HeapProfileError>;
+
+/// Why a heap snapshot could not be produced.
+#[derive(Debug, thiserror::Error)]
+pub enum HeapProfileError {
+    /// The profiler was not activated for this process.
+    #[error("{0}")]
+    Unavailable(&'static str),
+    /// Another request or an automatic snapshot is already taking a profile.
+    #[error("A heap profile dump is already in progress")]
+    Busy,
+    /// The allocator could not encode or return the requested profile.
+    #[error("{0}")]
+    Failed(String),
+}
+
 const TERMINAL_CONTROL_PLANE_PERMITS: usize = 1;
 const CPU_PROFILE_PERMITS: usize = 1;
 const HEAP_PROFILE_PERMITS: usize = 1;
@@ -296,6 +313,9 @@ struct AppState {
     /// requests are rejected immediately with HTTP 429.
     heap_profile_permits: Arc<Semaphore>,
 
+    /// Heap profiler supplied by a binary that selects its own allocator.
+    heap_profile_provider: Option<HeapProfileProvider>,
+
     /// Limits concurrent CPU profile dumps. Excess requests are rejected immediately with HTTP 429
     cpu_profile_permits: Arc<Semaphore>,
 
@@ -391,6 +411,7 @@ pub async fn run(
     memory_pressure_state: MemoryPressureState,
     log_tap: Option<InternalLogTapHandle>,
     resource_attributes: HashMap<String, ResourceAttributeValue>,
+    heap_profile_provider: Option<HeapProfileProvider>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let target_info: Arc<str> = telemetry::render_target_info(&resource_attributes).into();
@@ -400,6 +421,7 @@ pub async fn run(
         controller,
         terminal_control_plane_permits: Arc::new(Semaphore::new(TERMINAL_CONTROL_PLANE_PERMITS)),
         heap_profile_permits: Arc::new(Semaphore::new(HEAP_PROFILE_PERMITS)),
+        heap_profile_provider,
         cpu_profile_permits: Arc::new(Semaphore::new(CPU_PROFILE_PERMITS)),
         log_tap,
         memory_pressure_state,

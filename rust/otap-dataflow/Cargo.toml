@@ -9,6 +9,7 @@ exclude = [
     # compiled for the nightly wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
     "crates/wasm-host/plugins/test-plugin",
+    "third-party/mimalloc/contrib/rust",
 ]
 resolver = "2"
 
@@ -49,10 +50,16 @@ otel-arrow-dfe-telemetry.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pprof.workspace = true
+tempfile.workspace = true
 
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { version = "0.65.0", path = "crates/admin-api" }
@@ -146,7 +153,8 @@ kube = { version = "5.0.0", default-features = false, features = ["client", "der
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
+# Microsoft's bindings use the corresponding vendored C sources with the pprof fixes.
+mimalloc = { version = "=3.6.1", path = "third-party/mimalloc/contrib/rust" }
 # Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
 # Match the driver's mysql_common version range for shared codec error types.
@@ -444,10 +452,11 @@ dhat-heap = [
 ]
 jemalloc = [
     "dep:tikv-jemallocator",
+    "dep:tikv-jemalloc-ctl",
     "otel-arrow-dfe-engine/jemalloc",
     "otel-arrow-dfe-controller/jemalloc-pprof",
 ]
-mimalloc = ["dep:mimalloc"]
+mimalloc = ["dep:mimalloc", "dep:serde_json"]
 
 # Unsafe performance optimizations.
 unsafe-optimizations = ["unchecked-arithmetic", "unchecked-index"]

@@ -53,11 +53,11 @@ For the operator guide to live pipeline mutation, see
 
 ### Debug
 
-- `GET /api/v1/debug/pprof/heap`: dump jemalloc heap allocations in pprof
-  format. Requires jemalloc as the active allocator with profiling enabled
-  (e.g. `_RJEM_MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:19"`
-  on macOS, or `MALLOC_CONF` on Linux). Returns `application/x-protobuf`.
-  Returns HTTP 500 if profiling is unavailable or not activated.
+- `GET /api/v1/debug/pprof/heap` returns a live sampled heap profile as
+  `application/x-protobuf`. Enable profiling with `MIMALLOC_PROFILE` in mimalloc
+  builds or through the allocator configuration in jemalloc builds. Returns
+  HTTP 429 while another snapshot is running and HTTP 500 if profiling is
+  unavailable or inactive. See [heap profiling](../../PROFILING.md#heap-profiling-mimalloc-pprof).
 - `GET /api/v1/debug/pprof/profile`: collect a CPU profile in pprof format.
   Optional query parameters: `seconds` (sampling duration, default 30) and
   `frequency` (sampling frequency in Hz, default 100). Returns

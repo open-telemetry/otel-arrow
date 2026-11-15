@@ -44,9 +44,12 @@ unresolved frames, and its exported profile omits instruction addresses and
 mappings. The controller's short backtrace rendering also omits addresses for
 unresolved frames. See [profiling](../PROFILING.md) for diagnostic builds.
 
-Heap profiling requires the `jemalloc` feature and runtime profiling
-configuration. The minimal feature selection measured below disables jemalloc;
-its heap endpoint was not tested.
+Heap profiling requires runtime activation and an allocator with profiling
+support. The live endpoint supports
+[jemalloc](../PROFILING.md#live-heap-profiling-jemalloc-pprof), the default
+on Linux and macOS, as well as
+[mimalloc](../PROFILING.md#heap-profiling-mimalloc-pprof) builds. The minimal
+feature selection measured below uses the system allocator.
 
 ## Build
 

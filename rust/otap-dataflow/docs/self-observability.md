@@ -63,7 +63,7 @@ it behind an authenticated reverse proxy. See the
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | Status and conditions for a single logical pipeline. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | Per-pipeline liveness probe. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | Per-pipeline readiness probe. |
-| `GET /api/v1/debug/pprof/heap` | Jemalloc heap profile in pprof protobuf format, `application/x-protobuf`. Requires the `jemalloc` feature, default on Linux and macOS, and runtime activation with `MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:19"` on Linux or `_RJEM_MALLOC_CONF` on macOS. See [Profiling](../PROFILING.md#live-heap-profiling-jemalloc-pprof). |
+| `GET /api/v1/debug/pprof/heap` | Sampled heap profile in pprof protobuf format, `application/x-protobuf`. Enable [mimalloc](../PROFILING.md#heap-profiling-mimalloc-pprof) or [jemalloc](../PROFILING.md#live-heap-profiling-jemalloc-pprof) profiling at startup. |
 | `GET /api/v1/debug/pprof/profile` | Sampled CPU profile in pprof protobuf format, `application/x-protobuf`, on non-Windows targets. Accepts `seconds`, default `30`, and `frequency` in Hz, default `100`. |
 
 ### Metrics query parameters
@@ -224,6 +224,20 @@ Configure processor range `flow_metrics` under
 
 ### Engine, pipeline, and runtime
 
+The pipeline `memory.allocated`, `memory.freed`, and `memory.usage` instruments
+(including the delta counters) require a [jemalloc build](../PROFILING.md#live-heap-profiling-jemalloc-pprof).
+Process memory metrics such as `engine` scope `memory.rss` are available with
+each allocator. Native statistics appear in the `engine.allocator` scope,
+with `allocator` and `kind` datapoint attributes. The engine emits the kinds
+reported by its active allocator even when heap profiling is disabled.
+
+- **jemalloc** reports `allocated`, `active`, `resident`, `mapped`, and
+  `retained`. `resident` is jemalloc's estimate for its own memory.
+- **mimalloc v3** reports `committed`, `reserved`, and `reserved_peak`.
+
+Use the process RSS series to compare residency across allocators. Allocator
+reservation measures address space managed by the allocator.
+
 | Scope `otel_scope_name` | Instrument name | Prometheus name | Type | Unit | Datapoint attributes | Description |
 | --- | --- | --- | --- | --- | --- | --- |
 | `admission.rate_limiter` | `refusals` | `refusals_total` | `Counter<u64>` | `{decision}` | `dimension`, `refusal` | Admission attempts declined or observed as over limit. |
@@ -236,6 +250,7 @@ Configure processor range `flow_metrics` under
 | `engine` | `memory.commit` | `memory_commit_bytes` | `ObserveUpDownCounter<u64>` | `By` | none | Process private committed memory, including paged-out memory. |
 | `engine` | `memory.pressure.state` | `memory_pressure_state` | `Gauge<u64>` | `{state}` | none | Process memory limiter state: `0=normal`, `1=soft`, `2=hard`. |
 | `engine` | `memory.rss` | `memory_rss` | `ObserveUpDownCounter<u64>` | `{By}` | none | Process resident set size in physical RAM. |
+| `engine.allocator` | `allocator.memory` | `allocator_memory_bytes` | `Gauge<u64>` | `By` | `allocator`, `kind` | Process-wide allocator memory by kind. |
 | `engine` | `process.memory.hard.limit.bytes` | `process_memory_hard_limit_bytes` | `Gauge<u64>` | `{By}` | none | Process memory limiter hard limit in bytes. |
 | `engine` | `process.memory.soft.limit.bytes` | `process_memory_soft_limit_bytes` | `Gauge<u64>` | `{By}` | none | Process memory limiter soft limit in bytes. |
 | `engine` | `process.memory.usage.bytes` | `process_memory_usage_bytes` | `Gauge<u64>` | `{By}` | none | Most recent process memory limiter sample in bytes. |

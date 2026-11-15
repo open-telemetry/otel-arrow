@@ -110,6 +110,108 @@ impl EngineMetrics {
     }
 }
 
+/// Allocators with native memory statistics.
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum Allocator {
+    /// jemalloc.
+    Jemalloc,
+    /// mimalloc.
+    Mimalloc,
+}
+
+/// Meaning of an allocator-reported byte count.
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+enum AllocatorMemoryKind {
+    Allocated,
+    Active,
+    Resident,
+    Mapped,
+    Retained,
+    Committed,
+    Reserved,
+    ReservedPeak,
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+struct AllocatorMemoryAttributes {
+    allocator: Allocator,
+    kind: AllocatorMemoryKind,
+}
+
+#[metric_set(
+    name = "engine.allocator",
+    measurement_attributes = AllocatorMemoryAttributes
+)]
+#[derive(Debug, Default, Clone)]
+struct AllocatorMemoryMetrics {
+    /// Bytes reported by the allocator, with semantics identified by `kind`.
+    #[metric(unit = "By")]
+    allocator_memory: Gauge<u64>,
+}
+
+/// Process-wide allocator statistics. A missing value is omitted from telemetry.
+#[derive(Debug, Default)]
+pub struct AllocatorMemoryStats {
+    /// Bytes in allocations currently in use.
+    pub allocated: Option<u64>,
+    /// Bytes in active allocation pages.
+    pub active: Option<u64>,
+    /// Allocator-estimated resident bytes.
+    pub resident: Option<u64>,
+    /// Bytes in active virtual memory mappings.
+    pub mapped: Option<u64>,
+    /// Bytes in unused virtual memory mappings retained for reuse.
+    pub retained: Option<u64>,
+    /// Bytes committed by the allocator.
+    pub committed: Option<u64>,
+    /// Bytes reserved from the OS by the allocator.
+    pub reserved: Option<u64>,
+    /// Peak bytes reserved from the OS by the allocator.
+    pub reserved_peak: Option<u64>,
+}
+
+/// Native statistics reader supplied by the binary that selects the allocator.
+#[derive(Clone, Copy)]
+pub struct AllocatorMemoryProvider {
+    /// The active allocator.
+    pub allocator: Allocator,
+    /// Reads its currently available statistics.
+    pub read: fn() -> AllocatorMemoryStats,
+}
+
+struct AllocatorMemoryMonitor {
+    provider: AllocatorMemoryProvider,
+    metrics: MeasurementMetricSet<AllocatorMemoryMetrics>,
+}
+
+impl AllocatorMemoryMonitor {
+    fn update(&mut self) {
+        use AllocatorMemoryKind::*;
+        let stats = (self.provider.read)();
+        for (kind, bytes) in [
+            (Allocated, stats.allocated),
+            (Active, stats.active),
+            (Resident, stats.resident),
+            (Mapped, stats.mapped),
+            (Retained, stats.retained),
+            (Committed, stats.committed),
+            (Reserved, stats.reserved),
+            (ReservedPeak, stats.reserved_peak),
+        ] {
+            if let Some(bytes) = bytes {
+                self.metrics
+                    .with(AllocatorMemoryAttributes {
+                        allocator: self.provider.allocator,
+                        kind,
+                    })
+                    .allocator_memory
+                    .set(bytes);
+            }
+        }
+    }
+}
+
 /// Standard stream served by one console output writer.
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum ConsoleStream {
@@ -200,6 +302,7 @@ impl ConsoleOutputMetrics {
 /// and [`report`](Self::report) to flush them to the metrics pipeline.
 pub struct EngineMetricsMonitor {
     metrics: MetricSet<EngineMetrics>,
+    allocator_memory: Option<AllocatorMemoryMonitor>,
     /// Both console streams as buckets of one registration, so the registry never
     /// holds two sets with the same metric identity for the engine entity.
     console_output: MeasurementMetricSet<ConsoleOutputMetrics>,
@@ -260,6 +363,7 @@ impl EngineMetricsMonitor {
             .unwrap_or(1);
         Self {
             metrics,
+            allocator_memory: None,
             console_output,
             console_baseline,
             reporter,
@@ -271,6 +375,24 @@ impl EngineMetricsMonitor {
         }
     }
 
+    /// Collect allocator metrics for the same engine entity as the process metrics.
+    #[must_use]
+    pub fn with_allocator_memory(mut self, provider: Option<AllocatorMemoryProvider>) -> Self {
+        if let Some(previous) = self.allocator_memory.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(previous.metrics.metric_set_key());
+        }
+        if let Some(provider) = provider {
+            let metrics = self.registry
+                .register_metric_set_with_measurement_attributes_for_entity::<AllocatorMemoryMetrics>(
+                    self.metrics.entity_key(),
+                );
+            self.allocator_memory = Some(AllocatorMemoryMonitor { provider, metrics });
+        }
+        self
+    }
+
     /// Samples current engine-wide metrics (process memory, CPU utilization, etc.).
     pub fn update(&mut self) {
         self.update_with_console_stats(OutputService::stats());
@@ -278,6 +400,9 @@ impl EngineMetricsMonitor {
 
     fn update_with_console_stats(&mut self, console_stats: ServiceStats) {
         self.metrics.observe_memory(memory_stats::memory_stats());
+        if let Some(allocator_memory) = &mut self.allocator_memory {
+            allocator_memory.update();
+        }
 
         // Compute process-wide CPU utilization normalized across all cores.
         let now_wall = Instant::now();
@@ -330,6 +455,10 @@ impl EngineMetricsMonitor {
     /// A full channel is silently tolerated (non-blocking, try-send semantics).
     pub fn report(&mut self) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         self.reporter.report(&mut self.metrics)?;
+        if let Some(allocator_memory) = &mut self.allocator_memory {
+            self.reporter
+                .report_measurement(&mut allocator_memory.metrics)?;
+        }
         self.reporter.report_measurement(&mut self.console_output)
     }
 
@@ -353,6 +482,12 @@ impl EngineMetricsMonitor {
             .reporter
             .report_measurement_reliably_until(&mut self.console_output, deadline)
             .await?;
+        if let Some(allocator_memory) = &mut self.allocator_memory {
+            let _ = self
+                .reporter
+                .report_measurement_reliably_until(&mut allocator_memory.metrics, deadline)
+                .await?;
+        }
         self.reporter.flush_until(deadline).await?;
         Ok(console_stats)
     }
@@ -360,6 +495,11 @@ impl EngineMetricsMonitor {
 
 impl Drop for EngineMetricsMonitor {
     fn drop(&mut self) {
+        if let Some(allocator_memory) = &self.allocator_memory {
+            let _ = self
+                .registry
+                .unregister_metric_set(allocator_memory.metrics.metric_set_key());
+        }
         for key in [
             self.metrics.metric_set_key(),
             self.console_output.metric_set_key(),
@@ -407,6 +547,67 @@ mod tests {
         assert!(
             monitor.metrics.memory_commit.get() > 0,
             "process private commit should be nonzero"
+        );
+    }
+
+    /// Scenario: An allocator reports some memory kinds, including a measured zero.
+    /// Guarantees: The engine emits only those kinds with the active allocator label.
+    #[test]
+    fn engine_exports_only_reported_allocator_memory_kinds() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let entity_key = controller.register_engine_entity();
+        let (rx, reporter) = MetricsReporter::create_new_and_receiver(16);
+        let mut monitor = EngineMetricsMonitor::new(
+            registry.clone(),
+            entity_key,
+            reporter,
+            controller.memory_pressure_state(),
+        )
+        .with_allocator_memory(Some(AllocatorMemoryProvider {
+            allocator: Allocator::Mimalloc,
+            read: || AllocatorMemoryStats {
+                committed: Some(0),
+                reserved: Some(4096),
+                ..Default::default()
+            },
+        }));
+        monitor.update();
+        monitor.report().unwrap();
+        for snapshot in rx.try_iter() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let batch = registry.drain_metric_export_batch();
+        let mut observations: Vec<_> = batch
+            .metric_sets
+            .iter()
+            .filter(|set| set.descriptor.name == "engine.allocator")
+            .map(|set| (set.item_attributes.clone(), set.values[0].clone()))
+            .collect();
+        observations.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            observations,
+            [
+                (
+                    vec![
+                        ("allocator".into(), "mimalloc".into()),
+                        ("kind".into(), "committed".into())
+                    ],
+                    MetricValue::U64(0),
+                ),
+                (
+                    vec![
+                        ("allocator".into(), "mimalloc".into()),
+                        ("kind".into(), "reserved".into())
+                    ],
+                    MetricValue::U64(4096),
+                ),
+            ]
         );
     }
 

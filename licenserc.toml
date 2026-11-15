@@ -21,5 +21,7 @@ excludes = [
     "**/proto/**/*",
     # generated files
     "collector/cmd/otelarrowcol/**/*",
-    "go/pkg/otel/arrow_record/mock/mock.go"
+    "go/pkg/otel/arrow_record/mock/mock.go",
+    # Microsoft mimalloc and its MIT-licensed Rust bindings
+    "rust/otap-dataflow/third-party/mimalloc/**/*"
 ]

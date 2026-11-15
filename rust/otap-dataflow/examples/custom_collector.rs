@@ -92,16 +92,6 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
     ))
 }
 
-fn memory_allocator_name() -> &'static str {
-    if cfg!(feature = "mimalloc") {
-        "mimalloc"
-    } else if cfg!(all(feature = "jemalloc", not(windows))) {
-        "jemalloc"
-    } else {
-        "system"
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Install the TLS crypto provider before any network operations.
     otel_arrow_dfe_otap::crypto::install_crypto_provider()
@@ -109,11 +99,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
-    // Print system diagnostics on stderr, because stdout may carry `record_json` records.
-    eprintln!(
-        "{}",
-        startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
-    );
+    // This example uses the system allocator. A custom binary can select its own.
+    // Print diagnostics on stderr, because stdout may carry `record_json` records.
+    eprintln!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
 
     // Load and patch the configuration.
     let mut engine_cfg = OtelDataflowSpec::from_file(&args.config)?;

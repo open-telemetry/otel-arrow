@@ -74,18 +74,65 @@ for memory profiling that needs to be rendered by uploading it to:
 > [!NOTE]
 > `dhat` needs a clean shutdown to generate `dhat-heap.json` file.
 
+## Heap profiling (mimalloc pprof)
+
+Select mimalloc v3 with the existing `mimalloc` feature. Heap sampling is
+off by default. Set `MIMALLOC_PROFILE` to a writable file prefix before starting
+the engine to collect sampled allocations made through mimalloc.
+
+```bash
+cargo build --bin df_engine --no-default-features \
+  --features core-nodes,dev-tools,admin-live-logs-ws,mimalloc,crypto-ring
+profile_dir=$(mktemp -d)
+MIMALLOC_PROFILE="$profile_dir/heap" \
+  ./target/debug/df_engine --config ./configs/otap-noop.yaml \
+  --http-admin-bind 127.0.0.1:8080
+```
+
+Mimalloc writes numbered snapshots (`heap.0001.pb`, `heap.0002.pb`, etc.) as
+the engine runs and takes a final snapshot on normal exit. Use a new prefix for
+each run. By default a snapshot is triggered after about 1 GiB of allocations.
+Adjust `MIMALLOC_PROFILE_ALLOC_INTERVAL` to change that threshold, or set it to
+`0` to disable allocation-triggered snapshots. See [mimalloc's profiling
+options](https://github.com/microsoft/mimalloc/blob/v3.6.1/readme.md#profiling)
+for other triggers and sampling settings.
+
+Fetch a live snapshot from the admin server while profiling is active.
+
+```bash
+curl --fail http://127.0.0.1:8080/api/v1/debug/pprof/heap -o heap.pb
+```
+
+The endpoint takes a fresh snapshot of sampled allocations and returns it as
+protobuf without writing a file for the request. Concurrent snapshots return
+HTTP 429. Responses are limited to 16 MiB. Set all three snapshot intervals to
+`0` to skip periodic files and keep the final snapshot at shutdown.
+
+Use [Google's pprof tool](https://github.com/google/pprof) with the matching
+engine binary to resolve function names and inspect live bytes. Pass either the
+HTTP download or one of the numbered `.pb` files.
+
+```bash
+pprof -sample_index=inuse_bytes -http=localhost:18080 \
+  ./target/debug/df_engine heap.pb
+```
+
 ## Live heap profiling (jemalloc pprof)
 
-The admin server exposes a heap profiling endpoint at
-`/api/v1/debug/pprof/heap` that dumps unfreed heap allocations in pprof
-format. This requires jemalloc as the allocator (the default on Linux and
-macOS) with profiling enabled.
+Jemalloc is the default allocator on Linux and macOS. The same endpoint uses
+jemalloc's profiler. Per-pipeline heap allocation metrics and the
+`jemalloc_resident` and `purge_on_hard` memory limiter options also require
+a jemalloc build.
+
+```bash
+cargo build --bin df_engine
+```
 
 **Run** with profiling enabled:
 
 ```bash
 _RJEM_MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:19" \
-  cargo run -- --config ./configs/otap-noop.yaml
+  ./target/debug/df_engine --config ./configs/otap-noop.yaml
 ```
 
 On Linux, use `MALLOC_CONF` instead of `_RJEM_MALLOC_CONF`.
@@ -101,6 +148,10 @@ curl http://localhost:8080/api/v1/debug/pprof/heap -o heap.pprof
 ```bash
 go tool pprof -http=:18080 ./target/debug/df_engine ./heap.pprof
 ```
+
+Both allocator builds expose process RSS and their available native memory
+statistics through [engine metrics](docs/self-observability.md#engine-pipeline-and-runtime)
+independently of heap sampling.
 
 ## Live CPU profiling (pprof)
 

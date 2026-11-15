@@ -27,24 +27,18 @@ use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 #[cfg(feature = "wasm")]
 use otel_arrow_dfe_wasm_host as _;
 
+mod allocator_metrics;
+#[cfg(feature = "mimalloc")]
+mod mimalloc_profile;
+
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
 
 /// Third-party notices, embedded at compile time from the repository root.
 const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.txt");
 
-fn memory_allocator_name() -> &'static str {
-    if cfg!(feature = "mimalloc") {
-        "mimalloc"
-    } else if cfg!(all(feature = "jemalloc", not(windows))) {
-        "jemalloc"
-    } else {
-        "system"
-    }
-}
-
 // -----------------------------------------------------------------------------
-// Feature guard: jemalloc + mimalloc + dhat-heap any two together should fail.
+// The binary can install only one global allocator.
 // -----------------------------------------------------------------------------
 #[cfg(all(
     not(any(test, doc)),
@@ -69,18 +63,13 @@ use {
     std::sync::{LazyLock, Mutex},
 };
 
-#[cfg(all(windows, not(feature = "dhat-heap"), feature = "mimalloc"))]
-use mimalloc::MiMalloc;
-
-#[cfg(all(not(windows), not(feature = "dhat-heap"), feature = "jemalloc"))]
-use tikv_jemallocator::Jemalloc;
-
 // -----------------------------------------------------------------------------
 // Global allocator selection.
 // -----------------------------------------------------------------------------
 cfg_select! {
     // dhat (profiling) -- wins everywhere when enabled
     all(not(tarpaulin_include), feature = "dhat-heap") => {
+        const MEMORY_ALLOCATOR: &str = "dhat";
         #[global_allocator]
         static GLOBAL: dhat::Alloc = dhat::Alloc;
         static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
@@ -96,19 +85,30 @@ cfg_select! {
         }
     }
 
-    // Windows default: mimalloc
-    all(windows, feature = "mimalloc") => {
+    feature = "mimalloc" => {
+        const MEMORY_ALLOCATOR: &str = "mimalloc";
         #[global_allocator]
-        static GLOBAL: MiMalloc = MiMalloc;
+        static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
     }
 
-    // Linux default: jemalloc
     all(not(windows), feature = "jemalloc") => {
+        const MEMORY_ALLOCATOR: &str = "jemalloc";
         #[global_allocator]
-        static GLOBAL: Jemalloc = Jemalloc;
+        static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
     }
 
-    _ => {}
+    _ => {
+        const MEMORY_ALLOCATOR: &str = "system";
+    }
+}
+
+fn heap_profile_provider() -> Option<otel_arrow_dfe_controller::HeapProfileProvider> {
+    match MEMORY_ALLOCATOR {
+        #[cfg(feature = "mimalloc")]
+        "mimalloc" => Some(mimalloc_profile::snapshot),
+        // An omitted provider lets the admin server use its native jemalloc path.
+        _ => None,
+    }
 }
 
 // Crypto provider features are mutually exclusive.
@@ -165,7 +165,7 @@ compile_error!(
     version,
     about,
     long_about = None,
-    after_help = startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name()),
+    after_help = startup::system_info(&OTAP_PIPELINE_FACTORY, MEMORY_ALLOCATOR),
     after_long_help = concat!(
         "EXAMPLES:\n",
         "  ", env!("CARGO_BIN_NAME"), " --config file:/etc/config.yaml\n",
@@ -287,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // record_json run must not find prose ahead of its first record.
     eprintln!(
         "{}",
-        startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
+        startup::system_info(&OTAP_PIPELINE_FACTORY, MEMORY_ALLOCATOR)
     );
 
     let resolved = resolve_config(config.as_deref())?;
@@ -303,6 +303,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         },
         handle_os_signals: true,
+        heap_profile_provider: heap_profile_provider(),
+        allocator_memory_provider: allocator_metrics::provider(MEMORY_ALLOCATOR),
         ..Default::default()
     };
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;

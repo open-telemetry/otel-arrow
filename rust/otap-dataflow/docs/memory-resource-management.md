@@ -73,6 +73,7 @@ process-wide guardrail, how it remains bounded, and how it recovers.
 | Mechanism | Primary question | Scope | Typical use | Status |
 | --- | --- | --- | --- | --- |
 | Process memory sampling | How much memory is the process or container using? | Process | Detect OOM risk and classify pressure | Current |
+| Native allocator statistics | How much memory does the allocator hold? | Process | Compare allocation, reservation, and residency trends | Current for [jemalloc and mimalloc](self-observability.md#engine-pipeline-and-runtime) |
 | Process memory limiter | Which configured process-memory pressure level applies? | Process | Shed ingress, change readiness, optionally purge jemalloc | Current |
 | Pressure-aware receiver throttling | How quickly may this receiver admit work while pressure is active? | Receiver instance | Reduce ingress before accepting more work | Current |
 | Bounded channels and topics | Is a local transport boundary full? | Queue or topic | Apply local backpressure or configured refusal behavior | Current |

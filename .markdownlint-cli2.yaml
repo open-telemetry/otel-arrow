@@ -12,3 +12,6 @@ ignores:
   - "**/CHANGELOG.md"
   # Third-party content vendored verbatim from upstream.
   - "rust/otap-dataflow/vendor/**"
+  - "rust/otap-dataflow/third-party/mimalloc/contrib/**"
+  - "rust/otap-dataflow/third-party/mimalloc/include/**"
+  - "rust/otap-dataflow/third-party/mimalloc/src/**"

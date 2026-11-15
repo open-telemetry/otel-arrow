@@ -45,6 +45,7 @@ use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
+pub use otel_arrow_dfe_admin::{HeapProfileError, HeapProfileProvider};
 use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
 use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
@@ -76,6 +77,7 @@ use otel_arrow_dfe_engine::control::{
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
 };
+use otel_arrow_dfe_engine::engine_metrics::AllocatorMemoryProvider;
 use otel_arrow_dfe_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
@@ -326,6 +328,10 @@ pub struct ControllerRunOptions {
     /// Defaults to `false` so embedding hosts retain signal ownership. Standalone
     /// binaries that own the process can opt in explicitly.
     pub handle_os_signals: bool,
+    /// Heap snapshot provider for the process allocator selected by the host binary.
+    pub heap_profile_provider: Option<HeapProfileProvider>,
+    /// Process-wide allocator statistics supplied by the host binary.
+    pub allocator_memory_provider: Option<AllocatorMemoryProvider>,
     #[cfg(test)]
     fail_final_console_metrics: bool,
 }
@@ -1795,7 +1801,8 @@ impl<
                 engine_reporter,
                 engine_metrics_memory_pressure_state,
                 console_baseline,
-            );
+            )
+            .with_allocator_memory(options.allocator_memory_provider);
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",
             admin_tracing_setup.clone(),
@@ -1952,6 +1959,7 @@ impl<
 
         let signal_control_plane = Arc::clone(&control_plane);
         let admin_control_plane = Arc::clone(&control_plane);
+        let heap_profile_provider = options.heap_profile_provider;
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
@@ -1964,6 +1972,7 @@ impl<
                     memory_pressure_state,
                     log_tap_handle,
                     admin_resource,
+                    heap_profile_provider,
                     cancellation_token,
                 )
             },
