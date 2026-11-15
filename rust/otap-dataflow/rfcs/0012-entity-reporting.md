@@ -50,6 +50,9 @@ entities e.g. type, identifying attributes, and descriptive attributes.
 There are also certain problems with the existing entity model in the engine:
 
 - Can't dismbiguate between a pipeline/node that was deleted and recreated :( 
+- There is no way to order entities in time other than to infer existing from
+  their signals
+- 
 - TODO: consider removing this section
 
 ## Guide-level explanation
@@ -420,6 +423,34 @@ for consumers that do not reconstruct the containment chain.
   attributes, or the entity's attributes plus all attributes inherited along
   its containment chain.
 
+#### Entity delete events
+
+When an internal entity is removed, the DFE emits an `entity.delete` event
+with its `entity.type`, its `entity.id`, and an `entity.delete.reason`.
+Possible reasons include:
+
+| Reason | Example |
+| --- | --- |
+| `deleted` | A pipeline or pipeline group was removed from configuration. |
+| `replaced` | A pipeline instance was superseded by a newer deployment generation. |
+| `scaled` | A pipeline instance was removed because the pipeline's core allocation shrank. |
+| `failed` | A pipeline instance stopped because of an unrecoverable error. |
+| `shutdown` | The engine is shutting down. |
+
+Deleting an entity implicitly deletes all relationships that involve it. The
+DFE does not emit separate delete events for entities contained by a deleted
+entity unless they are torn down independently.
+
+- TODO: Decide whether contained entities (nodes, channels) get their own
+  delete events when their pipeline instance is deleted, or whether consumers
+  infer their deletion through containment.
+
+The OpenTelemetry specification
+[does not guarantee][otel-entity-delete] that delete events are delivered.
+For example, they are lost if the process crashes. Consumers must also expire
+entities whose state events stop arriving, using the last reported
+`entity.report.interval`.
+
 #### Entity relationships
 
 Relationships are reported in the `entity.relationships` attribute of the
@@ -466,34 +497,6 @@ relationships between channels and the nodes they connect (for example
 
 - TODO: Decide whether channel topology is reported as entity relationships,
   and in which direction.
-
-#### Entity delete events
-
-When an internal entity is removed, the DFE emits an `entity.delete` event
-with its `entity.type`, its `entity.id`, and an `entity.delete.reason`.
-Possible reasons include:
-
-| Reason | Example |
-| --- | --- |
-| `deleted` | A pipeline or pipeline group was removed from configuration. |
-| `replaced` | A pipeline instance was superseded by a newer deployment generation. |
-| `scaled` | A pipeline instance was removed because the pipeline's core allocation shrank. |
-| `failed` | A pipeline instance stopped because of an unrecoverable error. |
-| `shutdown` | The engine is shutting down. |
-
-Deleting an entity implicitly deletes all relationships that involve it. The
-DFE does not emit separate delete events for entities contained by a deleted
-entity unless they are torn down independently.
-
-- TODO: Decide whether contained entities (nodes, channels) get their own
-  delete events when their pipeline instance is deleted, or whether consumers
-  infer their deletion through containment.
-
-The OpenTelemetry specification
-[does not guarantee][otel-entity-delete] that delete events are delivered.
-For example, they are lost if the process crashes. Consumers must also expire
-entities whose state events stop arriving, using the last reported
-`entity.report.interval`.
 
 #### Periodic emission
 
@@ -569,8 +572,20 @@ avoidable in existing OpenTelemetry signals
 not actually a problem in the current engine design, but for opentelemetry more
 generally this seems like a hole because what we're doing with scope is not
 a standard
+- TODO: Explain the expected byte size difference due to additional uid attributes
+on a typical signal. Summarize per entity how many extra bytes and also for a typical
+resource log how many bytes
 
 ## Rationale and alternatives
+
+- TODO: Explain that UIDs are not strictly necessary at the node or engine level.
+UIDs at the engine level could be considered nice because we can track when the
+engine restarts across time. UIDs at the node level are less useful if we don't
+expect nodes to ever be destroyed/recreated at the pipeline level
+- TODO: We should consider prefixing our entities with a `dfe.`. This is
+disallowed in our documentation today, but there is a compelling reason in a lot
+of systems where a dfe and an otc, both with "pipelines" exists. All k8s entities
+have a prefix, so why not us?
 
 - Why is this design the best in the space of possible designs?
 - What other designs were considered, and why were they not chosen?
