@@ -30,8 +30,9 @@ to our existing model:
 
 - [Entity types](#entity-types): the logical `pipeline` is separated from its
   runtime `pipeline.instance`.
-- [Identity](#identity): every internal entity gets a UUID v7 `uid` as its sole
-  identifying attribute.
+- [Identity](#identity): internal entities that can be recreated under the
+  same name get a UUID v7 `uid`. Nodes, channels, and extensions are
+  identified by their pipeline instance's `uid` plus their own id.
 - [Descriptive attributes](#descriptive-attributes): existing identifiers become
   navigational attributes, distinct from state attributes.
 - [Scope](#scope) and
@@ -99,15 +100,15 @@ tables and how CPU cores and NUMA nodes are modeled) is refined separately.
   and metric set. It is a very generic name for a type that may eventually be
   proposed to OpenTelemetry Semantic Conventions; revisit before stabilizing.
 
-| Type | Lifetime | Description |
-| --- | --- | --- |
-| `engine` | Process | The DFE instance running inside a process. Root of all entities the DFE owns. |
-| `pipeline.group` | Group creation to deletion | A named group of pipelines. |
-| `pipeline` | Pipeline creation to deletion | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements. |
-| `pipeline.instance` | One deployment generation on one core | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline. |
-| `node` | Same as its pipeline instance | A receiver, processor, or exporter running inside a pipeline instance. |
-| `channel` | Same as its pipeline instance | A control or pdata channel owned by a pipeline instance. Its endpoints are not entities (see [Channels and their endpoints](#channels-and-their-endpoints)). |
-| `extension` | Same as its hosting scope | An extension, currently hosted by a pipeline instance. |
+| Type | Lifetime | Identifying attributes | Description |
+| --- | --- | --- | --- |
+| `engine` | Process | `engine.uid` | The DFE instance running inside a process. Root of all entities the DFE owns. |
+| `pipeline.group` | Group creation to deletion | `pipeline.group.uid` | A named group of pipelines. |
+| `pipeline` | Pipeline creation to deletion | `pipeline.uid` | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements. |
+| `pipeline.instance` | One deployment generation on one core | `pipeline.instance.uid` | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline. |
+| `node` | Same as its pipeline instance | `pipeline.instance.uid`, `node.id` | A receiver, processor, or exporter running inside a pipeline instance. |
+| `channel` | Same as its pipeline instance | `pipeline.instance.uid`, `channel.id` | A control or pdata channel owned by a pipeline instance. Its endpoints are not entities (see [Channels and their endpoints](#channels-and-their-endpoints)). |
+| `extension` | Same as its hosting scope | `pipeline.instance.uid`, `extension.id` | An extension, currently hosted by a pipeline instance. |
 
 The distinction between `pipeline` and `pipeline.instance` is new. The existing
 entity model conflates the logical pipeline with its runtime instances: the
@@ -119,31 +120,62 @@ identity.
 
 #### Identity
 
-Every entity created by the DFE is assigned a [UUID v7][uuid-v7] when it is
-created, and that UUID is its **sole identifying attribute**. The attribute is
-named `<type>.uid`, for example `engine.uid`, `pipeline.uid`,
-`pipeline.instance.uid`, and `node.uid`.
+Internal entities are identified in one of two ways, depending on whether
+their natural key can be reused.
+
+**An entity is assigned a `uid` if it can be deleted and recreated with the
+same natural key during the lifetime of its containing entity.** The `uid` is
+a [UUID v7][uuid-v7] generated when the entity is created, and it is the
+entity's sole identifying attribute. The attribute is named `<type>.uid`. This
+applies to:
+
+- `pipeline.group` and `pipeline`. A group or pipeline can be deleted and
+  recreated with the same id. A recreated pipeline also restarts its
+  deployment generation counter at `0`, so it produces exactly the same
+  attribute values as the original.
+- `pipeline.instance`. A rollback relaunches the previous deployment
+  generation on a core, so the same `core.id` and `deployment.generation` can
+  belong to two different instances of one pipeline.
+- `engine`. The engine is never recreated within its process, but its
+  containing entities are ambient, and `service.instance.id` can be overridden
+  by users. A `uid` keeps the engine's identity self-contained.
 
 This follows the Kubernetes convention, where `k8s.pod.uid` identifies a pod
-and `k8s.pod.name` is a human-friendly, descriptive name. The DFE keeps its
-existing human-friendly identifiers (`pipeline.id`, `node.id`, ...) as
-navigational attributes (see [Descriptive attributes](#descriptive-attributes))
-alongside the new `uid` attributes.
+and `k8s.pod.name` is a human-friendly, descriptive name. The DFE keeps the
+existing human-friendly identifiers of these entities (`pipeline.group.id`,
+`pipeline.id`) as navigational attributes (see
+[Descriptive attributes](#descriptive-attributes)).
 
-Using a UUID v7 as the identity has useful properties:
+**All other entities have a composite identity**: the identifying attributes
+of their containing entity plus their own local id. Nodes, channels, and
+extensions are built once per pipeline instance and are never recreated inside
+it, so a node is identified by `pipeline.instance.uid` and `node.id`, a
+channel by `pipeline.instance.uid` and `channel.id`, and an extension by
+`pipeline.instance.uid` and `extension.id`. The local id is unique within the
+instance, and the instance `uid` is unique everywhere, so neither attribute is
+sufficient on its own and together they are.
 
-- **Delete and recreate is unambiguous.** Today, a pipeline that is deleted and
-  recreated with the same configuration produces exactly the same attribute
-  values as the original (the deployment generation counter restarts at `0`).
-  A fresh UUID distinguishes the two.
+This gives the identities useful properties:
+
+- **Delete and recreate is unambiguous.** Every entity that can be recreated
+  under the same name gets a fresh `uid`, and every other entity inherits one
+  from its container.
 - **Creation order is recoverable.** UUID v7 embeds a millisecond timestamp, so
   consumers can order instances of the same logical entity without an extra
   attribute.
 - **It is minimally sufficient.** The OpenTelemetry data model asks that the
   identifying attributes be the
   [minimal set sufficient][otel-minimal-identity] to uniquely identify the
-  entity. A UUID is unique on its own, without depending on any containing
-  context.
+  entity. A `uid` is minimal for entities whose natural key can be reused. For
+  nodes, channels, and extensions, a `uid` of their own would add nothing that
+  the instance `uid` and their local id do not already provide. The data model
+  accepts identities that are only unique in context: its process example,
+  `process.pid` and `process.start_time`, is unique only within a host. The
+  composite identity goes further by including the container's `uid`, so it is
+  unique on its own.
+- **It matches how users query.** Composite identities use the ids that users
+  write in configuration, such as `node.id`, and those stay stable across
+  deployment generations.
 - **The DFE is the only observer.** OpenTelemetry asks for
   [repeatable identity][otel-repeatable-identity] across observers. The
   internals of the DFE (pipeline instances, nodes, channels) cannot be
@@ -152,37 +184,49 @@ Using a UUID v7 as the identity has useful properties:
 
 #### Descriptive attributes
 
-All attributes other than the `uid` are descriptive, but are divided into two
-categories:
+All attributes other than the identifying attributes are descriptive. The
+attributes of an entity therefore fall into three classes, distinguished by
+whether they can change during the lifetime of the entity:
 
-- **Navigational attributes** are descriptive attributes that are fixed for
-  the lifetime of the entity. They let users find the entity and act on it.
-  Examples: `pipeline.id`, `pipeline.group.id`, `node.id`, `node.urn`,
-  `node.type`, `core.id`, `deployment.generation`.
+- **Identifying attributes** never change and form the entity's minimal
+  identity (see [Identity](#identity)).
+- **Navigational attributes** are descriptive attributes that never change
+  during the lifetime of the entity. They let users find the entity and act on
+  it. Examples: `pipeline.group.id`, `pipeline.id`, `core.id`,
+  `deployment.generation`, `node.urn`, `node.type`.
 - **State attributes** are descriptive attributes that may change during the
   lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
   (`Running`, `Draining`, ...), its conditions, or its last heartbeat time.
+
+Whether an id is identifying or navigational follows from the identity rule,
+not from its name. `pipeline.id` is navigational because a pipeline can be
+deleted and recreated with the same `pipeline.id` inside its group. `node.id`
+is identifying because a node cannot be recreated with the same `node.id`
+inside its pipeline instance. Both are fixed for the lifetime of their entity,
+so the distinction does not affect where they appear: identifying and
+navigational attributes are placed on signals the same way.
 
 The term "navigational" comes from the [Navigation][otel-navigation] section of
 the OpenTelemetry Resource specification, which distinguishes attributes that
 identify an entity from attributes that help users find it in their
 infrastructure.
 
-The navigational attributes of an entity, combined with those of the entities
-that contain it (see [Entity Containment Chain](#entity-containment-chain)),
+The identifying and navigational attributes of an entity, combined with those
+of the entities that contain it (see [Entity Containment Chain](#entity-containment-chain)),
 make up its [telescoping identity][otel-telescoping].
 
 > [!NOTE]
 > Many of the navigational attributes look like identifiers, and some of
 > them (for example `pipeline.group.id` + `pipeline.id` + `core.id` +
 > `deployment.generation`) were used as a compound identity before
-> this RFC. Because the UUID is already minimally sufficient, the
+> this RFC. That compound key is not unique across delete and recreate or
+> rollback, so it is replaced by `pipeline.instance.uid`. Because the `uid` is
+> already minimally sufficient, the
 > [minimally sufficient identity][otel-minimal-identity] rule requires every
-> one of these attributes to be descriptive rather than identifying. Adding
-> them to the identity would add nothing to uniqueness.
+> one of these attributes to be descriptive rather than identifying.
 
-Navigational attributes appear on every signal related to the entity, while state
-attributes appear only in entity events. The reasons are explained in
+Identifying and navigational attributes appear on every signal related to the
+entity, while state attributes appear only in entity events. The reasons are explained in
 [Signal modeling and Entity Refs](#signal-modeling-and-entity-refs) and
 [Entity Events](#entity-events).
 
@@ -219,14 +263,15 @@ extensions they connect. This holds for both kinds of channel. A pdata channel
 spans several nodes, so no single node can own it. A control channel has a
 single owning node or extension, but it is modeled the same way so that every
 channel has the same containing entity type. The owner of a control channel
-is still visible through its `channel.id` (`{owner}:control`).
+is still visible through its `channel.id` (see
+[Channel metric sets](#channel-metric-sets) for its format).
 
 The **containment chain** of an entity is the path from the engine to that
 entity. For example, the containment chain of a node is
 `engine -> pipeline.group -> pipeline -> pipeline.instance -> node`.
 
-Navigational attributes accumulate along the chain. The full description of a
-node is its own navigational attributes (`node.id`, `node.urn`,
+Identifying and navigational attributes accumulate along the chain. The full
+description of a node is its own attributes (`node.id`, `node.urn`,
 `node.type`) together with those of its pipeline instance, pipeline, pipeline
 group, and engine. The chain is used for navigation and for inferring which entity
 a signal belongs to (see
@@ -274,8 +319,12 @@ specifies what goes into the scope.
 Every signal belongs to an entity. The scope attributes for a signal are the union,
 over every internal entity in the containment chain of:
 
-- the entity's identifying attributes (`uid`)
+- the entity's identifying attributes, and
 - the entity's navigational attributes.
+
+In other words, the scope carries every attribute in the chain that is fixed
+for the lifetime of its entity. A composite identity adds only the local id,
+because the containing entity's `uid` is already on the scope.
 
 For example, a log emitted by a node, or a metric from a node's metric set,
 carries:
@@ -296,8 +345,7 @@ InstrumentationScope:
     numa.node.id: 0
     deployment.generation: 2
     # node
-    node.uid: 0193a1d7-...
-    node.id: batch
+    node.id: batch                # identifying, with pipeline.instance.uid
     node.urn: urn:otel:processor:batch
     node.type: processor
 ```
@@ -313,23 +361,27 @@ not the entity.
 #### Attaching signals to entities
 
 Each log record or metric belongs to exactly one entity: the **narrowest**
-entity in its scope's containment chain. A consumer can infer that entity by
-looking at the dfe containment chain and referencing the uid attributes present.
+entity in its scope's containment chain whose identifying attributes are all
+present on the scope. A consumer can infer that entity from the DFE
+containment chain and the identifying attributes present.
 
-| Scope `uid` attributes present | Signal belongs to |
+| Scope identifying attributes present | Signal belongs to |
 | --- | --- |
 | None | `engine` (on the resource) |
 | `pipeline.group.uid` | `pipeline.group` |
 | ... `pipeline.uid` | `pipeline` |
 | ... `pipeline.instance.uid` | `pipeline.instance` |
-| ... `node.uid` | `node` |
-| ... `channel.uid` | `channel` |
-| ... `extension.uid` | `extension` |
+| ... `node.id` | `node` |
+| ... `channel.id` | `channel` |
+| ... `extension.id` | `extension` |
 
 This works because containment is a tree, and a scope only ever carries the
-`uid`s of a single containment chain. Sibling types such as `node`, `channel`,
-and `extension` never appear on the same scope, so the deepest `uid` present
-identifies the entity unambiguously. Whether the scope should also mark the
+identifying attributes of a single containment chain. Each type has its own
+identifying keys, and sibling types such as `node`, `channel`, and `extension`
+never appear on the same scope, so the deepest entity present is unambiguous.
+Only scope attributes are considered: a data point attribute such as the
+`node.id` endpoint dimension on channel metrics does not change which entity
+the signal belongs to. Whether the scope should also mark the
 entity type explicitly is an open question (see
 [Unresolved questions](#unresolved-questions)).
 
@@ -369,7 +421,8 @@ value that changes, such as a pipeline instance's phase, were placed on the
 scope, every change would start a new metric stream (and, for Prometheus, a
 new series with different `otel_scope_*` labels). Navigational
 attributes do not have this problem because they never change during the
-lifetime of the entity, and the entity's `uid` already scopes the stream.
+lifetime of the entity, and the entity's identifying attributes already scope
+the stream.
 
 ### Entity Events
 
@@ -403,7 +456,7 @@ The DFE may emit an `entity.state` event for an internal entity when:
 
 Each event carries the complete current state of the entity:
 
-- `entity.type` and `entity.id` (the `uid`),
+- `entity.type` and `entity.id` (the identifying attributes),
 - `entity.description`, containing both the navigational and the state
   attributes,
 - `entity.relationships`, and
@@ -434,6 +487,20 @@ LogRecord:
           pipeline.uid: 0193a1c3-...
     entity.report.interval: 60
 ```
+
+For an entity with a composite identity, `entity.id` contains every
+identifying attribute, including the containing entity's `uid`. For example,
+a node:
+
+```text
+    entity.type: node
+    entity.id:
+      pipeline.instance.uid: 0193a1d7-...
+      node.id: batch
+```
+
+The `part_of` relationship to the containing entity is still reported
+explicitly, even though it can be derived from the composite identity.
 
 - TODO: Define the exact state attributes for each entity type,
   and how they map from the status that `/api/v1/status` reports today.
@@ -601,30 +668,30 @@ only its own attributes, and the endpoint becomes a data point dimension (see
 [Channels and their endpoints](#channels-and-their-endpoints)).
 
 **Scope.** The channel attribute set drops the composed node and extension
-attributes and `node.port`. It composes the pipeline instance attributes
-instead, and adds `channel.uid`. The remaining attributes (`channel.id`,
-`channel.kind`, `channel.mode`, `channel.type`, `channel.impl`) are
-navigational. All endpoints of a channel build an identical attribute set, so
-the entity registry deduplicates them into a single entity key with a
-reference count per endpoint.
+attributes and `node.port`, and composes the pipeline instance attributes
+instead. The channel is identified by `pipeline.instance.uid` and
+`channel.id`. The remaining attributes (`channel.kind`, `channel.mode`,
+`channel.type`, `channel.impl`) are navigational. All endpoints of a channel
+build an identical attribute set, so the entity registry deduplicates them
+into a single entity key with a reference count per endpoint.
 
 **Endpoint dimensions.** Each endpoint registers its metric sets against the
 shared channel entity and supplies `node.id` and `node.port` as fixed data
 point attributes. The `registration_attributes` option of `#[metric_set]`
 already supports this: registration attributes are fixed for the lifetime of a
 registration, may be strings, and are combined with the existing measurement
-attributes (`signal`, `outcome`, `error.type`). `node.id` is sufficient
-without `node.uid` because node ids are unique within a pipeline instance and
-nodes are not recreated within an instance. Consumers that need `node.uid` can
-join it in from entity events.
+attributes (`signal`, `outcome`, `error.type`). The scope already carries
+`pipeline.instance.uid`, so `node.id` on the data point completes the node's
+identifying attributes (see [Identity](#identity)). Each endpoint dimension
+therefore refers to its node by the node's identity. It is also the attribute
+users query on, and it stays stable across deployment generations.
 
 ```text
 InstrumentationScope:
   name: channel.sender
   attributes:
     # pipeline.group, pipeline, pipeline.instance attributes as for a node
-    channel.uid: 0193a1d8-...
-    channel.id: hyperedge:3f9a...
+    channel.id: hyperedge:3f9a...   # identifying, with pipeline.instance.uid
     channel.kind: pdata
     channel.mode: shared
     channel.type: mpmc
@@ -650,15 +717,29 @@ distinguished. Control channel metrics therefore need no endpoint dimensions:
 they belong to the channel, and the owner remains identifiable through
 `channel.id`. Extension-hosted control channels are handled the same way.
 
+**Control channel ids.** A control channel's id is currently `{owner}:control`
+(`control_channel_id` in `crates/engine/src/channel_metrics.rs`), where the
+owner is a node id or an extension id. Configuration validation rejects
+duplicate node ids and duplicate extension ids, but not a node and an
+extension that share an id. Today the two control channels are still told
+apart by the composed node or extension attributes on their scopes. Under this
+RFC those attributes leave the channel scope, and the channel is identified by
+`pipeline.instance.uid` and `channel.id` alone, so the two channels would
+collide. The control channel id therefore includes the owner kind:
+`node:{node.id}:control` or `extension:{extension.id}:control`. This change
+rides on the channel metric change, which is already breaking, and it does not
+reject any existing configuration. The alternative is a validation rule that
+rejects a node and an extension sharing an id.
+
 **Custom node attributes.** Today the custom attributes configured under a
 node's `entity.extend.identity_attributes` are copied onto that node's channel
 scopes. Because the channel scope no longer carries node attributes, they are
 dropped from channel metrics. Consumers can join them in through `node.id`.
 
 - TODO: Investigate replacing `entity.extend.identity_attributes` with
-  `entity.extend.descriptive_attributes`. Under this RFC the `uid` is the only
-  identifying attribute, so user-supplied attributes can only ever be
-  descriptive, and it is not clear that user-supplied identity is ever
+  `entity.extend.descriptive_attributes`. Under this RFC identifying
+  attributes are determined by the identity rule, so user-supplied attributes
+  can only ever be descriptive, and it is not clear that user-supplied identity is ever
   necessary.
 
 **Compatibility.** Moving `node.*` and `node.port` from the scope to data
@@ -689,10 +770,61 @@ resource log how many bytes
 
 ## Rationale and alternatives
 
-- TODO: Explain that UIDs are not strictly necessary at the node or engine level.
-UIDs at the engine level could be considered nice because we can track when the
-engine restarts across time. UIDs at the node level are less useful if we don't
-expect nodes to ever be destroyed/recreated at the pipeline level
+### A `uid` on every entity
+
+An earlier draft of this RFC assigned a `uid` to every internal entity,
+including nodes, channels, and extensions. This was rejected for three
+reasons:
+
+- **It adds nothing to uniqueness.** Nodes, channels, and extensions are never
+  recreated inside their pipeline instance, so the instance `uid` plus their
+  local id already identifies them.
+- **It is wasteful where it matters most.** Nodes and channels are the most
+  numerous entities (cores x pipelines x nodes and channels). A `uid` adds about
+  45 bytes of key and value to every node and channel scope before
+  compression, and it must be generated, stored, and kept consistent across
+  every registration of the same entity.
+- **It weakens references by id.** Channel metrics identify their endpoints
+  with `node.id`, the attribute users query on. With a `node.uid`, that
+  dimension would refer to a node by a non-identifying attribute. With a
+  composite identity, `node.id` on the data point and `pipeline.instance.uid`
+  on the scope are exactly the node's identifying attributes.
+
+- TODO: Explain whether `engine.uid` is necessary. It is kept because the
+  engine's containing entities are ambient and `service.instance.id` can be
+  overridden, and because it lets consumers track engine restarts over time.
+
+### When the identity rule must be revisited
+
+The rule in [Identity](#identity) is applied per containing entity, not per
+type: an entity needs a `uid` only if it can be recreated with the same
+natural key while its container is alive. This holds today for every type in
+this RFC. The following changes would require revisiting it:
+
+- **Per-node restart.** Today a node failure fails its pipeline instance, and
+  recovery replaces the instance with a new deployment generation and a new
+  `pipeline.instance.uid`. If individual nodes could be restarted inside an
+  instance, nodes would need a `uid`.
+- **Live topology changes inside an instance.** Adding or removing nodes or
+  channels without a new deployment generation would have the same effect.
+- **Extensions hosted outside pipelines.** Engine-level controller extensions
+  already exist. They start once with the controller and are never restarted,
+  so `engine.uid` plus `extension.id` would identify them. They are not
+  reported as entities today. If engine- or group-hosted extensions become
+  live add and remove, extensions hosted there would need a `uid`.
+- **Topics.** If topics become entities (see
+  [Redefining the entity hierarchy](#redefining-the-entity-hierarchy)) and can
+  be added and removed live, they would need a `uid`.
+
+In-place node reconfiguration does not trigger the rule. The plumbing for it
+exists (`NodeControlMsg::Config`) but is not used in production. A node
+reconfigured in place stays the same entity, because its configuration is not
+one of its attributes and `node.urn` and `node.type` cannot change in place.
+A configuration change may still warrant a state attribute or an
+`entity.state` event.
+
+### Other considerations
+
 - TODO: We should consider prefixing our entities with a `dfe.`. This is
 disallowed in our documentation today, but there is a compelling reason in a lot
 of systems where a dfe and an otc, both with "pipelines" exists. All k8s entities
@@ -717,8 +849,9 @@ If there is no prior art, say so -- new ideas are welcome.
 
 ### Explicit scope entity marker
 
-Today, the entity a signal belongs to is inferred from the deepest `uid` on
-its scope (see [Attaching signals to entities](#attaching-signals-to-entities)).
+Today, the entity a signal belongs to is inferred from the deepest entity
+whose identifying attributes are on its scope (see
+[Attaching signals to entities](#attaching-signals-to-entities)).
 Two alternatives make it explicit:
 
 - **Scope level entity refs.** Propose to OpenTelemetry an equivalent of
@@ -728,7 +861,7 @@ Two alternatives make it explicit:
 - **An `entity.type` scope attribute.** Add a single attribute naming the type
   of the entity the scope belongs to. This is simpler, but it adds an
   attribute to every scope when the entity can already be inferred from the
-  `uid` attributes and the containment chain.
+  identifying attributes and the containment chain.
 
 Either option would make the model self-describing for generic consumers that
 do not know the DFE's containment chain. Both have to be weighed against
@@ -748,11 +881,28 @@ be redefined against the principles here:
 - The full per-type attribute tables, including channel and extension
   entities. This includes how `thread.id`, documented but not emitted today,
   fits in.
+- TODO: Classify the existing scope attributes that this RFC does not yet
+  cover:
+  - `scope.kind` on the extension scope (`ExtensionScopeAttributeSet`). It
+    names the kind of scope hosting the extension, which may be redundant once
+    the host can be inferred from the identifying attributes present.
+    Extensions hosted by the engine or a pipeline group would also give
+    `extension` more than one containing entity type.
+  - `extension.variant` (`local` or `shared`), likely navigational.
+  - `topic` on node metric sets (`NodeWithTopicAttributeSet`). Topics are
+    declared at the engine or group level and span pipelines, so `topic` may
+    need to be its own entity. Whether a node's per-topic metrics then belong
+    to the node or to the topic depends on whether a node can bind more than
+    one topic.
+  - The map-valued `custom` attribute from
+    `entity.extend.identity_attributes`. See the related TODO in
+    [Channel metric sets](#channel-metric-sets).
 
 ### Telescoping identity on the wire
 
 This RFC places every navigational attribute on the scope. A deployment
-could instead choose to send only the `uid`s and rely on entity events to join
+could instead choose to send only the identifying attributes and rely on
+entity events to join
 the navigational attributes back in. That would mean moving toward the
 UUID-only end of the [telescoping identity][otel-telescoping] spectrum. Should
 this be configurable, and at what granularity?
