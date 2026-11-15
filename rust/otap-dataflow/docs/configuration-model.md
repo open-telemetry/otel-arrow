@@ -351,6 +351,7 @@ Important behavior:
 - `topics`
 - `http_admin`
 - `telemetry`
+- `runtime`
 - `observed_state`
 - `observability`
 - `controller/extensions`
@@ -374,6 +375,56 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
     mixed implementation
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
+
+### Engine Runtime Settings
+
+Engine-wide runtime tuning is declared at `engine.runtime`.
+
+- `engine.runtime.local_runtime.event_interval` (optional): number of Tokio
+  scheduler ticks before each pipeline `LocalRuntime` polls timers and I/O
+  events. When omitted, Tokio's built-in default is used.
+- `engine.runtime.local_runtime.max_io_events_per_tick` (optional): maximum
+  number of I/O readiness events processed by Tokio per scheduler tick. When
+  omitted, Tokio's built-in default is used.
+- `engine.runtime.local_runtime.max_io_events_per_busy_tick` (optional): maximum
+  number of I/O readiness events processed by a nonblocking driver poll,
+  normally while runnable tasks remain. When omitted, Tokio uses
+  `max_io_events_per_tick` for both busy and idle polls.
+- `engine.runtime.local_runtime.poll_time_histogram` (optional, default
+  `false`): enables Tokio task poll-time histograms for diagnostics. This
+  requires a binary built with `RUSTFLAGS="--cfg tokio_unstable"`.
+
+Example:
+
+```yaml
+engine:
+  runtime:
+    local_runtime:
+      event_interval: 127
+      max_io_events_per_tick: 512
+      max_io_events_per_busy_tick: 32
+```
+
+Use this only after workload-specific validation. Higher values can reduce
+scheduler and I/O polling overhead for hot pipelines, but may increase timer and
+I/O readiness latency under sustained ready-task load. Larger
+`max_io_events_per_tick` values can improve I/O burst draining, but may also
+increase time spent in the I/O driver before ready tasks are polled.
+
+The busy limit allows smaller batches while tasks are runnable without reducing
+idle-poll batching. Smaller values leave excess events in the kernel and may
+improve task responsiveness during I/O bursts, but may also increase driver
+polls and reduce throughput. Unlike `event_interval`, which controls how often
+busy driver polls occur, this limit controls how much I/O each poll processes.
+Every numeric override must be greater than zero.
+
+For a representative pipeline experiment, first compare the old and new Tokio
+versions with all overrides omitted. Then keep `event_interval` and
+`max_io_events_per_tick` unchanged and compare busy limits of `8`, `32`, and
+`128` against the unset baseline. Use the same offered traffic, CPU placement,
+and topology for every run; measure delivered throughput and loss, CPU, memory,
+context switches, epoll activity, and tail latency. Do not assume a smaller
+batch improves throughput or reduces context switching.
 
 ### Engine Telemetry
 
@@ -690,11 +741,14 @@ core_allocation:
       end: 5
 ```
 
-| Type | Required fields | Placement and reservation semantics |
-| --- | --- | --- |
-| `all_cores` | Neither `count` nor `set` | Uses every process-visible core and does not reserve cores from other pipelines. |
-| `core_count` | `count` in YAML | Selects the requested number of unreserved process-visible cores and reserves them against other `core_count` allocations. Explicit `core_set` cores are also excluded. |
-| `core_set` | Non-empty `set` | Uses the exact inclusive ranges. Explicit sets may overlap one another and reserve their cores against `core_count` allocations. |
+- `all_cores`: requires neither `count` nor `set`. Uses every process-visible
+  core and does not reserve cores from other pipelines.
+- `core_count`: requires `count` in YAML. Selects the requested number of
+  unreserved process-visible cores and reserves them against other `core_count`
+  allocations. Explicit `core_set` cores are also excluded.
+- `core_set`: requires a non-empty `set`. Uses the exact inclusive ranges.
+  Explicit sets may overlap one another and reserve their cores against
+  `core_count` allocations.
 
 `core_count` uses strict exhaustion behavior. A positive count fails if there
 are too few unreserved visible cores, and a count greater than the number of

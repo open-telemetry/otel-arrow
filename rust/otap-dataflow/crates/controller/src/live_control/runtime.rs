@@ -158,6 +158,15 @@ impl<
         let engine_event_reporter = self.engine_event_reporter.clone();
         let metrics_reporter = self.metrics_reporter.clone();
         let telemetry_reporting_interval = self.telemetry_reporting_interval;
+        let local_runtime_settings = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .live_config
+            .engine
+            .runtime
+            .local_runtime
+            .clone();
         let _handle = thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
@@ -182,6 +191,7 @@ impl<
                         pipeline_completion_msg_rx,
                         memory_pressure_rx,
                         tracing_setup,
+                        local_runtime_settings,
                         internal_telemetry,
                         thread_startup_ready,
                     )
