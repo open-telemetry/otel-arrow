@@ -55,7 +55,6 @@ bytes.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true
-tikv-jemalloc-ctl.workspace = true
 
 [lints]
 workspace = true

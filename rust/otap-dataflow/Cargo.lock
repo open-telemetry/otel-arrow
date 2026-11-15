@@ -1320,7 +1320,6 @@ dependencies = [
  "roaring",
  "serde_json",
  "serde_yaml",
- "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "tokio-stream",

@@ -1,137 +1,89 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Benchmarks for the traffic_generator receiver's semantic-conventions data
-//! source, comparing the upstream registry (cloned from GitHub at startup) with
-//! the vendored, annotated copy under `vendor/semconv/model`.
+//! Startup and generation-cost benchmarks for the traffic_generator receiver's
+//! semantic-conventions data source, per signal type and with the
+//! `annotations` option disabled (`ann_off`) and enabled (`ann_on`).
 //!
-//! The goal is to measure the cost of the annotation integration. Three kinds
-//! of cost are isolated:
+//! Every benchmark loads the vendored registry under `vendor/semconv/model` so
+//! results do not depend on the network. Each config weights a single signal
+//! type, has no rate limit, and uses `max_batch_size = 1000`, built from the
+//! same JSON shape the receiver parses. Groups:
 //!
-//! - `startup/compile`: compile an already-resolved registry into the internal
-//!   model (annotations parsed, samplers built). The registry is resolved once
-//!   up front and reused, so the timed region excludes resolution -- and, for
-//!   `upstream`, the git clone -- and measures only the annotation compile cost.
-//! - `pregenerate`: build the full pre-generated payload set once, exactly as
-//!   the `pre_generated` strategy does at startup. This uses the producer's own
-//!   shaping (a 1:1:1 logs/metrics/traces mix, `1024 * max_batch_size` signals
-//!   total, split into separately encoded `max_batch_size` batches) so the
-//!   benchmark measures the real retained-payload workload rather than a single
-//!   oversized batch.
-//! - `fresh`: generate and encode one batch of signals, per signal type (the
-//!   per-batch cost paid continuously by the `fresh` strategy), through the same
-//!   `OtapPayload` encoder the receiver uses.
+//! - `startup/<signal>/<variant>`: everything the receiver prepares before it
+//!   can start generating data -- `TrafficProducer::from_config` with the
+//!   `fresh` strategy (resolve the registry, compile the model, build the
+//!   generator and batch shape).
+//! - `generation/fresh/<signal>/<variant>`: the cost of each message in the
+//!   `fresh` strategy -- generate and encode one batch of 1000 signals through
+//!   the producer's run iterator, the receiver's runtime hot path.
+//! - `generation/pregen/<signal>/<variant>`: the pre-generation cost of the
+//!   `pre_generated` strategy -- generate and encode the full replay set
+//!   (1024 batches of 1000 signals) from a newly built model.
 //!
-//! Memory is reported out-of-band by reading jemalloc's process-wide allocation
-//! statistics (through `tikv_jemalloc_ctl`) around each region: per-run lines
-//! print bytes retained by the model, bytes allocated during compile, bytes per
-//! fresh batch, bytes retained by the pre-generated payload set, and its
-//! per-signal breakdown.
-//!
-//! `vendored` always runs (it needs no network). `upstream` is opt-in: set
-//! `TRAFFICGEN_BENCH_UPSTREAM=1` to also clone and benchmark the upstream
-//! registry; a clone failure is then a hard error.
+//! Set `TRAFFICGEN_BENCH_UPSTREAM=1` to also benchmark the upstream registry
+//! (cloned from GitHub on every resolve; requires network access).
 
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::annotation::format_errors;
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::{
-    Config, TrafficConfig, default_registry_path, vendored_registry_path,
-};
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::producer::{
-    SignalGenerator, WeaverGenerator, pregenerate_payloads,
-};
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel;
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::Config;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::producer::TrafficProducer;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-use weaver_common::vdir::VirtualDirectoryPath;
-use weaver_forge::v1::registry::ResolvedRegistry;
+use serde_json::json;
 
-// Use jemalloc so its statistics can be read through tikv_jemalloc_ctl. The
-// counters below are process-wide, so memory lines are only meaningful because
-// the benchmark harness runs these regions single-threaded between iterations.
 #[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-/// Whether a memory report should be printed. jemalloc stats are unavailable on
-/// Windows in this configuration.
-const MEMORY_REPORT: bool = !cfg!(windows);
+/// Signals per batch (`max_batch_size`).
+const BATCH: usize = 1000;
+/// Batches built by the `pre_generated` strategy with no rate limit.
+const PREGEN_BATCHES: usize = 1024;
 
-/// Snapshot of jemalloc's process-wide allocation statistics (bytes currently
-/// allocated to the application, and resident bytes mapped by the allocator).
-/// On Windows the fields stay zero and memory lines are omitted.
-#[derive(Clone, Copy)]
-struct AllocSnapshot {
-    allocated: u64,
-    resident: u64,
-}
+mod traffic_generator {
+    use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::Config;
+    use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_model::SemconvModel;
+    use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use weaver_forge::v1::registry::ResolvedRegistry;
 
-impl AllocSnapshot {
-    /// Advance jemalloc's stats epoch and read the current counters.
-    fn now() -> Self {
-        #[cfg(not(windows))]
-        {
-            use tikv_jemalloc_ctl::{epoch, stats};
-            // Refresh cached statistics; ignore epoch errors and fall back to
-            // the last readable values.
-            let _ = epoch::advance();
-            Self {
-                allocated: stats::allocated::read().unwrap_or(0) as u64,
-                resident: stats::resident::read().unwrap_or(0) as u64,
-            }
-        }
-        #[cfg(windows)]
-        {
-            Self {
-                allocated: 0,
-                resident: 0,
-            }
-        }
+    use super::Signal;
+
+    /// Variants under comparison: `(label, annotations)`.
+    pub const VARIANTS: &[(&str, Option<bool>)] =
+        &[("ann_off", Some(false)), ("ann_on", Some(true))];
+
+    /// Model the generator draws from.
+    pub type Model = SemconvModel;
+
+    pub fn resolve(config: &Config) -> ResolvedRegistry {
+        config.resolve_registry().expect("registry resolves")
     }
 
-    /// Net bytes allocated to the application since `start`.
-    fn net_bytes(self, start: Self) -> i64 {
-        self.allocated as i64 - start.allocated as i64
-    }
-
-    /// Change in resident bytes since `start`.
-    fn resident_delta(self, start: Self) -> i64 {
-        self.resident as i64 - start.resident as i64
-    }
-}
-
-/// Registry variants under comparison.
-#[derive(Clone, Copy)]
-enum Registry {
-    Upstream,
-    Vendored,
-}
-
-impl Registry {
-    /// Registries to benchmark: `vendored` always, `upstream` only when
-    /// `TRAFFICGEN_BENCH_UPSTREAM=1` (it needs network access to clone).
-    fn selected() -> Vec<Registry> {
-        let upstream = std::env::var("TRAFFICGEN_BENCH_UPSTREAM").as_deref() == Ok("1");
-        if upstream {
-            vec![Registry::Upstream, Registry::Vendored]
+    pub fn compile(resolved: ResolvedRegistry, annotations: Option<bool>) -> Model {
+        if annotations == Some(true) {
+            SemconvModel::compile(&resolved).unwrap_or_else(|errors| {
+                panic!(
+                    "{}",
+                    otel_arrow_dfe_dev_nodes::receivers::traffic_generator::annotation::format_errors(&errors)
+                )
+            })
         } else {
-            vec![Registry::Vendored]
+            SemconvModel::compile_without_annotations(&resolved)
         }
     }
 
-    fn id(self) -> &'static str {
-        match self {
-            Registry::Upstream => "upstream",
-            Registry::Vendored => "vendored",
-        }
-    }
-
-    fn path(self) -> VirtualDirectoryPath {
-        match self {
-            Registry::Upstream => default_registry_path(),
-            Registry::Vendored => vendored_registry_path(),
+    pub fn generate(signal: Signal, count: usize, model: &Model) -> OtlpProtoMessage {
+        match signal {
+            Signal::Logs => OtlpProtoMessage::Logs(semconv_signal::semconv_otlp_logs(count, model)),
+            Signal::Metrics => {
+                OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, model))
+            }
+            Signal::Traces => {
+                OtlpProtoMessage::Traces(semconv_signal::semconv_otlp_traces(count, model))
+            }
         }
     }
 }
@@ -155,237 +107,188 @@ impl Signal {
         }
     }
 
-    /// Generate `count` signals as one encoded `OtapPayload`, through the same
-    /// `OtlpProtoMessage` -> `OtapPayload` path the receiver uses.
-    fn generate_encoded(self, count: usize, generator: &mut dyn SignalGenerator) -> OtapPayload {
-        let result = match self {
-            Signal::Logs => generator.generate_logs(count),
-            Signal::Metrics => generator.generate_metrics(count),
-            Signal::Traces => generator.generate_traces(count),
-        };
-        result.expect("signal generation and encoding succeed")
+    /// `(metric_weight, trace_weight, log_weight)` selecting only this signal.
+    fn weights(self) -> (u32, u32, u32) {
+        match self {
+            Signal::Logs => (0, 0, 1),
+            Signal::Metrics => (1, 0, 0),
+            Signal::Traces => (0, 1, 0),
+        }
     }
 }
 
-/// Signals per `fresh` batch.
-const FRESH_BATCH: usize = 1000;
-
-/// Build a `TrafficConfig` with all three signal weights enabled; the generator
-/// code paths below select a single signal type explicitly.
-fn traffic_config() -> TrafficConfig {
-    // signals_per_second = None (open), max_signal_count = None, batch 1000,
-    // metric/trace/log weights all 1.
-    TrafficConfig::new(None, None, FRESH_BATCH, 1, 1, 1)
+/// Registry sources under comparison.
+#[derive(Clone, Copy)]
+enum Registry {
+    Vendored,
+    Upstream,
 }
 
-/// Resolve the registry (clones from git for `upstream`), panicking on failure.
-///
-/// Resolution is excluded from the compile benchmark so the timed region
-/// measures annotation compilation only, not the network-bound clone.
-fn resolve(registry: Registry) -> ResolvedRegistry {
-    let config = Config::new(traffic_config(), registry.path());
-    config
-        .resolve_registry()
-        .unwrap_or_else(|e| panic!("resolve {} registry: {e}", registry.id()))
+impl Registry {
+    /// `vendored` always; `upstream` only with `TRAFFICGEN_BENCH_UPSTREAM=1`.
+    fn selected() -> Vec<Registry> {
+        if std::env::var("TRAFFICGEN_BENCH_UPSTREAM").as_deref() == Ok("1") {
+            otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+            vec![Registry::Vendored, Registry::Upstream]
+        } else {
+            vec![Registry::Vendored]
+        }
+    }
+
+    /// `registry_path` value, or `None` to use the receiver's default (the
+    /// upstream git repository).
+    fn path(self) -> Option<&'static str> {
+        match self {
+            Registry::Vendored => Some(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../vendor/semconv/model"
+            )),
+            Registry::Upstream => None,
+        }
+    }
+
+    /// Benchmark parameter label for a variant on this registry.
+    fn label(self, variant: &str) -> String {
+        match self {
+            Registry::Vendored => variant.to_owned(),
+            Registry::Upstream => format!("{variant}_upstream"),
+        }
+    }
 }
 
-/// Compile an already-resolved registry into a model, panicking on failure.
-///
-/// Annotations are enabled for both registries so the annotation-driven compile
-/// and generation paths are measured (upstream carries none).
-fn compile_resolved(registry: Registry, resolved: &ResolvedRegistry) -> SemconvModel {
-    SemconvModel::compile(resolved).unwrap_or_else(|errors| {
-        panic!(
-            "compile {} registry: {}",
-            registry.id(),
-            format_errors(&errors)
-        )
-    })
+/// Build the receiver config exactly as the receiver would parse it.
+fn config(
+    registry: Registry,
+    signal: Signal,
+    annotations: Option<bool>,
+    pre_generated: bool,
+) -> Config {
+    let (metric_weight, trace_weight, log_weight) = signal.weights();
+    let mut value = json!({
+        "traffic_config": {
+            "signals_per_second": null,
+            "max_batch_size": BATCH,
+            "metric_weight": metric_weight,
+            "trace_weight": trace_weight,
+            "log_weight": log_weight,
+        },
+        "data_source": "semantic_conventions",
+        "generation_strategy": if pre_generated { "pre_generated" } else { "fresh" },
+    });
+    if let Some(path) = registry.path() {
+        value["registry_path"] = json!(path);
+    }
+    if let Some(annotations) = annotations {
+        value["annotations"] = json!(annotations);
+    }
+    serde_json::from_value(value).expect("benchmark config parses")
 }
 
-/// Resolve and compile the registry into a model, panicking on failure.
-///
-/// Used by the `fresh` and `pregenerate` benchmarks, which need a model but do
-/// not time its construction.
-fn compile_model(registry: Registry) -> SemconvModel {
-    compile_resolved(registry, &resolve(registry))
+/// Generate and encode the replay set (`PREGEN_BATCHES` batches of `BATCH`
+/// signals) from `model`, as the `pre_generated` strategy does at startup.
+fn pregenerate(signal: Signal, model: &traffic_generator::Model) -> Vec<OtapPayload> {
+    (0..PREGEN_BATCHES)
+        .map(|_| {
+            let message: OtlpProtoMessage = traffic_generator::generate(signal, BATCH, model);
+            message.try_into().expect("payload encodes")
+        })
+        .collect()
 }
 
-/// weaver clones the upstream registry over rustls without choosing a crypto
-/// provider, so one must be installed before resolving.
-fn ensure_crypto() {
-    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-}
-
-#[allow(clippy::print_stdout)]
+/// Scenario: The receiver prepares to generate one signal type, for each
+/// annotations variant.
+/// Guarantees: Measures everything done before data generation can begin
+/// (`TrafficProducer::from_config` with `fresh`: resolve, compile, shape), so
+/// startup-latency regressions are visible per signal and per variant.
 fn bench_startup(c: &mut Criterion) {
-    let mut group = c.benchmark_group("startup/compile");
-    // Compilation is cheaper than resolution, but keep the sample modest since
-    // each iteration rebuilds every sampler.
-    let _ = group.sample_size(10);
-
+    let mut group = c.benchmark_group("startup");
+    let _ = group.sample_size(20);
     for registry in Registry::selected() {
-        // Resolve once, outside the timed region, so the benchmark measures only
-        // annotation compilation (not the git clone for `upstream`).
-        let resolved = resolve(registry);
-
-        if MEMORY_REPORT {
-            let before = AllocSnapshot::now();
-            let model = compile_resolved(registry, &resolved);
-            let after = AllocSnapshot::now();
-            // net_bytes is bytes still allocated to the application after compile
-            // completes (the model is retained); resident_delta is the change in
-            // bytes mapped by the allocator, which includes fragmentation and
-            // retained arenas.
-            println!(
-                "mem startup/{}: compile net={} B resident_delta={} B",
-                registry.id(),
-                after.net_bytes(before),
-                after.resident_delta(before),
-            );
-            // Measure bytes retained by the model alone: snapshot around a
-            // clone so transient compile state is excluded.
-            let before_model = AllocSnapshot::now();
-            let cloned = black_box(model.clone());
-            let after_model = AllocSnapshot::now();
-            println!(
-                "mem startup/{}: model_retained net={} B",
-                registry.id(),
-                after_model.net_bytes(before_model),
-            );
-            drop(cloned);
-            drop(model);
-        }
-
-        let _ = group.bench_with_input(
-            BenchmarkId::from_parameter(registry.id()),
-            &registry,
-            |b, &registry| {
-                b.iter(|| black_box(compile_resolved(registry, &resolved)));
-            },
-        );
-    }
-    group.finish();
-}
-
-#[allow(clippy::print_stdout)]
-fn bench_fresh(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fresh");
-    let _ = group.throughput(Throughput::Elements(FRESH_BATCH as u64));
-
-    for registry in Registry::selected() {
-        let mut generator = WeaverGenerator::new(compile_model(registry));
-        for signal in Signal::ALL {
-            if MEMORY_REPORT {
-                let before = AllocSnapshot::now();
-                let mut encoded = black_box(signal.generate_encoded(FRESH_BATCH, &mut generator));
-                let after = AllocSnapshot::now();
-                let bytes = encoded.num_bytes().unwrap_or(0);
-                println!(
-                    "mem fresh/{}/{}: batch_net={} B encoded={} B encoded_per_signal={:.1} B",
-                    signal.id(),
-                    registry.id(),
-                    after.net_bytes(before),
-                    bytes,
-                    bytes as f64 / FRESH_BATCH as f64,
-                );
+        for &(variant, annotations) in traffic_generator::VARIANTS {
+            for signal in Signal::ALL {
+                let cfg = config(registry, signal, annotations, false);
+                let id = BenchmarkId::new(signal.id(), registry.label(variant));
+                let _ = group.bench_function(id, |b| {
+                    b.iter_with_large_drop(|| {
+                        black_box(TrafficProducer::from_config(&cfg).expect("producer starts"))
+                    });
+                });
             }
-
-            let id = BenchmarkId::new(signal.id(), registry.id());
-            let _ = group.bench_with_input(id, &registry, |b, _registry| {
-                b.iter(|| black_box(signal.generate_encoded(FRESH_BATCH, &mut generator)));
-            });
         }
     }
     group.finish();
 }
 
-/// Build the full pre-generated payload set for `registry`, exactly as the
-/// `pre_generated` strategy does at startup: a 1:1:1 logs/metrics/traces mix of
-/// `FRESH_BATCH * 1024` signals, split into separately encoded `FRESH_BATCH`
-/// batches and retained as `OtapPayload`s.
-fn pregenerate_set(registry: Registry) -> Vec<OtapPayload> {
-    let mut generator = WeaverGenerator::new(compile_model(registry));
-    pregenerate_payloads(&mut generator, &traffic_config())
-        .unwrap_or_else(|e| panic!("pregenerate {} payloads: {e}", registry.id()))
-}
-
-/// Sum encoded bytes and batch counts per signal type for a payload set.
-fn report_pregenerate(registry: Registry, net: i64, payloads: &mut [OtapPayload]) {
-    let mut batches = [0usize; 3];
-    let mut bytes = [0usize; 3];
-    let mut signals = [0usize; 3];
-    for payload in payloads.iter_mut() {
-        let idx = match payload.signal_type() {
-            SignalType::Logs => 0,
-            SignalType::Metrics => 1,
-            SignalType::Traces => 2,
-        };
-        batches[idx] += 1;
-        bytes[idx] += payload.num_bytes().unwrap_or(0);
-        signals[idx] += payload.num_items();
-    }
-    let total_bytes: usize = bytes.iter().sum();
-    let total_batches: usize = batches.iter().sum();
-    #[allow(clippy::print_stdout)]
-    {
-        println!(
-            "mem pregenerate/{}: encoded_retained={total_bytes} B heap_net={net} B batches={total_batches}",
-            registry.id(),
-        );
-        for (idx, name) in ["logs", "metrics", "traces"].iter().enumerate() {
-            let per_signal = if signals[idx] == 0 {
-                0.0
-            } else {
-                bytes[idx] as f64 / signals[idx] as f64
-            };
-            println!(
-                "mem pregenerate/{}/{}: encoded={} B batches={} signals={} per_signal={:.1} B",
-                name,
-                registry.id(),
-                bytes[idx],
-                batches[idx],
-                signals[idx],
-                per_signal,
-            );
-        }
-    }
-}
-
-fn bench_pregenerate(c: &mut Criterion) {
-    let mut group = c.benchmark_group("pregenerate");
-    // The pre_generated strategy builds max_batch_size * 1024 signals up front
-    // when signals_per_second is None. Mirror that volume and 1:1:1 mix here.
-    let pregen_count = FRESH_BATCH * 1024;
-    let _ = group.throughput(Throughput::Elements(pregen_count as u64));
-    // One run already generates a million+ signals; keep the sample small.
-    let _ = group.sample_size(10);
-
+/// Scenario: A started `fresh` producer emits messages through its run
+/// iterator, for each signal type and annotations variant.
+/// Guarantees: Measures the per-message runtime cost of the `fresh` strategy
+/// (generate and encode one batch of `BATCH` signals) on the same path the
+/// receiver uses, excluding startup.
+fn bench_generation_fresh(c: &mut Criterion) {
+    let mut group = c.benchmark_group("generation/fresh");
+    let _ = group.throughput(Throughput::Elements(BATCH as u64));
     for registry in Registry::selected() {
-        if MEMORY_REPORT {
-            let before = AllocSnapshot::now();
-            let mut payloads = black_box(pregenerate_set(registry));
-            let after = AllocSnapshot::now();
-            report_pregenerate(registry, after.net_bytes(before), &mut payloads);
-            drop(payloads);
+        for &(variant, annotations) in traffic_generator::VARIANTS {
+            for signal in Signal::ALL {
+                let cfg = config(registry, signal, annotations, false);
+                let mut producer = TrafficProducer::from_config(&cfg).expect("producer starts");
+                let id = BenchmarkId::new(signal.id(), registry.label(variant));
+                let _ = group.bench_function(id, |b| {
+                    b.iter(|| {
+                        let mut run = producer
+                            .next_run()
+                            .expect("run starts")
+                            .expect("no signal limit");
+                        black_box(
+                            run.next()
+                                .expect("run has a batch")
+                                .expect("batch generates"),
+                        )
+                    });
+                });
+            }
         }
-
-        let id = BenchmarkId::from_parameter(registry.id());
-        let _ = group.bench_with_input(id, &registry, |b, &registry| {
-            // Freeing the retained payload set is excluded from the timed
-            // region so the measurement reflects generation and encoding only.
-            b.iter_with_large_drop(|| black_box(pregenerate_set(registry)));
-        });
     }
     group.finish();
 }
 
-fn benches(c: &mut Criterion) {
-    ensure_crypto();
-    bench_startup(c);
-    bench_fresh(c);
-    bench_pregenerate(c);
+/// Scenario: The `pre_generated` strategy builds its full replay set for one
+/// signal type from a newly built model, for each annotations variant.
+/// Guarantees: Measures the pre-generation cost (generate and encode all
+/// `PREGEN_BATCHES` batches) separately from startup; model construction runs
+/// untimed before each iteration so every sample starts from a new model as
+/// the receiver does.
+fn bench_generation_pregen(c: &mut Criterion) {
+    let mut group = c.benchmark_group("generation/pregen");
+    let _ = group.sample_size(10);
+    let _ = group.throughput(Throughput::Elements((BATCH * PREGEN_BATCHES) as u64));
+    for registry in Registry::selected() {
+        for &(variant, annotations) in traffic_generator::VARIANTS {
+            for signal in Signal::ALL {
+                let cfg = config(registry, signal, annotations, true);
+                let id = BenchmarkId::new(signal.id(), registry.label(variant));
+                let _ = group.bench_function(id, |b| {
+                    b.iter_batched(
+                        || traffic_generator::compile(traffic_generator::resolve(&cfg), annotations),
+                        |model| {
+                            // Return the model with the payloads so both are
+                            // dropped outside the timed region.
+                            let payloads = pregenerate(signal, &model);
+                            black_box((payloads, model))
+                        },
+                        BatchSize::PerIteration,
+                    );
+                });
+            }
+        }
+    }
+    group.finish();
 }
 
-criterion_group!(traffic_generator, benches);
+criterion_group!(
+    traffic_generator,
+    bench_startup,
+    bench_generation_fresh,
+    bench_generation_pregen
+);
 criterion_main!(traffic_generator);
