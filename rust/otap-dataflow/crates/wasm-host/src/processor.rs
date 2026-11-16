@@ -618,6 +618,9 @@ impl WasmProcessor {
                 None => effect_handler.send_message_with_source_node(pdata).await,
             };
             if let Err(error) = result {
+                if key.is_null() {
+                    return Err(error.into());
+                }
                 send_failed = true;
                 self.complete_output(
                     key,
@@ -1288,6 +1291,51 @@ mod tests {
             assert_eq!(nack.cause, NackCause::RouteClosed);
             assert!(h.processor.accept_pdata());
             assert!(h.completions.try_recv().is_err());
+        }
+    }
+
+    /// Scenario: An untracked input encounters a closed default or named route, before or after a successful send.
+    /// Guarantees: Dispatch returns the channel error, skips later outputs, and emits no completion.
+    #[tokio::test]
+    async fn output_untracked_route_failure_is_propagated() {
+        for port in [None, Some("b")] {
+            for first_closed in [false, true] {
+                let mut h = output_harness(&["a", "b", "c"], Some("b"));
+                drop(h.outputs.remove("b"));
+                let mut outputs = Vec::new();
+                if !first_closed {
+                    outputs.push(native_output(Some("a"), "A"));
+                }
+                outputs.push(native_output(port, "B"));
+                outputs.push(native_output(Some("c"), "C"));
+                let error = h
+                    .processor
+                    .dispatch_outputs(
+                        OtapPdata::new(Context::default(), build_logs_batch(&["INPUT"]).into())
+                            .into_delivery(),
+                        outputs,
+                        None,
+                        &h.effect,
+                    )
+                    .await
+                    .expect_err("closed untracked route must fail dispatch");
+                assert!(matches!(
+                    error,
+                    EngineError::ChannelSendError { closed: true, .. }
+                ));
+                let earlier = h.outputs.get_mut("a").unwrap().try_recv();
+                if first_closed {
+                    assert!(earlier.is_err());
+                } else {
+                    assert_eq!(
+                        earlier.unwrap().payload_ref().otap_ref().unwrap(),
+                        &build_logs_batch(&["A"])
+                    );
+                }
+                assert!(h.outputs.get_mut("c").unwrap().try_recv().is_err());
+                assert!(h.completions.try_recv().is_err());
+                assert!(h.processor.accept_pdata());
+            }
         }
     }
 
