@@ -183,6 +183,9 @@ pub(crate) struct NodeMetricHandles {
     pub(crate) output_size: Vec<MeasurementMetricSet<NodeOutputSizeMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
+    /// Allocation calls observed during this node's polls.
+    #[cfg(feature = "dfe-local-alloc")]
+    pub(crate) allocation_activity: Option<crate::node_allocation_metrics::NodeAllocationHandle>,
 }
 
 pub(crate) fn report_node_metrics_with_handles(
@@ -191,6 +194,10 @@ pub(crate) fn report_node_metrics_with_handles(
 ) -> Result<(), TelemetryError> {
     let mut handles_guard = node_metric_handles.borrow_mut();
     for handles in handles_guard.iter_mut().flatten() {
+        #[cfg(feature = "dfe-local-alloc")]
+        if let Some(activity) = &handles.allocation_activity {
+            metrics_reporter.report(&mut activity.borrow_mut())?;
+        }
         if let Some(input) = &mut handles.input {
             metrics_reporter.report_measurement(input)?;
         }
@@ -232,6 +239,13 @@ pub(crate) fn snapshot_node_metrics_with_handles(
     let mut handles_guard = node_metric_handles.borrow_mut();
     let mut snapshots = Vec::new();
     for handles in handles_guard.iter_mut().flatten() {
+        #[cfg(feature = "dfe-local-alloc")]
+        if let Some(activity) = &handles.allocation_activity {
+            let mut activity = activity.borrow_mut();
+            if !activity.is_empty() {
+                snapshots.extend(activity.terminal_snapshots());
+            }
+        }
         if let Some(input) = &mut handles.input {
             snapshots.extend(input.terminal_snapshots());
         }
@@ -3164,6 +3178,8 @@ mod tests {
             output_items: vec![recv_output_items],
             output_size: vec![recv_output_size],
             completion_emission: None,
+            #[cfg(feature = "dfe-local-alloc")]
+            allocation_activity: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
@@ -3176,6 +3192,8 @@ mod tests {
             output_items: vec![proc_output_items],
             output_size: vec![proc_output_size],
             completion_emission: None,
+            #[cfg(feature = "dfe-local-alloc")]
+            allocation_activity: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
@@ -3188,6 +3206,8 @@ mod tests {
             output_items: Vec::new(),
             output_size: Vec::new(),
             completion_emission: None,
+            #[cfg(feature = "dfe-local-alloc")]
+            allocation_activity: None,
         });
 
         let telemetry_policy = TelemetryPolicy {

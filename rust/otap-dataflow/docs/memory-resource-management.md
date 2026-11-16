@@ -415,6 +415,14 @@ below 64 KiB, 64 KiB to below 256 KiB, and 256 KiB or more. The process allocato
 metrics report current, peak, and retired virtual mapping bytes. Process RSS
 remains available through engine telemetry.
 
+Set `DFE_ALLOC_NODE_ACTIVITY=on` to report `node.allocator_activity`
+for Rust allocator calls executed during registered node tasks' polls.
+The counters report successful allocations and reallocations, deallocations,
+requested allocation and deallocation bytes, and bytes copied by reallocations.
+A moving realloc contributes one realloc. Activity describes the task executing
+the call. Pipeline heap inventory still describes the worker heap, and
+independently spawned tasks are outside the node poll scope.
+
 Build the experiment with the usual engine components:
 
 ```sh

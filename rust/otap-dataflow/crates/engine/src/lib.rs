@@ -93,6 +93,8 @@ pub mod listener_group;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
+#[cfg(feature = "dfe-local-alloc")]
+mod node_allocation_metrics;
 mod node_local_scheduler;
 pub mod output_router;
 #[cfg(feature = "dfe-local-alloc")]

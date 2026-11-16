@@ -71,6 +71,7 @@ const EXTENT_REUSE_RESIDENT: usize = 1 << 9;
 const EXTENT_POOL_MIB_SHIFT: u32 = 10;
 const EXTENT_POOL_MIB_MASK: usize = 0b111 << EXTENT_POOL_MIB_SHIFT;
 const FULLEST_EXTENTS: usize = 1 << 14;
+const NODE_ACTIVITY: usize = 1 << 13;
 const CACHE_FLAGS: usize = BINNED
     | RESERVE_HOT_BINS
     | GRADUAL_TRIM
@@ -82,7 +83,8 @@ const CACHE_FLAGS: usize = BINNED
     | EXTENT_REUSE
     | EXTENT_REUSE_RESIDENT
     | EXTENT_POOL_MIB_MASK
-    | FULLEST_EXTENTS;
+    | FULLEST_EXTENTS
+    | NODE_ACTIVITY;
 const EXTENT_BYTES: usize = 512 * 1024;
 const DEFAULT_EXTENT_POOL_MIB: usize = 2;
 const MAX_EXTENT_POOL_MIB: usize = 4;
@@ -102,7 +104,7 @@ const RESERVED_PER_BIN: u16 = 4;
 const IDLE_KEEP_MAX: usize = 512 * 1024;
 const IDLE_KEEP_TIME: Duration = Duration::from_secs(2);
 
-// Low bits hold cache policies and the extent pool limit. The remaining bits
+// Low bits hold heap options and the extent pool limit. The remaining bits
 // carry the dedicated mapping cache's byte budget.
 static LARGE_CACHE_CONFIG: AtomicUsize = AtomicUsize::new(MAP_CACHE_BYTES | BINNED);
 
@@ -1030,6 +1032,12 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
         Err(std::env::VarError::NotPresent) => 0,
         _ => return Err("DFE_ALLOC_FULLEST_EXTENTS must be on or off"),
     };
+    let node_activity = match std::env::var("DFE_ALLOC_NODE_ACTIVITY") {
+        Ok(value) if value == "on" => NODE_ACTIVITY,
+        Ok(value) if value == "off" => 0,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_NODE_ACTIVITY must be on or off"),
+    };
     LARGE_CACHE_CONFIG.store(
         budget
             | mode
@@ -1041,6 +1049,7 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
             | slab_regions
             | extent_reuse
             | fullest_extents
+            | node_activity
             | (extent_pool_mib << EXTENT_POOL_MIB_SHIFT),
         Relaxed,
     );
@@ -1867,6 +1876,10 @@ pub(crate) fn sample_worker() -> WorkerStats {
     with_heap(Heap::sample).unwrap_or_default()
 }
 
+pub(crate) fn node_activity_enabled() -> bool {
+    LARGE_CACHE_CONFIG.load(Relaxed) & NODE_ACTIVITY != 0
+}
+
 /// Current, peak, and retired virtual mapping bytes across all threads.
 #[must_use]
 pub fn mapped_bytes() -> (u64, u64, u64) {
@@ -1927,13 +1940,9 @@ unsafe fn resize_on_owner(span: *mut Span, old_size: usize, new_size: usize) -> 
 /// Standalone Rust global allocator with worker-owned spans and Linux mappings.
 pub struct PipelineAllocator;
 
-// SAFETY: Small blocks satisfy their class alignment and size and are routed
-// by their aligned span base. Other blocks carry a mapping record that tags
-// extent allocations. Only a thread with exclusive ownership of a block can
-// free it. An owned span remains mapped through every outstanding block.
-unsafe impl GlobalAlloc for PipelineAllocator {
+impl PipelineAllocator {
     #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
         if let Some(class) = size_class(layout) {
             if let Some(block) = with_heap(|heap| heap.alloc_block(class, layout.size()).0) {
                 return block;
@@ -1995,7 +2004,7 @@ unsafe impl GlobalAlloc for PipelineAllocator {
     }
 
     #[inline]
-    unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
+    unsafe fn deallocate(&self, block: *mut u8, layout: Layout) {
         if size_class(layout).is_some() {
             let span = block
                 .map_addr(|addr| addr & !(SPAN_BYTES - 1))
@@ -2024,6 +2033,29 @@ unsafe impl GlobalAlloc for PipelineAllocator {
             unsafe { release_mapping(mapping.base, mapping.len) };
         }
     }
+}
+
+// SAFETY: Small blocks satisfy their class alignment and size and are routed
+// by their aligned span base. Other blocks carry a mapping record that tags
+// extent allocations. Only a thread with exclusive ownership of a block can
+// free it. An owned span remains mapped through every outstanding block.
+unsafe impl GlobalAlloc for PipelineAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: The global allocator caller supplies a valid layout.
+        let block = unsafe { self.allocate(layout) };
+        if !block.is_null() {
+            crate::node_allocation_metrics::allocated(layout.size());
+        }
+        block
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
+        crate::node_allocation_metrics::freed(layout.size());
+        // SAFETY: The caller owns this allocation and supplies its layout.
+        unsafe { self.deallocate(block, layout) };
+    }
 
     unsafe fn realloc(&self, block: *mut u8, old: Layout, size: usize) -> *mut u8 {
         // SAFETY: GlobalAlloc requires a valid new layout at the old alignment.
@@ -2035,6 +2067,7 @@ unsafe impl GlobalAlloc for PipelineAllocator {
                     .cast::<Span>();
                 // SAFETY: The same small class still supports this layout.
                 if unsafe { resize_on_owner(span, old.size(), size) } {
+                    crate::node_allocation_metrics::reallocated(0);
                     return block;
                 }
             }
@@ -2052,6 +2085,7 @@ unsafe impl GlobalAlloc for PipelineAllocator {
                     && extent_class(alignment, len, class == UPPER_EXTENT_CLASS) == Some(class)
                     && unsafe { resize_on_owner(span, old.size(), size) }
                 {
+                    crate::node_allocation_metrics::reallocated(0);
                     return block;
                 }
             } else if size >= old.size()
@@ -2061,18 +2095,20 @@ unsafe impl GlobalAlloc for PipelineAllocator {
                 let usable = mapping.len - (block.addr() - mapping.base.addr());
                 if size <= usable {
                     let _ = with_heap(|heap| heap.activity.large_realloc_in_place += 1);
+                    crate::node_allocation_metrics::reallocated(0);
                     return block;
                 }
             }
         }
         // SAFETY: The old block stays live on failure. On success the two live
         // blocks are disjoint and the common prefix fits both layouts.
-        let replacement = unsafe { self.alloc(new) };
+        let replacement = unsafe { self.allocate(new) };
         if !replacement.is_null() {
             unsafe {
                 let copied = old.size().min(size);
                 ptr::copy_nonoverlapping(block, replacement, copied);
-                self.dealloc(block, old);
+                self.deallocate(block, old);
+                crate::node_allocation_metrics::reallocated(copied);
                 let _ = with_heap(|heap| heap.activity.realloc_copied += copied as u64);
             }
         }

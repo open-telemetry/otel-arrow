@@ -43,6 +43,7 @@ use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::TelemetryPolicy;
 use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::registry::EntityKey;
 use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -243,7 +244,42 @@ fn make_node_metric_handles(
         output_items,
         output_size,
         completion_emission,
+        #[cfg(feature = "dfe-local-alloc")]
+        allocation_activity: telemetry_handle.as_ref().and_then(|handle| {
+            crate::pipeline_allocator::node_activity_enabled()
+                .then(|| Rc::new(RefCell::new(handle.register_metric_set())))
+        }),
     }
+}
+
+fn spawn_node_task<F>(
+    tasks: &LocalSet,
+    future: F,
+    entity_key: Option<EntityKey>,
+    telemetry: Option<NodeTelemetryHandle>,
+    #[cfg(feature = "dfe-local-alloc")] allocation_activity: Option<
+        crate::node_allocation_metrics::NodeAllocationHandle,
+    >,
+) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
+    let context = match telemetry {
+        Some(handle) => {
+            let input_key = handle.input_channel_key();
+            let output_keys = handle.output_channel_keys();
+            NodeTaskContext::new(entity_key, Some(handle), input_key, output_keys)
+        }
+        None if entity_key.is_some() => NodeTaskContext::new(entity_key, None, None, Vec::new()),
+        None => return tasks.spawn_local(future),
+    };
+    tasks.spawn_local(instrument_with_node_context(
+        context,
+        future,
+        #[cfg(feature = "dfe-local-alloc")]
+        allocation_activity,
+    ))
 }
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
@@ -266,10 +302,7 @@ pub struct RuntimePipeline<PData: Debug> {
     /// data-path nodes; passive extensions hold their instance factories so
     /// `Capabilities::require_*` calls keep working at run time but are not
     /// spawned themselves.
-    extensions: Vec<(
-        crate::extension::ExtensionWrapper,
-        otel_arrow_dfe_telemetry::registry::EntityKey,
-    )>,
+    extensions: Vec<(crate::extension::ExtensionWrapper, EntityKey)>,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
@@ -411,10 +444,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
-        extensions: Vec<(
-            crate::extension::ExtensionWrapper,
-            otel_arrow_dfe_telemetry::registry::EntityKey,
-        )>,
+        extensions: Vec<(crate::extension::ExtensionWrapper, EntityKey)>,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
         runtime_services: PipelineRuntimeServices,
@@ -638,17 +668,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let completion_emission_metrics =
                 make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller (exporters have no output channels).
-            node_metric_entries.push((
-                node_id.index,
-                make_node_metric_handles(
-                    &telemetry_handle,
-                    &pipeline_context,
-                    true,
-                    false,
-                    node_interests,
-                    completion_emission_metrics.clone(),
-                ),
-            ));
+            let handles = make_node_metric_handles(
+                &telemetry_handle,
+                &pipeline_context,
+                true,
+                false,
+                node_interests,
+                completion_emission_metrics.clone(),
+            );
+            #[cfg(feature = "dfe-local-alloc")]
+            let allocation_activity = handles.allocation_activity.clone();
+            node_metric_entries.push((node_id.index, handles));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
@@ -687,18 +717,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     }
                 }
             };
-            if let Some(handle) = telemetry_handle {
-                let input_key = handle.input_channel_key();
-                let output_keys = handle.output_channel_keys();
-                let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
-            } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
-            } else {
-                futures.push(local_tasks.spawn_local(fut));
-            }
+            futures.push(spawn_node_task(
+                &local_tasks,
+                fut,
+                node_entity_key,
+                telemetry_handle,
+                #[cfg(feature = "dfe-local-alloc")]
+                allocation_activity,
+            ));
         }
         for processor in processors {
             let mut processor = processor;
@@ -720,17 +746,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let completion_emission_metrics =
                 make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller.
-            node_metric_entries.push((
-                node_id.index,
-                make_node_metric_handles(
-                    &telemetry_handle,
-                    &pipeline_context,
-                    true,
-                    true,
-                    node_interests,
-                    completion_emission_metrics.clone(),
-                ),
-            ));
+            let handles = make_node_metric_handles(
+                &telemetry_handle,
+                &pipeline_context,
+                true,
+                true,
+                node_interests,
+                completion_emission_metrics.clone(),
+            );
+            #[cfg(feature = "dfe-local-alloc")]
+            let allocation_activity = handles.allocation_activity.clone();
+            node_metric_entries.push((node_id.index, handles));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
@@ -828,18 +854,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 .await;
                 result
             };
-            if let Some(handle) = telemetry_handle {
-                let input_key = handle.input_channel_key();
-                let output_keys = handle.output_channel_keys();
-                let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
-            } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
-            } else {
-                futures.push(local_tasks.spawn_local(fut));
-            }
+            futures.push(spawn_node_task(
+                &local_tasks,
+                fut,
+                node_entity_key,
+                telemetry_handle,
+                #[cfg(feature = "dfe-local-alloc")]
+                allocation_activity,
+            ));
         }
         for receiver in receivers {
             let mut receiver = receiver;
@@ -874,17 +896,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
             node_telemetry_guards.extend(telemetry_guard);
             // Collect per-node metrics for the controller (receivers have no input data channel).
-            node_metric_entries.push((
-                node_id.index,
-                make_node_metric_handles(
-                    &telemetry_handle,
-                    &pipeline_context,
-                    false,
-                    true,
-                    node_interests,
-                    None,
-                ),
-            ));
+            let handles = make_node_metric_handles(
+                &telemetry_handle,
+                &pipeline_context,
+                false,
+                true,
+                node_interests,
+                None,
+            );
+            #[cfg(feature = "dfe-local-alloc")]
+            let allocation_activity = handles.allocation_activity.clone();
+            node_metric_entries.push((node_id.index, handles));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
@@ -938,18 +960,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     },
                 }
             };
-            if let Some(handle) = telemetry_handle {
-                let input_key = handle.input_channel_key();
-                let output_keys = handle.output_channel_keys();
-                let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
-            } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
-            } else {
-                futures.push(local_tasks.spawn_local(fut));
-            }
+            futures.push(spawn_node_task(
+                &local_tasks,
+                fut,
+                node_entity_key,
+                telemetry_handle,
+                #[cfg(feature = "dfe-local-alloc")]
+                allocation_activity,
+            ));
         }
 
         // Build the per-node metric handles table indexed by node_id.

@@ -132,10 +132,20 @@ pub fn node_output_channel_key(port: &str) -> Option<EntityKey> {
 pub(crate) fn instrument_with_node_context<F, T>(
     ctx: NodeTaskContext,
     fut: F,
+    #[cfg(feature = "dfe-local-alloc")] allocation_activity: Option<
+        crate::node_allocation_metrics::NodeAllocationHandle,
+    >,
 ) -> impl Future<Output = T>
 where
     F: Future<Output = T>,
 {
+    #[cfg(feature = "dfe-local-alloc")]
+    let fut = async move {
+        if let Some(metrics) = allocation_activity {
+            return crate::node_allocation_metrics::measure_node(metrics, fut).await;
+        }
+        fut.await
+    };
     NODE_TASK_CONTEXT.scope(ctx, fut)
 }
 
