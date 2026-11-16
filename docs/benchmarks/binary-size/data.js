@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794788850992,
+  "lastUpdate": 1794848298321,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -86180,6 +86180,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 123.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "289780372+otelbot-arrow[bot]@users.noreply.github.com",
+            "name": "otelbot-arrow[bot]",
+            "username": "otelbot-arrow[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c65b8c8195258da5eb0742c939e641b07dc9dccf",
+          "message": "chore(release): Prepare Go v0.60.3 and Rust v0.66.0 (#4770)\n\n## Go v0.60.3 and Rust v0.66.0\n\nThis PR contains the automatically calculated release plan.\n\n```json\n{\n  \"schema_version\": 1,\n  \"base_sha\": \"8312b7a3c53e37a70682070d8b0c472802a7c966\",\n  \"branch\": \"otelbot/release-go-v0.60.3-rust-v0.66.0\",\n  \"summary\": \"Go v0.60.3 and Rust v0.66.0\",\n  \"go\": {\n    \"target\": \"go\",\n    \"has_changes\": true,\n    \"impact\": \"patch\",\n    \"entry_count\": 1,\n    \"last_tag\": \"go/v0.60.2\",\n    \"last_version\": \"0.60.2\",\n    \"next_version\": \"0.60.3\"\n  },\n  \"rust\": {\n    \"target\": \"rust\",\n    \"has_changes\": true,\n    \"impact\": \"minor\",\n    \"entry_count\": 8,\n    \"last_tag\": \"rust/otap-dataflow/v0.65.0\",\n    \"last_version\": \"0.65.0\",\n    \"next_version\": \"0.66.0\"\n  }\n}\n```\n\n## What's Changed (Go :hamster:)\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Go dependencies.\n([#4717](https://github.com/open-telemetry/otel-arrow/issues/4717),\n[#4735](https://github.com/open-telemetry/otel-arrow/issues/4735))\n\n## What's Changed (Rust :crab:)\n\n### :stop_sign: Breaking changes :stop_sign:\n\n- `pipeline`: Windows performance counters replace legacy scrape\ncounters and timing with shared receiver.pulled.attempts and\nreceiver.processing.duration.\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530),\n[#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))\n\n### :rocket: New components :rocket:\n\n- `pipeline`: Add experimental `urn:otel:receiver:prometheus` receiver\npowered by `prometheus/scrape.rs` for zero-copy OTAP Arrow metric\ndecoding.\n([#3277](https://github.com/open-telemetry/otel-arrow/issues/3277))\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Rust dependencies.\n([#4710](https://github.com/open-telemetry/otel-arrow/issues/4710),\n[#4736](https://github.com/open-telemetry/otel-arrow/issues/4736),\n[#4745](https://github.com/open-telemetry/otel-arrow/issues/4745))\n- `pdata`: OTLP logs produced from OTAP data now use a protobuf field\norder that compresses better.\n([#4720](https://github.com/open-telemetry/otel-arrow/issues/4720))\n\n- `pipeline`: Database receivers support broader native queries,\nincluding joins and datetime filters, while retaining explicit\ncheckpoint predicates and existing checkpoint compatibility.\n([#4695](https://github.com/open-telemetry/otel-arrow/issues/4695))\n\n- `query-engine`: Add has_transport_header() function for inspecting\nbatch metadata in transform processor queries\n([#4713](https://github.com/open-telemetry/otel-arrow/issues/4713),\n[#3310](https://github.com/open-telemetry/otel-arrow/issues/3310))\n\n### :toolbox: Bug fixes :toolbox:\n\n- `dependencies`: Temporarily restore roaring 0.11.5 to avoid the\nunconditional SIMD dependency introduced in 0.12.0.\n([#4671](https://github.com/open-telemetry/otel-arrow/issues/4671))\n- `pipeline`: Filter processor config validation now rejects unknown\nfields instead of silently ignoring them.\n([#3568](https://github.com/open-telemetry/otel-arrow/issues/3568))\n\n\nAfter this PR merges, Push Release starts automatically and waits for\napproval from the protected `release` environment.\n\nCo-authored-by: otelbot-arrow[bot] <289780372+otelbot-arrow[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-16T16:10:42Z",
+          "tree_id": "6db19f705e2ccbb0c597f5870d03636379d29360",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c65b8c8195258da5eb0742c939e641b07dc9dccf"
+        },
+        "date": 1794848273079,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.32,
             "unit": "MB"
           },
           {
