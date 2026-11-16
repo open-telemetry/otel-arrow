@@ -2838,6 +2838,21 @@ mod test {
         }
     }
 
+    #[tokio::test]
+    async fn test_insert_field_from_scalar_ottl_parser() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let query = r#"set(log.severity_text, "ERROR")"#;
+        let result = exec_logs_pipeline::<OttlParser>(query, logs_data).await;
+        let logs_records = result.resource_logs[0].scope_logs[0].log_records.clone();
+        assert_eq!(logs_records.len(), 2);
+        for logs_record in logs_records {
+            assert_eq!(logs_record.severity_text, "ERROR");
+        }
+    }
+
     async fn test_set_multiple_root_columns<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().severity_text("INFO").finish(),
@@ -5285,7 +5300,7 @@ mod test {
                 .event_name("event1")
                 .finish(),
         ]);
-        let query = "logs | 
+        let query = "logs |
             extend attributes[\"k_int\"] = 5,
             attributes[\"k_bool\"] = true,
             attributes[\"k_double\"] = 4.0
@@ -5361,12 +5376,12 @@ mod test {
                 .event_name("event1")
                 .finish(),
         ]);
-        let query = "logs | 
+        let query = "logs |
             extend attributes[\"k_int\"] = 5,
-            attributes[\"k_bool\"] = true, 
+            attributes[\"k_bool\"] = true,
             attributes[\"k_double\"] = 4.0,
             attributes[\"k_int2\"] = 5,
-            attributes[\"k_bool2\"] = false, 
+            attributes[\"k_bool2\"] = false,
             attributes[\"k_double2\"] = 6.0
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
@@ -5442,10 +5457,10 @@ mod test {
                 .event_name("event1")
                 .finish(),
         ]);
-        let query = "logs | 
+        let query = "logs |
             extend
                 attributes[\"k_int2\"] = attributes[\"k_int\"],
-                attributes[\"k_bool2\"] = attributes[\"k_bool\"], 
+                attributes[\"k_bool2\"] = attributes[\"k_bool\"],
                 attributes[\"k_double2\"] = attributes[\"k_double\"]
         ";
         let pipeline_expr = P::parse(query).unwrap().pipeline;
@@ -5909,7 +5924,7 @@ mod test {
             LogRecord::build().finish(),
             LogRecord::build().finish(),
         ];
-        let query = "logs 
+        let query = "logs
             | extend attributes[\"x\"] = \"a\"
             | extend attributes[\"y\"] = \"b\"
             | extend attributes[\"z\"] = \"c\"
@@ -7227,7 +7242,7 @@ mod test {
                 .finish(),
         ]);
 
-        let query = r#"logs | 
+        let query = r#"logs |
             if (event_name == "event2") {
                 set attributes["y"] = "b2"
             } else {
@@ -7386,8 +7401,8 @@ mod test {
                 .finish(),
         ]);
 
-        let query = r#"logs | extend 
-            attributes["str_attr"] = encode(sha256(attributes["str_attr"]), "hex"),            
+        let query = r#"logs | extend
+            attributes["str_attr"] = encode(sha256(attributes["str_attr"]), "hex"),
             attributes["binary_attr"] = encode(sha256(attributes["binary_attr"]), "hex")
         "#;
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
@@ -7806,7 +7821,7 @@ mod test {
                 .finish(),
         ]);
 
-        let query = r#"logs | extend 
+        let query = r#"logs | extend
             attributes["s1"] = substring(attributes["attr"], 0, 5),
             attributes["s2"] = substring(attributes["attr"], 6, 5),
             attributes["attr"] = substring(attributes["attr"], 4, 4)
@@ -7856,7 +7871,7 @@ mod test {
                 .finish(),
         ]);
 
-        let query = r#"logs | extend 
+        let query = r#"logs | extend
             attributes["s1"] = substring(attributes["attr"], 1),
             attributes["s2"] = substring(attributes["attr"], 6),
             attributes["attr"] = substring(attributes["attr"], 4)
@@ -8028,7 +8043,7 @@ mod test {
         ]);
 
         let query = format!(
-            r#"logs | extend 
+            r#"logs | extend
             event_name = {concat_fn_name}(severity_text, " event: ", event_name)
         "#
         );
@@ -8146,7 +8161,7 @@ mod test {
         ]);
 
         let query = format!(
-            r#"logs | extend 
+            r#"logs | extend
             attributes["s1"] = {concat_fn_name}(" ", attributes["attr"], "arrow"),
             attributes["s2"] = {concat_fn_name}(" ", attributes["attr"], "otel", "and", "datafusion")
         "#
@@ -8190,7 +8205,7 @@ mod test {
         ]);
 
         let query = format!(
-            r#"logs | extend 
+            r#"logs | extend
             event_name = {concat_fn_name}(" ", "event with severity", severity_text, "happened")
         "#
         );
@@ -8272,7 +8287,7 @@ mod test {
         ]);
 
         let query = format!(
-            r#"logs | extend 
+            r#"logs | extend
             attributes["s1"] = {replace_fn_name}(attributes["attr"], "world", "arrow"),
             attributes["s2"] = {replace_fn_name}(attributes["attr"], "hello", "bonjour")
         "#
@@ -8321,7 +8336,7 @@ mod test {
         ]);
 
         let query = format!(
-            r#"logs | extend 
+            r#"logs | extend
             event_name = {replace_fn_name}(event_name, "{{severity}}", severity_text)
         "#
         );

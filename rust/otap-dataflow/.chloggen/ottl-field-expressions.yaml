@@ -8,7 +8,7 @@ change_type: enhancement
 component: query-engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: parse OTTL field path expressions
+note: 'OTTL now supports field path expressions rooted at the record name, such as set(log.severity_text, "ERROR")'
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2736]
@@ -18,4 +18,4 @@ issues: [2736]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext:
+subtext: 'Record-prefixed paths resolve to the same record fields as bare column names, including nested paths like log.attributes["k"]. Field names that begin with true, false, or nil, such as false_positive, now parse as identifiers.'

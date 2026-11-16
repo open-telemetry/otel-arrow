@@ -114,6 +114,18 @@ pub enum SignalKind {
     Traces,
 }
 
+impl SignalKind {
+    /// Field name that roots a field path at the record itself
+    #[must_use]
+    pub const fn record_field_name(self) -> &'static str {
+        match self {
+            SignalKind::Logs => "log",
+            SignalKind::Metrics(_) => "metric",
+            SignalKind::Traces => "span",
+        }
+    }
+}
+
 /// Which concrete metric types may flow through a metrics pipeline.
 ///
 /// This context is also used to derive `DataPointContext` when entering a nested
@@ -1391,12 +1403,42 @@ impl ColumnAccessor {
         }
     }
 
+    fn record_name_suffix<'a>(
+        selectors: &'a [ScalarExpression],
+        record_type: &'a RecordType,
+    ) -> Option<&'a [ScalarExpression]> {
+        let [root, rest @ ..] = selectors else {
+            return None;
+        };
+        if rest.is_empty() {
+            return None;
+        }
+        let ScalarExpression::Static(StaticScalarExpression::String(root_name)) = root else {
+            return None;
+        };
+        let SignalContext::Single(kind) = record_type.signal_context()? else {
+            return None;
+        };
+        (root_name.get_value() == kind.record_field_name()).then_some(rest)
+    }
+
     pub fn try_from_value_accessor(
         accessor: &ValueAccessor,
         record_type: &RecordType,
     ) -> Result<Self> {
         let selectors = accessor.get_selectors();
 
+        if let Some(rest) = Self::record_name_suffix(selectors, record_type) {
+            return Self::try_from_selectors(rest, record_type);
+        }
+
+        Self::try_from_selectors(selectors, record_type)
+    }
+
+    fn try_from_selectors(
+        selectors: &[ScalarExpression],
+        record_type: &RecordType,
+    ) -> Result<Self> {
         match &selectors[0] {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 let column_name = column.get_value();
