@@ -16,6 +16,9 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct EntityAttributeSet {
     descriptor: &'static AttributesDescriptor,
+    /// Entity type captured from the registering attribute set. A function of
+    /// the attribute set type, so it does not take part in equality.
+    entity_type: Option<&'static str>,
     values: Arc<[AttributeValue]>,
     // Precomputed sorted indices of attributes by key for efficient equality and hashing.
     sorted_indices: Arc<[usize]>,
@@ -47,11 +50,16 @@ impl AttributeSetHandler for EntityAttributeSet {
     fn attribute_values(&self) -> &[AttributeValue] {
         &self.values
     }
+
+    fn entity_type(&self) -> Option<&'static str> {
+        self.entity_type
+    }
 }
 
 impl EntityAttributeSet {
     fn new(attrs: impl AttributeSetHandler) -> Self {
         let descriptor = attrs.descriptor();
+        let entity_type = attrs.entity_type();
         let values: Arc<[AttributeValue]> = attrs.attribute_values().to_vec().into();
         debug_assert_eq!(
             descriptor.fields.len(),
@@ -68,6 +76,7 @@ impl EntityAttributeSet {
 
         Self {
             descriptor,
+            entity_type,
             values,
             sorted_indices: indices.into(),
         }

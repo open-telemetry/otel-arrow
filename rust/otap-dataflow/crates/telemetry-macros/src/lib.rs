@@ -472,10 +472,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let generics = input.generics.clone();
 
     let mut attributes_name: Option<String> = None;
+    let mut entity_type: Option<String> = None;
 
     for attr in &input.attrs {
         if let Some(name) = parse_attributes_name_attr(attr) {
             attributes_name = Some(name);
+        }
+        if let Some(entity) = parse_attributes_entity_attr(attr) {
+            entity_type = Some(entity);
         }
     }
     let attributes_name = match attributes_name {
@@ -517,6 +521,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
     // Choose path prefixes based on context
     let attr_handler_path = quote!(#root::attributes::AttributeSetHandler);
+    let entity_type_fn = match &entity_type {
+        Some(entity) => quote! {
+            fn entity_type(&self) -> ::std::option::Option<&'static str> {
+                ::std::option::Option::Some(#entity)
+            }
+        },
+        None => proc_macro2::TokenStream::new(),
+    };
     let descriptor_path = quote!(#root::descriptor::AttributesDescriptor);
     let field_path = quote!(#root::descriptor::AttributeField);
     let value_type_path = quote!(#root::descriptor::AttributeValueType);
@@ -689,6 +701,8 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         // Simple case: no composition - keep the original approach
         let generated = quote! {
             impl #generics #attr_handler_path for #struct_ident #generics {
+                #entity_type_fn
+
                 fn descriptor(&self) -> &'static #descriptor_path {
                     static #desc_ident: #descriptor_path = #descriptor_path {
                         name: #attributes_name,
@@ -739,6 +753,8 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
         let generated = quote! {
             impl #generics #attr_handler_path for #struct_ident #generics {
+                #entity_type_fn
+
                 fn descriptor(&self) -> &'static #descriptor_path {
                     use ::std::sync::Once;
                     static INIT: Once = Once::new();
@@ -1135,6 +1151,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[derive(Debug, Default)]
 struct AttributeSetArgs {
     name: Option<String>,
+    entity: Option<String>,
     scope: bool,
     item: bool,
     registration: bool,
@@ -1151,6 +1168,10 @@ fn parse_attribute_set_args(args: proc_macro2::TokenStream) -> syn::Result<Attri
                     let _: syn::Token![=] = input.parse()?;
                     let lit: LitStr = input.parse()?;
                     parsed.name = Some(lit.value());
+                } else if ident == "entity" {
+                    let _: syn::Token![=] = input.parse()?;
+                    let lit: LitStr = input.parse()?;
+                    parsed.entity = Some(lit.value());
                 } else if ident == "scope" {
                     parsed.scope = true;
                 } else if ident == "item" {
@@ -1178,6 +1199,12 @@ fn parse_attribute_set_args(args: proc_macro2::TokenStream) -> syn::Result<Attri
         return Err(syn::Error::new(
             proc_macro2::Span::call_site(),
             "`scope` cannot be combined with item modes",
+        ));
+    }
+    if parsed.entity.is_some() && !parsed.scope {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`entity` requires `scope`",
         ));
     }
     if parsed.scope && parsed.name.is_none() {
@@ -1262,7 +1289,10 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     s.attrs.push(derive_attr);
 
     // Add container descriptor attribute consumed by the derive
-    let attributes_attr: Attribute = parse_quote!(#[attributes(name = #attributes_name)]);
+    let attributes_attr: Attribute = match &args.entity {
+        Some(entity) => parse_quote!(#[attributes(name = #attributes_name, entity = #entity)]),
+        None => parse_quote!(#[attributes(name = #attributes_name)]),
+    };
     s.attrs.push(attributes_attr);
 
     quote!( #s #measurement_impl ).into()
@@ -1362,6 +1392,9 @@ fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
         if meta.path.is_ident("name") {
             let s: LitStr = meta.value()?.parse()?;
             out = Some(s.value());
+        } else if meta.path.is_ident("entity") {
+            // Consume the value so parsing continues to later keys.
+            let _: LitStr = meta.value()?.parse()?;
         }
         Ok(())
     });
@@ -1404,6 +1437,24 @@ fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
         if meta.path.is_ident("name") {
             let s: LitStr = meta.value()?.parse()?;
             out = Some(s.value());
+        }
+        Ok(())
+    });
+    out
+}
+
+fn parse_attributes_entity_attr(attr: &Attribute) -> Option<String> {
+    if !attr.path().is_ident("attributes") {
+        return None;
+    }
+    let mut out: Option<String> = None;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("entity") {
+            let s: LitStr = meta.value()?.parse()?;
+            out = Some(s.value());
+        } else if meta.path.is_ident("name") {
+            // Consume the value so parsing continues to later keys.
+            let _: LitStr = meta.value()?.parse()?;
         }
         Ok(())
     });

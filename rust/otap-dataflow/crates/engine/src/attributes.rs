@@ -71,6 +71,10 @@ static ENGINE_ENTITY_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
 pub struct EngineEntityAttributeSet;
 
 impl AttributeSetHandler for EngineEntityAttributeSet {
+    fn entity_type(&self) -> Option<&'static str> {
+        Some("engine")
+    }
+
     fn descriptor(&self) -> &'static AttributesDescriptor {
         &ENGINE_ENTITY_DESCRIPTOR
     }
@@ -81,7 +85,7 @@ impl AttributeSetHandler for EngineEntityAttributeSet {
 }
 
 /// Pipeline attributes.
-#[attribute_set(scope, name = "pipeline.attrs")]
+#[attribute_set(scope, name = "pipeline.attrs", entity = "pipeline.instance")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct PipelineAttributeSet {
     /// Pipeline identifier as defined in the configuration.
@@ -155,7 +159,7 @@ impl ExtensionScopeAttributeSet {
 }
 
 /// Extension attributes, including the host scope.
-#[attribute_set(scope, name = "extension.attrs")]
+#[attribute_set(scope, name = "extension.attrs", entity = "extension")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionAttributeSet {
     /// Extension unique identifier within its host scope.
@@ -171,7 +175,7 @@ pub struct ExtensionAttributeSet {
 }
 
 /// Node attributes.
-#[attribute_set(scope, name = "node.attrs")]
+#[attribute_set(scope, name = "node.attrs", entity = "node")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeAttributeSet {
     /// Node unique identifier (in scope of the pipeline).
@@ -193,7 +197,7 @@ pub struct NodeAttributeSet {
 /// This is used only when a node has non-empty `entity.extend.identity_attributes` in its config.
 /// Nodes without custom attributes use [`NodeAttributeSet`] directly, avoiding
 /// empty `custom={}` noise in telemetry output.
-#[attribute_set(scope, name = "node.custom.attrs")]
+#[attribute_set(scope, name = "node.custom.attrs", entity = "node")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeWithCustomAttributeSet {
     /// Base node attributes.
@@ -410,7 +414,7 @@ pub enum ChannelImplementation {
 }
 
 /// Channel endpoint attributes for a node-hosted channel.
-#[attribute_set(scope, name = "node.channel.attrs")]
+#[attribute_set(scope, name = "node.channel.attrs", entity = "channel")]
 #[derive(Debug, Clone, Hash)]
 pub struct NodeChannelAttributeSet {
     /// Unique channel identifier within the host scope.
@@ -443,7 +447,7 @@ pub struct NodeChannelAttributeSet {
 }
 
 /// Channel endpoint attributes for a node-hosted channel, extended with user-configured custom telemetry attributes.
-#[attribute_set(scope, name = "node.channel.custom.attrs")]
+#[attribute_set(scope, name = "node.channel.custom.attrs", entity = "channel")]
 #[derive(Debug, Clone, Hash)]
 pub struct NodeWithCustomChannelAttributeSet {
     /// Base node channel attributes.
@@ -459,7 +463,7 @@ pub struct NodeWithCustomChannelAttributeSet {
 ///
 /// Extensions only have a single control-channel kind (MPSC), so `channel.kind`
 /// and `channel.type` are intentionally omitted as invariants.
-#[attribute_set(scope, name = "extension.channel.attrs")]
+#[attribute_set(scope, name = "extension.channel.attrs", entity = "channel")]
 #[derive(Debug, Clone, Hash)]
 pub struct ExtensionChannelAttributeSet {
     /// Unique channel identifier within the host scope.

@@ -123,6 +123,17 @@ pub trait AttributeSetHandler {
         AttributeIterator::new(self.descriptor().fields, self.attribute_values())
     }
 
+    /// Returns the entity type this scope attribute set identifies (for
+    /// example `"node"`), declared with `#[attribute_set(scope, entity = "...")]`.
+    ///
+    /// When present, the OTLP metrics encoder names the instrumentation scope
+    /// after the entity type and merges every metric set registered against
+    /// the same entity into that one scope. `None` keeps the per-metric-set
+    /// scope.
+    fn entity_type(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
     fn schema_name(&self) -> &'static str {
         self.descriptor().name

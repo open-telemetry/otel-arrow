@@ -331,6 +331,10 @@ type CollisionIndex<'a> = HashMap<ScopeIdentity, ScopeStreams<'a>>;
 /// One resolved OTLP metric stream with one or more data points.
 struct PreparedMetric<'a> {
     field: &'static MetricsField,
+    /// Metric-set name prepended to `name` (as `qualifier.name`) when the
+    /// stream keeps its descriptor-defined name. `None` for view-renamed
+    /// streams, whose configured name is used verbatim.
+    qualifier: Option<&'static str>,
     name: &'a str,
     description: &'a str,
     points: SmallVec<[PreparedPoint<'a>; 1]>,
@@ -483,14 +487,15 @@ impl MetricsOtlpEncoder {
 /// have already been numerically coalesced above this layer.
 fn append_prepared_scope<'a>(
     scopes: &mut Vec<PreparedScope<'a>>,
-    identities: &mut HashMap<(usize, usize), usize>,
+    identities: &mut HashMap<(&'static str, usize), usize>,
     metric_set: &'a MetricSetExport,
     incoming: PreparedScope<'a>,
 ) {
-    let identity = (
-        std::ptr::from_ref(metric_set.descriptor) as usize,
-        Arc::as_ptr(&metric_set.attributes) as usize,
-    );
+    // The scope is keyed by its encoded name and the interned entity
+    // attributes, so every metric set of one entity (entity-typed scope) or
+    // every same-named metric set of one entity (legacy scope) shares a
+    // single ScopeMetrics.
+    let identity = (incoming.name, Arc::as_ptr(&metric_set.attributes) as usize);
     if let Some(index) = identities.get(&identity).copied() {
         merge_prepared_scope(&mut scopes[index], incoming);
     } else {
@@ -506,6 +511,7 @@ fn merge_prepared_scope<'a>(target: &mut PreparedScope<'a>, incoming: PreparedSc
             // TODO: Is this compatibility checking needed? can't imagine how
             // a single SDK would reach a point of having a disagreement.
             target_metric.name == incoming_metric.name
+                && target_metric.qualifier == incoming_metric.qualifier
                 && target_metric.description == incoming_metric.description
                 && target_metric.field.unit == incoming_metric.field.unit
                 && metric_data_compatible(target_metric.field, incoming_metric.field)
@@ -613,7 +619,14 @@ fn prepare_metric_set_without_views(
     let mut metrics = Vec::with_capacity(metric_set.values.len());
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
         validate_value_kind(field, value)?;
-        if let Some(metric) = prepare_metric(field, value, metric_set, field.name, field.brief)? {
+        if let Some(metric) = prepare_metric(
+            field,
+            value,
+            metric_set,
+            Some(metric_set.descriptor.name),
+            field.name,
+            field.brief,
+        )? {
             metrics.push(metric);
         }
     }
@@ -652,7 +665,14 @@ where
         validate_value_kind(field, value)?;
         for stream in resolve_views(field, &scope_views) {
             if let Some(metric) =
-                prepare_metric(field, value, metric_set, stream.name, stream.description)?
+                prepare_metric(
+                    field,
+                    value,
+                    metric_set,
+                    (!stream.view_applied).then_some(metric_set.descriptor.name),
+                    stream.name,
+                    stream.description,
+                )?
             {
                 register_projected_stream(
                     scope_streams,
@@ -731,7 +751,10 @@ fn build_prepared_scope<'a>(
     metrics: Vec<PreparedMetric<'a>>,
 ) -> PreparedScope<'a> {
     PreparedScope {
-        name: metric_set.descriptor.name,
+        name: metric_set
+            .attributes
+            .entity_type()
+            .unwrap_or(metric_set.descriptor.name),
         attributes: &metric_set.attributes,
         metrics,
     }
@@ -816,6 +839,7 @@ fn prepare_metric<'a>(
     field: &'static MetricsField,
     value: &'a MetricValue,
     metric_set: &'a MetricSetExport,
+    qualifier: Option<&'static str>,
     name: &'a str,
     description: &'a str,
 ) -> Result<Option<PreparedMetric<'a>>, Error> {
@@ -849,6 +873,7 @@ fn prepare_metric<'a>(
 
     Ok(Some(PreparedMetric {
         field,
+        qualifier,
         name,
         description,
         points: SmallVec::from_buf([PreparedPoint { value, metric_set }]),
@@ -898,7 +923,7 @@ fn encode_metric(
     metric: &PreparedMetric<'_>,
     time_unix_nano: u64,
 ) -> Result<(), Error> {
-    encode_string(buffer, METRIC_NAME, metric.name)?;
+    encode_metric_name(buffer, metric)?;
     encode_string(buffer, METRIC_DESCRIPTION, metric.description)?;
     encode_string(buffer, METRIC_UNIT, metric.field.unit)?;
 
@@ -1163,6 +1188,20 @@ fn encode_fixed64_if_nonzero(
     if value != 0 {
         encode_fixed64(buffer, field_number, value)?;
     }
+    Ok(())
+}
+
+/// Writes `qualifier.name` without allocating the joined string.
+fn encode_metric_name(buffer: &mut ProtoBuffer, metric: &PreparedMetric<'_>) -> Result<(), Error> {
+    let Some(qualifier) = metric.qualifier else {
+        return encode_string(buffer, METRIC_NAME, metric.name);
+    };
+    buffer.encode_len_delimited(METRIC_NAME, |buffer| {
+        buffer.extend_from_slice(qualifier.as_bytes())?;
+        buffer.extend_from_slice(b".")?;
+        buffer.extend_from_slice(metric.name.as_bytes())?;
+        Ok::<(), Error>(())
+    })?;
     Ok(())
 }
 
@@ -1617,7 +1656,7 @@ mod tests {
             .filter_map(|(number, wire_type, payload)| {
                 (number == SCOPE_METRICS_METRICS && wire_type == wire_types::LEN).then_some(payload)
             })
-            .find(|metric| message_field(metric, METRIC_NAME) == metric_name.as_bytes())
+            .find(|metric| is_named(message_field(metric, METRIC_NAME), metric_name))
             .unwrap_or_else(|| panic!("missing metric named {metric_name}"));
         protobuf_fields(message_field(metric, data_field))
             .into_iter()
@@ -1635,11 +1674,20 @@ mod tests {
         scope_metrics
     }
 
+    /// Matches an encoded metric name against its unqualified field name.
+    /// Descriptor-defined streams are encoded as `<metric set>.<field>`.
+    fn is_named(actual: &[u8], local: &str) -> bool {
+        actual == local.as_bytes()
+            || actual
+                .strip_suffix(local.as_bytes())
+                .is_some_and(|prefix| prefix.ends_with(b"."))
+    }
+
     fn metric_named<'a>(scope: &'a ScopeMetrics, name: &str) -> &'a Metric {
         scope
             .metrics
             .iter()
-            .find(|metric| metric.name == name)
+            .find(|metric| is_named(metric.name.as_bytes(), name))
             .unwrap_or_else(|| panic!("missing metric {name}"))
     }
 
@@ -1690,7 +1738,7 @@ mod tests {
         let [metric] = scope.metrics.as_slice() else {
             panic!("expected one default metric stream")
         };
-        assert_eq!(metric.name, "gauge.f64");
+        assert_eq!(metric.name, "test.f64_gauge.gauge.f64");
         assert_eq!(metric.description, "Floating-point gauge");
         assert_eq!(metric.unit, "1");
     }
@@ -1785,7 +1833,10 @@ mod tests {
             negative_unsigned,
         ] {
             let request = encode_with(scope_attributes);
-            assert_eq!(only_scope(&request).metrics[0].name, "gauge.f64");
+            assert_eq!(
+                only_scope(&request).metrics[0].name,
+                "test.f64_gauge.gauge.f64"
+            );
         }
     }
 
@@ -2581,7 +2632,7 @@ mod tests {
             first
                 .metrics
                 .iter()
-                .all(|metric| metric.name != "histogram.mmsc")
+                .all(|metric| !is_named(metric.name.as_bytes(), "histogram.mmsc"))
         );
 
         let second = &resource_metrics.scope_metrics[1];
@@ -2590,7 +2641,73 @@ mod tests {
             "test.empty_mmsc"
         );
         assert_eq!(second.metrics.len(), 1);
-        assert_eq!(second.metrics[0].name, "histogram.empty");
+        assert_eq!(second.metrics[0].name, "test.empty_mmsc.histogram.empty");
+    }
+
+    #[derive(Debug)]
+    struct EntityTypedAttributeSet;
+
+    impl AttributeSetHandler for EntityTypedAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &EMPTY_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &[]
+        }
+
+        fn entity_type(&self) -> Option<&'static str> {
+            Some("test.entity")
+        }
+    }
+
+    /// Scenario: Two different metric sets are registered against one entity
+    /// whose attribute set declares an entity type.
+    /// Guarantees: Both sets share one scope named after the entity type, and
+    /// each metric name is qualified with its metric-set name.
+    #[test]
+    fn entity_typed_attributes_merge_metric_sets_into_one_scope() {
+        let mut entities = EntityRegistry::default();
+        let key = entities.register(EntityTypedAttributeSet).key();
+        let attributes = entities.get_shared(key).expect("registered entity");
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![
+                metric_set(
+                    &ALL_METRICS_DESCRIPTOR,
+                    attributes.clone(),
+                    vec![
+                        MetricValue::U64(1),
+                        MetricValue::U64(2),
+                        MetricValue::F64(-1.0),
+                        MetricValue::F64(3.0),
+                        mmsc_value(0.0, 0.0, 0.0, 0),
+                    ],
+                ),
+                metric_set(
+                    &MMSC_ONLY_DESCRIPTOR,
+                    attributes,
+                    vec![mmsc_value(2.0, 8.0, 10.0, 2)],
+                ),
+            ],
+        };
+
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("non-empty request"),
+        );
+        let scope = only_scope(&request);
+        assert_eq!(scope.scope.as_ref().expect("scope").name, "test.entity");
+        let names = scope
+            .metrics
+            .iter()
+            .map(|metric| metric.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 5);
+        assert!(names.iter().take(4).all(|name| name.starts_with("test.scope.")));
+        assert_eq!(names[4], "test.empty_mmsc.histogram.empty");
     }
 
     /// Scenario: Dirty scalar instruments contain numeric zero values.
@@ -3042,7 +3159,7 @@ mod tests {
 
         let counter = scope_metrics
             .metrics()
-            .find(|metric| metric.name() == b"counter.delta")
+            .find(|metric| is_named(metric.name(), "counter.delta"))
             .expect("delta counter survives OTAP conversion");
         assert_eq!(counter.description(), b"Delta counter");
         assert_eq!(counter.unit(), b"{request}");
