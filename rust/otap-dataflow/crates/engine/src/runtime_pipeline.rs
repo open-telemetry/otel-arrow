@@ -24,9 +24,9 @@ use crate::entity_context::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
-    FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
-    build_flow_metric_state,
+    FlowDecisionAttributes, FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics,
+    FlowInputMessageMetrics, FlowInputSizeMetrics, FlowOutputItemsMetrics,
+    FlowOutputMessageMetrics, FlowOutputSizeMetrics, build_flow_metric_state,
 };
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -807,11 +807,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             if processor.runtime_requirements().makes_drop_decisions
                 && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
             {
-                let mut attrs = candidate.attrs.clone();
-                attrs.decision = Cow::Owned(node_id.name.to_string());
-                let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
+                // The decision node is a data point dimension on the flow
+                // entity, so this registers against the same flow entity as
+                // the flow's input/output/duration sets.
+                let entity_key = pipeline_context
+                    .metrics_registry()
+                    .register_entity(candidate.attrs.clone());
                 flow_dropped_items_metric = Some(FlowDroppedItemsMetrics::register(
                     &pipeline_context.metric_set_registrar_for_entity(entity_key),
+                    &FlowDecisionAttributes {
+                        decision: Cow::Owned(node_id.name.to_string()),
+                    },
                 ));
             }
             let fut = async move {

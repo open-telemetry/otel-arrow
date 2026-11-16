@@ -249,8 +249,27 @@ pub struct FlowOutputSizeMetrics {
     pub size: Counter<u64>,
 }
 
+/// Decision node that recorded `flow.dropped.items`, a data point dimension
+/// on the flow entity.
+///
+/// `dropped.items` aggregates correctly across this attribute: drops at
+/// different decision nodes are disjoint (a dropped item never reaches a later
+/// node), so the sum equals the flow's total removed =
+/// `flow.input.items - flow.output.items`.
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+pub struct FlowDecisionAttributes {
+    /// Name of the decision node.
+    #[attribute_key = "flow.node.decision"]
+    pub decision: Cow<'static, str>,
+}
+
 /// Dropped signal metric set emitted by a decision node within a flow range.
-#[metric_set(name = "flow.dropped", measurement_attributes = SignalAttributes)]
+#[metric_set(
+    name = "flow.dropped",
+    registration_attributes = FlowDecisionAttributes,
+    measurement_attributes = SignalAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowDroppedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) a
@@ -260,7 +279,7 @@ pub struct FlowDroppedItemsMetrics {
 }
 
 /// Entity attributes that scope a flow metric set.
-#[attribute_set(scope, name = "flow.attrs")]
+#[attribute_set(scope, name = "flow.attrs", entity = "flow")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct FlowAttributeSet {
     /// User-given flow identifier.
@@ -279,21 +298,6 @@ pub struct FlowAttributeSet {
     /// `flow` scope.
     #[attribute_key = "flow.purpose"]
     pub purpose: Cow<'static, str>,
-    /// Name of the decision node that recorded `dropped.items`. Always
-    /// emitted as the `flow.node.decision` scope attribute; carries an empty
-    /// value for the flow's input/output/duration entity (which is not
-    /// attributed to a specific decision node). Lets a single flow contain
-    /// multiple decision nodes without conflation.
-    ///
-    /// `dropped.items` aggregates correctly across this attribute: drops at
-    /// different decision nodes are disjoint (a dropped item never reaches a
-    /// later node), so the sum equals the flow's total removed =
-    /// `flow.input.items - flow.output.items`. There is deliberately no
-    /// per-node "kept" metric: a survivor count is non-additive across series
-    /// nodes (nested subsets double-count) and undefined under fan-out, and the
-    /// flow-wide kept count is simply `output.items`.
-    #[attribute_key = "flow.node.decision"]
-    pub decision: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]
     pub pipeline_attrs: PipelineAttributeSet,
@@ -649,7 +653,6 @@ pub(crate) fn build_flow_metric_state(
                 .purpose
                 .clone()
                 .map_or(Cow::Borrowed(""), Cow::Owned),
-            decision: Cow::Borrowed(""),
             pipeline_attrs: pipeline_attrs.clone(),
         };
 
@@ -1439,11 +1442,10 @@ mod tests {
         // Every processor node in the range a..=c is a decision candidate.
         assert_eq!(state.decision_candidates.len(), 3);
         for idx in [0usize, 1, 2] {
-            let candidate = state
-                .decision_candidates
-                .get(&idx)
-                .expect("each range node should be a candidate");
-            assert!(candidate.attrs.decision.is_empty());
+            assert!(
+                state.decision_candidates.contains_key(&idx),
+                "each range node should be a candidate"
+            );
         }
         assert!(state.is_active());
     }

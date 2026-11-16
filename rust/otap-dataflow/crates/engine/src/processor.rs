@@ -1394,6 +1394,9 @@ mod tests {
             .register_entity(FlowAttributeSet::default());
         let dropped_metric = FlowDroppedItemsMetrics::register(
             &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
+            &crate::flow_metrics::FlowDecisionAttributes {
+                decision: "decider".into(),
+            },
         );
         let (metrics_rx, metrics_reporter) =
             otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
@@ -1444,7 +1447,6 @@ mod tests {
             start_node: "auto_measure_processor".into(),
             end_node: "auto_measure_processor".into(),
             purpose: "".into(),
-            decision: "".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
