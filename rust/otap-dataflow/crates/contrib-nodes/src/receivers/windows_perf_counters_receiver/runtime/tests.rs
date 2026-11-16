@@ -628,7 +628,7 @@ async fn partial_scrape_records_success_and_publishes_healthy_points() {
                     time_unix_nano: 2,
                     start_time_unix_nano: 1,
                 }],
-                collected: vec![0],
+                collected: vec![0, 2],
                 collect_failures: vec![(1, 0xC000_0BB9)],
                 read_failures: vec![(2, 0xC000_0BC6)],
                 ..Report::default()
@@ -691,7 +691,7 @@ async fn repeated_failures_continue_incrementing_metrics_while_episodes_open() {
                     time_unix_nano: 2,
                     start_time_unix_nano: 1,
                 }],
-                collected: vec![0],
+                collected: vec![0, 2],
                 collect_failures: vec![(1, 0xC000_0BB9)],
                 read_failures: vec![(2, 0xC000_0BC6)],
                 ..Report::default()
@@ -713,7 +713,7 @@ async fn repeated_failures_continue_incrementing_metrics_while_episodes_open() {
                     time_unix_nano: 4,
                     start_time_unix_nano: 1,
                 }],
-                collected: vec![0],
+                collected: vec![0, 2],
                 collect_failures: vec![(1, 0xC000_0BB9)],
                 read_failures: vec![(2, 0xC000_0BC6)],
                 ..Report::default()
