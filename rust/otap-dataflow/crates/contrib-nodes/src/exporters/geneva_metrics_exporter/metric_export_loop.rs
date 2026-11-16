@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::client::{MetricsPublisher, PublishError};
-use super::encoder::EncodedPacket;
-use super::otlp_to_geneva::Config;
-use super::publication_preparation::prepare_publication;
+use super::encoder::{self, Packet};
+use super::otlp_to_geneva::{Config, MappingError};
+use super::publication_preparation::{PrepareError, prepare_publication};
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider as LocalBearerTokenProvider;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
@@ -50,14 +50,14 @@ struct InFlightPublication {
     // Preserved across packets so splitting cannot restart the input timeout.
     deadline: tokio::time::Instant,
     attempt: ExporterAttempt,
-    remaining: std::vec::IntoIter<EncodedPacket>,
+    remaining: std::vec::IntoIter<Packet>,
 }
 
 struct CompletedPublication {
     data: OtapPdata,
     auth_generation: u64,
     deadline: tokio::time::Instant,
-    remaining: std::vec::IntoIter<EncodedPacket>,
+    remaining: std::vec::IntoIter<Packet>,
     result: Result<(), PublishError>,
 }
 
@@ -150,7 +150,11 @@ impl GenevaMetricsExporter {
         let mut attempt = self.metrics.attempt(signal_type);
         attempt.set_item_count_with(|| data.num_items() as u64);
         if signal_type != SignalType::Metrics {
-            let nack = NackMsg::new_permanent(UNSUPPORTED_SIGNAL_MESSAGE, data);
+            let nack = NackMsg::new_permanent_with_cause(
+                UNSUPPORTED_SIGNAL_MESSAGE,
+                data,
+                NackCause::Refused,
+            );
             return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
         }
 
@@ -164,8 +168,12 @@ impl GenevaMetricsExporter {
         let prepared = match prepare_publication(&data, &self.mapping_config) {
             Ok(prepared) => prepared,
             Err(error) => {
-                let nack = NackMsg::new_permanent(error.to_string(), data);
-                return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
+                return PublicationStart::Completion(self.preparation_failure(
+                    attempt,
+                    error,
+                    data,
+                    effect_handler,
+                ));
             }
         };
         if prepared.rejected_data_points > 0 || prepared.cardinality_overflows > 0 {
@@ -182,7 +190,7 @@ impl GenevaMetricsExporter {
             return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
         }
 
-        // Mapping and packet splitting are shared preparation. Each HTTP
+        // Mapping and packet splitting are shared preparation. Each encoded HTTP
         // submission below owns a separate backend attempt.
         self.start_next_publication(
             data,
@@ -192,10 +200,45 @@ impl GenevaMetricsExporter {
         )
     }
 
+    fn preparation_failure(
+        &mut self,
+        attempt: ExporterAttempt,
+        error: PrepareError,
+        data: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> CompletionFuture {
+        let (permanent, cause) = match &error {
+            PrepareError::SystemTime
+            | PrepareError::Mapping(MappingError::ReceiveTimeOverflow)
+            | PrepareError::Encoding(encoder::EncodeError::TimestampOutOfRange {
+                field: "packet",
+                ..
+            }) => (false, NackCause::Unspecified),
+            PrepareError::Mapping(MappingError::InvalidConfig(_)) => (true, NackCause::Unspecified),
+            PrepareError::UnsupportedPayload
+            | PrepareError::Decode(_)
+            | PrepareError::Mapping(MappingError::InvalidUtf8(_))
+            | PrepareError::Encoding(_) => (true, NackCause::Refused),
+        };
+        let reason = error.to_string();
+        let result = if cause == NackCause::Refused {
+            Err::<(), _>(attempt.refused(error))
+        } else {
+            Err(attempt.failed(error))
+        };
+        _ = self.metrics.record(attempt.complete(result));
+        let nack = if permanent {
+            NackMsg::new_permanent_with_cause(reason, data, cause)
+        } else {
+            NackMsg::new_with_cause(reason, data, cause)
+        };
+        Self::nack_completion(effect_handler, nack)
+    }
+
     fn start_next_publication(
         &mut self,
         data: OtapPdata,
-        mut remaining: std::vec::IntoIter<EncodedPacket>,
+        mut remaining: std::vec::IntoIter<Packet>,
         deadline: tokio::time::Instant,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> PublicationStart {
@@ -203,8 +246,7 @@ impl GenevaMetricsExporter {
             return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
         };
         let mut attempt = self.metrics.attempt(SignalType::Metrics);
-        attempt.set_item_count_with(|| packet.item_count);
-        attempt.set_payload_size_with(|| packet.bytes.len());
+        attempt.set_item_count_with(|| packet.metrics.len() as u64);
         if tokio::time::Instant::now() >= deadline {
             let nack = NackMsg::new(PublishError::DeadlineExceeded.to_string(), data);
             return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
@@ -215,9 +257,21 @@ impl GenevaMetricsExporter {
             return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
         };
 
+        let bytes = match encoder::encode(&packet) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return PublicationStart::Completion(self.preparation_failure(
+                    attempt,
+                    error.into(),
+                    data,
+                    effect_handler,
+                ));
+            }
+        };
+        attempt.set_payload_size_with(|| bytes.len());
         let request = self.publisher.publish(
             &self.mapping_config.monitoring_account,
-            packet.bytes,
+            bytes,
             auth_header_name,
             auth_header_value,
         );
@@ -819,8 +873,16 @@ mod tests {
         exporter: &mut GenevaMetricsExporter,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> PublicationStart {
+        start_split_publication(exporter, effect_handler, 2)
+    }
+
+    fn start_split_publication(
+        exporter: &mut GenevaMetricsExporter,
+        effect_handler: &EffectHandler<OtapPdata>,
+        count: usize,
+    ) -> PublicationStart {
         let data = metrics_pdata(1);
-        let packets: Vec<_> = (0..2)
+        let packets: Vec<_> = (0..count)
             .flat_map(|_| {
                 prepare_publication(&data, &mapping_config())
                     .expect("prepare packet")
@@ -1305,8 +1367,8 @@ mod tests {
         assert_metric(&snapshots, "refused", "messages", 1);
     }
 
-    /// Scenario: One input is split into two publications and the second succeeds or fails.
-    /// Guarantees: Completion waits for both packets; retryable refusals stay retryable and each attempt has the correct telemetry outcome.
+    /// Scenario: Packet two succeeds or fails, with a third packet pending for HTTP 503 and 400 failures.
+    /// Guarantees: Failure prevents packet three from being sent; each input completes exactly once with correct retryability and attempt telemetry.
     #[tokio::test]
     async fn split_publications_complete_once_and_record_each_attempt() {
         for final_status in [200, 503, 400, 401, 403, 408, 429] {
@@ -1326,7 +1388,12 @@ mod tests {
                 .await;
             let (mut exporter, _controller) = ready_exporter(&server.uri()).await;
             let (effect_handler, mut completions) = completion_harness();
-            let mut work = start_two_packet_publication(&mut exporter, &effect_handler);
+            let packet_count = if matches!(final_status, 503 | 400) {
+                3
+            } else {
+                2
+            };
+            let mut work = start_split_publication(&mut exporter, &effect_handler, packet_count);
             for _ in 0..2 {
                 let PublicationStart::InFlight(mut publication) = work else {
                     panic!("each packet must be published before input completion");
@@ -1343,7 +1410,7 @@ mod tests {
                 work = exporter.publication_completion(completed, &effect_handler);
             }
             let PublicationStart::Completion(completion) = work else {
-                panic!("all packets must resolve to one input completion");
+                panic!("success or failure must resolve to one input completion");
             };
             completion
                 .await
@@ -1370,7 +1437,77 @@ mod tests {
                 completions.try_recv(),
                 Err(otel_arrow_dfe_channel::error::RecvError::Empty),
             ));
+            assert_eq!(
+                server
+                    .received_requests()
+                    .await
+                    .expect("recorded requests")
+                    .len(),
+                2,
+            );
         }
+    }
+
+    /// Scenario: Preparation encounters malformed input, a local clock failure, or invalid local configuration.
+    /// Guarantees: Input errors are permanently refused, clock failures remain retryable, and local configuration errors are not blamed on the caller.
+    #[tokio::test]
+    async fn preparation_failures_distinguish_input_from_local_errors() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+
+        let (mut exporter, _controller) = ready_exporter("http://127.0.0.1:1").await;
+        let (effect_handler, mut completions) = completion_harness();
+        let malformed = subscribe(
+            OtapPdata::new_default(
+                OtlpProtoBytes::ExportMetricsRequest(Bytes::from_static(&[0x0a])).into(),
+            ),
+            1,
+        );
+        let PublicationStart::Completion(completion) =
+            exporter.start_publication(malformed, &effect_handler)
+        else {
+            panic!("invalid input must not start an HTTP request");
+        };
+        completion.await.expect("NACK should be delivered");
+        let nack = expect_nack(&mut completions).await;
+        assert!(nack.permanent);
+        assert_eq!(nack.cause, NackCause::Refused);
+
+        for (error, permanent) in [
+            (PrepareError::SystemTime, false),
+            (
+                PrepareError::Mapping(MappingError::ReceiveTimeOverflow),
+                false,
+            ),
+            (
+                PrepareError::Encoding(encoder::EncodeError::TimestampOutOfRange {
+                    field: "packet",
+                    time_bucket: u64::MAX,
+                    milliseconds: 0,
+                }),
+                false,
+            ),
+            (
+                PrepareError::Mapping(MappingError::InvalidConfig("invalid account".to_string())),
+                true,
+            ),
+        ] {
+            let attempt = exporter.metrics.attempt(SignalType::Metrics);
+            exporter
+                .preparation_failure(attempt, error, metrics_pdata(2), &effect_handler)
+                .await
+                .expect("NACK should be delivered");
+            let nack = expect_nack(&mut completions).await;
+            assert_eq!(nack.permanent, permanent);
+            assert_eq!(nack.cause, NackCause::Unspecified);
+        }
+        assert!(matches!(
+            completions.try_recv(),
+            Err(otel_arrow_dfe_channel::error::RecvError::Empty),
+        ));
+        let snapshots = exporter.metrics.terminal_snapshots();
+        assert_metric(&snapshots, "refused", "messages", 1);
+        assert_metric(&snapshots, "failure", "messages", 4);
     }
 
     /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the hidden pipeline deadline, with completion delivery free or blocked.

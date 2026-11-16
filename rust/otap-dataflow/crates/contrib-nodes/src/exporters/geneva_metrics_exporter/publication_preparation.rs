@@ -13,9 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // ME reserves headroom below GIG's 20 MiB limit using this same bound.
 pub(super) const MAX_PUBLICATION_BYTES: usize = 20_000_000;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct PublicationPreparation {
-    pub(super) publications: Vec<encoder::EncodedPacket>,
+    pub(super) publications: Vec<encoder::Packet>,
     pub(super) rejected_data_points: usize,
     pub(super) cardinality_overflows: usize,
 }
@@ -61,7 +61,7 @@ fn prepare_publication_at(
     };
     let rejected_data_points = mapped.rejected_data_points;
     let cardinality_overflows = mapped.cardinality_overflows.len();
-    let publications = encoder::encode_bounded(&mapped.packet, MAX_PUBLICATION_BYTES)?;
+    let publications = encoder::partition_bounded(mapped.packet, MAX_PUBLICATION_BYTES)?;
     Ok(PublicationPreparation {
         publications,
         rejected_data_points,
@@ -252,7 +252,11 @@ mod tests {
             .expect("well-formed top-level framing should be accepted");
 
         assert_eq!(prepared.publications.len(), 1);
-        assert!(!prepared.publications[0].bytes.is_empty());
+        assert!(
+            !encoder::encode(&prepared.publications[0])
+                .expect("packet should encode")
+                .is_empty()
+        );
         assert_eq!(prepared.rejected_data_points, 0);
     }
 
@@ -327,7 +331,7 @@ mod tests {
         let actual = prepare_publication_at(&native, &mapping_config(), receive_time)
             .expect("transport-encoded native metrics should prepare");
         assert_eq!(actual, expected);
-        assert_eq!(actual.publications[0].item_count, 3);
+        assert_eq!(actual.publications[0].metrics.len(), 3);
         assert_eq!(
             native
                 .payload_ref()
@@ -350,14 +354,15 @@ mod tests {
             prepared
                 .publications
                 .iter()
-                .map(|packet| packet.item_count)
-                .sum::<u64>(),
+                .map(|packet| packet.metrics.len())
+                .sum::<usize>(),
             21_000,
         );
         for packet in prepared.publications {
-            assert!(packet.bytes.len() <= MAX_PUBLICATION_BYTES);
-            let crc = u32::from_le_bytes(packet.bytes[2..6].try_into().expect("CRC field"));
-            assert_eq!(crc, crc32fast::hash(&packet.bytes[6..]));
+            let bytes = encoder::encode(&packet).expect("packet should encode");
+            assert!(bytes.len() <= MAX_PUBLICATION_BYTES);
+            let crc = u32::from_le_bytes(bytes[2..6].try_into().expect("CRC field"));
+            assert_eq!(crc, crc32fast::hash(&bytes[6..]));
         }
     }
 }

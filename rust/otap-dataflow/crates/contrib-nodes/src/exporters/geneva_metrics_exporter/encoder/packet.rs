@@ -25,19 +25,12 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     encode_metrics(packet.current_time_bucket, &packet.metrics)
 }
 
-/// One independently decodable publication and its mapped data point count.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct EncodedPacket {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) item_count: u64,
-}
-
-/// Encodes independently decodable packets bounded by their complete wire size.
-pub(crate) fn encode_bounded(
-    packet: &Packet,
+/// Validates and partitions metrics without retaining encoded packet buffers.
+pub(crate) fn partition_bounded(
+    packet: Packet,
     maximum: usize,
-) -> Result<Vec<EncodedPacket>, EncodeError> {
-    let mut packets = Vec::new();
+) -> Result<Vec<Packet>, EncodeError> {
+    let mut counts = Vec::new();
     let mut remaining = packet.metrics.as_slice();
     while !remaining.is_empty() {
         let count = write_metrics(
@@ -46,13 +39,17 @@ pub(crate) fn encode_bounded(
             remaining,
             Some(maximum),
         )?;
-        packets.push(EncodedPacket {
-            bytes: encode_metrics(packet.current_time_bucket, &remaining[..count])?,
-            item_count: count as u64,
-        });
+        counts.push(count);
         remaining = &remaining[count..];
     }
-    Ok(packets)
+    let mut metrics = packet.metrics.into_iter();
+    Ok(counts
+        .into_iter()
+        .map(|count| Packet {
+            current_time_bucket: packet.current_time_bucket,
+            metrics: metrics.by_ref().take(count).collect(),
+        })
+        .collect())
 }
 
 fn encode_metrics(current_time_bucket: u64, metrics: &[Metric]) -> Result<Vec<u8>, EncodeError> {
@@ -724,19 +721,22 @@ mod tests {
                 .collect(),
         };
         let complete = encode(&packet).expect("packet should encode");
-        let exact = encode_bounded(&packet, complete.len()).expect("exact limit should fit");
+        let exact =
+            partition_bounded(packet.clone(), complete.len()).expect("exact limit should fit");
         assert_eq!(exact.len(), 1);
-        assert_eq!(exact[0].bytes, complete);
+        assert_eq!(encode(&exact[0]).expect("packet should encode"), complete);
 
-        let split = encode_bounded(&packet, complete.len() - 1).expect("packet should split");
+        let split =
+            partition_bounded(packet.clone(), complete.len() - 1).expect("packet should split");
         assert!(split.len() > 1);
         let mut offset = 0;
-        for encoded in split {
-            assert!(encoded.bytes.len() < complete.len());
-            let end = offset + encoded.item_count as usize;
+        for partition in split {
+            let bytes = encode(&partition).expect("packet should encode");
+            assert!(bytes.len() < complete.len());
+            let end = offset + partition.metrics.len();
             let expected = encode_metrics(packet.current_time_bucket, &packet.metrics[offset..end])
                 .expect("independent packet should encode");
-            assert_eq!(encoded.bytes, expected);
+            assert_eq!(bytes, expected);
             offset = end;
         }
         assert_eq!(offset, packet.metrics.len());
@@ -747,15 +747,15 @@ mod tests {
         };
         let size = encode(&single).expect("single metric should encode").len();
         assert_eq!(
-            encode_bounded(&single, size - 1).expect_err("indivisible metric must be rejected"),
+            partition_bounded(single, size - 1).expect_err("indivisible metric must be rejected"),
             EncodeError::PacketSizeOverflow {
                 size,
                 maximum: size - 1
             },
         );
         assert!(
-            encode_bounded(
-                &Packet {
+            partition_bounded(
+                Packet {
                     current_time_bucket: packet.current_time_bucket,
                     metrics: Vec::new()
                 },
@@ -763,6 +763,60 @@ mod tests {
             )
             .expect("empty input should succeed")
             .is_empty()
+        );
+    }
+
+    /// Scenario: A large inherited namespace is repeated across many independently bounded packets.
+    /// Guarantees: Pending packets share the namespace allocation and preserve every point without retaining encoded copies.
+    #[test]
+    fn shares_large_namespace_across_pending_packets() {
+        let namespace: std::rc::Rc<str> = "n".repeat(16_384).into();
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: (0..64)
+                .map(|index| {
+                    let mut metric = standard_metric(unsigned_values(1, 1), SUM | COUNT);
+                    metric.namespace = namespace.clone();
+                    metric.dimensions[0].value = format!("{index:04}{}", "x".repeat(100)).into();
+                    metric
+                })
+                .collect(),
+        };
+        let maximum = encode_metrics(packet.current_time_bucket, &packet.metrics[..1])
+            .expect("one point should encode")
+            .len();
+        let packets = partition_bounded(packet, maximum).expect("points should be partitioned");
+        assert_eq!(packets.len(), 64);
+        for packet in packets {
+            assert_eq!(packet.metrics.len(), 1);
+            assert!(std::rc::Rc::ptr_eq(
+                &packet.metrics[0].namespace,
+                &namespace
+            ));
+            let bytes = encode(&packet).expect("encode only the current packet");
+            assert_eq!(bytes.len(), maximum);
+        }
+    }
+
+    /// Scenario: A later point is invalid after an earlier point fills a packet.
+    /// Guarantees: Partitioning rejects the entire input before any packet can be published.
+    #[test]
+    fn preflights_invalid_later_packet() {
+        let metric = standard_metric(unsigned_values(1, 1), SUM | COUNT);
+        let maximum = encode_metrics(DEFAULT_TIME_BUCKET, std::slice::from_ref(&metric))
+            .expect("valid point should encode")
+            .len();
+        let mut invalid = metric.clone();
+        invalid.time_bucket = -1;
+        assert_eq!(
+            partition_bounded(
+                Packet {
+                    current_time_bucket: DEFAULT_TIME_BUCKET,
+                    metrics: vec![metric, invalid],
+                },
+                maximum,
+            ),
+            Err(EncodeError::NegativeTimeBucket(-1)),
         );
     }
 
@@ -815,15 +869,16 @@ mod tests {
         let limit = encode_metrics(packet.current_time_bucket, &packet.metrics[..160])
             .expect("reference packet")
             .len();
-        let packets = encode_bounded(&packet, limit).expect("bounded packets");
+        let packets = partition_bounded(packet.clone(), limit).expect("bounded packets");
         assert_eq!(packets.len(), 2);
-        assert_eq!(packets[0].item_count, 160);
+        assert_eq!(packets[0].metrics.len(), 160);
         let mut offset = 0;
-        for encoded in packets {
-            assert!(encoded.bytes.len() <= limit);
-            let end = offset + encoded.item_count as usize;
+        for partition in packets {
+            let bytes = encode(&partition).expect("packet should encode");
+            assert!(bytes.len() <= limit);
+            let end = offset + partition.metrics.len();
             assert_eq!(
-                encoded.bytes,
+                bytes,
                 encode_metrics(packet.current_time_bucket, &packet.metrics[offset..end])
                     .expect("reference packet")
             );

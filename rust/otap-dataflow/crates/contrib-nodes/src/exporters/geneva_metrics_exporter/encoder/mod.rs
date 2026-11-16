@@ -11,7 +11,7 @@ mod packet;
 mod writer;
 
 pub use model::*;
-pub(crate) use packet::{EncodedPacket, encode_bounded};
+pub(crate) use packet::partition_bounded;
 pub use packet::{encode, validate_metric};
 
 #[cfg(test)]
