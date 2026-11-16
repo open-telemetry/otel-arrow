@@ -9,8 +9,8 @@ Tracking Issue: open-telemetry/otel-arrow#0000
 
 ## Summary
 
-The Dataflow Engine (DFE) has a well-defined entity model. The goal of this RFC is
-to formalize that model in OpenTelemetry terms and outline how the DFE will
+The Dataflow Engine (DFE) has a well-defined entity model. The goal of this RFC
+is to formalize that model in OpenTelemetry terms and outline how the DFE will
 communicate it using OpenTelemetry signals.
 
 For the sake of completeness, this RFC consolidates some information already
@@ -24,9 +24,8 @@ present about entities in the following documents:
   [Entity events][otel-entity-events], and
   [Entity propagation][otel-entity-propagation]
 
-Reviewers familiar with the existing DFE entity model and OpenTelemetry Entity
-work may want to focus on the following sections which highlight important changes
-to our existing model:
+Reviewers familiar with the existing DFE entity model may want to focus on the
+following sections which highlight important changes:
 
 - [Entity types](#entity-types): the logical `pipeline` is separated from its
   runtime `pipeline.instance`.
@@ -51,34 +50,25 @@ Telemetry System (ITS).
 We want entity information to be available to DFE telemetry consumers like any
 other internal telemetry. This includes:
 
-- The current state of each entity,
-- Lifecycle events, including creation and deletion, and
-- Relationships between entities.
+- The current state of each entity
+- Lifecycle events, including creation and deletion
+- Relationships between entities
 
 The natural approach is to align with OpenTelemetry Entities, which are still
-being defined. To that end this RFC places the following constraints on
-itself:
+being defined, to the extent possible.
 
-- DFE entities follow the OpenTelemetry [entity data model][otel-entity-data-model]:
-  each has a type, identifying attributes, and descriptive attributes.
-- Entity state, lifecycle, and relationships are reported with OpenTelemetry
-  [entity events][otel-entity-events] rather than a DFE-specific format.
-- No changes to the OTLP protocol are required. Internal entities are carried
-  in existing fields (resource, scope, and log record attributes).
+This RFC also attempts to address the following items:
 
-The existing entity model also has problems that this RFC addresses:
-
-- **Ambiguous identity.** A pipeline that is deleted and recreated with
-  the same configuration produces the same attribute values as the original, so
-  consumers cannot tell the two apart.
-- **No ordering in time.** There is no way to order entities by creation other
+- Ambiguous identity - Entities such as a pipeline or pipeline group that
+  have a shorter lifetime than their containing entity can produce different 
+  time series with the same identifying attribute values so consumers cannot
+  tell them apart.
+- Signal to entity attribution - The attached entity for a signal can't be
+  determined except by reading the documentation. This is due to scopes having
+  compound identifiers from multiple entities as well as common dimensions from
+  metric sets.
+- Time ordering - There is no way to order entities by creation other
   than inferring it from when their signals first appeared.
-- **Conflated lifetimes.** The `pipeline` attribute set describes a runtime
-  instance (it carries `core.id` and `deployment.generation`), and nothing
-  describes the logical pipeline that outlives those instances.
-- **Implicit relationships.** Relationships are only implied by attribute sets
-  that appear together on the same signal. A relationship cannot be observed
-  while the entities involved emit no telemetry.
 
 ## Guide-level explanation
 
@@ -123,11 +113,10 @@ identity.
 Internal entities are identified in one of two ways, depending on whether
 their natural key can be reused.
 
-**An entity is assigned a `uid` if it can be deleted and recreated with the
-same natural key during the lifetime of its containing entity.** The `uid` is
+An entity is assigned a `uid` if it lifetime is shorter than its containing entity
+and it can be deleted and recreated during its containers lifetime. The `uid` is
 a [UUID v7][uuid-v7] generated when the entity is created, and it is the
-entity's sole identifying attribute. The attribute is named `<type>.uid`. This
-applies to:
+entity's sole identifying attribute.
 
 - `pipeline.group` and `pipeline`. A group or pipeline can be deleted and
   recreated with the same id. A recreated pipeline also restarts its
@@ -138,61 +127,48 @@ applies to:
   belong to two different instances of one pipeline.
 - `engine`. The engine is never recreated within its process, but its
   containing entities are ambient, and `service.instance.id` can be overridden
-  by users. A `uid` keeps the engine's identity self-contained.
+  by users.
 
-This follows the Kubernetes convention, where `k8s.pod.uid` identifies a pod
-and `k8s.pod.name` is a human-friendly, descriptive name. The DFE keeps the
-existing human-friendly identifiers of these entities (`pipeline.group.id`,
-`pipeline.id`) as navigational attributes (see
+The DFE keeps the existing human-friendly identifiers of these entities
+(`pipeline.group.id`, `pipeline.id`) as navigational attributes (see
 [Descriptive attributes](#descriptive-attributes)).
 
-**All other entities have a composite identity**: the identifying attributes
-of their containing entity plus their own local id. Nodes, channels, and
-extensions are built once per pipeline instance and are never recreated inside
-it, so a node is identified by `pipeline.instance.uid` and `node.id`, a
-channel by `pipeline.instance.uid` and `channel.id`, and an extension by
-`pipeline.instance.uid` and `extension.id`. The local id is unique within the
-instance, and the instance `uid` is unique everywhere, so neither attribute is
-sufficient on its own and together they are.
+Other entities have a composite identity consisting of the minimal set of 
+navigational attributes as they do today. 
 
-This gives the identities useful properties:
+All entities id is formed from a composition of their containing entities
+identifying attributes plus their own local id. 
 
-- **Delete and recreate is unambiguous.** Every entity that can be recreated
+This gives identities useful properties:
+
+- Delete and recreate is unambiguous - Every entity that can be recreated
   under the same name gets a fresh `uid`, and every other entity inherits one
   from its container.
-- **Creation order is recoverable.** UUID v7 embeds a millisecond timestamp, so
+- Creation order is recoverable - UUID v7 embeds a millisecond timestamp, so
   consumers can order instances of the same logical entity without an extra
   attribute.
-- **It is minimally sufficient.** The OpenTelemetry data model asks that the
+- It is minimally sufficient - The OpenTelemetry data model asks that the
   identifying attributes be the
   [minimal set sufficient][otel-minimal-identity] to uniquely identify the
   entity. A `uid` is minimal for entities whose natural key can be reused. For
   nodes, channels, and extensions, a `uid` of their own would add nothing that
   the instance `uid` and their local id do not already provide. The data model
-  accepts identities that are only unique in context: its process example,
-  `process.pid` and `process.start_time`, is unique only within a host. The
-  composite identity goes further by including the container's `uid`, so it is
-  unique on its own.
-- **It matches how users query.** Composite identities use the ids that users
+  accepts identities that are only unique in context.
+- It matches how users query - Composite identities use the ids that users
   write in configuration, such as `node.id`, and those stay stable across
   deployment generations.
-- **The DFE is the only observer.** OpenTelemetry asks for
-  [repeatable identity][otel-repeatable-identity] across observers. The
-  internals of the DFE (pipeline instances, nodes, channels) cannot be
-  observed from outside the process, so the DFE is the source of truth for
-  these entities and is free to choose its own identifiers.
 
 #### Descriptive attributes
 
 All attributes other than the identifying attributes are descriptive and belong
 to one of two classes:
 
-- **Navigational attributes** are descriptive attributes that never change
-  during the lifetime of the entity. They let users find the entity and act on
-  it. Examples: `pipeline.group.id`, `pipeline.id`, `core.id`,
-  `deployment.generation`, `node.urn`, `node.type`.
-- **State attributes** are descriptive attributes that may change during the
-  lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
+- Navigational attributes - Attributes that never change during the lifetime of
+  the entity and are helpful in finding the entity. These are used for entities
+  assigned a UID as their sole identifier. Examples: `pipeline.group.id`,
+  `pipeline.id`, `core.id`, `deployment.generation`, `node.urn`, `node.type`.
+- State attributes - Attributes indicating status or state that may change during
+  the lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
   (`Running`, `Draining`, ...), its conditions, or its last heartbeat time.
 
 The term "navigational" comes from the [Navigation][otel-navigation] section of
@@ -223,12 +199,12 @@ entity, while state attributes appear only in entity events. The reasons are exp
 
 The DFE distinguishes between two kinds of entities:
 
-- **Ambient entities** describe the environment the DFE runs in: the host,
+- Ambient - Entities that define the environment the DFE runs in: the host,
   container, process, service instance, and so on. The DFE does not create or
   own them. They are discovered by resource detectors, provided through
   [entity propagation][otel-entity-propagation] (`OTEL_ENTITIES`), or
   configured explicitly under `engine.telemetry.resource`.
-- **Internal entities** are created, owned, and deleted by the DFE: the
+- Internal - Entities that are created, owned, and deleted by the DFE: the
   engine, pipeline groups, pipelines, pipeline instances, nodes, channels, and
   extensions. All of the entity types in [Entity types](#entity-types) are
   internal.
