@@ -744,10 +744,69 @@ class FaultTests(unittest.TestCase):
                 self.assertEqual(run.call_args.args[0], ["docker", "port", "owned-id", "1433/tcp"])
                 query.assert_called_once()
                 self.assertEqual(query.call_args.args[0]["container"], state["container"])
-                self.assertEqual(query.call_args.args[1], "SELECT 1")
+                self.assertEqual(
+                    query.call_args.args[1],
+                    "USE otap_fixture; SELECT TOP (1) ID FROM dbo.OTAP_SQL_EVENTS",
+                )
                 self.assertEqual(query.call_args.kwargs, {"allow_expired": variant == "expired"})
                 self.assertEqual((directory / "server.crt").read_text(),
                                  "original" if variant == "valid" else variant)
+                state = json.loads((directory / "fixture.json").read_text())
+                self.assertEqual(state["env"]["OTAP_SQL_SERVER_CERTIFICATE"], variant)
+                self.assertEqual(state["env"]["OTAP_SQL_SERVER_PORT"], "53758")
+
+    # Scenario: After restart, master accepts queries while the fixture database is still recovering.
+    # Guarantees: The sqlcmd probe propagates database failures and waits for a fixture-table read before publishing state.
+    def test_rotation_waits_for_fixture_database_recovery(self):
+        for variant in ("replacement", "expired", "valid"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.fixture(directory)
+                before = (directory / "fixture.json").read_text()
+                database_probes = []
+
+                def command(args, **options):
+                    if args[1] == "inspect":
+                        output = "owned-id owner-label"
+                    elif args[1] == "restart":
+                        self.assertEqual(args, ["docker", "restart", "owned-id"])
+                        output = "restarted"
+                    elif args[1] == "port":
+                        self.assertEqual(len(database_probes), 3)
+                        self.assertEqual((directory / "fixture.json").read_text(), before)
+                        output = "127.0.0.1:53758"
+                    elif args[1] == "exec":
+                        self.assertEqual(args[:3], ["docker", "exec", "owned-id"])
+                        self.assertIn(f"{FIXTURE.SQLCMD} -S localhost -U sa -N", args[5])
+                        self.assertIn(' -b -l 2 -Q "$1"', args[5])
+                        self.assertEqual(" -C" in args[5], variant == "expired")
+                        self.assertEqual(options["timeout"], 10)
+                        self.assertEqual((directory / "fixture.json").read_text(), before)
+                        sql = args[-1]
+                        if sql == "SELECT 1":
+                            return subprocess.CompletedProcess(args, 0, "1", "")
+                        self.assertIn("USE otap_fixture;", sql)
+                        self.assertIn("FROM dbo.OTAP_SQL_EVENTS", sql)
+                        database_probes.append(sql)
+                        if len(database_probes) == 1:
+                            return subprocess.CompletedProcess(
+                                args, 1, "", "Cannot open database 'otap_fixture' requested by the login."
+                            )
+                        if len(database_probes) == 2:
+                            raise subprocess.TimeoutExpired("sqlcmd", 10)
+                        output = "1"
+                    else:
+                        self.fail(f"Unexpected command: {args[:2]}")
+                    return subprocess.CompletedProcess(args, 0, output, "")
+
+                with (
+                    mock.patch.object(FIXTURE.subprocess, "run", side_effect=command),
+                    mock.patch.object(FIXTURE.time, "monotonic", side_effect=[0, 30, 60]),
+                    mock.patch.object(FIXTURE.time, "sleep") as sleep,
+                ):
+                    FIXTURE.rotate_certificate(directory, variant)
+                self.assertEqual(len(database_probes), 3)
+                self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(1)])
                 state = json.loads((directory / "fixture.json").read_text())
                 self.assertEqual(state["env"]["OTAP_SQL_SERVER_CERTIFICATE"], variant)
                 self.assertEqual(state["env"]["OTAP_SQL_SERVER_PORT"], "53758")
@@ -778,21 +837,27 @@ class FaultTests(unittest.TestCase):
                     FIXTURE.rotate_certificate(directory, "replacement")
             self.assertEqual((directory / "fixture.json").read_text(), before)
 
-    # Scenario: Rotation restarts the owned server but readiness never succeeds.
-    # Guarantees: The failure remains visible and the manifest never advertises a successful rotation.
+    # Scenario: Fixture database readiness keeps failing or timing out after a certificate restart.
+    # Guarantees: The bounded failure leaves the manifest unchanged and never discovers or publishes a new port.
     def test_rotation_readiness_failure_is_not_success(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            self.fixture(directory)
-            with (
-                mock.patch.object(FIXTURE, "run", side_effect=["owned-id owner-label", "restarted"]),
-                mock.patch.object(FIXTURE, "admin_query", side_effect=RuntimeError("not ready")),
-                mock.patch.object(FIXTURE.time, "monotonic", side_effect=[0, 121]),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "120 seconds"):
-                    FIXTURE.rotate_certificate(directory, "expired")
-            self.assertEqual(json.loads((directory / "fixture.json").read_text())["env"]
-                             ["OTAP_SQL_SERVER_CERTIFICATE"], "valid")
+        for variant in ("replacement", "expired", "valid"):
+            for error in (RuntimeError("not ready"), subprocess.TimeoutExpired("sqlcmd", 10)):
+                with self.subTest(variant=variant, error=type(error)), tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    self.fixture(directory)
+                    before = (directory / "fixture.json").read_text()
+                    with (
+                        mock.patch.object(FIXTURE, "run", side_effect=["owned-id owner-label", "restarted"]),
+                        mock.patch.object(FIXTURE, "admin_query", side_effect=error),
+                        mock.patch.object(FIXTURE.time, "monotonic", side_effect=[0, 121]),
+                        mock.patch.object(FIXTURE.time, "sleep") as sleep,
+                        mock.patch.object(FIXTURE, "published_port") as port,
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "120 seconds"):
+                            FIXTURE.rotate_certificate(directory, variant)
+                    sleep.assert_not_called()
+                    port.assert_not_called()
+                    self.assertEqual((directory / "fixture.json").read_text(), before)
 
     # Scenario: A requested fault disconnects idle receiver sessions in the disposable database.
     # Guarantees: SQL restricts the target login/application/database and cannot select its administrator.

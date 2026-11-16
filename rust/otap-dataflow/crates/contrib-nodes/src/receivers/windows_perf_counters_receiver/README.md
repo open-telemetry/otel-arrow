@@ -718,12 +718,14 @@ If an entire collection produces no points, no batch is sent.
 #### Collection Failures
 
 If a counter cannot be collected, it misses that collection. The receiver logs
-`collect.fail` with the counter's path and counts the collection in
-`scrape.failures`. No restart is needed: the next collection sets the counter up
-again, and its values return on the collection after that. If Windows reports a
-negative denominator while collecting the counter's query, the receiver waits
-one second and tries once more before treating it as a failure. This delays the
-rest of that collection.
+`collect.fail` with the counter's path. No restart is needed: the next collection
+sets the counter up again, and its values return on the collection after that.
+If Windows reports a negative denominator while collecting the counter's query,
+the receiver waits one second and tries once more before treating it as a
+failure. This delays the rest of that collection.
+
+The receiver counts a partial collection as successful when at least one
+counter collects without a read failure.
 
 ### Slow Collections
 
@@ -743,9 +745,9 @@ reporting wrong values after the first collection (reported on Windows Server
 collection.
 
 If the new query cannot be built, the receiver keeps the old one and warns with
-`recreate_query.fail`. Rebuilding the query each time makes collections take
-longer and can lead to `scrape.overrun` warnings, so set `recreate_query` only
-on counters that need it.
+`recreate_query.fail`. This alone does not fail the collection. Rebuilding the
+query each time makes collections take longer and can lead to `scrape.overrun`
+warnings, so set `recreate_query` only on counters that need it.
 
 ### Dropped Batches
 
@@ -783,9 +785,16 @@ collection still in progress is not sent.
 
 ## Telemetry
 
-Self-metrics and events use *scrape* for a collection.
+These metrics and events describe the receiver's own operation, not the Windows
+counter values it collects.
 
 ### Metric Set
+
+The receiver uses the [shared collection metrics][pulled-metrics] to count
+collection attempts and measure their duration. Each scheduled collection that
+the receiver starts counts as one attempt, whether it succeeds or fails.
+Startup initialization and collections skipped because the previous one is
+still running do not count as attempts.
 
 #### `receiver.windows_perf_counters`
 
@@ -793,10 +802,7 @@ Self-metrics and events use *scrape* for a collection.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.windows_perf_counters.scrapes` | `{scrape}` | Collections in which at least one counter was collected successfully. |
-| `receiver.windows_perf_counters.scrape.failures` | `{scrape}` | Collections in which at least one counter could not be collected, plus startup if a counter's query could not be opened or sampled. A collection where some counters succeed and others fail counts once in both `scrapes` and `scrape.failures`. |
 | `receiver.windows_perf_counters.scrape.overruns` | `{tick}` | Collections skipped because the previous collection was still running. |
-| `receiver.windows_perf_counters.scrape.duration` | `s` | Time from requesting a collection to receiving its results. |
 | `receiver.windows_perf_counters.counter.add.failures` | `{failure}` | Failures to add a counter, including retries. |
 | `receiver.windows_perf_counters.active.counters` | `{counter}` | Counters currently added, whether or not they produce values. |
 | `receiver.windows_perf_counters.batches.dropped` | `{batch}` | Batches dropped because downstream was full or closed. |
@@ -823,6 +829,7 @@ distinguish counters that share the same `path`.
 | `scrape.overrun` | warn | A collection ran past `timeout`. Fields: `collection_interval_seconds`, `timeout_seconds` (`0` when `timeout` is not set). |
 | `batch.dropped` | warn | A batch was dropped because downstream was full or closed. |
 | `shutdown.timeout` | warn | Shutdown did not finish within its time limit. |
+| `terminal_metrics.fail` | warn | Final receiver metrics could not be handed off after a fatal receiver error. Field: `error`. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -868,5 +875,6 @@ distinguish counters that share the same `path`.
 [humantime]: https://docs.rs/humantime/latest/humantime/fn.parse_duration.html
 [pdh-errors]: https://learn.microsoft.com/windows/win32/perfctrs/pdh-error-codes
 [performance-counters]: https://learn.microsoft.com/windows/win32/perfctrs/performance-counters-portal
+[pulled-metrics]: ../../../../../docs/telemetry/metrics-guide.md#receiver-initiated-collection
 [semconv]: https://opentelemetry.io/docs/specs/semconv/
 [using-pdh]: https://learn.microsoft.com/windows/win32/perfctrs/using-the-pdh-functions-to-consume-counter-data

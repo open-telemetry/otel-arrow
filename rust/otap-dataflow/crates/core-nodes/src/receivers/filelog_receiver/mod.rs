@@ -12,6 +12,9 @@ pub mod metadata;
 pub mod multiline;
 pub mod multiline_pattern;
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod partial_state;
+
 /// Linux source-file access.
 #[cfg(target_os = "linux")]
 pub mod source;
@@ -20,6 +23,16 @@ pub mod source;
 #[cfg(target_os = "linux")]
 pub mod discovery;
 
+// Scheduler composition remains separate from receiver registration.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod scheduler;
+
 /// Linux file identity and local ownership admission.
 #[cfg(target_os = "linux")]
 pub mod identity;
+
+// Internal delivery primitives; receiver composition remains disabled.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod delivery;

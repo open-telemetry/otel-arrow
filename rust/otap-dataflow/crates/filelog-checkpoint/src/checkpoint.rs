@@ -3,8 +3,8 @@
 
 //! Single-file checkpoint container: header, complete snapshot, then WAL transactions.
 
-use crate::primitives::{FILELOG_FORMAT_VERSION, Reader, Writer};
-use crate::snapshot::encode_snapshot_into;
+use crate::primitives::{BoundedWriter, ByteWriter, FILELOG_FORMAT_VERSION, Reader};
+use crate::snapshot::{encode_snapshot_into, snapshot_encoded_len};
 use crate::{
     DecodeError, EncodeError, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES, Snapshot,
     SnapshotRecord, crc32c, decode_snapshot,
@@ -92,10 +92,27 @@ pub fn encode_checkpoint(
     checkpoint_id: &str,
     records: &[SnapshotRecord],
 ) -> Result<Vec<u8>, EncodeError> {
-    let mut out = Writer::new();
+    encode_checkpoint_borrowed(generation, checkpoint_id, records.iter(), u64::MAX)
+}
+
+/// Store-only entry point: admit snapshot bytes before allocating the container.
+pub(crate) fn encode_checkpoint_borrowed<'a>(
+    generation: u64,
+    checkpoint_id: &str,
+    records: impl Iterator<Item = &'a SnapshotRecord> + Clone,
+    max_snapshot_bytes: u64,
+) -> Result<Vec<u8>, EncodeError> {
+    let (snapshot_bytes, count) = snapshot_encoded_len(records.clone(), max_snapshot_bytes)?;
+    let total = CHECKPOINT_HEADER_BYTES.checked_add(snapshot_bytes).ok_or(
+        EncodeError::ArithmeticOverflow {
+            context: "checkpoint bytes",
+        },
+    )?;
+    let mut bytes = vec![0; total];
+    let mut out = BoundedWriter::new(&mut bytes);
     out.bytes(&[0; CHECKPOINT_HEADER_BYTES]);
-    encode_snapshot_into(&mut out, generation, checkpoint_id, records)?;
-    let mut bytes = out.finish();
+    encode_snapshot_into(&mut out, generation, checkpoint_id, records, count)?;
+    out.finish()?;
     let wal_offset = u64::try_from(bytes.len()).map_err(|_| EncodeError::ArithmeticOverflow {
         context: "checkpoint WAL offset",
     })?;
@@ -144,4 +161,82 @@ pub fn decode_checkpoint_snapshot(
         max_records,
     )?;
     Ok((snapshot, wal_offset))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASELINE: &[u8] = include_bytes!("../tests/fixtures/checkpoint-encoding-variants.bin");
+    const ID: &str = "encoding-variants";
+
+    fn records() -> Vec<SnapshotRecord> {
+        decode_checkpoint_snapshot(
+            BASELINE,
+            &crate::namespace_digest(ID).unwrap(),
+            10,
+            u64::MAX,
+        )
+        .unwrap()
+        .0
+        .records
+    }
+
+    /// Scenario: Borrowed encoding exercises all variable-width fields against pre-change bytes.
+    /// Guarantees: The container and snapshot remain byte-identical to the independent frozen baseline.
+    #[test]
+    fn borrowed_snapshot_preserves_baseline_bytes() {
+        let records = records();
+        assert_eq!(records.len(), 10);
+        assert_eq!(
+            encode_checkpoint_borrowed(9, ID, records.iter(), u64::MAX).unwrap(),
+            BASELINE
+        );
+        assert_eq!(encode_checkpoint(9, ID, &records).unwrap(), BASELINE);
+        assert_eq!(
+            crate::encode_snapshot(9, ID, &records).unwrap(),
+            &BASELINE[CHECKPOINT_HEADER_BYTES..]
+        );
+    }
+
+    /// Scenario: Populated and empty snapshots meet budgets one byte below, at, and above their size.
+    /// Guarantees: Admission excludes the container header, permits equality, and rejects excess before output allocation.
+    #[test]
+    fn borrowed_snapshot_budget_boundaries() {
+        for records in [records(), Vec::new()] {
+            let expected = encode_checkpoint(9, ID, &records).unwrap();
+            let size = (expected.len() - CHECKPOINT_HEADER_BYTES) as u64;
+            assert!(
+                matches!(encode_checkpoint_borrowed(9, ID, records.iter(), size - 1),
+                Err(EncodeError::SnapshotTooLarge { len, max }) if len == size && max == size - 1)
+            );
+            for budget in [size, size + 1] {
+                assert_eq!(
+                    encode_checkpoint_borrowed(9, ID, records.iter(), budget).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    /// Scenario: Borrowed records duplicate a file ID or a live locator, or legally share a finalized locator.
+    /// Guarantees: Both uniqueness rules remain enforced and finalized historical locators remain allowed.
+    #[test]
+    fn borrowed_snapshot_keeps_uniqueness_rules() {
+        let mut records = records()[..2].to_vec();
+        let id = records[1].file_id;
+        records[1].file_id = records[0].file_id;
+        assert!(matches!(
+            encode_checkpoint_borrowed(9, ID, records.iter(), u64::MAX),
+            Err(EncodeError::DuplicateFileId { .. })
+        ));
+        records[1].file_id = id;
+        records[1].locator = records[0].locator;
+        assert!(matches!(
+            encode_checkpoint_borrowed(9, ID, records.iter(), u64::MAX),
+            Err(EncodeError::DuplicateLiveLocator { .. })
+        ));
+        records[1].lifecycle_state = crate::LifecycleState::RotatedFinalized;
+        let _ = encode_checkpoint_borrowed(9, ID, records.iter(), u64::MAX).unwrap();
+    }
 }
