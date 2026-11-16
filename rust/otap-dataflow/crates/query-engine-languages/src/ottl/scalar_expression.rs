@@ -210,5 +210,48 @@ mod tests {
                 ]),
             )),
         );
+
+        run_test_success(
+            "false_positive",
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "false_positive",
+                    )),
+                )]),
+            )),
+        );
+
+        run_test_success(
+            "true_positive.foo",
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "true_positive"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
+                    )),
+                ]),
+            )),
+        );
+
+        run_test_success(
+            "true.foo", // TODO: currently field_expression parses this, as follow-up maybe disallow such a parse.
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "true"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "foo"),
+                    )),
+                ]),
+            )),
+        );
     }
 }
