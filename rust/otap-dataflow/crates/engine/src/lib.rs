@@ -7,10 +7,11 @@ use crate::{
     admission::AdmissionBinder,
     attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType},
     channel_metrics::{
-        ChannelMetricsRegistry, ChannelReceiverMetricSets, ChannelReceiverMetrics,
-        ChannelReceiverStateMetrics, ChannelSenderFailureMetrics, ChannelSenderMetricSets,
-        ChannelSenderMetrics, LocalChannelQueueDepth, PdataChannelReceiverMetricSets,
-        PdataChannelSenderMetricSets, SharedChannelQueueDepth,
+        ChannelMetricsRegistry, ChannelReceiverEndpointAttributes, ChannelReceiverMetricSets,
+        ChannelReceiverMetrics, ChannelReceiverStateMetrics, ChannelSenderEndpointAttributes,
+        ChannelSenderFailureMetrics, ChannelSenderMetricSets, ChannelSenderMetrics,
+        LocalChannelQueueDepth, PdataChannelReceiverMetricSets, PdataChannelSenderMetricSets,
+        SharedChannelQueueDepth,
     },
     config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
@@ -1523,35 +1524,40 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let register_sender_metrics = |ctx: &PipelineContext,
                                        telemetry: &NodeTelemetryHandle,
-                                       entity_key| {
+                                       entity_key,
+                                       port: &PortName| {
+            let registrar = ctx.metric_set_registrar_for_entity(entity_key);
+            let endpoint = ChannelSenderEndpointAttributes {
+                node_id: ctx.node_id(),
+                node_port: port.clone(),
+            };
             let metrics = PdataChannelSenderMetricSets {
-                messages: ctx
-                    .register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(entity_key),
-                failures: ctx
-                    .register_measurement_metric_set_for_entity::<ChannelSenderFailureMetrics>(
-                        entity_key,
-                    ),
+                messages: ChannelSenderMetrics::register(&registrar, &endpoint),
+                failures: ChannelSenderFailureMetrics::register(&registrar, &endpoint),
             };
             for key in metrics.metric_set_keys() {
                 telemetry.track_metric_set(key);
             }
             ChannelSenderMetricSets::Pdata(metrics)
         };
-        let register_receiver_metrics = |ctx: &PipelineContext,
-                                         telemetry: &NodeTelemetryHandle,
-                                         entity_key| {
-            let metrics = PdataChannelReceiverMetricSets {
-                messages: ctx.register_measurement_metric_set_for_entity::<ChannelReceiverMetrics>(
-                    entity_key,
-                ),
-                state: ctx
-                    .register_metric_set_for_entity::<ChannelReceiverStateMetrics>(entity_key),
+        let register_receiver_metrics =
+            |ctx: &PipelineContext, telemetry: &NodeTelemetryHandle, entity_key| {
+                let endpoint = ChannelReceiverEndpointAttributes {
+                    node_id: ctx.node_id(),
+                };
+                let metrics = PdataChannelReceiverMetricSets {
+                    messages: ChannelReceiverMetrics::register(
+                        &ctx.metric_set_registrar_for_entity(entity_key),
+                        &endpoint,
+                    ),
+                    state: ctx
+                        .register_metric_set_for_entity::<ChannelReceiverStateMetrics>(entity_key),
+                };
+                for key in metrics.metric_set_keys() {
+                    telemetry.track_metric_set(key);
+                }
+                ChannelReceiverMetricSets::Pdata(metrics)
             };
-            for key in metrics.metric_set_keys() {
-                telemetry.track_metric_set(key);
-            }
-            ChannelReceiverMetricSets::Pdata(metrics)
-        };
 
         if channel_metrics_enabled {
             match (use_shared_channels, num_destinations > 1) {
@@ -1577,7 +1583,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
                         let sender_metrics =
-                            register_sender_metrics(ctx, telemetry, sender_entity_key);
+                            register_sender_metrics(ctx, telemetry, sender_entity_key, port);
                         let sender = SharedSender::mpmc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
@@ -1638,7 +1644,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
                         let sender_metrics =
-                            register_sender_metrics(ctx, telemetry, sender_entity_key);
+                            register_sender_metrics(ctx, telemetry, sender_entity_key, port);
                         let sender = SharedSender::mpsc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
@@ -1695,7 +1701,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
                         let sender_metrics =
-                            register_sender_metrics(ctx, telemetry, sender_entity_key);
+                            register_sender_metrics(ctx, telemetry, sender_entity_key, port);
                         let sender = LocalSender::mpmc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
@@ -1757,7 +1763,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
                         let sender_metrics =
-                            register_sender_metrics(ctx, telemetry, sender_entity_key);
+                            register_sender_metrics(ctx, telemetry, sender_entity_key, port);
                         let sender = LocalSender::mpsc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,

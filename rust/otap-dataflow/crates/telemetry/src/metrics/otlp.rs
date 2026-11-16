@@ -664,16 +664,14 @@ where
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
         validate_value_kind(field, value)?;
         for stream in resolve_views(field, &scope_views) {
-            if let Some(metric) =
-                prepare_metric(
-                    field,
-                    value,
-                    metric_set,
-                    (!stream.view_applied).then_some(metric_set.descriptor.name),
-                    stream.name,
-                    stream.description,
-                )?
-            {
+            if let Some(metric) = prepare_metric(
+                field,
+                value,
+                metric_set,
+                (!stream.view_applied).then_some(metric_set.descriptor.name),
+                stream.name,
+                stream.description,
+            )? {
                 register_projected_stream(
                     scope_streams,
                     metric_set.descriptor.name,
@@ -2706,7 +2704,12 @@ mod tests {
             .map(|metric| metric.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names.len(), 5);
-        assert!(names.iter().take(4).all(|name| name.starts_with("test.scope.")));
+        assert!(
+            names
+                .iter()
+                .take(4)
+                .all(|name| name.starts_with("test.scope."))
+        );
         assert_eq!(names[4], "test.empty_mmsc.histogram.empty");
     }
 

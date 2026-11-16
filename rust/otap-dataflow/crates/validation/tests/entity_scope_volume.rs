@@ -282,7 +282,10 @@ fn capture_internal_metrics_volume() {
         .block_on(drive_engine(admin_port));
 
     let engine_result = engine_thread.join().expect("engine thread should join");
-    assert!(engine_result.is_ok(), "engine run failed: {engine_result:?}");
+    assert!(
+        engine_result.is_ok(),
+        "engine run failed: {engine_result:?}"
+    );
 
     let captured = std::mem::take(&mut *CAPTURED.lock());
     assert!(!captured.is_empty(), "no internal metrics were captured");
@@ -290,8 +293,8 @@ fn capture_internal_metrics_volume() {
 }
 
 async fn drive_engine(admin_port: u16) {
-    let endpoint = AdminEndpoint::from_url(&format!("http://127.0.0.1:{admin_port}"))
-        .expect("admin endpoint");
+    let endpoint =
+        AdminEndpoint::from_url(&format!("http://127.0.0.1:{admin_port}")).expect("admin endpoint");
     let client = AdminClient::builder()
         .http(HttpAdminClientSettings::new(endpoint))
         .build()

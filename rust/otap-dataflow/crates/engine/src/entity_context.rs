@@ -527,7 +527,9 @@ mod tests {
             .entity_handle()
             .register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(dest_entity_key);
 
-        assert_eq!(registry.entity_count(), 6);
+        // The sender and receiver endpoints of one channel share a single
+        // deduplicated channel entity.
+        assert_eq!(registry.entity_count(), 5);
         assert_eq!(registry.metric_set_count(), 6);
 
         drop(dest_guard);

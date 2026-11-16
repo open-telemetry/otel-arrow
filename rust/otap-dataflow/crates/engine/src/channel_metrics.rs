@@ -71,6 +71,7 @@ pub(crate) struct SignalChannelSendFailureAttributes {
 /// PData channel send attempts grouped by signal and terminal local outcome.
 #[metric_set(
     name = "channel.sender",
+    registration_attributes = ChannelSenderEndpointAttributes,
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -83,6 +84,7 @@ pub struct ChannelSenderMetrics {
 /// PData channel send failures grouped by signal and actionable error category.
 #[metric_set(
     name = "channel.sender",
+    registration_attributes = ChannelSenderEndpointAttributes,
     measurement_attributes = SignalChannelSendFailureAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -119,6 +121,7 @@ pub(crate) struct ControlChannelSenderFailureMetrics {
 /// Successfully dequeued PData messages grouped by signal.
 #[metric_set(
     name = "channel.receiver",
+    registration_attributes = ChannelReceiverEndpointAttributes,
     measurement_attributes = SignalAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -258,6 +261,33 @@ pub struct NodePortAttributes {
     /// Output port name, or `input` for the input side of completion metrics.
     #[attribute_key = "node.port"]
     pub node_port: Cow<'static, str>,
+}
+
+/// Sending endpoint of a pdata channel: the node and output port that feed it.
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+pub struct ChannelSenderEndpointAttributes {
+    /// Sending node.
+    #[attribute_key = "node.id"]
+    pub node_id: Cow<'static, str>,
+    /// Output port of the sending node connected to the channel.
+    #[attribute_key = "node.port"]
+    pub node_port: Cow<'static, str>,
+}
+
+/// Receiving endpoint of a pdata channel: the node that consumes from it.
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+pub struct ChannelReceiverEndpointAttributes {
+    /// Receiving node.
+    #[attribute_key = "node.id"]
+    pub node_id: Cow<'static, str>,
+}
+
+/// Control channel id qualified with the owner kind, so a node and an
+/// extension that share an id do not collide.
+pub(crate) fn node_control_channel_id(name: &str) -> Cow<'static, str> {
+    format!("node:{}:{}", name, ChannelKind::Control.as_str()).into()
 }
 
 pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {

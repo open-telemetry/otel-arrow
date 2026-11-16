@@ -22,7 +22,7 @@ use crate::channel_metrics::{
     ControlChannelReceiverMetricSets, ControlChannelReceiverMetrics,
     ControlChannelSenderFailureMetrics, ControlChannelSenderMetricSets,
     ControlChannelSenderMetrics, LocalChannelQueueDepth, SharedChannelQueueDepth,
-    control_channel_id,
+    control_channel_id, node_control_channel_id,
 };
 use crate::context::{ExtensionContext, PipelineContext};
 use crate::entity_context::{EntityTelemetryHandle, current_node_telemetry_handle};
@@ -226,7 +226,7 @@ where
         control_receiver,
         || {
             let key = pipeline_ctx.register_node_channel_entity(
-                control_channel_id(name),
+                node_control_channel_id(name),
                 "input".into(),
                 ChannelKind::Control,
                 M::CHANNEL_MODE,

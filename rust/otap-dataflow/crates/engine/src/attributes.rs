@@ -413,6 +413,34 @@ pub enum ChannelImplementation {
     Flume,
 }
 
+/// Channel entity attributes: a channel is one physical queue, contained by
+/// the pipeline instance. Endpoints (sending and receiving nodes) are data
+/// point dimensions on the channel metrics, not part of the entity.
+#[attribute_set(scope, name = "channel.attrs", entity = "channel")]
+#[derive(Debug, Clone, Hash)]
+pub struct ChannelAttributeSet {
+    /// Channel identifier, unique within the pipeline instance.
+    #[attribute_key = "channel.id"]
+    pub channel_id: Cow<'static, str>,
+
+    /// Pipeline instance attributes.
+    #[compose]
+    pub pipeline_attrs: PipelineAttributeSet,
+
+    /// Channel payload kind ("control" or "pdata").
+    #[attribute_key = "channel.kind"]
+    pub channel_kind: ChannelKind,
+    /// Concurrency mode of the channel ("local" or "shared").
+    #[attribute_key = "channel.mode"]
+    pub channel_mode: ChannelMode,
+    /// Channel type ("mpsc" or "mpmc").
+    #[attribute_key = "channel.type"]
+    pub channel_type: ChannelType,
+    /// Channel implementation ("tokio", "flume", "internal").
+    #[attribute_key = "channel.impl"]
+    pub channel_impl: ChannelImplementation,
+}
+
 /// Channel endpoint attributes for a node-hosted channel.
 #[attribute_set(scope, name = "node.channel.attrs", entity = "channel")]
 #[derive(Debug, Clone, Hash)]
@@ -447,6 +475,8 @@ pub struct NodeChannelAttributeSet {
 }
 
 /// Channel endpoint attributes for a node-hosted channel, extended with user-configured custom telemetry attributes.
+// Unused since the RFC 0012 channel experiment registers `ChannelAttributeSet`.
+#[allow(dead_code)]
 #[attribute_set(scope, name = "node.channel.custom.attrs", entity = "channel")]
 #[derive(Debug, Clone, Hash)]
 pub struct NodeWithCustomChannelAttributeSet {

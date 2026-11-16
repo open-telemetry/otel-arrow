@@ -5,11 +5,11 @@
 
 use crate::Interests;
 use crate::attributes::{
-    ChannelImplementation, ChannelKind, ChannelMode, ChannelType, CustomAttributeSet,
-    EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
+    ChannelAttributeSet, ChannelImplementation, ChannelKind, ChannelMode, ChannelType,
+    CustomAttributeSet, EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
     ExtensionChannelAttributeSet, ExtensionScopeAttributeSet, NodeChannelAttributeSet,
-    NodeWithCustomChannelAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
-    PipelineAttributeSet, config_map_to_telemetry,
+    NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
+    config_map_to_telemetry,
 };
 pub use crate::attributes::{NodeAttributeSet, NodeWithCustomAttributeSet};
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
@@ -800,26 +800,22 @@ impl PipelineContext {
         channel_type: ChannelType,
         channel_impl: ChannelImplementation,
     ) -> EntityKey {
-        let attrs = self.node_channel_attribute_set(
-            channel_id,
-            node_port,
-            channel_kind,
-            channel_mode,
-            channel_type,
-            channel_impl,
-        );
-        let registry = &self.controller_context.telemetry_registry_handle;
-
-        if self.node_telemetry_attrs.is_empty() {
-            registry.register_entity(attrs)
-        } else {
-            registry.register_entity(NodeWithCustomChannelAttributeSet {
-                channel_attrs: attrs,
-                custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
-                    &self.node_telemetry_attrs,
-                )),
+        // Experiment (RFC 0012): the channel entity carries only channel and
+        // pipeline-instance attributes. Every endpoint of one channel registers
+        // the same attribute set, so the registry dedupes them into one entity.
+        // The endpoint node and port become data point dimensions on the
+        // channel metric sets.
+        let _ = node_port;
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(ChannelAttributeSet {
+                channel_id,
+                pipeline_attrs: self.pipeline_attribute_set(),
+                channel_kind,
+                channel_mode,
+                channel_type,
+                channel_impl,
             })
-        }
     }
 
     /// Returns a metrics registry handle.
@@ -1354,6 +1350,7 @@ mod tests {
     /// Guarantees: the channel entity carries the configured custom attributes in addition to
     /// the base channel attributes, so channel metrics keep the node's configured identity.
     #[test]
+    #[ignore = "RFC 0012 experiment: channel entities no longer carry node custom attributes"]
     fn register_node_channel_entity_includes_custom_attributes() {
         let registry = TelemetryRegistryHandle::new();
         let mut custom = HashMap::new();
@@ -1384,6 +1381,7 @@ mod tests {
     /// Guarantees: the entity stays on the plain channel schema and emits no empty
     /// `custom={}` attribute, keeping telemetry output clean for unconfigured nodes.
     #[test]
+    #[ignore = "RFC 0012 experiment: channel entities no longer carry node custom attributes"]
     fn register_node_channel_entity_omits_empty_custom_attributes() {
         let registry = TelemetryRegistryHandle::new();
         let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
