@@ -119,6 +119,8 @@ pub enum Allocator {
     Mimalloc,
     /// snmalloc.
     Snmalloc,
+    /// Standalone Rust allocator for the pinned DFE runtime.
+    DfeSlab,
 }
 
 /// Meaning of an allocator-reported byte count.
@@ -132,6 +134,8 @@ enum AllocatorMemoryKind {
     Committed,
     Reserved,
     ReservedPeak,
+    MappedPeak,
+    RetiredMapped,
 }
 
 #[attribute_set(item, measurement)]
@@ -171,6 +175,10 @@ pub struct AllocatorMemoryStats {
     pub reserved: Option<u64>,
     /// Peak bytes reserved from the OS by the allocator.
     pub reserved_peak: Option<u64>,
+    /// Peak virtual mapping bytes used by the allocator.
+    pub mapped_peak: Option<u64>,
+    /// Virtual mapping bytes kept alive by blocks from retired workers.
+    pub retired_mapped: Option<u64>,
 }
 
 /// Native statistics reader supplied by the binary that selects the allocator.
@@ -200,6 +208,8 @@ impl AllocatorMemoryMonitor {
             (Committed, stats.committed),
             (Reserved, stats.reserved),
             (ReservedPeak, stats.reserved_peak),
+            (MappedPeak, stats.mapped_peak),
+            (RetiredMapped, stats.retired_mapped),
         ] {
             if let Some(bytes) = bytes {
                 self.metrics

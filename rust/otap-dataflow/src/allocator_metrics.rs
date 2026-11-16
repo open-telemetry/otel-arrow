@@ -7,6 +7,7 @@ use otel_arrow_dfe_engine::engine_metrics::AllocatorMemoryProvider;
 #[cfg(any(
     feature = "mimalloc",
     feature = "snmalloc",
+    feature = "dfe-local-alloc",
     all(not(windows), feature = "jemalloc")
 ))]
 use otel_arrow_dfe_engine::engine_metrics::{Allocator, AllocatorMemoryStats};
@@ -28,7 +29,23 @@ pub(crate) fn provider(name: &str) -> Option<AllocatorMemoryProvider> {
             allocator: Allocator::Snmalloc,
             read: snmalloc_memory,
         }),
+        #[cfg(feature = "dfe-local-alloc")]
+        "dfe-local" => Some(AllocatorMemoryProvider {
+            allocator: Allocator::DfeSlab,
+            read: dfe_slab_memory,
+        }),
         _ => None,
+    }
+}
+
+#[cfg(feature = "dfe-local-alloc")]
+fn dfe_slab_memory() -> AllocatorMemoryStats {
+    let (mapped, peak, retired) = otel_arrow_dfe_engine::pipeline_allocator::mapped_bytes();
+    AllocatorMemoryStats {
+        mapped: Some(mapped),
+        mapped_peak: Some(peak),
+        retired_mapped: Some(retired),
+        ..Default::default()
     }
 }
 

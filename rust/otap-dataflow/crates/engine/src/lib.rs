@@ -95,6 +95,13 @@ pub mod memory_limiter;
 pub mod node;
 mod node_local_scheduler;
 pub mod output_router;
+#[cfg(feature = "dfe-local-alloc")]
+pub mod pipeline_allocator;
+#[cfg(all(
+    feature = "dfe-local-alloc",
+    not(all(target_os = "linux", target_arch = "x86_64"))
+))]
+compile_error!("dfe-local-alloc currently supports Linux x86-64");
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;

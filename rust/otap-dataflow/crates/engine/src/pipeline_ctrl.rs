@@ -770,6 +770,34 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         error = err.to_string()
                     );
                 }
+                #[cfg(feature = "dfe-local-alloc")]
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_reliably_until(
+                        pipeline_metrics_monitor.sample_allocator_slab(),
+                        terminal_metrics_deadline,
+                    )
+                    .await
+                {
+                    otel_warn!(
+                        "pipeline.allocator_slab.final_reporting.fail",
+                        error = err.to_string()
+                    );
+                }
+                #[cfg(feature = "dfe-local-alloc")]
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_measurement_reliably_until(
+                        pipeline_metrics_monitor.allocator_large_cache_mut(),
+                        terminal_metrics_deadline,
+                    )
+                    .await
+                {
+                    otel_warn!(
+                        "pipeline.allocator_large_cache.final_reporting.fail",
+                        error = err.to_string()
+                    );
+                }
             }
 
             if self.telemetry.tokio_metrics {
@@ -864,6 +892,26 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     .report(pipeline_metrics_monitor.metrics_mut())
                 {
                     otel_warn!("pipeline.metrics.reporting.fail", error = err.to_string());
+                }
+                #[cfg(feature = "dfe-local-alloc")]
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report(pipeline_metrics_monitor.sample_allocator_slab())
+                {
+                    otel_warn!(
+                        "pipeline.allocator_slab.reporting.fail",
+                        error = err.to_string()
+                    );
+                }
+                #[cfg(feature = "dfe-local-alloc")]
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_measurement(pipeline_metrics_monitor.allocator_large_cache_mut())
+                {
+                    otel_warn!(
+                        "pipeline.allocator_large_cache.reporting.fail",
+                        error = err.to_string()
+                    );
                 }
             }
 

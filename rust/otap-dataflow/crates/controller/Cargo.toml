@@ -19,6 +19,7 @@ workspace = true
 testing = []
 admin-live-logs-ws = ["otel-arrow-dfe-admin/live-logs-ws"]
 jemalloc-pprof = ["otel-arrow-dfe-admin/jemalloc-pprof"]
+dfe-local-alloc = ["otel-arrow-dfe-engine/dfe-local-alloc"]
 
 [dependencies]
 otel-arrow-dfe-config = { workspace = true }

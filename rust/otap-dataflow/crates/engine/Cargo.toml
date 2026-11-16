@@ -19,6 +19,7 @@ workspace = true
 testing = []
 jemalloc = ["dep:tikv-jemalloc-ctl", "dep:tikv-jemalloc-sys"]
 jemalloc-testing = ["jemalloc"]
+dfe-local-alloc = []
 test-utils = []
 
 [dependencies]

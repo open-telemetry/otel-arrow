@@ -318,6 +318,83 @@ validation criteria. Backend-specific allocator APIs and compatibility shims
 are implementation details tracked there rather than part of this architecture
 contract.
 
+## Experimental Standalone Rust Heap
+
+The optional `dfe-local-alloc` build provides a standalone Rust global allocator
+on Linux x86-64. It acquires anonymous mappings from Linux. Each worker owns
+64 KiB spans for small allocations up to 16 KiB, with one empty span retained
+per size class. Large and highly aligned allocations use dedicated mappings.
+By default, each worker can keep up to 2 MiB of unused large mappings for
+reuse. The allocator groups eligible mappings into capacity bins and may reuse
+one up to 25% larger than the requested mapping. A growing allocation can stay
+in place when the mapping has enough space after alignment. The worker clears
+its cache after consecutive pipeline samples with no large mapping activity.
+
+Set `DFE_ALLOC_LARGE_CACHE=exact` to use the original four-slot, exact-size
+cache and copy large reallocations. Set `DFE_ALLOC_LARGE_CACHE_MIB` to an integer
+from 0 to 8 to change the per-worker cache budget. A value of 0 disables
+caching. Each retained mapping counts against the budget at its full mapped
+size and can use up to half of that budget.
+
+The binned cache has two independent experimental controls:
+
+- `DFE_ALLOC_LARGE_CACHE_EVICTION=reserve-hot` prefers to retain up to four
+  mappings per recently requested bin with capacity up to 64 KiB. It still
+  obeys the byte budget and can evict from those bins when necessary. The
+  default, `largest`, evicts the largest cached mapping first.
+- `DFE_ALLOC_LARGE_CACHE_TRIM=gradual` retains up to one quarter of the cache
+  budget, capped at 512 KiB per worker, at the first quiet pipeline sample.
+  Further quiet samples release the remainder after two seconds. The
+  default, `immediate`, empties the cache at the first quiet sample.
+
+Set `DFE_ALLOC_MEDIUM_EXTENTS=on` to let pipeline workers allocate from
+512 KiB extents for mapping sizes in the 16-64 KiB capacity bins, with
+alignment up to 4 KiB. Each extent holds slots of one capacity. A worker
+can keep one empty extent per capacity while active and releases empty
+extents when it samples an idle interval. Live slots hold their extent
+mapped until the last free, including across worker shutdown. Each worker
+tracks extent capacity and live requested bytes separately from its cache
+of dedicated mappings.
+
+With extents enabled, set `DFE_ALLOC_MEDIUM_EXTENT_SLOTS=bitmap` to track
+available slots in the extent header instead of linking through their pages.
+Set it to `bitmap-purge` to also discard contiguous runs of reconciled,
+fully free slots in partially occupied extents after one second of sampled
+worker inactivity. It keeps their virtual ranges mapped. The default
+`list` uses the original free lists.
+
+Set `DFE_ALLOC_UPPER_EXTENT=on` alongside `DFE_ALLOC_MEDIUM_EXTENTS=on`
+to also pool the 160 KiB capacity bin. It covers mapping sizes above
+128 KiB through 160 KiB with alignment up to 4 KiB. Each 512 KiB extent
+holds three slots. This option defaults to `off`.
+
+A cross-thread free publishes into the originating span's remote list or
+records the returned slot in its remote bitmap. The owner reconciles remote
+frees in batches when searching for space and at pipeline
+telemetry collection. Worker exit releases empty spans and retires spans with
+live objects. The last remote free releases a retired span. Ordinary Rust
+threads outside pipelines use the same heap implementation and retire their
+spans when their thread-local heap is destroyed.
+
+`pipeline.allocator_slab` reports small-object live requested and usable bytes,
+mapped and empty span capacity, bytes reconciled by sampling, and large mapping
+cache size. It also reports extent mapped, empty, requested, and occupied slot
+bytes. It counts acquisitions and releases for each mapping type, idle
+extent discard calls and bytes, bytes copied during reallocation, and
+dedicated reallocations served in place.
+`pipeline.allocator_large_cache` reports hits and misses by the size requested
+from the mapping cache, after alignment and page rounding. The three bands are
+below 64 KiB, 64 KiB to below 256 KiB, and 256 KiB or more. The process allocator
+metrics report current, peak, and retired virtual mapping bytes. Process RSS
+remains available through engine telemetry.
+
+Build the experiment with the usual engine components:
+
+```sh
+cargo build --release --no-default-features \
+  --features core-nodes,dev-tools,admin-live-logs-ws,crypto-ring,dfe-local-alloc
+```
+
 ## Proposed Logical Retained-Work Accounting
 
 Retained-work accounting answers who currently holds accepted work and where it

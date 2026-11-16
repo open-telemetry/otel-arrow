@@ -2816,6 +2816,9 @@ impl<
             );
         }
 
+        #[cfg(feature = "dfe-local-alloc")]
+        let _allocator_scope = otel_arrow_dfe_engine::pipeline_allocator::enter_pipeline();
+
         // Run the pipeline with thread-local tracing subscriber active.
         tracing_setup.with_subscriber(|| {
             // Create a tracing span for this pipeline thread

@@ -52,14 +52,24 @@ const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.txt
         all(feature = "jemalloc", feature = "mimalloc"),
         all(feature = "jemalloc", feature = "snmalloc"),
         all(feature = "mimalloc", feature = "snmalloc"),
+        all(
+            feature = "dfe-local-alloc",
+            any(
+                feature = "dhat-heap",
+                feature = "mimalloc",
+                feature = "jemalloc",
+                feature = "snmalloc"
+            )
+        ),
     )
 ))]
 compile_error!(
-    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`, `snmalloc`. \
+    "Allocator features are mutually exclusive. Enable only one allocator: `dhat-heap`, `mimalloc`, `jemalloc`, `snmalloc`, `dfe-local-alloc`. \
     Example: \
         (mimalloc): cargo build --release --no-default-features --features mimalloc. \
         (jemalloc): cargo build --release --no-default-features --features jemalloc. \
         (snmalloc): cargo build --release --no-default-features --features snmalloc. \
+        (experimental Rust heap): cargo build --release --no-default-features --features dfe-local-alloc. \
         (dhat): cargo build --profile profiling --no-default-features --features dhat-heap."
 );
 
@@ -101,6 +111,14 @@ cfg_select! {
         const MEMORY_ALLOCATOR: &str = "jemalloc";
         #[global_allocator]
         static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+    }
+
+    feature = "dfe-local-alloc" => {
+        use otel_arrow_dfe_engine::pipeline_allocator::PipelineAllocator;
+
+        const MEMORY_ALLOCATOR: &str = "dfe-local";
+        #[global_allocator]
+        static GLOBAL: PipelineAllocator = PipelineAllocator;
     }
 
     feature = "snmalloc" => {
@@ -275,6 +293,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
     {
         dhat_start();
+    }
+
+    #[cfg(feature = "dfe-local-alloc")]
+    if MEMORY_ALLOCATOR == "dfe-local" {
+        otel_arrow_dfe_engine::pipeline_allocator::configure_large_cache_from_env()?;
     }
 
     // Install the rustls crypto provider selected by the crypto-* feature flag.

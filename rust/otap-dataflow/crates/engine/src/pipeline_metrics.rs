@@ -134,9 +134,13 @@
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
+#[cfg(feature = "dfe-local-alloc")]
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry_macros::metric_set;
+#[cfg(feature = "dfe-local-alloc")]
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 use std::time::Instant;
 
 #[cfg(all(not(windows), feature = "jemalloc"))]
@@ -388,7 +392,108 @@ pub struct TokioRuntimeMetrics {
     pub io_driver_ready_count: ObserveCounter<u64>,
 }
 
-/// Per-thread allocation counters.
+/// Worker-owned heap inventory and remote reclaim activity.
+#[cfg(feature = "dfe-local-alloc")]
+#[metric_set(name = "pipeline.allocator_slab")]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PipelineAllocatorSlabMetrics {
+    /// Mapped bytes in this worker's small-object spans.
+    #[metric(unit = "By")]
+    slab_mapped_bytes: Gauge<u64>,
+    /// Requested bytes in live small objects allocated by this worker.
+    #[metric(unit = "By")]
+    slab_requested_bytes: Gauge<u64>,
+    /// Size-class capacity of live small objects allocated by this worker.
+    #[metric(unit = "By")]
+    slab_usable_bytes: Gauge<u64>,
+    /// Mapped span bytes empty and available for reuse.
+    #[metric(unit = "By")]
+    empty_span_bytes: Gauge<u64>,
+    /// Mapped bytes in worker-owned medium extents.
+    #[metric(unit = "By")]
+    extent_mapped_bytes: Gauge<u64>,
+    /// Requested bytes in live extent-backed objects.
+    #[metric(unit = "By")]
+    extent_requested_bytes: Gauge<u64>,
+    /// Bytes occupied by slots for live extent-backed objects.
+    #[metric(unit = "By")]
+    extent_usable_bytes: Gauge<u64>,
+    /// Mapped bytes in completely empty extents.
+    #[metric(unit = "By")]
+    empty_extent_bytes: Gauge<u64>,
+    /// Requested bytes returned remotely and reconciled at this sample.
+    #[metric(unit = "By")]
+    remote_reclaimed_bytes: Counter<u64>,
+    /// Large anonymous mappings cached by this worker for reuse.
+    #[metric(unit = "By")]
+    cached_large_bytes: Gauge<u64>,
+    /// Small-object spans acquired from the OS by this worker.
+    #[metric(unit = "{mapping}")]
+    slab_maps: Counter<u64>,
+    /// Empty small-object spans released by this worker.
+    #[metric(unit = "{mapping}")]
+    slab_releases: Counter<u64>,
+    /// Medium extents acquired from the OS by this worker.
+    #[metric(unit = "{mapping}")]
+    extent_maps: Counter<u64>,
+    /// Empty medium extents released to the OS by this worker.
+    #[metric(unit = "{mapping}")]
+    extent_releases: Counter<u64>,
+    /// OS calls to discard pages of idle, partially occupied extents.
+    #[metric(unit = "{call}")]
+    extent_purge_calls: Counter<u64>,
+    /// Free extent slot bytes successfully passed to the OS for discard.
+    #[metric(unit = "By")]
+    extent_purged_bytes: Counter<u64>,
+    /// Large mappings acquired from the OS by this worker.
+    #[metric(unit = "{mapping}")]
+    large_maps: Counter<u64>,
+    /// Large mappings released to the OS by this worker.
+    #[metric(unit = "{mapping}")]
+    large_releases: Counter<u64>,
+    /// Bytes copied to a replacement block during reallocation.
+    #[metric(unit = "By")]
+    realloc_copied_bytes: Counter<u64>,
+    /// Large reallocations served by the existing mapping.
+    #[metric(unit = "{allocation}")]
+    large_realloc_in_place: Counter<u64>,
+}
+
+#[cfg(feature = "dfe-local-alloc")]
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+enum MappingSizeBand {
+    #[attribute_value = "under64_kib"]
+    Below64,
+    #[attribute_value = "under256_kib"]
+    From64To256,
+    #[attribute_value = "at_least256_kib"]
+    AtLeast256,
+}
+
+#[cfg(feature = "dfe-local-alloc")]
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LargeCacheAttributes {
+    size_band: MappingSizeBand,
+}
+
+/// Large mapping cache activity by requested mapping size.
+#[cfg(feature = "dfe-local-alloc")]
+#[metric_set(
+    name = "pipeline.allocator_large_cache",
+    measurement_attributes = LargeCacheAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PipelineAllocatorLargeCacheMetrics {
+    /// Requests satisfied by a cached mapping.
+    #[metric(unit = "{request}")]
+    hits: Counter<u64>,
+    /// Requests that could not be served from the cache.
+    #[metric(unit = "{request}")]
+    misses: Counter<u64>,
+}
+
+/// Per-thread pipeline and runtime metrics.
 pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
 
@@ -411,6 +516,10 @@ pub(crate) struct PipelineMetricsMonitor {
     cpu_start: ThreadTime,
 
     metrics: MetricSet<PipelineMetrics>,
+    #[cfg(feature = "dfe-local-alloc")]
+    allocator_slab: MetricSet<PipelineAllocatorSlabMetrics>,
+    #[cfg(feature = "dfe-local-alloc")]
+    allocator_large_cache: MeasurementMetricSet<PipelineAllocatorLargeCacheMetrics>,
     tokio_rt: Option<tokio::runtime::RuntimeMetrics>,
     tokio_metrics: MetricSet<TokioRuntimeMetrics>,
     registry: TelemetryRegistryHandle,
@@ -460,6 +569,14 @@ impl PipelineMetricsMonitor {
             "pipeline entity key not set; ensure pipeline entity is registered and instrumented",
         );
         let metrics = pipeline_ctx.register_metric_set_for_entity::<PipelineMetrics>(entity_key);
+        #[cfg(feature = "dfe-local-alloc")]
+        let allocator_slab =
+            pipeline_ctx.register_metric_set_for_entity::<PipelineAllocatorSlabMetrics>(entity_key);
+        #[cfg(feature = "dfe-local-alloc")]
+        let allocator_large_cache = pipeline_ctx
+            .register_measurement_metric_set_for_entity::<PipelineAllocatorLargeCacheMetrics>(
+                entity_key,
+            );
         let tokio_metrics =
             pipeline_ctx.register_metric_set_for_entity::<TokioRuntimeMetrics>(entity_key);
         let registry = pipeline_ctx.metrics_registry();
@@ -480,6 +597,10 @@ impl PipelineMetricsMonitor {
             wall_start: now,
             cpu_start: ThreadTime::now(),
             metrics,
+            #[cfg(feature = "dfe-local-alloc")]
+            allocator_slab,
+            #[cfg(feature = "dfe-local-alloc")]
+            allocator_large_cache,
             tokio_rt,
             tokio_metrics,
             registry,
@@ -489,6 +610,92 @@ impl PipelineMetricsMonitor {
     /// Returns a mutable reference to the metrics struct.
     pub const fn metrics_mut(&mut self) -> &mut MetricSet<PipelineMetrics> {
         &mut self.metrics
+    }
+
+    #[cfg(feature = "dfe-local-alloc")]
+    pub fn sample_allocator_slab(&mut self) -> &mut MetricSet<PipelineAllocatorSlabMetrics> {
+        let stats = crate::pipeline_allocator::sample_worker();
+        self.allocator_slab
+            .slab_mapped_bytes
+            .set(stats.slab_mapped as u64);
+        self.allocator_slab
+            .slab_requested_bytes
+            .set(stats.slab_requested as u64);
+        self.allocator_slab
+            .slab_usable_bytes
+            .set(stats.slab_usable as u64);
+        self.allocator_slab
+            .empty_span_bytes
+            .set(stats.empty_mapped as u64);
+        self.allocator_slab
+            .extent_mapped_bytes
+            .set(stats.extent_mapped as u64);
+        self.allocator_slab
+            .extent_requested_bytes
+            .set(stats.extent_requested as u64);
+        self.allocator_slab
+            .extent_usable_bytes
+            .set(stats.extent_usable as u64);
+        self.allocator_slab
+            .empty_extent_bytes
+            .set(stats.empty_extents as u64);
+        self.allocator_slab
+            .remote_reclaimed_bytes
+            .add(stats.remote_requested as u64);
+        self.allocator_slab
+            .cached_large_bytes
+            .set(stats.cached_large as u64);
+        let activity = stats.activity;
+        self.allocator_slab.slab_maps.add(activity.slab_maps);
+        self.allocator_slab
+            .slab_releases
+            .add(activity.slab_releases);
+        self.allocator_slab.extent_maps.add(activity.extent_maps);
+        self.allocator_slab
+            .extent_releases
+            .add(activity.extent_releases);
+        self.allocator_slab
+            .extent_purge_calls
+            .add(activity.extent_purge_calls);
+        self.allocator_slab
+            .extent_purged_bytes
+            .add(activity.extent_purged_bytes);
+        self.allocator_slab.large_maps.add(activity.large_maps);
+        self.allocator_slab
+            .large_releases
+            .add(activity.large_releases);
+        self.allocator_slab
+            .realloc_copied_bytes
+            .add(activity.realloc_copied);
+        self.allocator_slab
+            .large_realloc_in_place
+            .add(activity.large_realloc_in_place);
+        for (index, size_band) in [
+            MappingSizeBand::Below64,
+            MappingSizeBand::From64To256,
+            MappingSizeBand::AtLeast256,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let hits = activity.hits[index];
+            let misses = activity.misses[index];
+            if hits != 0 || misses != 0 {
+                let entry = self
+                    .allocator_large_cache
+                    .with(LargeCacheAttributes { size_band });
+                entry.hits.add(hits);
+                entry.misses.add(misses);
+            }
+        }
+        &mut self.allocator_slab
+    }
+
+    #[cfg(feature = "dfe-local-alloc")]
+    pub fn allocator_large_cache_mut(
+        &mut self,
+    ) -> &mut MeasurementMetricSet<PipelineAllocatorLargeCacheMetrics> {
+        &mut self.allocator_large_cache
     }
 
     /// Returns a mutable reference to the Tokio runtime metrics struct.
@@ -764,6 +971,14 @@ impl PipelineMetricsMonitor {
 
 impl Drop for PipelineMetricsMonitor {
     fn drop(&mut self) {
+        #[cfg(feature = "dfe-local-alloc")]
+        let _ = self
+            .registry
+            .unregister_metric_set(self.allocator_slab.metric_set_key());
+        #[cfg(feature = "dfe-local-alloc")]
+        let _ = self
+            .registry
+            .unregister_metric_set(self.allocator_large_cache.metric_set_key());
         let _ = self
             .registry
             .unregister_metric_set(self.metrics.metric_set_key());
