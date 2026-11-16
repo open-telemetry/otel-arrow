@@ -13,6 +13,9 @@
 //!   --test entity_scope_volume -- --ignored --nocapture
 //! ```
 //!
+//! `ENTITY_SCOPE_WORKLOAD` selects the workload: `pipeline` (default) or
+//! `topology`.
+//!
 //! Output written to `$ENTITY_SCOPE_OUT/$ENTITY_SCOPE_LABEL/`:
 //! - `req-NNNN.pb`: the raw `ExportMetricsServiceRequest` bytes, one file per
 //!   captured request.
@@ -250,6 +253,154 @@ groups:
     )
 }
 
+/// Topology workload: exercises the cases where endpoint and port dimensions
+/// can vary within one entity.
+///
+/// - fan-in: two generators feed the router (one channel, two senders), and
+///   two filters feed `sink_logs` (one channel, two senders);
+/// - multi-port node: `router` has `logs` and `metrics` output ports;
+/// - competing consumers: `router["logs"]` feeds `[filter_a, filter_b]`
+///   (one MPMC channel, two receivers);
+/// - decision nodes: the `logs_a` flow spans `filter_a` -> `filter_c`, two
+///   filters that drop records.
+fn topology_workload_yaml(admin_port: u16) -> String {
+    format!(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:{admin_port}"
+  telemetry:
+    reporting_interval: 1s
+    logs:
+      providers:
+        global: noop
+        engine: noop
+        internal: noop
+        admin: noop
+  observability:
+    pipeline:
+      policies:
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          runtime_metrics: none
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+        capture:
+          type: "{CAPTURE_EXPORTER_URN}"
+          config: {{}}
+      connections:
+        - from: telemetry
+          to: capture
+groups:
+  default:
+    pipelines:
+      topo:
+        policies:
+          telemetry:
+            pipeline_metrics: true
+            tokio_metrics: true
+            runtime_metrics: detailed
+            flow_metrics:
+              - id: logs_a
+                bounds:
+                  start_node: filter_a
+                  end_node: filter_c
+                duration_distribution: basic
+                purpose: filter
+        nodes:
+          gen_logs:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_signal_count: 3000
+                max_batch_size: 50
+                signals_per_second: 500
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+          gen_mixed:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_signal_count: 3000
+                max_batch_size: 50
+                signals_per_second: 500
+                log_weight: 50
+                metric_weight: 50
+                trace_weight: 0
+          router:
+            type: processor:type_router
+            outputs: ["logs", "metrics"]
+            config: {{}}
+          filter_a:
+            type: processor:filter
+            config:
+              logs:
+                include:
+                  match_type: strict
+                  severity_texts: [INFO, WARN]
+          filter_b:
+            type: processor:filter
+            config:
+              logs:
+                include:
+                  match_type: strict
+                  severity_texts: [WARN, ERROR]
+          filter_c:
+            type: processor:filter
+            config:
+              logs:
+                exclude:
+                  match_type: strict
+                  severity_texts: [WARN]
+          attrs:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: deployment.environment
+                  value: experiment
+          sink_logs:
+            type: exporter:noop
+            config: {{}}
+          sink_metrics:
+            type: exporter:noop
+            config: {{}}
+        connections:
+          - from: gen_logs
+            to: router
+          - from: gen_mixed
+            to: router
+          - from: router["logs"]
+            to: [filter_a, filter_b]
+          - from: router["metrics"]
+            to: attrs
+          - from: filter_a
+            to: filter_c
+          - from: filter_c
+            to: sink_logs
+          - from: filter_b
+            to: sink_logs
+          - from: attrs
+            to: sink_metrics
+"#
+    )
+}
+
 /// Scenario: a fixed synthetic workload runs for a fixed duration.
 /// Guarantees: every internal-telemetry metrics request is captured and dumped
 /// for offline before/after comparison.
@@ -266,8 +417,14 @@ fn capture_internal_metrics_volume() {
 
     let admin_port = free_port();
     let otlp_port = free_port();
-    let spec = OtelDataflowSpec::from_yaml(&workload_yaml(admin_port, otlp_port))
-        .expect("workload config should parse and validate");
+    let workload = std::env::var("ENTITY_SCOPE_WORKLOAD").unwrap_or_else(|_| "pipeline".to_owned());
+    let yaml = match workload.as_str() {
+        "pipeline" => workload_yaml(admin_port, otlp_port),
+        "topology" => topology_workload_yaml(admin_port),
+        other => panic!("unknown ENTITY_SCOPE_WORKLOAD `{other}`"),
+    };
+    let spec =
+        OtelDataflowSpec::from_yaml(&yaml).expect("workload config should parse and validate");
 
     let engine_thread = std::thread::spawn(move || {
         Controller::new(&OTAP_PIPELINE_FACTORY)
