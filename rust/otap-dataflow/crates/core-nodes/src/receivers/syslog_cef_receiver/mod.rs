@@ -549,7 +549,17 @@ struct SyslogCefReceiver {
 
 impl SyslogCefReceiver {
     /// Construct with pipeline context registering metrics
-    fn with_pipeline(pipeline: PipelineContext, arrival: ArrivalBinding, config: Config) -> Self {
+    #[cfg(test)]
+    fn with_pipeline(pipeline: PipelineContext, config: Config) -> Self {
+        Self::with_pipeline_bindings(pipeline, ArrivalBinding::default(), config)
+    }
+
+    /// Construct with pipeline context registering metrics
+    fn with_pipeline_bindings(
+        pipeline: PipelineContext,
+        arrival: ArrivalBinding,
+        config: Config,
+    ) -> Self {
         let metrics = Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(
             &pipeline,
             config.protocol.as_str(),
@@ -581,7 +591,9 @@ impl SyslogCefReceiver {
             .ok_or_else(|| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "Syslog receiver requires a compiled arrival binding".to_owned(),
             })?;
-        Ok(SyslogCefReceiver::with_pipeline(pipeline, arrival, cfg))
+        Ok(SyslogCefReceiver::with_pipeline_bindings(
+            pipeline, arrival, cfg,
+        ))
     }
 }
 
@@ -4212,8 +4224,7 @@ mod telemetry_tests {
 
     fn registered_shared_metric_protocol(config: Config) -> (Vec<String>, bool) {
         let (pipeline, registry) = test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
-        let _receiver =
-            SyslogCefReceiver::with_pipeline(pipeline, ArrivalBinding::default(), config);
+        let _receiver = SyslogCefReceiver::with_pipeline(pipeline, config);
         let mut entities = Vec::new();
         let mut protocol_is_measurement_attribute = false;
         registry.visit_current_metrics_with_item_attrs(
@@ -4428,7 +4439,6 @@ mod telemetry_tests {
             // the interval tick, which avoids timing-dependent flakiness.
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Udp(UdpConfig { listening_addr }),
                     batch: Some(BatchConfig {
@@ -4535,7 +4545,6 @@ mod telemetry_tests {
             // the interval tick, which avoids timing-dependent flakiness.
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Udp(UdpConfig {
                         listening_addr: addr,
@@ -4622,7 +4631,6 @@ mod telemetry_tests {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Udp(UdpConfig {
                         listening_addr: addr,
@@ -4692,7 +4700,6 @@ mod telemetry_tests {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Tcp(TcpConfig {
                         listening_addr: addr,
@@ -4774,7 +4781,6 @@ mod telemetry_tests {
 
             let receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Udp(UdpConfig {
                         listening_addr: addr,
@@ -4864,7 +4870,6 @@ mod telemetry_tests {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let mut receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Udp(UdpConfig {
                         listening_addr: addr,
@@ -4962,7 +4967,6 @@ mod telemetry_tests {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let mut receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Tcp(TcpConfig {
                         listening_addr: addr,
@@ -5068,7 +5072,6 @@ mod telemetry_tests {
 
             let mut receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Udp(UdpConfig {
                         listening_addr: addr,
@@ -5156,7 +5159,6 @@ mod telemetry_tests {
 
             let mut receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Tcp(TcpConfig {
                         listening_addr: addr,
@@ -5249,7 +5251,6 @@ mod telemetry_tests {
 
             let mut receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Tcp(TcpConfig {
                         listening_addr: addr,
@@ -5343,7 +5344,6 @@ mod telemetry_tests {
 
             let mut receiver = SyslogCefReceiver::with_pipeline(
                 pipeline,
-                ArrivalBinding::default(),
                 Config {
                     protocol: Protocol::Tcp(TcpConfig {
                         listening_addr: addr,
