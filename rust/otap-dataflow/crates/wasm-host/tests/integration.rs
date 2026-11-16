@@ -765,53 +765,6 @@ async fn wasm_runner_observable_telemetry() {
     }
 }
 
-/// Scenario: A real guest produces three outputs but the downstream channel is already closed.
-/// Guarantees: Guest rows are counted without emitted rows; the input gets one retryable route-closed Nack.
-#[tokio::test]
-async fn wasm_runner_guest_rows_are_not_emitted_rows() {
-    let path = build_test_guest_wasm();
-    let (mut h, registry) = running_guest(&path, &[None, Some("a"), None], true);
-    let (_, disconnected) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
-    drop(std::mem::replace(&mut h.output, disconnected));
-    let mut input = logs_with_severities(&["ERROR", "INFO"]);
-    subscribe_upstream(&mut input, 44);
-    h.input.send(input).unwrap();
-    assert!(futures::poll!(&mut h.runner).is_pending());
-    assert!(futures::poll!(&mut h.dispatcher).is_pending());
-    let NodeControlMsg::Nack(nack) = h.outcomes.try_recv().unwrap() else {
-        panic!("closed route must nack")
-    };
-    assert!(!nack.permanent);
-    assert_eq!(severities_of(*nack.refused), ["ERROR", "INFO"]);
-    assert!(h.outcomes.try_recv().is_err());
-    assert!(h.output.try_recv().is_err());
-    let metrics = finish_running(h, &registry).await;
-    assert_eq!(
-        counter(
-            &metrics,
-            "processor.wasm_processor.pdata.records.records.out",
-            &[("signal", "logs")]
-        ),
-        6
-    );
-    assert_eq!(
-        counter(&metrics, "node.output.items", &[("signal", "logs")]),
-        0
-    );
-    assert_eq!(
-        counter(&metrics, "node.output.messages", &[("signal", "logs")]),
-        0
-    );
-    assert_eq!(
-        counter(
-            &metrics,
-            "node.input.messages",
-            &[("signal", "logs"), ("outcome", "failure")]
-        ),
-        1
-    );
-}
-
 /// Scenario: A real guest clones encoded traces onto default, named, and repeated destinations, then one child fails.
 /// Guarantees: Fanout preserves order and metadata; one Nack returns the original encoded allocation.
 #[tokio::test]

@@ -27,7 +27,7 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
@@ -536,7 +536,7 @@ impl WasmProcessor {
     async fn dispatch_outputs(
         &mut self,
         delivery: PdataDelivery,
-        outputs: Vec<NativeOutput>,
+        mut outputs: Vec<NativeOutput>,
         flow_compute: Option<u64>,
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
@@ -570,6 +570,18 @@ impl WasmProcessor {
             return effect_handler.notify_ack(AckMsg::new(pdata)).await;
         }
 
+        // A single output reuses the original context, so completions flow directly
+        // upstream without consuming fanout tracking capacity.
+        if let [_] = outputs.as_slice() {
+            let output = outputs.pop().expect("one output");
+            let mut pdata = delivery.with_payload(output.records.into());
+            if let Some(ns) = flow_compute {
+                pdata.start_flow_metric();
+                pdata.add_flow_compute(ns);
+            }
+            return Self::send_output(output.port, pdata, effect_handler).await;
+        }
+
         let context = delivery.context().clone_detached();
         let count = outputs.len();
         let keys = self
@@ -581,23 +593,9 @@ impl WasmProcessor {
                 error: "wasm completion capacity exhausted despite admission gate".into(),
                 source_detail: String::new(),
             })?;
-        let mut send_failed = false;
+        // Like other routing processors, a closed route is a node error: the
+        // engine tears the node down rather than Nacking the partially sent input.
         for (index, (output, key)) in outputs.into_iter().zip(keys).enumerate() {
-            if send_failed {
-                self.complete_output(
-                    key,
-                    Some((
-                        OutboundError {
-                            reason: "output not sent after an earlier route closed".into(),
-                            cause: NackCause::RouteClosed,
-                        },
-                        false,
-                    )),
-                    effect_handler,
-                )
-                .await?;
-                continue;
-            }
             let mut pdata = OtapPdata::new(context.clone_detached(), output.records.into());
             if let Some(ns) = flow_compute {
                 // Split upstream time equally: outputs may contain overlapping rows.
@@ -609,32 +607,23 @@ impl WasmProcessor {
             if !key.is_null() {
                 effect_handler.subscribe_to(Interests::ACKS_OR_NACKS, key.into(), &mut pdata);
             }
-            let result = match output.port {
-                Some(port) => {
-                    effect_handler
-                        .send_message_with_source_node_to(port, pdata)
-                        .await
-                }
-                None => effect_handler.send_message_with_source_node(pdata).await,
-            };
-            if let Err(error) = result {
-                if key.is_null() {
-                    return Err(error.into());
-                }
-                send_failed = true;
-                self.complete_output(
-                    key,
-                    Some((
-                        OutboundError {
-                            reason: error.to_string(),
-                            cause: NackCause::RouteClosed,
-                        },
-                        false,
-                    )),
-                    effect_handler,
-                )
-                .await?;
+            Self::send_output(output.port, pdata, effect_handler).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_output(
+        port: Option<String>,
+        pdata: OtapPdata,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        match port {
+            Some(port) => {
+                effect_handler
+                    .send_message_with_source_node_to(port, pdata)
+                    .await?
             }
+            None => effect_handler.send_message_with_source_node(pdata).await?,
         }
         Ok(())
     }
@@ -706,17 +695,15 @@ impl local::Processor<OtapPdata> for WasmProcessor {
                 };
                 let signal_type = delivery.signal_type();
                 if records.root_record_batch().is_none() {
-                    return self
-                        .dispatch_outputs(
-                            delivery,
-                            vec![NativeOutput {
-                                port: None,
-                                records,
-                            }],
-                            flow_compute,
-                            effect_handler,
-                        )
-                        .await;
+                    // Empty input carries nothing to route; Ack it locally without
+                    // invoking the guest or depending on a default port.
+                    let mut pdata = delivery.with_payload(records.into());
+                    if let Some(ns) = flow_compute {
+                        pdata.start_flow_metric();
+                        pdata.add_flow_compute(ns);
+                    }
+                    pdata.complete_processor_without_output(effect_handler);
+                    return effect_handler.notify_ack(AckMsg::new(pdata)).await;
                 }
                 self.metrics.pdata.guest_process_calls.add(1);
                 let rows_in = records
@@ -1250,91 +1237,41 @@ mod tests {
         }
     }
 
-    /// Scenario: A channel closes before or after an earlier output is admitted.
-    /// Guarantees: Unsent children settle locally, admitted children delay completion, and mixed delivery is permanent.
+    /// Scenario: A tracked or untracked input fans out and a default or named route is closed, before or after a successful send.
+    /// Guarantees: Dispatch returns the channel error, skips later outputs, and emits no upstream completion.
     #[tokio::test]
-    async fn output_partial_dispatch_preserves_completion() {
-        for first_closed in [false, true] {
-            let mut h = output_harness(&["a", "b", "c"], None);
-            drop(h.outputs.remove(if first_closed { "a" } else { "b" }));
-            h.processor
-                .dispatch_outputs(
-                    tracked_input().into_delivery(),
-                    vec![
-                        native_output(Some("a"), "A"),
-                        native_output(Some("b"), "B"),
-                        native_output(Some("c"), "C"),
-                    ],
-                    None,
-                    &h.effect,
-                )
-                .await
-                .unwrap();
-            assert!(h.outputs.get_mut("c").unwrap().try_recv().is_err());
-            if !first_closed {
-                assert!(h.completions.try_recv().is_err());
-                assert!(!h.processor.accept_pdata());
-                let a = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
-                h.processor
-                    .process(
-                        Message::Control(NodeControlMsg::Ack(ack_output(a))),
-                        &mut h.effect,
-                    )
-                    .await
-                    .unwrap();
-            }
-            let PipelineCompletionMsg::DeliverNack { nack } = h.completions.try_recv().unwrap()
-            else {
-                panic!("expected Nack")
-            };
-            assert_eq!(nack.permanent, !first_closed);
-            assert_eq!(nack.cause, NackCause::RouteClosed);
-            assert!(h.processor.accept_pdata());
-            assert!(h.completions.try_recv().is_err());
-        }
-    }
-
-    /// Scenario: An untracked input encounters a closed default or named route, before or after a successful send.
-    /// Guarantees: Dispatch returns the channel error, skips later outputs, and emits no completion.
-    #[tokio::test]
-    async fn output_untracked_route_failure_is_propagated() {
-        for port in [None, Some("b")] {
-            for first_closed in [false, true] {
-                let mut h = output_harness(&["a", "b", "c"], Some("b"));
-                drop(h.outputs.remove("b"));
-                let mut outputs = Vec::new();
-                if !first_closed {
-                    outputs.push(native_output(Some("a"), "A"));
-                }
-                outputs.push(native_output(port, "B"));
-                outputs.push(native_output(Some("c"), "C"));
-                let error = h
-                    .processor
-                    .dispatch_outputs(
+    async fn output_route_failure_is_propagated() {
+        for tracked in [false, true] {
+            for port in [None, Some("b")] {
+                for first_closed in [false, true] {
+                    let mut h = output_harness(&["a", "b", "c"], Some("b"));
+                    drop(h.outputs.remove("b"));
+                    let mut outputs = Vec::new();
+                    if !first_closed {
+                        outputs.push(native_output(Some("a"), "A"));
+                    }
+                    outputs.push(native_output(port, "B"));
+                    outputs.push(native_output(Some("c"), "C"));
+                    let input = if tracked {
+                        tracked_input()
+                    } else {
                         OtapPdata::new(Context::default(), build_logs_batch(&["INPUT"]).into())
-                            .into_delivery(),
-                        outputs,
-                        None,
-                        &h.effect,
-                    )
-                    .await
-                    .expect_err("closed untracked route must fail dispatch");
-                assert!(matches!(
-                    error,
-                    EngineError::ChannelSendError { closed: true, .. }
-                ));
-                let earlier = h.outputs.get_mut("a").unwrap().try_recv();
-                if first_closed {
-                    assert!(earlier.is_err());
-                } else {
-                    assert_eq!(
-                        earlier.unwrap().payload_ref().otap_ref().unwrap(),
-                        &build_logs_batch(&["A"])
-                    );
+                    };
+                    let error = h
+                        .processor
+                        .dispatch_outputs(input.into_delivery(), outputs, None, &h.effect)
+                        .await
+                        .expect_err("closed route must fail dispatch");
+                    assert!(matches!(
+                        error,
+                        EngineError::ChannelSendError { closed: true, .. }
+                    ));
+                    let earlier = h.outputs.get_mut("a").unwrap().try_recv();
+                    assert_eq!(earlier.is_ok(), !first_closed);
+                    assert!(h.outputs.get_mut("c").unwrap().try_recv().is_err());
+                    assert!(h.completions.try_recv().is_err());
+                    assert!(!h.processor.poisoned);
                 }
-                assert!(h.outputs.get_mut("c").unwrap().try_recv().is_err());
-                assert!(h.completions.try_recv().is_err());
-                assert!(h.processor.accept_pdata());
             }
         }
     }
@@ -1416,10 +1353,10 @@ mod tests {
         assert!(h.completions.try_recv().is_err());
     }
 
-    /// Scenario: A guest drops input or produces outputs without completion subscribers.
-    /// Guarantees: Drops Ack once without a port; untracked outputs never exhaust completion capacity.
+    /// Scenario: A guest drops input, or returns one output for tracked and untracked inputs.
+    /// Guarantees: Drops Ack once without a port; single outputs reuse the input context and never consume tracking capacity.
     #[tokio::test]
-    async fn output_drop_and_untracked_paths() {
+    async fn output_drop_and_single_output_paths() {
         let mut h = output_harness(&[], None);
         h.processor
             .dispatch_outputs(tracked_input().into_delivery(), vec![], None, &h.effect)
@@ -1431,18 +1368,28 @@ mod tests {
         ));
         assert!(h.processor.accept_pdata());
         let mut h = output_harness(&["a"], None);
-        for _ in 0..3 {
+        for tracked in [false, false, true, true, true] {
+            let input = if tracked {
+                tracked_input()
+            } else {
+                OtapPdata::new(Context::default(), build_logs_batch(&["A"]).into())
+            };
             h.processor
                 .dispatch_outputs(
-                    OtapPdata::new(Context::default(), build_logs_batch(&["A"]).into())
-                        .into_delivery(),
+                    input.into_delivery(),
                     vec![native_output(None, "A")],
                     None,
                     &h.effect,
                 )
                 .await
                 .unwrap();
-            let _ = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+            let child = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+            assert_eq!(
+                child.payload_ref().otap_ref().unwrap(),
+                &build_logs_batch(&["A"])
+            );
+            // The child carries the upstream subscription, not a fanout correlation.
+            assert_eq!(child.has_context_frames(), tracked);
             assert!(h.processor.accept_pdata());
             assert!(h.completions.try_recv().is_err());
         }
@@ -1510,31 +1457,35 @@ mod tests {
         }
     }
 
-    /// Scenario: A rootless native input reaches a guest that would wait forever if invoked.
-    /// Guarantees: The host bypasses the guest, forwards once, and preserves completion ownership.
+    /// Scenario: A rootless native input reaches a guest that would wait forever if invoked, with and without a default port.
+    /// Guarantees: The host bypasses the guest and Acks locally without output, poisoning, or guest-error accounting.
     #[tokio::test]
     async fn output_rootless_input_bypasses_guest() {
-        let mut h = output_harness(&["a"], None);
-        h.processor
-            .process(
-                Message::PData(OtapPdata::new(
-                    Context::default(),
-                    OtapPayload::empty(SignalType::Logs),
-                )),
-                &mut h.effect,
-            )
-            .await
-            .unwrap();
-        assert!(
-            h.outputs
-                .get_mut("a")
-                .unwrap()
-                .try_recv()
-                .unwrap()
-                .is_empty()
-        );
-        assert!(h.processor.accept_pdata());
-        assert_eq!(h.processor.metrics.pdata.guest_process_calls.get(), 0);
+        for ports in [&["a"][..], &["a", "b"]] {
+            let mut h = output_harness(ports, None);
+            let (context, _) = tracked_input().into_parts();
+            h.processor
+                .process(
+                    Message::PData(OtapPdata::new(
+                        context,
+                        OtapPayload::empty(SignalType::Logs),
+                    )),
+                    &mut h.effect,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                h.completions.try_recv().unwrap(),
+                PipelineCompletionMsg::DeliverAck { .. }
+            ));
+            for port in ports {
+                assert!(h.outputs.get_mut(*port).unwrap().try_recv().is_err());
+            }
+            assert!(!h.processor.poisoned);
+            assert!(h.processor.accept_pdata());
+            assert_eq!(h.processor.metrics.pdata.guest_process_calls.get(), 0);
+            assert_eq!(h.processor.metrics.pdata.guest_process_errors.get(), 0);
+        }
     }
 
     /// Scenario: A real guest returns a list or port string exceeding the canonical lifting budget.
@@ -1569,7 +1520,7 @@ mod tests {
         }
     }
 
-    /// Scenario: Direct control handling receives Shutdown while a metrics-only input is retained.
+    /// Scenario: Direct control handling receives Shutdown while a metrics-only fanout input is retained.
     /// Guarantees: Metadata and tracking survive until completion; input-close draining is not exercised.
     #[tokio::test]
     async fn direct_shutdown_control_preserves_retained_context_without_ack() {
@@ -1579,7 +1530,7 @@ mod tests {
         h.processor
             .dispatch_outputs(
                 input.into_delivery(),
-                vec![native_output(None, "A")],
+                vec![native_output(None, "A"), native_output(None, "B")],
                 None,
                 &h.effect,
             )
@@ -1598,15 +1549,17 @@ mod tests {
             .unwrap();
         assert!(h.completions.try_recv().is_err());
         assert!(!h.processor.accept_pdata());
-        let child = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
-        assert_eq!(child.peer_addr(), Some(address));
-        h.processor
-            .process(
-                Message::Control(NodeControlMsg::Ack(ack_output(child))),
-                &mut h.effect,
-            )
-            .await
-            .unwrap();
+        for _ in 0..2 {
+            let child = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+            assert_eq!(child.peer_addr(), Some(address));
+            h.processor
+                .process(
+                    Message::Control(NodeControlMsg::Ack(ack_output(child))),
+                    &mut h.effect,
+                )
+                .await
+                .unwrap();
+        }
         let PipelineCompletionMsg::DeliverAck { ack } = h.completions.try_recv().unwrap() else {
             panic!("metrics completion")
         };
