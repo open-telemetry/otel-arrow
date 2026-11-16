@@ -30,6 +30,10 @@ config:
 
 ## Supported Formats
 
+The receiver uses the shared [syslog/CEF codec](../../../../pdata-codec/src/codecs/syslog/codec.rs),
+parsers, and Arrow builders in `pdata-codec`. Socket handling and
+telemetry remain in this receiver.
+
 The receiver automatically detects and parses the following message formats:
 
 | Format | Description |
@@ -457,8 +461,8 @@ release mode on an otherwise idle pinned CPU (replace `<cpu>`):
 
 ```sh
 cd rust/otap-dataflow
-cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency --no-run
-taskset -c <cpu> cargo test -p otel-arrow-dfe-core-nodes --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
+cargo test -p otel-arrow-dfe-pdata-codec --features syslog-cef --release --lib bounded_decode_scheduling_latency --no-run
+taskset -c <cpu> cargo test -p otel-arrow-dfe-pdata-codec --features syslog-cef --release --lib bounded_decode_scheduling_latency -- --ignored --nocapture
 ```
 
 The 50 ms assertion is a regression threshold for that controlled test, not a
@@ -629,6 +633,6 @@ See [Configuration](#configuration).
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
-- [Parsing behavior](syslog-parsing-behavior.md)
+- [Parsing behavior](../../../../pdata-codec/src/codecs/syslog/syslog-parsing-behavior.md)
 - [Telemetry](telemetry.md)
 - [Core node catalog](../../../README.md)

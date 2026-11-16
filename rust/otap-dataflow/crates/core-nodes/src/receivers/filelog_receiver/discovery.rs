@@ -18,7 +18,7 @@ pub mod reconcile;
 mod roots;
 mod walk;
 
-pub use budget::{ProbeBudget, ProbeReservation};
+pub use budget::{ProbeBudget, ProbeReservation, ReaderProbeRequest};
 pub use linux::{BindingBatch, Scanner};
 
 use super::source::{FileLocator, SymlinkPolicy};

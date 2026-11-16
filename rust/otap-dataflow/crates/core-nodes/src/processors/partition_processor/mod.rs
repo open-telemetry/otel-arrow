@@ -27,7 +27,7 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
-    NodeContextDeclarations,
+    NodeBindings, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
@@ -68,7 +68,7 @@ fn create_partition_processor(
     processor_config: &ProcessorConfig,
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
-    let processor = PartitionProcessor::from_config(&pipeline_ctx, &user_config.config)?;
+    let processor = PartitionProcessor::from_config(&pipeline_ctx, &node_id, &user_config.config)?;
     Ok(ProcessorWrapper::local(
         processor,
         node_id,
@@ -96,7 +96,17 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
         // about invalid expressions in user's config
         match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let _ = try_create_partitioner(&opl_expression, config.signal_type.as_ref())?;
+                // use default node bindings for validation. We don't have access to the configured
+                // pipeline context here, so we can't use the compiled node bindings. Using default
+                // is fine because the purpose of the validation is currently just to eagerly check
+                // that syntax field references & function names are are valid.
+                let node_bindings = NodeBindings::default();
+
+                let _ = try_create_partitioner(
+                    &opl_expression,
+                    config.signal_type.as_ref(),
+                    &node_bindings,
+                )?;
             }
         };
         Ok(())
@@ -106,6 +116,7 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 fn try_create_partitioner(
     opl_expression: &str,
     signal_type: Option<&SignalType>,
+    node_bindings: &NodeBindings,
 ) -> Result<Partitioner, ConfigError> {
     let (expr, function_defs) =
         OplParser::parse_expr_with_options(opl_expression, default_parser_options()).map_err(
@@ -123,7 +134,7 @@ fn try_create_partitioner(
         Some(SignalType::Traces) => SignalContext::Single(SignalKind::Traces),
     };
 
-    Partitioner::try_new(expr, function_defs, signal_context).map_err(|e| {
+    Partitioner::try_new(expr, function_defs, signal_context, node_bindings).map_err(|e| {
         ConfigError::InvalidUserConfig {
             error: format!("Could not plan partitioner from OPL expression: {e:?}"),
         }
@@ -146,6 +157,7 @@ pub struct PartitionProcessor {
 impl PartitionProcessor {
     fn from_config(
         pipeline_ctx: &PipelineContext,
+        node_id: &NodeId,
         config: &Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
@@ -155,10 +167,19 @@ impl PartitionProcessor {
         })?;
         config.validate_context_declarations(pipeline_ctx)?;
 
+        // extract the context bindings from the pipeline context
+        let context_bindings = pipeline_ctx.compiled_context_bindings();
+        let node_bindings = context_bindings
+            .node_bindings(&pipeline_ctx.pipeline_key(), &node_id.name)
+            .cloned()
+            .unwrap_or_default();
+
         let partitioner = match config.partition_by {
-            PartitionByConfig::OplExpression(opl_expression) => {
-                try_create_partitioner(&opl_expression, config.signal_type.as_ref())?
-            }
+            PartitionByConfig::OplExpression(opl_expression) => try_create_partitioner(
+                &opl_expression,
+                config.signal_type.as_ref(),
+                &node_bindings,
+            )?,
         };
 
         Ok(Self {
@@ -519,13 +540,13 @@ fn partition_value_to_transport_header(
 }
 
 impl ConfigNodeContextDeclaration for Config {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Edits {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
+        Ok(std::iter::once(ContextDeclaration::Edits {
             actions: Box::new([ContextAction::Add {
                 entry: self.partition_header_name.clone(),
             }]),
         })
-        .collect()
+        .collect())
     }
 }
 
@@ -2083,7 +2104,7 @@ mod test {
             "partition_header_name": "x-partition"
         });
         let config: Config = serde_json::from_value(config).unwrap();
-        let decls = config.context_declarations();
+        let decls = config.context_declarations().unwrap();
         assert_eq!(decls.len(), 1);
         assert_eq!(
             decls.iter().next().expect("one declaration"),

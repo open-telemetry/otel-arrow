@@ -1,0 +1,4 @@
+change_type: enhancement
+component: query-engine
+note: Add has_transport_header() function for inspecting batch metadata in transform processor queries
+issues: [4713, 3310]
