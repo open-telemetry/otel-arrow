@@ -24,6 +24,7 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 serde_yaml.workspace = true
 arrow.workspace = true
 futures.workspace = true
@@ -39,3 +40,7 @@ test-codecs = ["testing"]
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "protobuf_payload"
+harness = false

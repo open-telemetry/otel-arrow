@@ -15,6 +15,38 @@ Operators: see the [codec user guide](../../docs/codecs.md) for available
 encodings, optional codec bindings and named configurations, inheritance, and pass-through
 limitations. This README describes the developer extension contract.
 
+## Owned protobuf encoding benchmark
+
+From `rust/otap-dataflow`, run:
+
+```bash
+cargo bench -p otel-arrow-dfe-pdata-codec --bench protobuf_payload
+```
+
+This crate-local Criterion benchmark avoids the engine and transport dependencies
+of the cross-crate benchmark package. It compares the previous fresh
+`BytesMut::new()` + `encode()` + `freeze()` conversion (`before`) with the current
+`PdataPayload::try_from` conversion (`after`) in the same optimized binary.
+Both start with a fresh output buffer on each iteration; neither reuses capacity.
+
+Cases cover empty messages and batches of 1, 128, and 8192 items for logs, traces,
+and sum metrics. Metrics include one metric with many points and many metrics
+with one point each. Deterministic fixtures include resource/scope metadata.
+Each case checks matching bytes, encoding, signal, and item count before timing.
+The benchmark ID includes the encoded byte length.
+
+Fixture creation, input cloning, registry initialization, assertions, and returned
+payload destruction are outside the timed region. Encoding, payload construction,
+and destruction of the consumed input are inside it. Criterion batches setup
+with `LargeInput` to limit retained fixture memory.
+
+Compare `before` and `after` for the same case on the same host, and repeat the
+run to check stability. Record the compiler, platform, allocator, profile, and
+Criterion settings with results. These are conversion latency measurements, not
+allocation counts or end-to-end pipeline throughput; they exclude networking,
+compression, and scheduling. Empty-message timings primarily measure fixed
+conversion overhead.
+
 ## Architecture overview
 
 ![PData forwarding, views, conversion, batching, and codec lifecycle][codec-diagram]
