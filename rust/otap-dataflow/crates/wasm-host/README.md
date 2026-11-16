@@ -10,12 +10,10 @@ WASM host-kernel runtime for OTAP dataflow processor plugins.
 > off-by-default cargo feature (see [Feature flag](#feature-flag)). Do not
 > depend on any part of this crate outside the in-tree experimental slice.
 >
-> **Pre-release contract warning:** This crate and the SDK's WIT contract form
-> an internal experimental interface. **Do not ship production plugins or take
-> external dependencies on this WIT package yet.** We expect breaking changes
-> in upcoming phases (resource model, processor/effects contract, kernel
-> semantics, and error/failure policies), and compatibility across revisions is
-> not guaranteed.
+> **Do not ship production plugins or take external dependencies on this WIT
+> package yet.** Before WIT package version `1.0.0`, backward compatibility is
+> not guaranteed. Host upgrades may require updating plugin source and rebuilding
+> binaries against the matching SDK.
 
 This crate implements the initial slice of the WASM binary plugin system (see
 [open-telemetry/otel-arrow#2973][parent] and [#3227][wit]): a thin,
@@ -48,8 +46,9 @@ dependency.
 - Passes an opaque, **host-managed pdata resource** across the host-guest
   boundary. Bulk Arrow data never crosses the WASM boundary; the host owns
   OTAP records and runs kernels natively.
-- Bridges `OtapPdata` <-> OTAP records while preserving the pdata
-  `Context` (Ack/Nack routing and transport headers).
+- Materializes `OtapPdata` into native records through pipeline codecs while
+  retaining original delivery ownership on the host. Multiple outputs preserve
+  metadata without duplicating upstream Ack/Nack ownership.
 
 ## Host-kernel orchestration model
 
@@ -61,12 +60,14 @@ re-validation.
 The WIT contract in `../wasm-guest-sdk/wit/plugin.wit` freezes only the tiny
 surface this slice needs:
 
-- `otel-kernels`: the `pdata` resource, `pdata-num-rows`,
+- `otel-kernels`: the `pdata` resource, `pdata-num-rows`, `clone-pdata`,
   `filter-by-attribute-eq`, and the `attr-scope` enum.
-- `processor`: `process(data) -> option<pdata>` (return `none` to drop).
+- `processor`: `process(data) -> list<output>`, where each output owns pdata
+  and optionally names a port. An empty list intentionally drops the input.
 - `host-services`: a capability-limited, host-provided import giving the
   guest an ABI version (`host-abi-version`), read-only config access
-  (`get-config`), structured logging (`log`), and a bounded counter
+  (`get-config`), read-only output discovery (`get-output-info`),
+  structured logging (`log`), and a bounded counter
   (`counter-add`).
 - The host also links only the WASI 0.3 CLI and clocks interfaces needed by
   Rust `std`. CLI state is inert (empty arguments/environment, no cwd, and
@@ -129,26 +130,37 @@ see "Deferred to later phases" for what a real limits design still owes.
 - **String copies.** Canonical-ABI lifting has a 16 KiB encoded-input budget
   per lift, checked before copying strings into host memory. This covers
   imported arguments and exported results; bulk telemetry stays host-side.
-  Log messages, counter names, kernel strings, and config clones additionally
-  share a 2 MiB byte allowance per guest entry and a lifetime byte bucket
+  Log messages, counter names, kernel strings, config clones, and output-info
+  copies additionally share a 2 MiB byte allowance per guest entry and a
+  lifetime byte bucket
   (1 MiB/second, 2 MiB burst). Both aggregate limits charge UTF-8 bytes,
   including arguments to calls that are later ignored. Config is charged
   before cloning; incoming arguments are charged after lifting, so the
   failing call can copy at most one additional bounded argument set (up to
-  32 KiB after encoding conversion). Exceeding either copy limit traps.
+  32 KiB after encoding conversion). Output-info strings and list metadata are
+  charged before copying. Exceeding either copy limit traps.
   The per-entry allowance does not refill while a call is running.
-- **Host-service call rate.** `get-config`, `log`, and `counter-add` share a
-  token-bucket limiter scoped to the instance's lifetime (sustained rate plus
-  a burst allowance). Throttled calls within the copy budgets are silent no-ops.
+- **Host-service call rate.** `get-config`, `get-output-info`, `log`, and
+  `counter-add` share a token-bucket limiter scoped to the instance's lifetime
+  (sustained rate plus a burst allowance). Throttled telemetry calls within the
+  copy budgets are silent no-ops; discovery returns an explicit `throttled`
+  error.
 - **Resource handles.** The host-managed component resource table is capped at
-  10,000 entries during a guest call, and must be empty after the returned
-  `pdata` is reclaimed. A guest that retains any host resource across
+  10,000 entries during a guest call, and must be empty after all returned
+  pdata are reclaimed. A guest that retains any host resource across
   `process` calls fails the node, so complete host-side batches cannot
   accumulate across messages.
 - **Kernel invocations.** Each `initialize`/`process` call has a
   separate cap on native `otel-kernels` invocations. This is required because
   fuel accounts for guest Wasm instructions, not time spent inside native
   host imports; exceeding the cap traps the guest.
+- **Output and completion counts.** `max_outputs_per_call` defaults to 64
+  (allowed range 1..=256); `max_inflight_inputs` defaults to 128
+  (allowed range 1..=1024). Zero is not an unlimited setting. The host reserves
+  output correlation capacity before sending and pauses pdata admission at
+  capacity while continuing to process completion controls. The 16 KiB
+  canonical lifting budget also applies before allocating returned lists and
+  port strings. Counts do not bound total native Arrow bytes or kernel latency.
 
 Where the host silently drops a guest request, it always counts it, so
 "the plugin is quiet" is distinguishable from "the plugin is being
@@ -223,12 +235,67 @@ nodes:
     type: processor:wasm_processor
     config:
       wasm_path: "/plugins/severity_filter.wasm"
+      max_outputs_per_call: 64
+      max_inflight_inputs: 128
       # Optional freeform config. This sub-object -- and only this
       # sub-object -- is serialized to JSON and served to the guest by
       # `host-services.get-config`.
       config:
         some_plugin_setting: true
 ```
+
+## Multiple outputs and delivery
+
+The SDK uses `Vec<Output>` with `Output { port: Option<String>, data: Pdata }`.
+`None` selects the configured default port or the single connected port;
+`Some(name)` must identify a connected port. Repeated destinations are allowed.
+Use the ordinary node `outputs` and `default_output` configuration to wire
+routes; they are not part of the plugin-owned `config` object.
+
+The host validates all handles and destinations before dispatch. Output limit
+violations, invalid handles, and unknown or ambiguous ports fail the node.
+`clone-pdata` shares Arrow buffers through independently owned handles;
+filtering a clone leaves the original unchanged.
+
+`host-services.get-output-info` returns sorted connected ports, the resolved
+default, and `max_outputs_per_call`. Declared but unconnected ports are excluded.
+The snapshot is fixed before the first `process` call and can be cached. Discovery
+returns `unavailable` during instantiation and initialization, and `throttled`
+when the shared call-rate budget is exhausted. Copies charge the shared byte
+budgets.
+
+Dispatch follows returned order using normal engine sends and backpressure.
+It is not transactional: a channel may close after an earlier output was sent.
+The host stops dispatching on the first failure, settles unsent outputs locally,
+and waits for the admitted outputs' completions. No implicit retry is performed.
+
+The host retains one original delivery context. All successful outputs produce
+one upstream Ack; any failure produces one Nack after all outputs settle.
+The Nack is retryable only when every output failed transiently. Mixed success
+and failure, or any permanent failure, makes the Nack permanent to avoid
+automatically replaying successful deliveries.
+Original input bytes/records are retained only when `RETURN_DATA` requests them.
+Decode failures still recover the exact original input.
+
+`records_out` counts rows produced by the guest across all outputs, including
+intentional duplicates, before routing or delivery. Engine metrics measure the
+subsequent sends and completions. Upstream flow-compute time is divided equally
+among outputs, with any remainder assigned in list order.
+
+The guest can retain bounded local state between calls, but not host pdata.
+Completion handling is host-owned; there are no guest completion or shutdown
+callbacks. Closing upstream input can stop completion handling before outstanding
+outputs settle, including single-output calls (#2477; receiver-side work: #3849).
+Cancellation and terminal failure can also prevent completion; teardown releases
+resources without sending Ack/Nack.
+
+When enabled, flow `dropped.items` reports the net item-count reduction across
+the guest's returned outputs. An empty list drops every input item; duplicated
+fanout rows can mask filtering in other outputs. `flow.compute.duration` measures
+engine send-boundary timing, not synchronous `processor.compute.duration`.
+
+The host supports WIT package `otel:otap-dataflow-plugin@0.2.0` and host-services
+behavior version 2.
 
 ## Reference guest plugin
 

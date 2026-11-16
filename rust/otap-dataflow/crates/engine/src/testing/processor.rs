@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::sleep;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod running;
+
 /// Context used during the test phase of a test.
 pub struct TestContext<PData> {
     runtime: ProcessorWrapperRuntime<PData>,

@@ -12,23 +12,24 @@
 //! Cargo workspace member.
 
 use wasm_guest_sdk::{
-    AttrScope, Lifecycle, LogLevel, Pdata, Plugin, counter_add, export_plugin,
+    AttrScope, Lifecycle, LogLevel, Output, Pdata, Plugin, counter_add, export_plugin,
     filter_by_attribute_eq, log,
 };
 
 struct SeverityFilter;
 
 impl Plugin for SeverityFilter {
-    async fn process(data: Pdata) -> Option<Pdata> {
-        Some(
-            filter_by_attribute_eq(
+    async fn process(data: Pdata) -> Vec<Output> {
+        vec![Output {
+            port: None,
+            data: filter_by_attribute_eq(
                 data,
                 AttrScope::Record,
                 String::from("severity_text"),
                 String::from("ERROR"),
             )
             .await,
-        )
+        }]
     }
 }
 

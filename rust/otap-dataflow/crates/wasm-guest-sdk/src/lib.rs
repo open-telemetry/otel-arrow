@@ -26,9 +26,10 @@ pub mod bindings {
 #[cfg(feature = "guest")]
 pub use bindings::{
     exports::otel::otap_dataflow_plugin::lifecycle::InitError,
+    exports::otel::otap_dataflow_plugin::processor::Output,
     otel::otap_dataflow_plugin::{
-        host_services::LogLevel,
-        otel_kernels::{AttrScope, Pdata, filter_by_attribute_eq, pdata_num_rows},
+        host_services::{LogLevel, OutputInfo, OutputInfoError, get_output_info},
+        otel_kernels::{AttrScope, Pdata, clone_pdata, filter_by_attribute_eq, pdata_num_rows},
     },
 };
 
@@ -69,8 +70,8 @@ impl std::error::Error for ConfigError {
 #[allow(async_fn_in_trait)]
 #[cfg(feature = "guest")]
 pub trait Plugin {
-    /// Process one host-managed pdata resource, or return `None` to drop it.
-    async fn process(data: Pdata) -> Option<Pdata>;
+    /// Return owned outputs, or an empty list to intentionally drop the input.
+    async fn process(data: Pdata) -> Vec<Output>;
 }
 
 /// One-time initialization behavior implemented by a guest plugin.
@@ -150,7 +151,7 @@ macro_rules! export_plugin {
         {
             async fn process(
                 data: $crate::Pdata,
-            ) -> Option<$crate::Pdata> {
+            ) -> Vec<$crate::Output> {
                 <$plugin as $crate::Plugin>::process(data).await
             }
         }
@@ -183,9 +184,13 @@ mod tests {
     impl Plugin for ExportFixture {
         /// Scenario: An exported plugin counts rows using only the SDK's public API.
         /// Guarantees: Borrowing pdata for an async row count compiles without generated binding paths.
-        async fn process(data: Pdata) -> Option<Pdata> {
+        async fn process(data: Pdata) -> Vec<Output> {
             let rows: u32 = pdata_num_rows(&data).await;
-            (rows > 0).then_some(data)
+            if rows > 0 {
+                vec![Output { port: None, data }]
+            } else {
+                Vec::new()
+            }
         }
     }
 

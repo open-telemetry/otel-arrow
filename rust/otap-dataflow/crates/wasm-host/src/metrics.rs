@@ -23,7 +23,7 @@ pub struct WasmProcessorMetrics {
     /// Number of guest `process` calls that failed or trapped.
     #[metric(unit = "{item}")]
     pub guest_process_errors: Counter<u64>,
-    /// Number of pdata messages intentionally dropped by guest `process` returning `none`.
+    /// Number of inputs intentionally dropped by guest `process` returning an empty list.
     #[metric(unit = "{item}")]
     pub pdata_dropped: Counter<u64>,
 
@@ -76,7 +76,7 @@ pub struct WasmProcessorRecordMetrics {
     /// Records entering the guest (root batch row count).
     #[metric(unit = "{item}")]
     pub records_in: Counter<u64>,
-    /// Records leaving the guest after filtering.
+    /// Rows across all guest outputs, including duplicates, before routing or delivery.
     #[metric(unit = "{item}")]
     pub records_out: Counter<u64>,
 }

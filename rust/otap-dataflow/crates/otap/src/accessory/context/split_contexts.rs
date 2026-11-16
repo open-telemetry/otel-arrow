@@ -60,6 +60,38 @@ pub struct Contexts {
 }
 
 impl Contexts {
+    /// Whether an input and all of its outputs can be reserved without yielding.
+    #[must_use]
+    pub fn has_capacity_for(&self, outputs: usize) -> bool {
+        self.inbound.has_capacity() && self.outbound.remaining_capacity() >= outputs
+    }
+
+    /// Atomically reserves all correlations, returning ownership on insufficient
+    /// capacity. Inputs without completion interests do not consume slots.
+    ///
+    /// A zero-output input must be completed directly by the caller.
+    pub fn reserve_outputs(
+        &mut self,
+        delivery: PdataDelivery,
+        outputs: usize,
+    ) -> Result<Vec<Key>, Box<PdataDelivery>> {
+        if outputs == 0 {
+            return Err(Box::new(delivery));
+        }
+        if !delivery.context().needs_completion_tracking() {
+            return Ok(vec![Key::null(); outputs]);
+        }
+        if !self.has_capacity_for(outputs) {
+            return Err(Box::new(delivery));
+        }
+        let inbound = self
+            .insert_inbound(delivery, None)
+            .expect("capacity checked");
+        Ok((0..outputs)
+            .map(|_| self.insert_outbound(inbound).expect("capacity reserved"))
+            .collect())
+    }
+
     /// Create a new instance of [`Contexts`] with limits on the number of inbound/outbound slots.
     #[must_use]
     pub fn new(max_inbound: NonZeroUsize, max_outbound: NonZeroUsize) -> Self {
@@ -226,6 +258,49 @@ mod test {
     // Helper to create a test context without completion interests.
     fn create_context_without_subscribers() -> Context {
         Context::default()
+    }
+
+    /// Scenario: Reserving a complete split would exceed available outbound slots.
+    /// Guarantees: Failure retains delivery ownership and does not consume any slots.
+    #[test]
+    fn reserve_outputs_is_atomic_and_returns_delivery() {
+        let mut contexts =
+            Contexts::new(NonZeroUsize::new(2).unwrap(), NonZeroUsize::new(3).unwrap());
+        let context = create_context_with_subscribers();
+        let keys = contexts
+            .reserve_outputs(test_delivery(context.clone(), None), 2)
+            .unwrap();
+        let rejected = contexts
+            .reserve_outputs(test_delivery(context.clone(), None), 2)
+            .unwrap_err();
+        assert_eq!(rejected.context(), &context);
+        assert!(contexts.has_capacity_for(1));
+        assert!(contexts.clear_outbound(keys[0]).is_none());
+        assert!(contexts.clear_outbound(keys[1]).is_some());
+        assert!(contexts.has_capacity_for(3));
+        let replacement = contexts.reserve_outputs(*rejected, 3).unwrap();
+        assert!(contexts.clear_outbound(keys[1]).is_none());
+        assert!(contexts.clear_outbound(replacement[2]).is_none());
+        assert!(contexts.clear_outbound(replacement[0]).is_none());
+        assert!(contexts.clear_outbound(replacement[1]).is_some());
+    }
+
+    /// Scenario: No completion interests exist, or a caller tries to reserve zero outputs.
+    /// Guarantees: Untracked outputs consume no slots and zero-output ownership is returned.
+    #[test]
+    fn reserve_outputs_without_tracking_or_outputs() {
+        let mut contexts = new_contexts();
+        let keys = contexts
+            .reserve_outputs(test_delivery(Context::default(), None), 100)
+            .unwrap();
+        assert!(keys.iter().all(|key| key.is_null()));
+        assert!(contexts.has_capacity_for(20));
+        assert!(
+            contexts
+                .reserve_outputs(test_delivery(create_context_with_subscribers(), None), 0)
+                .is_err()
+        );
+        assert!(contexts.has_capacity_for(20));
     }
 
     /// Scenario: an inbound batch has Ack subscribers.

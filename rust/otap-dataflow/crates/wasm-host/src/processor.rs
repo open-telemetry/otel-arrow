@@ -13,6 +13,7 @@
 //! per-core runtime. Clock reads are available, but suspending clock waits are
 //! rejected in every phase. Store-owned state is never shared across threads.
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,22 +27,25 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
-use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
+use otel_arrow_dfe_engine::{FlowMetricAccumulation, Interests, ProducerEffectHandlerExtension};
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
+use otel_arrow_dfe_otap::accessory::slots::Key;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde::{Deserialize, Serialize};
+use slotmap::Key as _;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store};
 
 use crate::bindings::KernelProcessor;
-use crate::bridge;
+use crate::bindings::exports::otel::otap_dataflow_plugin::processor::Output;
 use crate::host::{
     GuestCounterActivity, HostPdata, HostState, MAX_GUEST_HOSTCALL_BYTES, add_wasi_clocks_to_linker,
 };
@@ -150,6 +154,38 @@ pub struct WasmProcessorConfig {
     /// defaults to `None`, served as `null`).
     #[serde(default)]
     pub config: Option<serde_json::Value>,
+    /// Maximum outputs returned by one guest invocation (1..=256).
+    #[serde(default = "default_max_outputs")]
+    pub max_outputs_per_call: usize,
+    /// Maximum inputs awaiting downstream completion (1..=1024).
+    #[serde(default = "default_max_inflight")]
+    pub max_inflight_inputs: usize,
+}
+
+const fn default_max_outputs() -> usize {
+    64
+}
+const fn default_max_inflight() -> usize {
+    128
+}
+
+impl WasmProcessorConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=256).contains(&self.max_outputs_per_call)
+            || !(1..=1024).contains(&self.max_inflight_inputs)
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "wasm max_outputs_per_call must be 1..=256 and max_inflight_inputs must be 1..=1024".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct NativeOutput {
+    port: Option<String>,
+    records: OtapArrowRecords,
 }
 
 /// A processor node that delegates `process` to a WASM guest plugin driving
@@ -170,6 +206,8 @@ pub struct WasmProcessor {
     // Terminal after a guest-call or output-cleanup failure, including
     // host-detected violations that do not themselves trap Wasmtime.
     poisoned: bool,
+    max_outputs_per_call: usize,
+    contexts: Contexts,
 }
 
 impl WasmProcessor {
@@ -349,6 +387,12 @@ impl WasmProcessor {
             _component: component,
             guest_call_timeout,
             poisoned: false,
+            max_outputs_per_call: default_max_outputs(),
+            contexts: Contexts::new(
+                NonZeroUsize::new(default_max_inflight()).expect("positive default"),
+                NonZeroUsize::new(default_max_inflight() * default_max_outputs())
+                    .expect("positive default"),
+            ),
         })
     }
 
@@ -360,11 +404,11 @@ impl WasmProcessor {
     }
 
     /// Push `batch` into the handle table, invoke the guest `process`, and
-    /// return the resulting batch (or `None` when the guest dropped it).
+    /// return the resulting outputs (empty when the guest dropped it).
     async fn run_guest(
         &mut self,
         otap_batch: OtapArrowRecords,
-    ) -> wasmtime::Result<Option<OtapArrowRecords>> {
+    ) -> wasmtime::Result<Vec<NativeOutput>> {
         if self.poisoned {
             return Err(wasmtime::Error::msg(WASM_INSTANCE_POISONED));
         }
@@ -412,25 +456,27 @@ impl WasmProcessor {
         self.finish_guest_call(output)
     }
 
-    fn finish_guest_call(
-        &mut self,
-        output: Option<wasmtime::component::Resource<HostPdata>>,
-    ) -> wasmtime::Result<Option<OtapArrowRecords>> {
-        let result = match output {
-            Some(handle) => {
-                let data = self
-                    .store
-                    .data_mut()
-                    .table
-                    .delete(handle)
-                    .map_err(|error| {
-                        self.poisoned = true;
-                        wasmtime::Error::from(error).context("failed to reclaim guest output pdata")
-                    })?;
-                Some(data.otap_batch)
-            }
-            None => None,
-        };
+    fn finish_guest_call(&mut self, output: Vec<Output>) -> wasmtime::Result<Vec<NativeOutput>> {
+        if output.len() > self.max_outputs_per_call {
+            self.poisoned = true;
+            return Err(wasmtime::Error::msg("guest exceeded max_outputs_per_call"));
+        }
+        let mut result = Vec::with_capacity(output.len());
+        for output in output {
+            let data = self
+                .store
+                .data_mut()
+                .table
+                .delete(output.data)
+                .map_err(|error| {
+                    self.poisoned = true;
+                    wasmtime::Error::from(error).context("failed to reclaim guest output pdata")
+                })?;
+            result.push(NativeOutput {
+                port: output.port,
+                records: data.otap_batch,
+            });
+        }
 
         if !self.store.data().table.is_empty() {
             self.poisoned = true;
@@ -441,10 +487,166 @@ impl WasmProcessor {
 
         Ok(result)
     }
+
+    async fn complete_output(
+        &mut self,
+        key: Key,
+        failure: Option<(OutboundError, bool)>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        match failure {
+            Some((error, permanent)) => {
+                self.contexts.set_failed_outbound(key, error);
+                if permanent {
+                    self.contexts.set_outbound_all_transient_errors(key, false);
+                }
+            }
+            None => self.contexts.set_outbound_all_transient_errors(key, false),
+        }
+        if let Some(inbound) = self.contexts.clear_outbound(key) {
+            let pdata = inbound.delivery.into_pdata();
+            if let Some(error) = inbound.error {
+                let nack = if inbound.outbound_all_transient_errors {
+                    NackMsg::new_with_cause(error.reason, pdata, error.cause)
+                } else {
+                    NackMsg::new_permanent_with_cause(error.reason, pdata, error.cause)
+                };
+                effect_handler.notify_nack(nack).await?;
+            } else {
+                effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn prepare_output_info(&mut self, effect_handler: &local::EffectHandler<OtapPdata>) {
+        let _ = self.store.data_mut().output_info.get_or_insert_with(|| {
+            crate::bindings::otel::otap_dataflow_plugin::host_services::OutputInfo {
+                connected_ports: effect_handler
+                    .connected_ports()
+                    .into_iter()
+                    .map(|port| port.to_string())
+                    .collect(),
+                default_port: effect_handler.default_port().map(|port| port.to_string()),
+                max_outputs_per_call: self.max_outputs_per_call as u32,
+            }
+        });
+    }
+
+    async fn dispatch_outputs(
+        &mut self,
+        delivery: PdataDelivery,
+        outputs: Vec<NativeOutput>,
+        flow_compute: Option<u64>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        self.prepare_output_info(effect_handler);
+        let info = self.store.data().output_info.as_ref().expect("wiring set");
+        for output in &outputs {
+            let valid = match &output.port {
+                Some(port) => info.connected_ports.binary_search(port).is_ok(),
+                None => info.default_port.is_some(),
+            };
+            if !valid {
+                self.poisoned = true;
+                self.metrics.pdata.guest_process_errors.add(1);
+                return Err(EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Other,
+                    error: "wasm output requires a connected named port or an unambiguous default"
+                        .into(),
+                    source_detail: String::new(),
+                });
+            }
+        }
+        if outputs.is_empty() {
+            self.metrics.pdata.pdata_dropped.add(1);
+            let mut pdata = delivery.into_pdata();
+            if let Some(ns) = flow_compute {
+                pdata.start_flow_metric();
+                pdata.add_flow_compute(ns);
+            }
+            pdata.complete_processor_without_output(effect_handler);
+            return effect_handler.notify_ack(AckMsg::new(pdata)).await;
+        }
+
+        let context = delivery.context().clone_detached();
+        let count = outputs.len();
+        let keys = self
+            .contexts
+            .reserve_outputs(delivery, count)
+            .map_err(|_delivery| EngineError::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "wasm completion capacity exhausted despite admission gate".into(),
+                source_detail: String::new(),
+            })?;
+        let mut send_failed = false;
+        for (index, (output, key)) in outputs.into_iter().zip(keys).enumerate() {
+            if send_failed {
+                self.complete_output(
+                    key,
+                    Some((
+                        OutboundError {
+                            reason: "output not sent after an earlier route closed".into(),
+                            cause: NackCause::RouteClosed,
+                        },
+                        false,
+                    )),
+                    effect_handler,
+                )
+                .await?;
+                continue;
+            }
+            let mut pdata = OtapPdata::new(context.clone_detached(), output.records.into());
+            if let Some(ns) = flow_compute {
+                // Split upstream time equally: outputs may contain overlapping rows.
+                pdata.start_flow_metric();
+                pdata.add_flow_compute(
+                    ns / count as u64 + u64::from((index as u64) < ns % count as u64),
+                );
+            }
+            if !key.is_null() {
+                effect_handler.subscribe_to(Interests::ACKS_OR_NACKS, key.into(), &mut pdata);
+            }
+            let result = match output.port {
+                Some(port) => {
+                    effect_handler
+                        .send_message_with_source_node_to(port, pdata)
+                        .await
+                }
+                None => effect_handler.send_message_with_source_node(pdata).await,
+            };
+            if let Err(error) = result {
+                send_failed = true;
+                self.complete_output(
+                    key,
+                    Some((
+                        OutboundError {
+                            reason: error.to_string(),
+                            cause: NackCause::RouteClosed,
+                        },
+                        false,
+                    )),
+                    effect_handler,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for WasmProcessor {
+    fn runtime_requirements(&self) -> otel_arrow_dfe_engine::ProcessorRuntimeRequirements {
+        otel_arrow_dfe_engine::ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
+    fn accept_pdata(&self) -> bool {
+        self.contexts.has_capacity_for(self.max_outputs_per_call)
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -461,80 +663,109 @@ impl local::Processor<OtapPdata> for WasmProcessor {
                 let _ = self.metrics.report(&mut metrics_reporter);
                 Ok(())
             }
+            Message::Control(NodeControlMsg::Ack(ack)) => {
+                self.complete_output(ack.unwind.route.calldata.try_into()?, None, effect_handler)
+                    .await
+            }
+            Message::Control(NodeControlMsg::Nack(nack)) => {
+                self.complete_output(
+                    nack.unwind.route.calldata.try_into()?,
+                    Some((
+                        OutboundError {
+                            reason: nack.reason,
+                            cause: nack.cause,
+                        },
+                        nack.permanent,
+                    )),
+                    effect_handler,
+                )
+                .await
+            }
             Message::Control(_) => Ok(()),
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
+                self.prepare_output_info(effect_handler);
                 let processor_id = effect_handler.processor_id();
-                let arrow_pdata = match effect_handler.materialize_otap(pdata).await {
-                    Ok(arrow_pdata) => arrow_pdata,
+                let flow_compute = pdata.take_flow_compute();
+                let input_items = effect_handler.is_flow_decision().then(|| pdata.num_items());
+                let (delivery, records) = match effect_handler.prepare_otap_work(pdata).await {
+                    Ok(prepared) => prepared,
                     Err(error) => {
-                        let (error, pdata) = error.into_parts();
+                        let (error, mut pdata) = error.into_parts();
+                        if let Some(ns) = flow_compute {
+                            pdata.start_flow_metric();
+                            pdata.add_flow_compute(ns);
+                        }
                         effect_handler
                             .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
                             .await?;
                         return Ok(());
                     }
                 };
-                let context = arrow_pdata.context().clone();
-                let signal_type = arrow_pdata.signal_type();
-                let output = bridge::run_on_otap_records_async(arrow_pdata, |records| async {
-                    self.metrics.pdata.guest_process_calls.add(1);
-                    // Count rows entering the guest before consuming records.
-                    let rows_in = records
-                        .root_record_batch()
-                        .map_or(0, |b| b.num_rows() as u64);
+                let signal_type = delivery.signal_type();
+                if records.root_record_batch().is_none() {
+                    return self
+                        .dispatch_outputs(
+                            delivery,
+                            vec![NativeOutput {
+                                port: None,
+                                records,
+                            }],
+                            flow_compute,
+                            effect_handler,
+                        )
+                        .await;
+                }
+                self.metrics.pdata.guest_process_calls.add(1);
+                let rows_in = records
+                    .root_record_batch()
+                    .map_or(0, |b| b.num_rows() as u64);
 
-                    let result = self.run_guest(records).await.map_err(|e| {
-                        self.metrics.pdata.guest_process_errors.add(1);
-                        EngineError::ProcessorError {
-                            processor: processor_id.clone(),
-                            kind: ProcessorErrorKind::Other,
-                            error: format!("wasm plugin process failed: {e:#}"),
-                            source_detail: String::new(),
-                        }
-                    });
+                let result = self.run_guest(records).await.map_err(|e| {
+                    self.metrics.pdata.guest_process_errors.add(1);
+                    EngineError::ProcessorError {
+                        processor: processor_id.clone(),
+                        kind: ProcessorErrorKind::Other,
+                        error: format!("wasm plugin process failed: {e:#}"),
+                        source_detail: String::new(),
+                    }
+                });
 
-                    // Record rows-in by signal type.
+                self.metrics
+                    .records_for(signal_type)
+                    .records_in
+                    .add(rows_in);
+
+                if let Ok(ref outputs) = result {
+                    if let Some(input_items) = input_items {
+                        // Duplicated rows can mask filtering in other outputs.
+                        let output_items = outputs.iter().map(|out| out.records.num_items()).sum();
+                        effect_handler.record_flow_dropped_items(
+                            signal_type,
+                            input_items.saturating_sub(output_items) as u64,
+                        );
+                    }
+                    let rows_out = outputs
+                        .iter()
+                        .map(|out| {
+                            out.records
+                                .root_record_batch()
+                                .map_or(0, |b| b.num_rows() as u64)
+                        })
+                        .sum();
                     self.metrics
                         .records_for(signal_type)
-                        .records_in
-                        .add(rows_in);
+                        .records_out
+                        .add(rows_out);
+                }
 
-                    // Record rows-out if the guest returned a batch.
-                    if let Ok(Some(ref out)) = result {
-                        let rows_out = out.root_record_batch().map_or(0, |b| b.num_rows() as u64);
-                        self.metrics
-                            .records_for(signal_type)
-                            .records_out
-                            .add(rows_out);
-                    }
-
-                    result
-                })
-                .await;
-
-                // Drain per-call kernel counters outside the closure so they
-                // are captured for successful and error-return guest calls.
+                // Capture kernel activity for both successful and failed calls.
                 let kc = self.store.data_mut().drain_kernel_counters();
                 self.metrics.pdata.kernel_calls.add(kc);
 
                 self.drain_host_service_counters();
 
-                let output = output?;
-
-                match output {
-                    Some(pdata) => effect_handler
-                        .send_message_with_source_node(pdata)
-                        .await
-                        .map_err(Into::into),
-                    // Guest returned `none`: intentionally drop this pdata and
-                    // ack upstream so context unwinding follows normal
-                    // processor drop semantics.
-                    None => {
-                        self.metrics.pdata.pdata_dropped.add(1);
-                        let dropped = OtapPdata::new(context, OtapPayload::empty(signal_type));
-                        effect_handler.notify_ack(AckMsg::new(dropped)).await
-                    }
-                }
+                self.dispatch_outputs(delivery, result?, flow_compute, effect_handler)
+                    .await
             }
         }
     }
@@ -555,12 +786,19 @@ fn create_wasm_processor(
         })?;
 
     let metrics = WasmProcessorAllMetrics::new(&pipeline_ctx);
-    let processor = WasmProcessor::from_path(
+    config.validate()?;
+    let mut processor = WasmProcessor::from_path(
         &config.wasm_path,
         config.config.as_ref(),
         node.name.to_string(),
         metrics,
     )?;
+    processor.max_outputs_per_call = config.max_outputs_per_call;
+    processor.contexts = Contexts::new(
+        NonZeroUsize::new(config.max_inflight_inputs).expect("validated positive limit"),
+        NonZeroUsize::new(config.max_inflight_inputs * config.max_outputs_per_call)
+            .expect("validated bounded limits"),
+    );
 
     Ok(ProcessorWrapper::local(
         processor,
@@ -573,6 +811,7 @@ fn create_wasm_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -594,7 +833,7 @@ mod tests {
 
         const EMPTY_WAITABLE_SET_COMPONENT: &str = r#"
             (component
-              (import "otel:otap-dataflow-plugin/otel-kernels@0.1.0"
+              (import "otel:otap-dataflow-plugin/otel-kernels@0.2.0"
                 (instance $kernels
                   (export "pdata" (type (sub resource)))))
               (alias export $kernels "pdata" (type $pdata))
@@ -634,8 +873,9 @@ mod tests {
                 (canon lift
                   (core func $guest "initialize")
                   (memory (core memory $libc "memory"))))
+              (type $output (record (field "port" (option string)) (field "data" (own $pdata))))
               (func $process async (param "data" (own $pdata))
-                (result (option (own $pdata)))
+                (result (list $output))
                 (canon lift
                   (core func $guest "process")
                   (memory (core memory $libc "memory"))))
@@ -644,10 +884,11 @@ mod tests {
                 (export "initialize" (func $initialize)))
               (instance $processor
                 (export "pdata" (type $pdata))
+                (export "output" (type $output))
                 (export "process" (func $process)))
-              (export "otel:otap-dataflow-plugin/lifecycle@0.1.0"
+              (export "otel:otap-dataflow-plugin/lifecycle@0.2.0"
                 (instance $lifecycle))
-              (export "otel:otap-dataflow-plugin/processor@0.1.0"
+              (export "otel:otap-dataflow-plugin/processor@0.2.0"
                 (instance $processor)))
         "#;
 
@@ -759,17 +1000,697 @@ mod tests {
     use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
     use otel_arrow_dfe_engine::config::ProcessorConfig;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver;
     use otel_arrow_dfe_engine::control::{
         CallData, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
     };
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
     use otel_arrow_dfe_engine::local::processor::Processor;
     use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::testing::node::test_node;
     use otel_arrow_dfe_engine::testing::processor::TestRuntime;
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use tokio::time::timeout;
 
+    struct OutputHarness {
+        processor: WasmProcessor,
+        effect: local::EffectHandler<OtapPdata>,
+        outputs: HashMap<String, LocalReceiver<OtapPdata>>,
+        completions: PipelineCompletionMsgReceiver<OtapPdata>,
+    }
+
+    fn output_harness(ports: &[&str], default: Option<&str>) -> OutputHarness {
+        let fixture = empty_waitable_plugin_fixture(false);
+        let controller = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut processor = WasmProcessor::from_path(
+            &fixture.path().to_path_buf(),
+            None,
+            "outputs".into(),
+            WasmProcessorAllMetrics::new(&pipeline),
+        )
+        .unwrap();
+        processor.max_outputs_per_call = 4;
+        processor.contexts =
+            Contexts::new(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(4).unwrap());
+        let mut outputs = HashMap::new();
+        let mut senders = HashMap::new();
+        for port in ports {
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(2);
+            let _ = senders.insert(
+                (*port).to_string().into(),
+                Sender::Local(LocalSender::mpsc(tx)),
+            );
+            let _ = outputs.insert((*port).to_string(), LocalReceiver::mpsc(rx));
+        }
+        let (_metrics_rx, reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(8);
+        let mut effect = local::EffectHandler::new(
+            test_node("outputs"),
+            senders,
+            default.map(|port| port.to_string().into()),
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (tx, completions) = pipeline_completion_msg_channel(8);
+        effect.set_pipeline_completion_msg_sender(tx);
+        OutputHarness {
+            processor,
+            effect,
+            outputs,
+            completions,
+        }
+    }
+
+    fn tracked_input() -> OtapPdata {
+        input_with_interests(Interests::ACKS_OR_NACKS | Interests::RETURN_DATA)
+    }
+
+    fn input_with_interests(interests: Interests) -> OtapPdata {
+        let (_rx, reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+        let effect = local::EffectHandler::new(
+            test_node("upstream"),
+            HashMap::new(),
+            None,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let mut input = OtapPdata::new(Context::default(), build_logs_batch(&["ORIGINAL"]).into());
+        effect.subscribe_to(interests, CallData::default(), &mut input);
+        input
+    }
+
+    fn native_output(port: Option<&str>, severity: &str) -> NativeOutput {
+        NativeOutput {
+            port: port.map(str::to_owned),
+            records: build_logs_batch(&[severity]),
+        }
+    }
+
+    fn ack_output(pdata: OtapPdata) -> AckMsg<OtapPdata> {
+        let route = pdata.source_route().expect("child correlation");
+        let mut ack = AckMsg::new(pdata);
+        ack.unwind.route = route;
+        ack
+    }
+
+    fn nack_output(pdata: OtapPdata, permanent: bool) -> NackMsg<OtapPdata> {
+        let route = pdata.source_route().expect("child correlation");
+        let mut nack = if permanent {
+            NackMsg::new_permanent("test failure", pdata)
+        } else {
+            NackMsg::new("test failure", pdata)
+        };
+        nack.unwind.route = route;
+        nack
+    }
+
+    /// Scenario: A real guest discovers empty, single, ambiguous, and explicitly defaulted wiring.
+    /// Guarantees: Initialization reports unavailable; process sees sorted ports and respects the output limit.
+    #[tokio::test]
+    async fn output_discovery_drives_guest_routing() {
+        let path = build_test_guest_wasm_for_unit_tests();
+        for (ports, default, limit) in [
+            (vec![], None, 4),
+            (vec!["only"], None, 4),
+            (vec!["z", "a"], None, 4),
+            (vec!["z", "a"], Some("z"), 1),
+        ] {
+            let mut h = output_harness(&ports, default);
+            let controller = ControllerContext::new(
+                otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+            );
+            let pipeline =
+                controller.pipeline_context_with("grp".into(), "discovery".into(), 0, 1, 0);
+            let mut sorted = ports.clone();
+            sorted.sort_unstable();
+            let expected_default = default.or_else(|| (ports.len() == 1).then(|| ports[0]));
+            h.processor = WasmProcessor::from_path(
+                &path,
+                Some(&serde_json::json!({"discover_outputs": {
+                    "connected_ports": sorted,
+                    "default_port": expected_default,
+                    "max_outputs_per_call": limit
+                }})),
+                "discovery".into(),
+                WasmProcessorAllMetrics::new(&pipeline),
+            )
+            .unwrap();
+            h.processor.max_outputs_per_call = limit;
+            for _ in 0..2 {
+                h.processor
+                    .process(
+                        Message::PData(OtapPdata::new(
+                            Context::default(),
+                            build_logs_batch(&["INPUT"]).into(),
+                        )),
+                        &mut h.effect,
+                    )
+                    .await
+                    .unwrap();
+                for (index, port) in sorted.iter().enumerate() {
+                    let output = h.outputs.get_mut(*port).unwrap().try_recv();
+                    assert_eq!(output.is_ok(), index < limit);
+                }
+            }
+        }
+    }
+
+    /// Scenario: Multiple outputs complete out of order with successes and/or failures.
+    /// Guarantees: All children settle before admission resumes, with original data and correct retry classification.
+    #[tokio::test]
+    async fn output_completion_policy_and_capacity() {
+        for outcomes in [[0, 0], [1, 1], [0, 1], [1, 2]] {
+            let mut h = output_harness(&["a", "b"], Some("a"));
+            h.processor
+                .dispatch_outputs(
+                    tracked_input().into_delivery(),
+                    vec![native_output(None, "A"), native_output(Some("b"), "B")],
+                    Some(11),
+                    &h.effect,
+                )
+                .await
+                .unwrap();
+            assert!(!h.processor.accept_pdata());
+            let mut a = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+            let mut b = h.outputs.get_mut("b").unwrap().try_recv().unwrap();
+            assert_eq!(a.take_flow_compute(), Some(6));
+            assert_eq!(b.take_flow_compute(), Some(5));
+            assert_ne!(
+                a.source_route().unwrap().output_port_index,
+                b.source_route().unwrap().output_port_index
+            );
+            let duplicate = ack_output(b.clone());
+            for (pdata, outcome) in [(b, outcomes[1]), (a, outcomes[0])] {
+                assert!(h.completions.try_recv().is_err());
+                let control = match outcome {
+                    0 => NodeControlMsg::Ack(ack_output(pdata)),
+                    _ => NodeControlMsg::Nack(nack_output(pdata, outcome == 2)),
+                };
+                h.processor
+                    .process(Message::Control(control), &mut h.effect)
+                    .await
+                    .unwrap();
+            }
+            let original = match h.completions.try_recv().unwrap() {
+                PipelineCompletionMsg::DeliverAck { ack } => {
+                    assert_eq!(outcomes, [0, 0]);
+                    *ack.accepted
+                }
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    assert_eq!(nack.permanent, outcomes != [1, 1]);
+                    *nack.refused
+                }
+            };
+            assert_eq!(
+                original.payload_ref().otap_ref().unwrap(),
+                &build_logs_batch(&["ORIGINAL"])
+            );
+            assert!(h.processor.accept_pdata());
+            h.processor
+                .process(
+                    Message::Control(NodeControlMsg::Ack(duplicate)),
+                    &mut h.effect,
+                )
+                .await
+                .unwrap();
+            assert!(h.completions.try_recv().is_err());
+        }
+    }
+
+    /// Scenario: A later destination is invalid or the default is ambiguous.
+    /// Guarantees: Preflight emits no earlier output and terminally poisons the guest.
+    #[tokio::test]
+    async fn output_preflight_rejects_entire_list() {
+        for port in [None, Some("missing")] {
+            let mut h = output_harness(&["a", "b"], None);
+            assert!(
+                h.processor
+                    .dispatch_outputs(
+                        tracked_input().into_delivery(),
+                        vec![native_output(Some("a"), "A"), native_output(port, "B")],
+                        None,
+                        &h.effect,
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(h.outputs.get_mut("a").unwrap().try_recv().is_err());
+            assert!(h.outputs.get_mut("b").unwrap().try_recv().is_err());
+            assert!(h.processor.poisoned);
+            assert!(h.completions.try_recv().is_err());
+        }
+    }
+
+    /// Scenario: A channel closes before or after an earlier output is admitted.
+    /// Guarantees: Unsent children settle locally, admitted children delay completion, and mixed delivery is permanent.
+    #[tokio::test]
+    async fn output_partial_dispatch_preserves_completion() {
+        for first_closed in [false, true] {
+            let mut h = output_harness(&["a", "b", "c"], None);
+            drop(h.outputs.remove(if first_closed { "a" } else { "b" }));
+            h.processor
+                .dispatch_outputs(
+                    tracked_input().into_delivery(),
+                    vec![
+                        native_output(Some("a"), "A"),
+                        native_output(Some("b"), "B"),
+                        native_output(Some("c"), "C"),
+                    ],
+                    None,
+                    &h.effect,
+                )
+                .await
+                .unwrap();
+            assert!(h.outputs.get_mut("c").unwrap().try_recv().is_err());
+            if !first_closed {
+                assert!(h.completions.try_recv().is_err());
+                assert!(!h.processor.accept_pdata());
+                let a = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+                h.processor
+                    .process(
+                        Message::Control(NodeControlMsg::Ack(ack_output(a))),
+                        &mut h.effect,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let PipelineCompletionMsg::DeliverNack { nack } = h.completions.try_recv().unwrap()
+            else {
+                panic!("expected Nack")
+            };
+            assert_eq!(nack.permanent, !first_closed);
+            assert_eq!(nack.cause, NackCause::RouteClosed);
+            assert!(h.processor.accept_pdata());
+            assert!(h.completions.try_recv().is_err());
+        }
+    }
+
+    /// Scenario: Three ordered outputs target one capacity-two channel.
+    /// Guarantees: The third send waits for capacity without dropping or reordering outputs.
+    #[tokio::test]
+    async fn output_sends_apply_channel_backpressure() {
+        use std::task::Poll;
+        let mut h = output_harness(&["a"], None);
+        let mut dispatch = Box::pin(h.processor.dispatch_outputs(
+            tracked_input().into_delivery(),
+            vec![
+                native_output(None, "A"),
+                native_output(Some("a"), "B"),
+                native_output(None, "C"),
+            ],
+            None,
+            &h.effect,
+        ));
+        assert!(matches!(futures::poll!(&mut dispatch), Poll::Pending));
+        let receiver = h.outputs.get_mut("a").unwrap();
+        let a = receiver.try_recv().unwrap();
+        assert!(matches!(futures::poll!(&mut dispatch), Poll::Ready(Ok(()))));
+        drop(dispatch);
+        let b = receiver.try_recv().unwrap();
+        let c = receiver.try_recv().unwrap();
+        for (pdata, severity) in [(a, "A"), (b, "B"), (c, "C")] {
+            assert_eq!(
+                pdata.payload_ref().otap_ref().unwrap(),
+                &build_logs_batch(&[severity])
+            );
+            h.processor
+                .process(
+                    Message::Control(NodeControlMsg::Ack(ack_output(pdata))),
+                    &mut h.effect,
+                )
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            h.completions.try_recv().unwrap(),
+            PipelineCompletionMsg::DeliverAck { .. }
+        ));
+        assert!(h.processor.accept_pdata());
+    }
+
+    /// Scenario: Node execution is cancelled while its third output awaits channel capacity.
+    /// Guarantees: Teardown releases retained original data without fabricating an upstream completion.
+    #[tokio::test]
+    async fn output_cancelled_dispatch_releases_delivery_on_teardown() {
+        let mut h = output_harness(&["a"], None);
+        let input = tracked_input();
+        let original = Arc::downgrade(
+            input
+                .payload_ref()
+                .otap_ref()
+                .unwrap()
+                .root_record_batch()
+                .unwrap()
+                .column(0),
+        );
+        let mut dispatch = Box::pin(h.processor.dispatch_outputs(
+            input.into_delivery(),
+            vec![
+                native_output(None, "A"),
+                native_output(None, "B"),
+                native_output(None, "C"),
+            ],
+            None,
+            &h.effect,
+        ));
+        assert!(futures::poll!(&mut dispatch).is_pending());
+        drop(dispatch);
+        assert!(h.completions.try_recv().is_err());
+        assert!(original.upgrade().is_some());
+        drop(h.processor);
+        assert!(original.upgrade().is_none());
+        assert!(h.completions.try_recv().is_err());
+    }
+
+    /// Scenario: A guest drops input or produces outputs without completion subscribers.
+    /// Guarantees: Drops Ack once without a port; untracked outputs never exhaust completion capacity.
+    #[tokio::test]
+    async fn output_drop_and_untracked_paths() {
+        let mut h = output_harness(&[], None);
+        h.processor
+            .dispatch_outputs(tracked_input().into_delivery(), vec![], None, &h.effect)
+            .await
+            .unwrap();
+        assert!(matches!(
+            h.completions.try_recv().unwrap(),
+            PipelineCompletionMsg::DeliverAck { .. }
+        ));
+        assert!(h.processor.accept_pdata());
+        let mut h = output_harness(&["a"], None);
+        for _ in 0..3 {
+            h.processor
+                .dispatch_outputs(
+                    OtapPdata::new(Context::default(), build_logs_batch(&["A"]).into())
+                        .into_delivery(),
+                    vec![native_output(None, "A")],
+                    None,
+                    &h.effect,
+                )
+                .await
+                .unwrap();
+            let _ = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+            assert!(h.processor.accept_pdata());
+            assert!(h.completions.try_recv().is_err());
+        }
+    }
+
+    /// Scenario: Limit configuration is missing, zero, beyond its ceiling, or at its boundary.
+    /// Guarantees: Defaults are usable and invalid sizes are rejected before any component loading.
+    #[test]
+    fn output_limits_validate_before_loading() {
+        for (outputs, inputs, valid) in [
+            (1, 1, true),
+            (256, 1024, true),
+            (0, 1, false),
+            (1, 0, false),
+            (257, 1, false),
+            (1, 1025, false),
+            (usize::MAX, usize::MAX, false),
+        ] {
+            let value = serde_json::json!({"wasm_path":"missing.wasm", "max_outputs_per_call": outputs, "max_inflight_inputs": inputs});
+            assert_eq!(
+                (WASM_PROCESSOR_FACTORY.validate_config)(&value).is_ok(),
+                valid
+            );
+        }
+
+        let config: WasmProcessorConfig =
+            serde_json::from_value(serde_json::json!({"wasm_path":"unused"})).unwrap();
+        assert_eq!(
+            (config.max_outputs_per_call, config.max_inflight_inputs),
+            (64, 128)
+        );
+    }
+
+    /// Scenario: The host reclaims multiple outputs, an excessive list, or duplicated ownership.
+    /// Guarantees: Valid lists empty the table; over-limit and duplicate handles poison the instance without dispatch.
+    #[test]
+    fn output_reclamation_validates_all_handles() {
+        for (count, duplicate, valid) in [(4, false, true), (5, false, false), (2, true, false)] {
+            let mut h = output_harness(&["a"], None);
+            let mut outputs = Vec::new();
+            let mut first = 0;
+            for index in 0..count {
+                let data = if duplicate && index > 0 {
+                    wasmtime::component::Resource::new_own(first)
+                } else {
+                    h.processor
+                        .store
+                        .data_mut()
+                        .table
+                        .push(HostPdata {
+                            otap_batch: build_logs_batch(&["A"]),
+                        })
+                        .unwrap()
+                };
+                first = data.rep();
+                outputs.push(Output { port: None, data });
+            }
+            let result = h.processor.finish_guest_call(outputs);
+            assert_eq!(result.is_ok(), valid);
+            assert_eq!(h.processor.poisoned, !valid);
+            if valid {
+                assert_eq!(result.unwrap().len(), count);
+                assert!(h.processor.store.data().table.is_empty());
+            }
+        }
+    }
+
+    /// Scenario: A rootless native input reaches a guest that would wait forever if invoked.
+    /// Guarantees: The host bypasses the guest, forwards once, and preserves completion ownership.
+    #[tokio::test]
+    async fn output_rootless_input_bypasses_guest() {
+        let mut h = output_harness(&["a"], None);
+        h.processor
+            .process(
+                Message::PData(OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::empty(SignalType::Logs),
+                )),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        assert!(
+            h.outputs
+                .get_mut("a")
+                .unwrap()
+                .try_recv()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(h.processor.accept_pdata());
+        assert_eq!(h.processor.metrics.pdata.guest_process_calls.get(), 0);
+    }
+
+    /// Scenario: A real guest returns a list or port string exceeding the canonical lifting budget.
+    /// Guarantees: The runtime rejects oversized results before the host's post-lift output-count check.
+    #[test]
+    fn output_lifting_budget_precedes_count_validation() {
+        let path = build_test_guest_wasm_for_unit_tests();
+        let controller = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline = controller.pipeline_context_with("grp".into(), "lift".into(), 0, 1, 0);
+        for config in [
+            serde_json::json!({"outputs": vec![None::<String>; 2000]}),
+            serde_json::json!({"oversized_output_port": true}),
+        ] {
+            let mut processor = WasmProcessor::from_path(
+                &path,
+                Some(&config),
+                "lift".into(),
+                WasmProcessorAllMetrics::new(&pipeline),
+            )
+            .unwrap();
+            let error = futures::executor::block_on(processor.run_guest(build_logs_batch(&["A"])))
+                .unwrap_err();
+            let text = format!("{error:#}");
+            assert!(!text.contains("max_outputs_per_call"), "{text}");
+            assert!(
+                text.contains("fuel allocated for hostcalls has been exhausted"),
+                "{text}"
+            );
+            assert!(processor.poisoned);
+        }
+    }
+
+    /// Scenario: Direct control handling receives Shutdown while a metrics-only input is retained.
+    /// Guarantees: Metadata and tracking survive until completion; input-close draining is not exercised.
+    #[tokio::test]
+    async fn direct_shutdown_control_preserves_retained_context_without_ack() {
+        let mut h = output_harness(&["a"], None);
+        let address = "127.0.0.1:1234".parse().unwrap();
+        let input = input_with_interests(Interests::NODE_INPUT_METRICS).with_peer_addr(address);
+        h.processor
+            .dispatch_outputs(
+                input.into_delivery(),
+                vec![native_output(None, "A")],
+                None,
+                &h.effect,
+            )
+            .await
+            .unwrap();
+        assert!(!h.processor.accept_pdata());
+        h.processor
+            .process(
+                Message::shutdown_ctrl_msg(
+                    std::time::Instant::now() + Duration::from_secs(30),
+                    "test",
+                ),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        assert!(h.completions.try_recv().is_err());
+        assert!(!h.processor.accept_pdata());
+        let child = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+        assert_eq!(child.peer_addr(), Some(address));
+        h.processor
+            .process(
+                Message::Control(NodeControlMsg::Ack(ack_output(child))),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        let PipelineCompletionMsg::DeliverAck { ack } = h.completions.try_recv().unwrap() else {
+            panic!("metrics completion")
+        };
+        assert!(ack.accepted.has_context_frames());
+        assert_eq!(ack.accepted.peer_addr(), Some(address));
+        assert!(h.processor.accept_pdata());
+    }
+
+    /// Scenario: Empty, single, and fanout dispatch reach a collecting flow endpoint with 11ns of upstream compute.
+    /// Guarantees: Collected flow durations sum to 11ns, including the fanout remainder.
+    #[tokio::test]
+    async fn output_flow_duration_is_not_multiplied_by_fanout() {
+        use otel_arrow_dfe_engine::testing::processor::running::FlowEndProbe;
+        use otel_arrow_dfe_telemetry::metrics::MetricValue;
+        for count in [0, 1, 2] {
+            let h = output_harness(&["a"], None);
+            let mut processor = h.processor;
+            let (pipeline, _) = otel_arrow_dfe_engine::testing::test_pipeline_ctx();
+            let mut probe = FlowEndProbe::new(h.effect, &pipeline);
+            processor
+                .dispatch_outputs(
+                    tracked_input().into_delivery(),
+                    (0..count).map(|_| native_output(None, "A")).collect(),
+                    Some(11),
+                    &probe.handler,
+                )
+                .await
+                .unwrap();
+            let snapshots = probe.collect();
+            let snapshot = snapshots
+                .iter()
+                .find(|s| s.descriptor().name == "flow.compute")
+                .unwrap();
+            assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
+            let [MetricValue::Distribution(duration)] = snapshot.get_metrics() else {
+                panic!("expected collected flow duration")
+            };
+            let (observations, sum, min, max) = duration.summary();
+            assert_eq!(observations, count.max(1));
+            assert!((sum - 11e-9).abs() < 1e-20);
+            if count == 2 {
+                assert_eq!((min, max), (5e-9, 6e-9));
+            } else {
+                assert_eq!((min, max), (11e-9, 11e-9));
+            }
+        }
+    }
+
+    /// Scenario: A guest receives encoded input and its multiple outputs later fail or succeed.
+    /// Guarantees: Completion recovers the original encoding and shared bytes, not a modified output.
+    #[tokio::test]
+    async fn output_recovery_preserves_encoded_input() {
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        let path = build_test_guest_wasm_for_unit_tests();
+        let mut h = output_harness(&["a", "b"], None);
+        let controller = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline = controller.pipeline_context_with("grp".into(), "encoded".into(), 0, 1, 0);
+        let config = serde_json::json!({"outputs": ["a", "b"]});
+        h.processor = WasmProcessor::from_path(
+            &path,
+            Some(&config),
+            "encoded".into(),
+            WasmProcessorAllMetrics::new(&pipeline),
+        )
+        .unwrap();
+        // ExportLogsServiceRequest with one empty resource/scope/log record.
+        let bytes = vec![0x0a, 0x06, 0x12, 0x04, 0x12, 0x02, 0x10, 0x09].into();
+        let payload = OtapPayload::from_otlp(OtlpProtoBytes::ExportLogsRequest(bytes));
+        let original = payload.encoded_bytes().unwrap().clone();
+        let (context, _) = tracked_input().into_parts();
+        h.processor
+            .process(
+                Message::PData(OtapPdata::new(context, payload)),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        let a = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+        let b = h.outputs.get_mut("b").unwrap().try_recv().unwrap();
+        h.processor
+            .process(
+                Message::Control(NodeControlMsg::Ack(ack_output(a))),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        assert!(h.completions.try_recv().is_err());
+        h.processor
+            .process(
+                Message::Control(NodeControlMsg::Nack(nack_output(b, false))),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        let PipelineCompletionMsg::DeliverNack { nack } = h.completions.try_recv().unwrap() else {
+            panic!("expected mixed Nack")
+        };
+        assert!(nack.permanent);
+        let recovered = nack.refused.payload_ref().encoded_bytes().unwrap();
+        assert_eq!(recovered, &original);
+        assert_eq!(recovered.as_ptr(), original.as_ptr());
+    }
+
+    /// Scenario: Invalid encoded input fails before a guest with an indefinitely waiting process.
+    /// Guarantees: Decode failure Nacks the exact original bytes without invoking or poisoning the guest.
+    #[tokio::test]
+    async fn output_decode_failure_recovers_original() {
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        let mut h = output_harness(&["a"], None);
+        let payload = OtapPayload::from_otlp(OtlpProtoBytes::ExportLogsRequest(vec![0xff].into()));
+        let original = payload.encoded_bytes().unwrap().clone();
+        let (context, _) = tracked_input().into_parts();
+        h.processor
+            .process(
+                Message::PData(OtapPdata::new(context, payload)),
+                &mut h.effect,
+            )
+            .await
+            .unwrap();
+        let PipelineCompletionMsg::DeliverNack { nack } = h.completions.try_recv().unwrap() else {
+            panic!("decode Nack")
+        };
+        assert_eq!(
+            nack.refused.payload_ref().encoded_bytes().unwrap().as_ptr(),
+            original.as_ptr()
+        );
+        assert!(nack.permanent);
+        assert!(!h.processor.poisoned);
+        assert!(h.outputs.get_mut("a").unwrap().try_recv().is_err());
+    }
     /// Build a minimal `OtapArrowRecords::Logs` batch with a `severity_text`
     /// column, for exercising `WasmProcessor::run_guest` directly in tests.
     fn build_logs_batch(severities: &[&str]) -> OtapArrowRecords {
@@ -1427,7 +2348,10 @@ mod tests {
         .expect("guest initializes");
         let invalid = wasmtime::component::Resource::<HostPdata>::new_own(u32::MAX);
         let error = processor
-            .finish_guest_call(Some(invalid))
+            .finish_guest_call(vec![Output {
+                port: None,
+                data: invalid,
+            }])
             .expect_err("missing output must fail cleanup");
         assert!(
             error
@@ -1599,7 +2523,13 @@ pub static WASM_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapP
             },
         context_declarations: None,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
-            WasmProcessorConfig,
-        >,
+        validate_config: |value| {
+            let config: WasmProcessorConfig =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    ConfigError::InvalidUserConfig {
+                        error: error.to_string(),
+                    }
+                })?;
+            config.validate()
+        },
     };

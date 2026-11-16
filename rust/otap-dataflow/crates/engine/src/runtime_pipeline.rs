@@ -151,7 +151,7 @@ fn make_output_size_metrics(
 /// - `has_input`: whether to register input metrics (false for receivers).
 /// - `has_outputs`: whether to register output metrics (false for exporters).
 /// - `node_interests`: the effective metric interests for this node.
-fn make_node_metric_handles(
+pub(crate) fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,

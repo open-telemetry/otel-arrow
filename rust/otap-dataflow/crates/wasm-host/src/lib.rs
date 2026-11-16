@@ -31,8 +31,6 @@
 //! [#3227]: https://github.com/open-telemetry/otel-arrow/issues/3227
 
 #[cfg(feature = "wasm")]
-mod bridge;
-#[cfg(feature = "wasm")]
 mod host;
 #[cfg(feature = "wasm")]
 mod metrics;
@@ -58,13 +56,10 @@ mod bindings {
         // Generate host import signatures returning `wasmtime::Result<T>` so
         // contract violations reachable from guest-controlled input (bad
         // resource handles, unsupported kernel arguments, malformed batches)
-        // become guest traps instead of host panics. A host panic here would
-        // take down the whole collector process, and -- because `Drop for
-        // WasmProcessor` re-enters the guest -- could escalate into a
-        // double-panic abort while unwinding.
+        // become guest traps instead of host panics.
         imports: { default: trappable },
         with: {
-            "otel:otap-dataflow-plugin/otel-kernels@0.1.0.pdata": crate::host::HostPdata,
+            "otel:otap-dataflow-plugin/otel-kernels@0.2.0.pdata": crate::host::HostPdata,
         },
     });
 }
