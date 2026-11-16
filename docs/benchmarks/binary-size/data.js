@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794702211136,
+  "lastUpdate": 1794788850992,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -85923,6 +85923,148 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/8312b7a3c53e37a70682070d8b0c472802a7c966"
         },
         "date": 1794702192062,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Bartlomiej Plotka",
+            "username": "bwplotka",
+            "email": "bwplotka@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8312b7a3c53e37a70682070d8b0c472802a7c966",
+          "message": "docs(otap-dataflow): add self-observability guide and metrics reference (#4684)\n\nAdds an operator-facing self-observability guide at\n`rust/otap-dataflow/docs/self-observability.md` and links it from\nexisting configuration, admin, node-and-flow metrics, and telemetry\ndocumentation indexes.\n\nThe guide documents:\n\n- The embedded browser debugging UI served at `GET /` and `GET\n/dashboard`, including live metric polling, playback and scrubbing\ncontrols, engine and pipeline summary cards, per-core selectors, the\ninteractive channel DAG topology viewer, and the internal log tap\nviewer.\n- The administrative HTTP endpoints for metrics, cross-entity metric\naggregation, live semantic convention schema inspection, internal log\ntap queries and WebSocket streaming, liveness and readiness probes, and\nheap and CPU profiling.\n- Internal observability pipeline configuration with\n`receiver:internal_telemetry` and runtime telemetry policy verbosity\nlevels.\n- Prometheus and OTLP mapping rules covering `target_info`,\n`otel_scope_name`, `otel_scope_<attribute>` entity labels, datapoint\nattributes, UCUM unit suffixes, and distribution summary series.\n- A reference catalog of engine, controller, pipeline, Tokio runtime,\nchannel, node, and flow metric sets, with links to component catalogs\nand `/api/v1/telemetry/live-schema` for component-specific metrics.\n\nRelated to\n[open-telemetry/otel-arrow#3631](https://github.com/open-telemetry/otel-arrow/issues/3631)\nand\n[open-telemetry/otel-arrow#4670](https://github.com/open-telemetry/otel-arrow/pull/4670).\n\n---------\n\nSigned-off-by: Bartek Plotka <bwplotka@gmail.com>\nCo-authored-by: Laurent Quérel <laurent.querel@gmail.com>",
+          "timestamp": "2026-11-14T13:27:31Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8312b7a3c53e37a70682070d8b0c472802a7c966"
+        },
+        "date": 1794788828969,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
