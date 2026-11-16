@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Before/after benchmark for owned OTLP message encoding into `PdataPayload`.
+//!
+//! From `rust/otap-dataflow`:
+//! ```sh
+//! cargo bench -p otel-arrow-dfe-pdata-codec --bench protobuf_payload
+//! ```
 
 use std::hint::black_box;
 
