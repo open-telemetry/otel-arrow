@@ -1,0 +1,167 @@
+groups:
+  - id: syslog.common
+    type: attribute_group
+    stability: development
+    brief: Shared syslog and CEF headers for independently named data profiles.
+    attributes:
+      - id: syslog.host_name
+        type: string
+        brief: Sending host.
+        examples: [edge-01, edge-02]
+      - id: syslog.app_name
+        type: string
+        brief: Application name.
+        examples: [application, scheduler]
+      - id: syslog.process_id
+        type: int
+        brief: Numeric application process ID.
+        examples: [1234, 5678]
+      - id: syslog.msg_id
+        type: string
+        brief: Message identifier.
+        examples: [ID47, ID48]
+      - id: syslog.facility
+        type: int
+        brief: Local-use facility.
+        examples: [16, 17]
+      - id: syslog.severity
+        type: int
+        brief: Syslog severity independent of CEF severity.
+        examples: [6, 4]
+      - id: syslog.content
+        type: string
+        brief: RFC 3164 message text as emitted by the parser.
+        examples: [Request completed, Worker started, Scheduled task finished]
+      - id: syslog.message
+        type: string
+        brief: RFC 5424 message text as emitted by the parser.
+        examples: [Request completed, Worker started, Scheduled task finished]
+      - id: msg
+        type: string
+        brief: CEF message extension as emitted by the parser.
+        examples: [Request completed, Worker started, Scheduled task finished]
+      - id: cef.device_vendor
+        type: string
+        brief: Synthetic device vendor.
+        examples: [trafficgen]
+      - id: cef.device_product
+        type: string
+        brief: Synthetic security product.
+        examples: [application]
+      - id: cef.device_version
+        type: string
+        brief: Device version.
+        examples: ["1.0"]
+      - id: cef.device_event_class_id
+        type: string
+        brief: Security event class.
+        examples: ["100"]
+      - id: cef.name
+        type: string
+        brief: Security event name.
+        examples: [Application activity]
+      - id: cef.severity
+        type: int
+        brief: CEF event severity.
+        examples: [3, 6, 9]
+
+  - id: syslog.application
+    type: event
+    name: syslog.application
+    extends: syslog.common
+    stability: development
+    brief: Application lifecycle and request messages without network or vendor extensions.
+
+  - id: syslog.firewall
+    type: event
+    name: syslog.firewall
+    extends: syslog.common
+    stability: development
+    brief: Firewall network activity with standard CEF extensions.
+    attributes:
+      - ref: syslog.content
+        examples: [Connection accepted, Connection denied]
+      - ref: syslog.message
+        examples: [Connection accepted, Connection denied]
+      - ref: msg
+        examples: [Connection accepted, Connection denied]
+      - ref: syslog.app_name
+        examples: [firewall, gateway]
+      - ref: cef.device_product
+        examples: [firewall]
+      - ref: cef.device_event_class_id
+        examples: ["200"]
+      - ref: cef.name
+        examples: [Network activity]
+      - id: src
+        type: string
+        brief: Documentation-range source address.
+        examples: [192.0.2.10, 192.0.2.20]
+      - id: dst
+        type: string
+        brief: Documentation-range destination address.
+        examples: [198.51.100.10, 198.51.100.20]
+      - id: spt
+        type: int
+        brief: Source port.
+        examples: [12345, 54321]
+      - id: dpt
+        type: int
+        brief: Destination port.
+        examples: [443, 8443]
+      - id: proto
+        type: string
+        brief: Transport protocol.
+        examples: [TCP]
+      - id: suser
+        type: string
+        brief: Synthetic source user.
+        examples: [user01, user02]
+      - id: deviceExternalId
+        type: string
+        brief: Synthetic device identifier.
+        examples: [device-01, device-02]
+      - id: act
+        type: string
+        brief: Device action.
+        examples: [allow, deny]
+
+  - id: syslog.vendor_firewall
+    type: event
+    name: syslog.vendor_firewall
+    extends: syslog.firewall
+    stability: development
+    brief: Synthetic vendor firewall events with labeled custom and vendor-defined extensions.
+    attributes:
+      - ref: syslog.content
+        examples: [Request completed, Connection denied, 'rule=default path=C:\logs']
+      - ref: syslog.message
+        examples: [Request completed, Connection denied, 'rule=default path=C:\logs']
+      - ref: msg
+        examples: [Request completed, Connection denied, 'rule=default path=C:\logs']
+      - ref: cef.device_product
+        examples: [vendor-firewall]
+      - ref: cef.device_event_class_id
+        examples: ["300"]
+      - ref: cef.name
+        examples: [Policy matched, 'Policy | audit \ event']
+      - id: cs1Label
+        type: string
+        brief: Vendor-specific meaning of custom string slot 1.
+        examples: [PolicyName]
+      - id: cs1
+        type: string
+        brief: Synthetic vendor policy name.
+        examples: [allow-web, deny-untrusted]
+      - id: cn1Label
+        type: string
+        brief: Vendor-specific meaning of custom numeric slot 1.
+        examples: [SessionId]
+      - id: cn1
+        type: int
+        brief: Synthetic vendor session identifier.
+        examples: [100001, 100002]
+      - id: vendorZone
+        type: string
+        brief: Synthetic vendor-defined extension outside the standard CEF dictionary.
+        examples: [trusted, untrusted]
