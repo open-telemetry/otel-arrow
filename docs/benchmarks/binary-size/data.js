@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794850680574,
+  "lastUpdate": 1794861103415,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -86473,6 +86473,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "bd03a5067673fe0fee657f2ee5931656ba0cce4c",
+          "message": "perf: Reduce protobuf padding bytes for anyvalue types (#4732)\n\n# Change summary\n\nThis PR reduces the number of bytes used to encode length for anyvalue\ntypes. Due to the structure of AnyValue which is wrapped in its own\nmessage, these types have a few extra wasted bytes that we can remove\nand which was not handled by the existing encoding paths for leaf\nfields. The attached issue describes this in more detail.\n\n## Related issue\n\n* Closes #4722 \n\n## Validation\n\nHere are the un-compressed bytes per log for a couple of test runs\nbefore/after. The amount of savings scales with the number of attributes\nor other AnyValue fields. For our standard synthetic data this is around\n6% of encoding size.\n\n| Run | Engine tx (B/s) | Engine rx (B/s) | Logs received/s | B/log (tx\n÷ received) | tx / rx | CPU % |\n|---|---|---|---|---|---|---|\n| baseline-1 | 40.83M | 1.219M | 100,073 | 408 | 33.49 | 12.5 |\n| exact-1 | 38.13M | 1.205M | 100,065 | 381 | 31.63 | 12.3 |\n| baseline-2 | 40.03M | 1.197M | 94,992* | 410 | 33.44 | 12.3 |\n| exact-2 | 38.22M | 1.210M | 100,064 | 382 | 31.58 | 12.6 |\n\n## User-facing changes\n\nSmaller wire sizes.",
+          "timestamp": "2026-11-16T19:42:35Z",
+          "tree_id": "847a02b02680f8694f8e02081568d45c15c1028f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/bd03a5067673fe0fee657f2ee5931656ba0cce4c"
+        },
+        "date": 1794861078947,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.15,
             "unit": "MB"
           }
         ]
