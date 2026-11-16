@@ -37,7 +37,7 @@ how to wire the components into a pipeline.
 | --- | --- | --- | --- |
 | [Batch, fan-out, and retry][core-processors] | Core | Experimental | Combine batches, send to multiple outputs, or retry downstream NACKs. |
 | [Attribute, content router, and signal router][core-processors] | Core | Experimental | Edit attributes or route by content or signal. |
-| [Filter and log sampling][core-processors] | Core | Experimental | Filter logs and traces or reduce log volume by sampling. |
+| [Filter and log sampling][core-processors] | Core | Experimental | Filter logs and traces, include or exclude metrics by name, or reduce log volume by sampling. |
 | [Temporal reaggregation][core-processors] | Core | Experimental | Reaggregate metrics into a lower-frequency stream. |
 | [Debug][core-processors] | Core | Experimental | Emit diagnostics about passing data. |
 | [Log parser][log-parser] | Core | Experimental | Parse framed string logs with regex, JSON Pointers, or headerless CSV. |
