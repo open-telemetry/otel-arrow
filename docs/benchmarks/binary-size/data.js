@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794861103415,
+  "lastUpdate": 1794862378623,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -86617,6 +86617,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.15,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "44511335d241e6122cfc40829a065f02d28be904",
+          "message": "feat(codecs): Add native OTAP to syslog-batch codec encoding (#4739)\n\n# Change summary\n\n> Note: Simplified/refined version of #4728\n\nAdds OTAP-to-syslog/CEF encoding using existing views, plus registry\nexamples and benchmarks. Supports RFC 3164, RFC 5424, CEF, and\nsyslog-wrapped CEF. No generation API or exporter is added.\n\nThis is an alternate implementation solving almost the same problem as\nthe stacked PR drafts:\n- #4645\n- #4646\n\nHowever, this implementation doesn't introduce anything new (i.e. a\n`generator`) into the `codec` API. Instead, it leverages Weaver and a\nhardcoded registry declaration of the various types of syslog/CEF we\nsupport. Users can specify a `profile:\n{all|rfc3164|rfc5424|cef|cef_rfc3164|cef_rfc5424}` on the codec\ndeclaration to force the `encoder` to produce certain kinds of wire\nformat.\n\nThis `encoder` would likely be utilized directly in the syslog exporter\nin progress at #4643.\n\n## Related issue\n\n* Closes #4642\n\n## Validation\n\nThis PR adds a `codec_encoders` benchmark suite to compare the OTLP\n`encoder` performance to the Syslog `encoder` performance:\n\n**Encoding throughput (logs/s; higher is better).** 100 samples per\ncase, pinned to one logical CPU.\n\n| Format | 10 logs/batch | 100 logs/batch | 1,000 logs/batch |\n| --- | ---: | ---: | ---: |\n| OTLP | 873,000 | 1,047,000 | 1,070,000 |\n| RFC 3164 | 526,000 | 523,000 | 466,000 |\n| RFC 5424 | 383,000 | 479,000 | 437,000 |\n| CEF | 493,000 | 506,000 | 452,000 |\n| CEF/RFC 3164 | 354,000 | 404,000 | 357,000 |\n| CEF/RFC 5424 | 369,000 | 386,000 | 332,000 |\n| `all` | 400,000 | 461,000 | 397,000 |\n\nNote that OTLP encoder preserves more fields from the native OTAP\nrepresentation, while the syslog/CEF encoder preserves only the content\napplicable to the selected `profile`.\n\nThe most likely reason for lower syslog/CEF throughput is that [OTLP's\nencoder](https://github.com/open-telemetry/otel-arrow/blob/196b2e57b0aac2a7e181a6a69566f6e39fa10741/rust/otap-dataflow/crates/pdata/src/otlp/logs.rs#L394-L451)\nreads typed Arrow columns and uses cursors to visit attributes while\nwriting protobuf. Syslog walks the existing `OtapLogsView` instead. A\ncustom traversal mechanism could improve performance, but I wanted to\nget the baseline checked in first.\n\n## User-facing changes\n\nEncode structured logs as RFC 3164, RFC 5424, or CEF and generate\nrepresentative data from a shared local semantic-convention registry\nunder the `syslog-batch` codec.",
+          "timestamp": "2026-11-16T19:55:08Z",
+          "tree_id": "8550f05c37f3b75e351f3d481430b5eb58ce044e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/44511335d241e6122cfc40829a065f02d28be904"
+        },
+        "date": 1794862358518,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.21,
             "unit": "MB"
           }
         ]
