@@ -9,6 +9,7 @@ use crate::Unwindable;
 use crate::channel_metrics::{
     ChannelMetricsHandle, NodeCompletionMetrics, NodeInputItemMetrics, NodeInputMetrics,
     NodeInputSizeMetrics, NodeOutputItemMetrics, NodeOutputMetrics, NodeOutputSizeMetrics,
+    NodePortAttributes,
 };
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
@@ -44,6 +45,7 @@ use otel_arrow_dfe_config::policy::TelemetryPolicy;
 use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -73,9 +75,12 @@ fn make_output_metrics(
             let mut keys = h.output_channel_keys();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
-                .map(|(_, key)| {
+                .map(|(port, _)| {
                     NodeOutputMetrics::register(
-                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                        &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
+                        &NodePortAttributes {
+                            node_port: port.clone(),
+                        },
                     )
                 })
                 .collect()
@@ -94,9 +99,12 @@ fn make_output_completion_metrics(
             let mut keys = h.output_channel_keys();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
-                .map(|(_, key)| {
+                .map(|(port, _)| {
                     NodeCompletionMetrics::register(
-                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                        &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
+                        &NodePortAttributes {
+                            node_port: port.clone(),
+                        },
                     )
                 })
                 .collect()
@@ -115,9 +123,12 @@ fn make_output_item_metrics(
             let mut keys = h.output_channel_keys();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
-                .map(|(_, key)| {
+                .map(|(port, _)| {
                     NodeOutputItemMetrics::register(
-                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                        &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
+                        &NodePortAttributes {
+                            node_port: port.clone(),
+                        },
                     )
                 })
                 .collect()
@@ -136,9 +147,12 @@ fn make_output_size_metrics(
             let mut keys = h.output_channel_keys();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
-                .map(|(_, key)| {
+                .map(|(port, _)| {
                     NodeOutputSizeMetrics::register(
-                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                        &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
+                        &NodePortAttributes {
+                            node_port: port.clone(),
+                        },
                     )
                 })
                 .collect()
@@ -169,9 +183,11 @@ fn make_node_metric_handles(
     let input = if input_metrics_enabled {
         telemetry_handle
             .as_ref()
-            .and_then(|h| h.input_channel_key())
-            .map(|key| {
-                NodeInputMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
+            .filter(|h| h.input_channel_key().is_some())
+            .map(|h| {
+                NodeInputMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
+                )
             })
     } else {
         None
@@ -179,10 +195,13 @@ fn make_node_metric_handles(
     let input_completion = if completion_duration_enabled && has_input {
         telemetry_handle
             .as_ref()
-            .and_then(|h| h.input_channel_key())
-            .map(|key| {
+            .filter(|h| h.input_channel_key().is_some())
+            .map(|h| {
                 NodeCompletionMetrics::register(
-                    &pipeline_context.metric_set_registrar_for_entity(key),
+                    &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
+                    &NodePortAttributes {
+                        node_port: Cow::Borrowed("input"),
+                    },
                 )
             })
     } else {
@@ -191,10 +210,10 @@ fn make_node_metric_handles(
     let input_size = if size_enabled && has_input {
         telemetry_handle
             .as_ref()
-            .and_then(|h| h.input_channel_key())
-            .map(|key| {
+            .filter(|h| h.input_channel_key().is_some())
+            .map(|h| {
                 NodeInputSizeMetrics::register(
-                    &pipeline_context.metric_set_registrar_for_entity(key),
+                    &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
                 )
             })
     } else {
@@ -203,10 +222,10 @@ fn make_node_metric_handles(
     let input_items = if item_counts_enabled && has_input {
         telemetry_handle
             .as_ref()
-            .and_then(|h| h.input_channel_key())
-            .map(|key| {
+            .filter(|h| h.input_channel_key().is_some())
+            .map(|h| {
                 NodeInputItemMetrics::register(
-                    &pipeline_context.metric_set_registrar_for_entity(key),
+                    &pipeline_context.metric_set_registrar_for_entity(h.entity_key()),
                 )
             })
     } else {
@@ -789,7 +808,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
             {
                 let mut attrs = candidate.attrs.clone();
-                attrs.decision = std::borrow::Cow::Owned(node_id.name.to_string());
+                attrs.decision = Cow::Owned(node_id.name.to_string());
                 let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
                 flow_dropped_items_metric = Some(FlowDroppedItemsMetrics::register(
                     &pipeline_context.metric_set_registrar_for_entity(entity_key),

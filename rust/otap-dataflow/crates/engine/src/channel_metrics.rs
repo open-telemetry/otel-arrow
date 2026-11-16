@@ -172,6 +172,7 @@ pub struct NodeInputMetrics {
 /// Ack/nack completion duration associated with one node boundary.
 #[metric_set(
     name = "node.completion",
+    registration_attributes = NodePortAttributes,
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -211,6 +212,7 @@ pub struct NodeInputSizeMetrics {
 /// channel attributes as the transport metrics.
 #[metric_set(
     name = "node.output",
+    registration_attributes = NodePortAttributes,
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -223,6 +225,7 @@ pub struct NodeOutputMetrics {
 /// Optional per-signal item metrics for a node output channel.
 #[metric_set(
     name = "node.output",
+    registration_attributes = NodePortAttributes,
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -235,6 +238,7 @@ pub struct NodeOutputItemMetrics {
 /// Optional per-signal logical payload-size metrics for a node output channel.
 #[metric_set(
     name = "node.output",
+    registration_attributes = NodePortAttributes,
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -242,6 +246,18 @@ pub struct NodeOutputSizeMetrics {
     /// Output logical payload size, grouped by `signal` and `outcome`.
     #[metric(unit = "By")]
     pub size: Counter<u64>,
+}
+
+/// Node port a node-level metric set is recorded for.
+///
+/// Output-side node metrics are registered on the node entity once per output
+/// port; the port is a data-point dimension rather than an entity attribute.
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+pub struct NodePortAttributes {
+    /// Output port name, or `input` for the input side of completion metrics.
+    #[attribute_key = "node.port"]
+    pub node_port: Cow<'static, str>,
 }
 
 pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {
