@@ -31,6 +31,7 @@ humantime-serde.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlparser = { workspace = true, features = ["visitor"] }
 thiserror.workspace = true
 tokio.workspace = true
 
