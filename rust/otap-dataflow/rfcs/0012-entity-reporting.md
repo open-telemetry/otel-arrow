@@ -51,9 +51,9 @@ Telemetry System (ITS).
 We want entity information to be available to DFE telemetry consumers like any
 other internal telemetry. This includes:
 
-- the current state of each entity,
-- lifecycle events, including creation and deletion, and
-- relationships between entities.
+- The current state of each entity,
+- Lifecycle events, including creation and deletion, and
+- Relationships between entities.
 
 The natural approach is to align with OpenTelemetry Entities, which are still
 being defined. To that end this RFC places the following constraints on
@@ -68,7 +68,7 @@ itself:
 
 The existing entity model also has problems that this RFC addresses:
 
-- **Ambiguous identity.** A pipeline or node that is deleted and recreated with
+- **Ambiguous identity.** A pipeline that is deleted and recreated with
   the same configuration produces the same attribute values as the original, so
   consumers cannot tell the two apart.
 - **No ordering in time.** There is no way to order entities by creation other
@@ -184,12 +184,9 @@ This gives the identities useful properties:
 
 #### Descriptive attributes
 
-All attributes other than the identifying attributes are descriptive. The
-attributes of an entity therefore fall into three classes, distinguished by
-whether they can change during the lifetime of the entity:
+All attributes other than the identifying attributes are descriptive and belong
+to one of two classes:
 
-- **Identifying attributes** never change and form the entity's minimal
-  identity (see [Identity](#identity)).
 - **Navigational attributes** are descriptive attributes that never change
   during the lifetime of the entity. They let users find the entity and act on
   it. Examples: `pipeline.group.id`, `pipeline.id`, `core.id`,
@@ -197,14 +194,6 @@ whether they can change during the lifetime of the entity:
 - **State attributes** are descriptive attributes that may change during the
   lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
   (`Running`, `Draining`, ...), its conditions, or its last heartbeat time.
-
-Whether an id is identifying or navigational follows from the identity rule,
-not from its name. `pipeline.id` is navigational because a pipeline can be
-deleted and recreated with the same `pipeline.id` inside its group. `node.id`
-is identifying because a node cannot be recreated with the same `node.id`
-inside its pipeline instance. Both are fixed for the lifetime of their entity,
-so the distinction does not affect where they appear: identifying and
-navigational attributes are placed on signals the same way.
 
 The term "navigational" comes from the [Navigation][otel-navigation] section of
 the OpenTelemetry Resource specification, which distinguishes attributes that
@@ -277,7 +266,7 @@ group, and engine. The chain is used for navigation and for inferring which enti
 a signal belongs to (see
 [Signal modeling and Entity Refs](#signal-modeling-and-entity-refs)).
 
-### Signal modeling and Entity Refs
+### Signal Modeling and Entity Refs
 
 Ambient entities and the `engine` are carried on the resource. All other
 internal entities are carried on the instrumentation scope.
@@ -360,10 +349,8 @@ not the entity.
 
 #### Attaching signals to entities
 
-Each log record or metric belongs to exactly one entity: the **narrowest**
-entity in its scope's containment chain whose identifying attributes are all
-present on the scope. A consumer can infer that entity from the DFE
-containment chain and the identifying attributes present.
+Each log record or metric belongs to exactly one entity. A consumer can infer
+that entity from the DFE containment chain and the identifying attributes present.
 
 | Scope identifying attributes present | Signal belongs to |
 | --- | --- |
