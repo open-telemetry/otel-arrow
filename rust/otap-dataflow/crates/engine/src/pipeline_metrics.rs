@@ -400,6 +400,9 @@ pub(crate) struct PipelineAllocatorSlabMetrics {
     /// Mapped bytes in this worker's small-object spans.
     #[metric(unit = "By")]
     slab_mapped_bytes: Gauge<u64>,
+    /// Virtual mapping bytes in backing regions, including free slab slots.
+    #[metric(unit = "By")]
+    slab_region_mapped_bytes: Gauge<u64>,
     /// Requested bytes in live small objects allocated by this worker.
     #[metric(unit = "By")]
     slab_requested_bytes: Gauge<u64>,
@@ -409,9 +412,12 @@ pub(crate) struct PipelineAllocatorSlabMetrics {
     /// Mapped span bytes empty and available for reuse.
     #[metric(unit = "By")]
     empty_span_bytes: Gauge<u64>,
-    /// Mapped bytes in worker-owned medium extents.
+    /// Mapped bytes in medium extents assigned to a worker size class.
     #[metric(unit = "By")]
     extent_mapped_bytes: Gauge<u64>,
+    /// Mapped bytes in the worker's pool of unassigned empty extents.
+    #[metric(unit = "By")]
+    cached_extent_bytes: Gauge<u64>,
     /// Requested bytes in live extent-backed objects.
     #[metric(unit = "By")]
     extent_requested_bytes: Gauge<u64>,
@@ -427,18 +433,27 @@ pub(crate) struct PipelineAllocatorSlabMetrics {
     /// Large anonymous mappings cached by this worker for reuse.
     #[metric(unit = "By")]
     cached_large_bytes: Gauge<u64>,
-    /// Small-object spans acquired from the OS by this worker.
+    /// Small-object spans acquired from the OS or a worker backing region.
     #[metric(unit = "{mapping}")]
     slab_maps: Counter<u64>,
-    /// Empty small-object spans released by this worker.
+    /// Empty small-object spans returned to the OS or a worker backing region.
     #[metric(unit = "{mapping}")]
     slab_releases: Counter<u64>,
+    /// Small-object backing regions mapped by this worker.
+    #[metric(unit = "{mapping}")]
+    slab_region_maps: Counter<u64>,
+    /// Entirely empty small-object backing regions unmapped by this worker.
+    #[metric(unit = "{mapping}")]
+    slab_region_releases: Counter<u64>,
     /// Medium extents acquired from the OS by this worker.
     #[metric(unit = "{mapping}")]
     extent_maps: Counter<u64>,
     /// Empty medium extents released to the OS by this worker.
     #[metric(unit = "{mapping}")]
     extent_releases: Counter<u64>,
+    /// Empty extent mappings reused by a worker size class.
+    #[metric(unit = "{mapping}")]
+    extent_reuse_hits: Counter<u64>,
     /// OS calls to discard pages of idle, partially occupied extents.
     #[metric(unit = "{call}")]
     extent_purge_calls: Counter<u64>,
@@ -619,6 +634,9 @@ impl PipelineMetricsMonitor {
             .slab_mapped_bytes
             .set(stats.slab_mapped as u64);
         self.allocator_slab
+            .slab_region_mapped_bytes
+            .set(stats.slab_region_mapped as u64);
+        self.allocator_slab
             .slab_requested_bytes
             .set(stats.slab_requested as u64);
         self.allocator_slab
@@ -630,6 +648,9 @@ impl PipelineMetricsMonitor {
         self.allocator_slab
             .extent_mapped_bytes
             .set(stats.extent_mapped as u64);
+        self.allocator_slab
+            .cached_extent_bytes
+            .set(stats.cached_extents as u64);
         self.allocator_slab
             .extent_requested_bytes
             .set(stats.extent_requested as u64);
@@ -650,10 +671,19 @@ impl PipelineMetricsMonitor {
         self.allocator_slab
             .slab_releases
             .add(activity.slab_releases);
+        self.allocator_slab
+            .slab_region_maps
+            .add(activity.slab_region_maps);
+        self.allocator_slab
+            .slab_region_releases
+            .add(activity.slab_region_releases);
         self.allocator_slab.extent_maps.add(activity.extent_maps);
         self.allocator_slab
             .extent_releases
             .add(activity.extent_releases);
+        self.allocator_slab
+            .extent_reuse_hits
+            .add(activity.extent_reuse_hits);
         self.allocator_slab
             .extent_purge_calls
             .add(activity.extent_purge_calls);

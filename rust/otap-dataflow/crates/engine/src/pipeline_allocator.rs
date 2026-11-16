@@ -18,12 +18,18 @@ use std::marker::PhantomData;
 use std::ptr::{self, null_mut};
 use std::rc::Rc;
 use std::sync::atomic::{
-    AtomicBool, AtomicUsize, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
+    AtomicBool, AtomicUsize, Ordering::AcqRel, Ordering::Acquire, Ordering::Relaxed,
+    Ordering::Release,
 };
 use std::time::{Duration, Instant};
 
 const PAGE: usize = 4096;
 const SPAN_BYTES: usize = 64 * 1024;
+const SLAB_REGION_BYTES: usize = 2 * 1024 * 1024;
+// Bit 0 belongs to the region header. Keep it independent of the slab pages
+// so an entire relinquished slab can be discarded.
+const SLAB_REGION_FREE: u32 = !1;
+const _: () = assert!(SLAB_REGION_BYTES / SPAN_BYTES == u32::BITS as usize);
 const CLASS_SIZES: [usize; 36] = [
     16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024,
     1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096, 5120, 6144, 7168, 8192, 10240, 12288, 14336,
@@ -59,14 +65,21 @@ const MEDIUM_EXTENTS: usize = 1 << 3;
 const EXTENT_BITMAP: usize = 1 << 4;
 const EXTENT_PURGE: usize = 1 << 5;
 const UPPER_EXTENT: usize = 1 << 6;
+const SLAB_REGIONS: usize = 1 << 7;
+const EXTENT_REUSE: usize = 1 << 8;
+const EXTENT_REUSE_RESIDENT: usize = 1 << 9;
 const CACHE_FLAGS: usize = BINNED
     | RESERVE_HOT_BINS
     | GRADUAL_TRIM
     | MEDIUM_EXTENTS
     | EXTENT_BITMAP
     | EXTENT_PURGE
-    | UPPER_EXTENT;
+    | UPPER_EXTENT
+    | SLAB_REGIONS
+    | EXTENT_REUSE
+    | EXTENT_REUSE_RESIDENT;
 const EXTENT_BYTES: usize = 512 * 1024;
+const EXTENT_POOL_SLOTS: usize = 4;
 const EXTENT_PURGE_DELAY: Duration = Duration::from_secs(1);
 const EXTENT_MAX_BIN_SHIFT: u32 = 16;
 const EXTENT_MAX_CAPACITY: usize = 1 << EXTENT_MAX_BIN_SHIFT;
@@ -113,6 +126,25 @@ impl ExtentMode {
 
     fn uses_bitmap(self) -> bool {
         matches!(self, Self::Bitmap | Self::Purge)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExtentReuseMode {
+    Off,
+    Discard,
+    Resident,
+}
+
+impl ExtentReuseMode {
+    fn from_config(config: usize) -> Self {
+        if config & EXTENT_REUSE_RESIDENT != 0 {
+            Self::Resident
+        } else if config & EXTENT_REUSE != 0 {
+            Self::Discard
+        } else {
+            Self::Off
+        }
     }
 }
 
@@ -183,6 +215,23 @@ fn map(len: usize) -> *mut u8 {
     }
 }
 
+fn map_aligned(bytes: usize, alignment: usize) -> *mut u8 {
+    let raw = map(bytes + alignment);
+    if raw.is_null() {
+        return raw;
+    }
+    let prefix = raw.align_offset(alignment);
+    // SAFETY: The two page-aligned trims are outside the kept interval.
+    unsafe {
+        let aligned = raw.add(prefix);
+        if prefix != 0 {
+            unmap(raw, prefix);
+        }
+        unmap(aligned.add(bytes), alignment - prefix);
+        aligned
+    }
+}
+
 unsafe fn unmap(addr: *mut u8, len: usize) {
     // SAFETY: The caller owns this page-aligned interval and has ensured that
     // no live blocks or allocator operations still reference it.
@@ -203,6 +252,226 @@ unsafe fn release_mapping(addr: *mut u8, len: usize) {
     // SAFETY: Forwarded unique mapping ownership from the caller.
     unsafe { unmap(addr, len) };
     let _ = MAPPED.fetch_sub(len, Relaxed);
+}
+
+/// Whole, empty extent mappings available to any size class on this worker.
+struct ExtentPool {
+    mode: ExtentReuseMode,
+    slots: [*mut Span; EXTENT_POOL_SLOTS],
+    len: usize,
+}
+
+impl ExtentPool {
+    const EMPTY: Self = Self {
+        mode: ExtentReuseMode::Off,
+        slots: [null_mut(); EXTENT_POOL_SLOTS],
+        len: 0,
+    };
+
+    fn take(&mut self, activity: &mut MappingActivity) -> *mut Span {
+        if self.len == 0 {
+            return null_mut();
+        }
+        self.len -= 1;
+        activity.extent_reuse_hits += 1;
+        std::mem::replace(&mut self.slots[self.len], null_mut())
+    }
+
+    unsafe fn release_empty(
+        &mut self,
+        span: *mut Span,
+        idle: bool,
+        activity: &mut MappingActivity,
+    ) {
+        // SAFETY: Only detached extents with no outstanding blocks enter the
+        // pool. Discard may zero the header, so the pool stores addresses
+        // outside the mappings and checkout rebuilds the entire header.
+        let retain = !idle
+            && self.mode != ExtentReuseMode::Off
+            && self.len < self.slots.len()
+            && (self.mode == ExtentReuseMode::Resident
+                || unsafe { libc::madvise(span.cast(), EXTENT_BYTES, libc::MADV_DONTNEED) } == 0);
+        if retain {
+            self.slots[self.len] = span;
+            self.len += 1;
+        } else {
+            unsafe { release_mapping(span.cast(), EXTENT_BYTES) };
+            activity.extent_releases += 1;
+        }
+    }
+
+    fn clear(&mut self, activity: &mut MappingActivity) {
+        for slot in &mut self.slots[..std::mem::take(&mut self.len)] {
+            // SAFETY: Pool slots exclusively own detached empty mappings.
+            let span = std::mem::replace(slot, null_mut());
+            unsafe { release_mapping(span.cast(), EXTENT_BYTES) };
+            activity.extent_releases += 1;
+        }
+    }
+}
+
+struct SlabRegionLocal {
+    prev: *mut SlabRegion,
+    next: *mut SlabRegion,
+    free: u32,
+}
+
+struct SlabRegion {
+    local: UnsafeCell<SlabRegionLocal>,
+    // One pin for the worker and one for each still-live slab it retires.
+    // Active slab checkout and return only use owner-local state.
+    retired_refs: AtomicUsize,
+}
+
+impl SlabRegion {
+    unsafe fn local(region: *mut Self) -> *mut SlabRegionLocal {
+        // SAFETY: The owner holds its reference and is the only local writer.
+        unsafe { (*region).local.get() }
+    }
+
+    unsafe fn release_retired_ref(region: *mut Self) {
+        // SAFETY: The caller holds a region reference. The final release
+        // synchronizes with all earlier users before unmapping the header.
+        if unsafe { (*region).retired_refs.fetch_sub(1, AcqRel) } == 1 {
+            let _ = RETIRED_MAPPED.fetch_sub(SLAB_REGION_BYTES, Relaxed);
+            unsafe { release_mapping(region.cast(), SLAB_REGION_BYTES) };
+        }
+    }
+}
+
+// Each region is on exactly one of these owner-only lists. Moving a region
+// across lists means checkout never has to scan full regions.
+struct SlabRegions {
+    available: *mut SlabRegion,
+    full: *mut SlabRegion,
+    mapped: usize,
+}
+
+impl SlabRegions {
+    const EMPTY: Self = Self {
+        available: null_mut(),
+        full: null_mut(),
+        mapped: 0,
+    };
+
+    unsafe fn link(head: &mut *mut SlabRegion, region: *mut SlabRegion) {
+        // SAFETY: This is an unlinked region and both entries belong to the owner.
+        unsafe {
+            let local = &mut *SlabRegion::local(region);
+            local.prev = null_mut();
+            local.next = *head;
+            if !head.is_null() {
+                (*SlabRegion::local(*head)).prev = region;
+            }
+            *head = region;
+        }
+    }
+
+    unsafe fn unlink(head: &mut *mut SlabRegion, region: *mut SlabRegion) {
+        // SAFETY: This region and its neighbors belong to this list and owner.
+        unsafe {
+            let local = &*SlabRegion::local(region);
+            if local.prev.is_null() {
+                *head = local.next;
+            } else {
+                (*SlabRegion::local(local.prev)).next = local.next;
+            }
+            if !local.next.is_null() {
+                (*SlabRegion::local(local.next)).prev = local.prev;
+            }
+        }
+    }
+
+    fn take(&mut self, activity: &mut MappingActivity) -> (*mut u8, *mut SlabRegion) {
+        if self.available.is_null() {
+            let region = map_aligned(SLAB_REGION_BYTES, SLAB_REGION_BYTES).cast::<SlabRegion>();
+            if region.is_null() {
+                return (null_mut(), null_mut());
+            }
+            // SAFETY: Fresh aligned mapping owned exclusively by this thread.
+            unsafe {
+                region.write(SlabRegion {
+                    local: UnsafeCell::new(SlabRegionLocal {
+                        prev: null_mut(),
+                        next: null_mut(),
+                        free: SLAB_REGION_FREE,
+                    }),
+                    retired_refs: AtomicUsize::new(1),
+                });
+            }
+            self.available = region;
+            self.mapped += SLAB_REGION_BYTES;
+            activity.slab_region_maps += 1;
+            add_mapping(SLAB_REGION_BYTES);
+        }
+        let region = self.available;
+        // SAFETY: The available list contains only owned regions with a free bit.
+        unsafe {
+            let free = &mut (*SlabRegion::local(region)).free;
+            let slot = free.trailing_zeros() as usize;
+            *free &= !(1 << slot);
+            if *free == 0 {
+                Self::unlink(&mut self.available, region);
+                Self::link(&mut self.full, region);
+            }
+            (region.cast::<u8>().add(slot * SPAN_BYTES), region)
+        }
+    }
+
+    unsafe fn release_span(
+        &mut self,
+        span: *mut Span,
+        bytes: usize,
+        activity: &mut MappingActivity,
+    ) {
+        // SAFETY: The slab is unlinked and has no outstanding blocks or frees.
+        let region = unsafe { (*span).remote.region };
+        if region.is_null() {
+            unsafe { release_mapping(span.cast(), bytes) };
+            return;
+        }
+        let slot = (span.addr() - region.addr()) / SPAN_BYTES;
+        // SAFETY: The owner owns the region and the returned slot is in use.
+        unsafe {
+            let free = &mut (*SlabRegion::local(region)).free;
+            let was_full = *free == 0;
+            *free |= 1 << slot;
+            if *free == SLAB_REGION_FREE {
+                Self::unlink(&mut self.available, region);
+                self.mapped -= SLAB_REGION_BYTES;
+                activity.slab_region_releases += 1;
+                release_mapping(region.cast(), SLAB_REGION_BYTES);
+            } else {
+                if was_full {
+                    Self::unlink(&mut self.full, region);
+                    Self::link(&mut self.available, region);
+                }
+                discard_slab(span);
+            }
+        }
+    }
+
+    fn retire(&mut self) {
+        for mut region in [self.available, self.full] {
+            while !region.is_null() {
+                // SAFETY: All slabs have transferred their outstanding pins.
+                // The worker's pin protects the links through this read.
+                unsafe {
+                    let next = (*SlabRegion::local(region)).next;
+                    let _ = RETIRED_MAPPED.fetch_add(SLAB_REGION_BYTES, Relaxed);
+                    SlabRegion::release_retired_ref(region);
+                    region = next;
+                }
+            }
+        }
+        *self = Self::EMPTY;
+    }
+}
+
+unsafe fn discard_slab(span: *mut Span) {
+    // SAFETY: The caller owns the whole empty slab and its region is pinned.
+    // A failed discard leaves reusable pages resident. Reuse never assumes zeroes.
+    let _ = unsafe { libc::madvise(span.cast(), SPAN_BYTES, libc::MADV_DONTNEED) };
 }
 
 #[derive(Clone, Copy)]
@@ -234,10 +503,11 @@ struct RemoteState {
 struct Remote {
     locked: AtomicBool,
     state: UnsafeCell<RemoteState>,
+    region: *mut SlabRegion,
 }
 
 impl Remote {
-    const fn new() -> Self {
+    const fn new(region: *mut SlabRegion) -> Self {
         Self {
             locked: AtomicBool::new(false),
             state: UnsafeCell::new(RemoteState {
@@ -245,6 +515,7 @@ impl Remote {
                 retired_live: 0,
                 returned_slots: 0,
             }),
+            region,
         }
     }
 
@@ -323,6 +594,10 @@ struct Span {
     remote: Remote,
 }
 
+// Region ownership fits in the existing remote cache line and preserves
+// the slab header size and block offsets in the standalone control.
+const _: () = assert!(size_of::<Remote>() == 64);
+
 impl Span {
     fn create(
         owner: usize,
@@ -330,29 +605,26 @@ impl Span {
         stride: usize,
         bytes: usize,
         mode: ExtentMode,
+        regions: Option<(&mut SlabRegions, &mut MappingActivity)>,
+        reused_extent: *mut Self,
     ) -> *mut Self {
-        let (span, align) = if bytes == EXTENT_BYTES {
+        let (span, align, region) = if bytes == EXTENT_BYTES {
             // The allocation prefix records the owning extent explicitly, so
             // the extent itself needs only the OS's normal page alignment.
-            (map(bytes), PAGE)
-        } else {
-            // The two-span mapping supplies sufficient alignment slack.
-            let raw = map(2 * SPAN_BYTES);
-            if raw.is_null() {
-                return null_mut();
-            }
-            let prefix = raw.align_offset(SPAN_BYTES);
-            // SAFETY: Both page-aligned trimmed ranges are disjoint from the
-            // span we preserve for address-mask lookup.
-            let aligned = unsafe {
-                let aligned = raw.add(prefix);
-                if prefix != 0 {
-                    unmap(raw, prefix);
-                }
-                unmap(aligned.add(SPAN_BYTES), SPAN_BYTES - prefix);
-                aligned
+            let span = if reused_extent.is_null() {
+                map(bytes)
+            } else {
+                reused_extent.cast()
             };
-            (aligned, 1 << stride.trailing_zeros())
+            (span, PAGE, null_mut())
+        } else {
+            let (mut span, region) = regions
+                .map(|(regions, activity)| regions.take(activity))
+                .unwrap_or((null_mut(), null_mut()));
+            if span.is_null() {
+                span = map_aligned(SPAN_BYTES, SPAN_BYTES);
+            }
+            (span, 1 << stride.trailing_zeros(), region)
         };
         if span.is_null() {
             return null_mut();
@@ -371,13 +643,15 @@ impl Span {
                     live: 0,
                     requested: 0,
                 }),
-                remote: Remote::new(),
+                remote: Remote::new(region),
             });
             if bytes == EXTENT_BYTES {
                 Self::extent_slots(span).write(ExtentSlots::new(stride, mode));
             }
         }
-        add_mapping(bytes);
+        if region.is_null() && reused_extent.is_null() {
+            add_mapping(bytes);
+        }
         span
     }
 
@@ -523,22 +797,35 @@ impl Span {
         if release {
             // SAFETY: This caller released the last retired block and the
             // owner relinquished the span before making retirement visible.
-            let bytes = span_bytes(unsafe { (*span).class });
-            let _ = RETIRED_MAPPED.fetch_sub(bytes, Relaxed);
-            unsafe { release_mapping(span.cast(), bytes) };
+            unsafe {
+                let region = (*span).remote.region;
+                if region.is_null() {
+                    let bytes = span_bytes((*span).class);
+                    let _ = RETIRED_MAPPED.fetch_sub(bytes, Relaxed);
+                    release_mapping(span.cast(), bytes);
+                } else {
+                    discard_slab(span);
+                    SlabRegion::release_retired_ref(region);
+                }
+            }
         }
     }
 
     unsafe fn retire(span: *mut Self) {
         // SAFETY: The owner still holds this span until it publishes retirement.
-        let bytes = span_bytes(unsafe { (*span).class });
+        let (bytes, region) = unsafe { (span_bytes((*span).class), (*span).remote.region) };
         // SAFETY: Only the owner can retire a span. The remote lock serializes
         // the transition with frees already in flight.
         let remaining = unsafe {
             Remote::with(ptr::addr_of!((*span).remote), |state| {
                 let live = (*Self::local(span)).live - state.pending.count;
                 if live != 0 {
-                    let _ = RETIRED_MAPPED.fetch_add(bytes, Relaxed);
+                    if region.is_null() {
+                        let _ = RETIRED_MAPPED.fetch_add(bytes, Relaxed);
+                    } else {
+                        // The worker still pins this region while traversing its slabs.
+                        let _ = (*region).retired_refs.fetch_add(1, Relaxed);
+                    }
                     state.retired_live = live;
                 }
                 live
@@ -546,7 +833,13 @@ impl Span {
         };
         if remaining == 0 {
             // SAFETY: All previously allocated blocks have been returned.
-            unsafe { release_mapping(span.cast(), bytes) };
+            unsafe {
+                if region.is_null() {
+                    release_mapping(span.cast(), bytes);
+                } else {
+                    discard_slab(span);
+                }
+            }
         }
         // Otherwise a remote free may already have unmapped the span.
     }
@@ -677,8 +970,32 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
     if upper_extent != 0 && extents == 0 {
         return Err("DFE_ALLOC_UPPER_EXTENT=on requires DFE_ALLOC_MEDIUM_EXTENTS=on");
     }
+    let slab_regions = match std::env::var("DFE_ALLOC_SLAB_REGIONS") {
+        Ok(value) if value == "off" => 0,
+        Ok(value) if value == "on" => SLAB_REGIONS,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_SLAB_REGIONS must be on or off"),
+    };
+    let extent_reuse = match std::env::var("DFE_ALLOC_EXTENT_REUSE") {
+        Ok(value) if value == "off" => 0,
+        Ok(value) if value == "discard" => EXTENT_REUSE,
+        Ok(value) if value == "resident" => EXTENT_REUSE | EXTENT_REUSE_RESIDENT,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_EXTENT_REUSE must be off, discard, or resident"),
+    };
+    if extent_reuse != 0 && extents == 0 {
+        return Err("extent reuse requires DFE_ALLOC_MEDIUM_EXTENTS=on");
+    }
     LARGE_CACHE_CONFIG.store(
-        budget | mode | eviction | trim | extents | slots | upper_extent,
+        budget
+            | mode
+            | eviction
+            | trim
+            | extents
+            | slots
+            | upper_extent
+            | slab_regions
+            | extent_reuse,
         Relaxed,
     );
     Ok(())
@@ -689,8 +1006,11 @@ pub(crate) const LARGE_SIZE_BANDS: usize = 3;
 pub(crate) struct MappingActivity {
     pub(crate) slab_maps: u64,
     pub(crate) slab_releases: u64,
+    pub(crate) slab_region_maps: u64,
+    pub(crate) slab_region_releases: u64,
     pub(crate) extent_maps: u64,
     pub(crate) extent_releases: u64,
+    pub(crate) extent_reuse_hits: u64,
     pub(crate) extent_purge_calls: u64,
     pub(crate) extent_purged_bytes: u64,
     pub(crate) large_maps: u64,
@@ -705,8 +1025,11 @@ impl MappingActivity {
     const EMPTY: Self = Self {
         slab_maps: 0,
         slab_releases: 0,
+        slab_region_maps: 0,
+        slab_region_releases: 0,
         extent_maps: 0,
         extent_releases: 0,
+        extent_reuse_hits: 0,
         extent_purge_calls: 0,
         extent_purged_bytes: 0,
         large_maps: 0,
@@ -756,19 +1079,19 @@ impl Class {
         self.head = span;
     }
 
-    // Returns whether the entire span was unmapped.
-    unsafe fn keep_or_release_empty(&mut self, span: *mut Span, bytes: usize) -> bool {
+    // Returns whether the empty span was unlinked for release.
+    unsafe fn keep_or_unlink_empty(&mut self, span: *mut Span) -> bool {
         if self.empty.is_null() {
             self.empty = span;
         } else if self.empty != span {
             // SAFETY: The owner established that the linked span is empty.
-            unsafe { self.release_empty(span, bytes) };
+            unsafe { self.unlink_empty(span) };
             return true;
         }
         false
     }
 
-    unsafe fn release_empty(&mut self, span: *mut Span, bytes: usize) {
+    unsafe fn unlink_empty(&mut self, span: *mut Span) {
         // SAFETY: This is a linked owner-only span with no outstanding blocks.
         // Update every local alias before releasing the mapping.
         unsafe {
@@ -791,7 +1114,6 @@ impl Class {
             if self.scan == span {
                 self.scan = next;
             }
-            release_mapping(span.cast(), bytes);
         }
     }
 }
@@ -851,6 +1173,8 @@ impl BinDemand {
 struct Heap {
     owner: usize,
     classes: [Class; HEAP_CLASSES],
+    slab_regions: SlabRegions,
+    use_slab_regions: bool,
     cache: [Mapping; MAP_CACHE_SLOTS],
     // A cached mapping's first word is its intrusive next pointer. Only the
     // owning worker can access these lists and a byte cap bounds all entries.
@@ -862,6 +1186,7 @@ struct Heap {
     evict: usize,
     used_large: bool,
     extent_mode: ExtentMode,
+    extent_pool: ExtentPool,
     upper_extent: bool,
     used_extents: bool,
     extent_idle_since: Option<Instant>,
@@ -873,6 +1198,8 @@ impl Heap {
     const EMPTY: Self = Self {
         owner: 0,
         classes: [Class::EMPTY; HEAP_CLASSES],
+        slab_regions: SlabRegions::EMPTY,
+        use_slab_regions: false,
         cache: [Mapping::EMPTY; MAP_CACHE_SLOTS],
         bins: [null_mut(); BIN_COUNT],
         occupied_bins: 0,
@@ -882,6 +1209,7 @@ impl Heap {
         evict: 0,
         used_large: false,
         extent_mode: ExtentMode::Disabled,
+        extent_pool: ExtentPool::EMPTY,
         upper_extent: false,
         used_extents: false,
         extent_idle_since: None,
@@ -939,12 +1267,30 @@ impl Heap {
                 }
                 probe = class.scan;
             }
-            span = Span::create(owner, index, stride, bytes, self.extent_mode);
+            let reused = if bytes == EXTENT_BYTES {
+                // The refill path owns the worker cache. An extent mapping
+                // has the same geometry regardless of its previous class.
+                self.extent_pool.take(&mut self.activity)
+            } else {
+                null_mut()
+            };
+            let regions = self
+                .use_slab_regions
+                .then_some((&mut self.slab_regions, &mut self.activity));
+            span = Span::create(
+                owner,
+                index,
+                stride,
+                bytes,
+                self.extent_mode,
+                regions,
+                reused,
+            );
             if span.is_null() {
                 return (null_mut(), null_mut());
             }
             if bytes == EXTENT_BYTES {
-                self.activity.extent_maps += 1;
+                self.activity.extent_maps += u64::from(reused.is_null());
             } else {
                 self.activity.slab_maps += 1;
             }
@@ -976,10 +1322,13 @@ impl Heap {
             if local.live == 0 {
                 let index = (*span).class;
                 let bytes = span_bytes(index);
-                if self.classes[index].keep_or_release_empty(span, bytes) {
+                if self.classes[index].keep_or_unlink_empty(span) {
                     if bytes == EXTENT_BYTES {
-                        self.activity.extent_releases += 1;
+                        self.extent_pool
+                            .release_empty(span, false, &mut self.activity);
                     } else {
+                        self.slab_regions
+                            .release_span(span, bytes, &mut self.activity);
                         self.activity.slab_releases += 1;
                     }
                 }
@@ -1176,6 +1525,9 @@ impl Heap {
             ..Default::default()
         };
         let extent_idle = !std::mem::replace(&mut self.used_extents, false);
+        if extent_idle {
+            self.extent_pool.clear(&mut self.activity);
+        }
         let purge_extent_slots = if self.extent_mode != ExtentMode::Purge || !extent_idle {
             self.extent_idle_since = None;
             false
@@ -1197,19 +1549,25 @@ impl Heap {
                     let local = &*Span::local(span);
                     if local.live == 0 {
                         let released = if extent && extent_idle {
-                            class.release_empty(span, bytes);
+                            class.unlink_empty(span);
                             true
                         } else {
-                            class.keep_or_release_empty(span, bytes)
+                            class.keep_or_unlink_empty(span)
                         };
                         if extent {
                             if released {
-                                self.activity.extent_releases += 1;
+                                self.extent_pool.release_empty(
+                                    span,
+                                    extent_idle,
+                                    &mut self.activity,
+                                );
                             } else {
                                 result.empty_extents += bytes;
                                 result.extent_mapped += bytes;
                             }
                         } else if released {
+                            self.slab_regions
+                                .release_span(span, bytes, &mut self.activity);
                             self.activity.slab_releases += 1;
                         } else {
                             result.empty_mapped += bytes;
@@ -1243,12 +1601,16 @@ impl Heap {
                 }
             }
         }
+        result.slab_region_mapped = self.slab_regions.mapped;
+        result.cached_extents = self.extent_pool.len * EXTENT_BYTES;
         result.activity = std::mem::take(&mut self.activity);
         result
     }
 
     fn retire(&mut self) {
         self.drop_cached_mappings();
+        self.extent_pool.clear(&mut self.activity);
+        self.extent_pool.mode = ExtentReuseMode::Off;
         self.demand = BinDemand::EMPTY;
         self.idle_since = None;
         self.used_large = false;
@@ -1256,6 +1618,7 @@ impl Heap {
         self.upper_extent = false;
         self.used_extents = false;
         self.extent_idle_since = None;
+        self.use_slab_regions = false;
         for class in &mut self.classes {
             let mut span = std::mem::replace(class, Class::EMPTY).head;
             while !span.is_null() {
@@ -1268,6 +1631,7 @@ impl Heap {
                 }
             }
         }
+        self.slab_regions.retire();
         self.owner = 0;
     }
 }
@@ -1317,7 +1681,9 @@ pub fn enter_pipeline() -> PipelineScope {
     let config = LARGE_CACHE_CONFIG.load(Relaxed);
     let _ = with_heap(|heap| {
         heap.extent_mode = ExtentMode::from_config(config);
+        heap.extent_pool.mode = ExtentReuseMode::from_config(config);
         heap.upper_extent = config & UPPER_EXTENT != 0;
+        heap.use_slab_regions = config & SLAB_REGIONS != 0;
     });
     PipelineScope(PhantomData)
 }
@@ -1326,10 +1692,12 @@ pub fn enter_pipeline() -> PipelineScope {
 #[derive(Default)]
 pub(crate) struct WorkerStats {
     pub(crate) slab_mapped: usize,
+    pub(crate) slab_region_mapped: usize,
     pub(crate) slab_requested: usize,
     pub(crate) slab_usable: usize,
     pub(crate) empty_mapped: usize,
     pub(crate) extent_mapped: usize,
+    pub(crate) cached_extents: usize,
     pub(crate) extent_requested: usize,
     pub(crate) extent_usable: usize,
     pub(crate) empty_extents: usize,
@@ -1417,7 +1785,15 @@ unsafe impl GlobalAlloc for PipelineAllocator {
             // TLS is unavailable during teardown. Use a standalone retired
             // span with the same pointer classification as any other small block.
             let stride = CLASS_SIZES[class];
-            let span = Span::create(0, class, stride, SPAN_BYTES, ExtentMode::Disabled);
+            let span = Span::create(
+                0,
+                class,
+                stride,
+                SPAN_BYTES,
+                ExtentMode::Disabled,
+                None,
+                null_mut(),
+            );
             if span.is_null() {
                 return null_mut();
             }
@@ -1591,6 +1967,159 @@ mod tests {
     fn read_mapping(block: &Block) -> Mapping {
         // SAFETY: These tests pass only live non-small allocations.
         unsafe { block.ptr.cast::<Mapping>().sub(1).read() }
+    }
+
+    fn enter_slab_region_worker() -> PipelineScope {
+        let scope = enter_pipeline();
+        let _ = with_heap(|heap| heap.use_slab_regions = true);
+        scope
+    }
+
+    fn enter_extent_reuse_worker(mode: ExtentReuseMode) -> PipelineScope {
+        let scope = enter_extent_worker_in(ExtentMode::Purge);
+        let _ = with_heap(|heap| {
+            heap.upper_extent = true;
+            heap.extent_pool.mode = mode;
+        });
+        scope
+    }
+
+    /// Scenario: A worker releases more empty upper extents than its pool
+    /// can hold, then allocates in a different extent class and becomes idle.
+    /// Guarantees: The pool respects its cap, reassigns a mapping across size
+    /// classes, and flushes at the first idle sample while live slots remain valid.
+    #[test]
+    fn extent_reuse_respects_budget_across_classes_and_flushes_when_idle() {
+        for mode in [ExtentReuseMode::Discard, ExtentReuseMode::Resident] {
+            let _scope = enter_extent_reuse_worker(mode);
+            let blocks: Vec<_> = (0..21).map(|_| Block::new(133_634, 1)).collect();
+            let bases: Vec<_> = blocks.iter().map(|b| read_mapping(b).base).collect();
+            for block in blocks {
+                drop(block);
+            }
+            let full = sample_worker();
+            assert_eq!(full.activity.extent_maps, 7);
+            assert_eq!(full.activity.extent_releases, 2);
+            assert_eq!(full.cached_extents, EXTENT_POOL_SLOTS * EXTENT_BYTES);
+            assert_eq!(full.empty_extents, EXTENT_BYTES);
+
+            let other_class = Block::new(32 * 1024, PAGE);
+            let mapping = read_mapping(&other_class);
+            assert!(mapping.is_extent());
+            assert!(bases[3..15].contains(&mapping.base));
+            let reused = sample_worker();
+            assert_eq!(reused.activity.extent_maps, 0);
+            assert_eq!(reused.activity.extent_reuse_hits, 1);
+            assert_eq!(
+                reused.cached_extents,
+                (EXTENT_POOL_SLOTS - 1) * EXTENT_BYTES
+            );
+            // SAFETY: This byte is part of a live block owned by this thread.
+            unsafe { other_class.ptr.write(42) };
+            let idle = sample_worker();
+            assert_eq!(idle.activity.extent_releases, EXTENT_POOL_SLOTS as u64);
+            assert_eq!(idle.cached_extents, 0);
+            assert_eq!(idle.extent_mapped, EXTENT_BYTES);
+            // SAFETY: The block is still live and its first byte is initialized.
+            assert_eq!(unsafe { other_class.ptr.read() }, 42);
+            drop(other_class);
+        }
+    }
+
+    /// Scenario: A worker retires with one live extent and one cached extent.
+    /// Guarantees: Retirement unmaps the cache and the live block can still be
+    /// read and freed on a different thread.
+    #[test]
+    fn extent_reuse_drops_cached_extents_on_retirement() {
+        let scope = enter_extent_reuse_worker(ExtentReuseMode::Resident);
+        let mut blocks: Vec<_> = (0..9).map(|_| Block::new(133_634, 1)).collect();
+        let live = blocks.pop().unwrap();
+        drop(blocks);
+        assert_eq!(sample_worker().cached_extents, EXTENT_BYTES);
+        // SAFETY: The block is live and belongs to this thread.
+        unsafe { live.ptr.write(13) };
+        drop(scope);
+        let retired = sample_worker();
+        assert_eq!(retired.cached_extents, 0);
+        assert_eq!(retired.activity.extent_releases, 1);
+        std::thread::spawn(move || {
+            // SAFETY: The retired extent stays mapped while this live block
+            // owns its initialized first byte.
+            assert_eq!(unsafe { live.ptr.read() }, 13);
+            drop(live);
+        })
+        .join()
+        .unwrap();
+    }
+
+    fn slab_of(block: &Block) -> *mut Span {
+        block.ptr.map_addr(|addr| addr & !(SPAN_BYTES - 1)).cast()
+    }
+
+    /// Scenario: A worker fills a region, maps a second, and releases a slab
+    /// from the first region after retaining its class's one empty slab.
+    /// Guarantees: The released slab can back a different size class without
+    /// a new mapping and entirely empty regions are unmapped.
+    #[test]
+    fn slab_regions_reuse_released_slabs_across_classes() {
+        let _scope = enter_slab_region_worker();
+        let mut blocks: Vec<_> = (0..94).map(|_| Block::new(16 * 1024, 8)).collect();
+        let returned = slab_of(&blocks[3]);
+        let first = slab_of(&blocks[0]);
+        let last = slab_of(&blocks[93]);
+        assert_ne!(returned, first);
+        // SAFETY: All three slabs are pinned by live blocks.
+        unsafe {
+            assert_eq!((*first).remote.region, (*returned).remote.region);
+            assert_ne!((*first).remote.region, (*last).remote.region);
+            assert_eq!((*first).remote.region.addr() % SLAB_REGION_BYTES, 0);
+        }
+        let full = sample_worker();
+        assert_eq!(full.slab_region_mapped, 2 * SLAB_REGION_BYTES);
+        assert_eq!(full.activity.slab_region_maps, 2);
+
+        drop(blocks.drain(..6));
+        let other_class = Block::new(8192, 64);
+        assert_eq!(slab_of(&other_class), returned);
+        let reused = sample_worker();
+        assert_eq!(reused.activity.slab_region_maps, 0);
+
+        drop(blocks);
+        drop(other_class);
+        let empty = sample_worker();
+        assert_eq!(empty.slab_region_mapped, SLAB_REGION_BYTES);
+        assert_eq!(empty.activity.slab_region_releases, 1);
+        assert_eq!(empty.empty_mapped, 2 * SPAN_BYTES);
+    }
+
+    /// Scenario: The worker retires a region with blocks in two different
+    /// slabs, and a different thread frees the first one.
+    /// Guarantees: Each retired slab pins the region independently and
+    /// releasing one leaves the other mapped and readable.
+    #[test]
+    fn slab_regions_keep_remote_blocks_alive_after_retirement() {
+        let scope = enter_slab_region_worker();
+        let first = Block::new(16 * 1024, 8);
+        let last = Block::new(8192, 64);
+        // SAFETY: The two live blocks pin their distinct slabs and region.
+        let region = unsafe {
+            assert_ne!(slab_of(&first), slab_of(&last));
+            let region = (*slab_of(&last)).remote.region;
+            assert!(!region.is_null());
+            assert_eq!((*slab_of(&first)).remote.region, region);
+            last.ptr.write(13);
+            region
+        };
+        drop(scope);
+        // SAFETY: Both retired slabs still have a live block.
+        assert_eq!(unsafe { (*region).retired_refs.load(Acquire) }, 2);
+        std::thread::spawn(move || drop(first)).join().unwrap();
+        // SAFETY: Last still owns its slab and the first byte is initialized.
+        unsafe {
+            assert_eq!((*region).retired_refs.load(Acquire), 1);
+            assert_eq!(last.ptr.read(), 13);
+        }
+        std::thread::spawn(move || drop(last)).join().unwrap();
     }
 
     /// Scenario: An opted-in worker allocates and grows buffers in the hot
@@ -1853,15 +2382,20 @@ mod tests {
         drop(second);
     }
 
-    /// Scenario: remote workers return blocks while their owning heap retires.
+    /// Scenario: remote workers return blocks while their owning heap retires
+    /// with standalone or region-backed slabs.
     /// Guarantees: the racing frees complete across many spans, with each
     /// block surrendered exactly once.
     #[test]
     fn retirement_races_with_remote_free() {
         use std::sync::{Arc, Barrier};
 
-        for _ in 0..16 {
-            let owner_scope = enter_pipeline();
+        for iteration in 0..32 {
+            let owner_scope = if iteration % 2 == 0 {
+                enter_pipeline()
+            } else {
+                enter_slab_region_worker()
+            };
             let gate = Arc::new(Barrier::new(5));
             let workers: Vec<_> = (0..4)
                 .map(|_| {

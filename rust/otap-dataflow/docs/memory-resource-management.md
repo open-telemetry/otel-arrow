@@ -330,6 +330,13 @@ one up to 25% larger than the requested mapping. A growing allocation can stay
 in place when the mapping has enough space after alignment. The worker clears
 its cache after consecutive pipeline samples with no large mapping activity.
 
+Set `DFE_ALLOC_SLAB_REGIONS=on` to back a pipeline worker's small-object slabs
+with aligned 2 MiB regions. Each region can supply 31 slabs, and a returned
+slab can serve a different size class. The allocator discards its pages when
+the class releases the slab and unmaps a region when all its slabs are
+returned. Live slabs keep their region mapped across worker shutdown. The
+option defaults to `off`.
+
 Set `DFE_ALLOC_LARGE_CACHE=exact` to use the original four-slot, exact-size
 cache and copy large reallocations. Set `DFE_ALLOC_LARGE_CACHE_MIB` to an integer
 from 0 to 8 to change the per-worker cache budget. A value of 0 disables
@@ -368,6 +375,14 @@ to also pool the 160 KiB capacity bin. It covers mapping sizes above
 128 KiB through 160 KiB with alignment up to 4 KiB. Each 512 KiB extent
 holds three slots. This option defaults to `off`.
 
+With medium extents enabled, `DFE_ALLOC_EXTENT_REUSE` gives each worker
+an optional pool of up to four unassigned empty extents (2 MiB). Use
+`discard` to discard pages when an extent enters the pool or `resident`
+to retain its pages for reuse during traffic. Any extent size class can
+reuse a pooled mapping. Both modes unmap the pool at the first sampled
+interval with no extent allocation and on worker exit. The default
+`off` releases excess empty extents immediately.
+
 A cross-thread free publishes into the originating span's remote list or
 records the returned slot in its remote bitmap. The owner reconciles remote
 frees in batches when searching for space and at pipeline
@@ -378,8 +393,11 @@ spans when their thread-local heap is destroyed.
 
 `pipeline.allocator_slab` reports small-object live requested and usable bytes,
 mapped and empty span capacity, bytes reconciled by sampling, and large mapping
-cache size. It also reports extent mapped, empty, requested, and occupied slot
-bytes. It counts acquisitions and releases for each mapping type, idle
+cache size. With region backing, it reports region mapping bytes separately,
+including slab capacity already counted in the slab gauge. It also reports
+extent mapped, empty, requested, and occupied slot bytes, plus cached
+extent mapping bytes and reuse hits. It counts
+acquisitions and releases for slabs, backing regions, and other mappings, idle
 extent discard calls and bytes, bytes copied during reallocation, and
 dedicated reallocations served in place.
 `pipeline.allocator_large_cache` reports hits and misses by the size requested
