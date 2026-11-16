@@ -10,4 +10,4 @@ note: "Windows performance counters add counter operation failure diagnostics an
 issues: [3530]
 # (Optional) One or more lines of additional information to render under the primary note.
 subtext: |
-  Adds receiver.windows_perf_counters.counter.failures dimensioned by operation (collect, read) to expose partial collection failures alongside shared attempt outcomes.
+  Adds receiver.windows_perf_counters.counter.failures dimensioned by operation (collect, read) to expose per-configured-counter collection and read failures alongside shared attempt outcomes.
