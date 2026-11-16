@@ -86,8 +86,11 @@ pub use super::value_spec::{
 };
 
 /// Signal-level spec for a metric group.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MetricSpec {
+    /// Metric value type (`value_type`): [`ScalarKind::Int`] or
+    /// [`ScalarKind::Double`] (the default).
+    pub value_type: ScalarKind,
     /// Data point value (or per-observation value for histograms).
     pub value: Option<ValueSpec>,
     /// Number of observations aggregated into each histogram data point.
@@ -96,6 +99,18 @@ pub struct MetricSpec {
     pub bounds: Option<Vec<f64>>,
     /// Aggregation temporality for sums and histograms (only `delta`).
     pub temporality: Option<AggregationTemporality>,
+}
+
+impl Default for MetricSpec {
+    fn default() -> Self {
+        Self {
+            value_type: ScalarKind::Double,
+            value: None,
+            observations: None,
+            bounds: None,
+            temporality: None,
+        }
+    }
 }
 
 /// Signal-level spec for a span group.
@@ -535,7 +550,7 @@ pub fn parse_metric_spec(
     let gauge = matches!(instrument, InstrumentSpec::Gauge);
     for key in map.keys() {
         let reason = match key.as_str() {
-            "value" => continue,
+            "value" | "value_type" => continue,
             "observations" | "bounds" if histogram => continue,
             "temporality" if !gauge => continue,
             "observations" | "bounds" => {
@@ -549,9 +564,12 @@ pub fn parse_metric_spec(
         return Err(AnnotationError::new(path, reason));
     }
     let mut spec = MetricSpec::default();
+    if let Some(t) = map.get("value_type") {
+        spec.value_type = parse_value_type(t, &format!("{path}.value_type"))?;
+    }
     if let Some(m) = optional_map(map, path, "value")? {
         let p = format!("{path}.value");
-        let v = parse_value_spec(m, &p, ScalarKind::Double)?;
+        let v = parse_value_spec(m, &p, spec.value_type)?;
         // Counter increments and histogram observations must be >= 0 (OTLP
         // only defines a histogram `sum` for non-negative observations).
         if matches!(instrument, InstrumentSpec::Counter) || histogram {
@@ -620,6 +638,19 @@ pub fn parse_event_spec(map: &Mapping) -> AnnotationResult<EventSpec> {
         spec.severity = Some(v);
     }
     Ok(spec)
+}
+
+/// Parse a metric `value_type` (`int` or `double`).
+fn parse_value_type(value: &Value, path: &str) -> AnnotationResult<ScalarKind> {
+    match value {
+        Value::String(s) if s == "int" => Ok(ScalarKind::Int),
+        Value::String(s) if s == "double" => Ok(ScalarKind::Double),
+        Value::String(s) => Err(AnnotationError::new(
+            path,
+            format!("unsupported value_type \"{s}\" (expected int or double)"),
+        )),
+        _ => Err(AnnotationError::new(path, "must be a string")),
+    }
 }
 
 /// Parse a metric `temporality`.

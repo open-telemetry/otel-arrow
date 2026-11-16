@@ -56,6 +56,7 @@ groups:
     metric_name: gen_ai.client.token.usage
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 131072 }
           distribution: { type: lognormal, mean: 600, stddev: 1500 }

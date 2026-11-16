@@ -16,6 +16,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1048576, max: 8589934592 }
           distribution: { type: lognormal, mean: 268435456, stddev: 536870912 }
@@ -32,6 +33,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 2097152, max: 8589934592 }
           distribution: { type: lognormal, mean: 402653184, stddev: 536870912 }
@@ -48,6 +50,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [251658240, 1073741824, 2147483648, 4294967296, 8589934592], weights: [2, 2, 3, 3, 1] }
     extends: attributes.jvm.memory
     brief: "Measure of max obtainable memory."
@@ -62,6 +65,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 8589934592 }
           distribution: { type: lognormal, mean: 134217728, stddev: 268435456 }
@@ -103,6 +107,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 10, max: 200 } }
     brief: "Number of executing platform threads."
     instrument: updowncounter
@@ -121,6 +126,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 5 }
@@ -136,6 +142,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50 }
           distribution: { type: exponential, mean: 1 }
@@ -152,6 +159,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1000, max: 60000 }
           distribution: { type: normal, mean: 12000, stddev: 6000 }
@@ -167,6 +175,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 4, 8, 16, 32, 64], weights: [2, 4, 5, 4, 2, 1, 1] }
     brief: "Number of processors available to the Java virtual machine."
     instrument: updowncounter

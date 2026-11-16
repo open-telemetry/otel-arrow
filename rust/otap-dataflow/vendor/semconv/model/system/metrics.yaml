@@ -28,6 +28,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [2, 4, 8, 16, 32, 64], weights: [3, 5, 5, 3, 2, 1] }
     stability: development
     brief: "Reports the number of actual physical processor cores on the hardware."
@@ -45,6 +46,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [2, 4, 8, 16, 32, 64, 128], weights: [2, 4, 5, 4, 3, 2, 1] }
     stability: development
     brief: "Reports the number of logical (virtual) processor cores created by the operating system to manage multitasking."
@@ -107,6 +109,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 800000000, max: 5500000000 }
           distribution: { type: normal, mean: 2800000000, stddev: 700000000 }
@@ -127,6 +130,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 10000000, max: 256000000000 }
           distribution: { type: lognormal, mean: 4000000000, stddev: 6000000000 }
@@ -146,6 +150,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [4294967296, 8589934592, 17179869184, 34359738368, 68719476736, 137438953472], weights: [2, 4, 5, 4, 2, 1] }
     stability: development
     brief: "Total virtual memory available in the system."
@@ -182,6 +187,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 17179869184 }
           distribution: { type: lognormal, mean: 500000000, stddev: 1000000000 }
@@ -226,6 +232,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: lognormal, mean: 2000, stddev: 5000 }
@@ -247,6 +254,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10000 }
           distribution: { type: exponential, mean: 50 }
@@ -268,6 +276,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 2000000000 }
           distribution: { type: lognormal, mean: 20000000, stddev: 50000000 }
@@ -289,6 +298,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: lognormal, mean: 1000, stddev: 3000 }
@@ -363,6 +373,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10000 }
           distribution: { type: exponential, mean: 100 }
@@ -384,6 +395,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [68719476736, 137438953472, 274877906944, 549755813888, 1099511627776, 4398046511104], weights: [2, 4, 4, 3, 2, 1] }
     stability: development
     brief: "The total storage capacity of the disk."
@@ -402,6 +414,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 2000000000000 }
           distribution: { type: lognormal, mean: 50000000000, stddev: 100000000000 }
@@ -455,6 +468,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1073741824, 68719476736, 137438953472, 274877906944, 549755813888, 1099511627776], weights: [1, 3, 4, 3, 2, 1] }
     stability: development
     brief: "The total storage capacity of the filesystem."
@@ -477,6 +491,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 500 }
           distribution: { type: exponential, mean: 20 }
@@ -502,6 +517,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 1 }
@@ -529,6 +545,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000000 }
           distribution: { type: lognormal, mean: 5000, stddev: 20000 }
@@ -550,6 +567,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50 }
           distribution: { type: exponential, mean: 0.5 }
@@ -577,6 +595,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1250000000 }
           distribution: { type: lognormal, mean: 5000000, stddev: 20000000 }
@@ -598,6 +617,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 5000 }
           distribution: { type: exponential, mean: 100 }
@@ -620,6 +640,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 2000 }
           distribution: { type: lognormal, mean: 150, stddev: 200 }
@@ -639,6 +660,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 20 }
@@ -658,6 +680,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [32768, 63704, 127436, 4194304], weights: [3, 2, 2, 3] }
     stability: development
     brief: "The maximum number of concurrent processes/tasks allowed by the operating system."
@@ -679,6 +702,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 50000000, max: 128000000000 }
           distribution: { type: lognormal, mean: 6000000000, stddev: 8000000000 }
@@ -703,6 +727,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 4000000000 }
           distribution: { type: lognormal, mean: 200000000, stddev: 300000000 }
@@ -723,6 +748,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 128, 512, 1024, 4096], weights: [5, 2, 2, 2, 1] }
     stability: development
     brief: "Total number of hugepages available."
@@ -739,6 +765,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [2097152, 1073741824], weights: [9, 1] }
     stability: development
     brief: "System hugepage size in bytes."
@@ -755,6 +782,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 512 }
           distribution: { type: exponential, mean: 16 }
@@ -777,6 +805,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 256 }
           distribution: { type: exponential, mean: 4 }
@@ -799,6 +828,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 0, max: 1024 } }
     stability: development
     brief: "Number of hugepages in use by state."
@@ -833,6 +863,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1000000, max: 8000000000 }
           distribution: { type: lognormal, mean: 300000000, stddev: 400000000 }

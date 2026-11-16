@@ -88,6 +88,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 50 }
@@ -110,6 +111,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 50 }

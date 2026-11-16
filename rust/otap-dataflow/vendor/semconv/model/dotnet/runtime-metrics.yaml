@@ -6,6 +6,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [2, 4, 8, 16, 32], weights: [3, 4, 4, 2, 1] }
     brief: "The number of processors available to the process."
     note: >
@@ -51,6 +52,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 20000000, max: 8000000000 }
           distribution: { type: lognormal, mean: 300000000, stddev: 400000000 }
@@ -70,6 +72,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50 }
           distribution: { type: exponential, mean: 3 }
@@ -94,6 +97,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 2000000000 }
           distribution: { type: lognormal, mean: 50000000, stddev: 100000000 }
@@ -116,6 +120,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 10000000, max: 8000000000 }
           distribution: { type: lognormal, mean: 250000000, stddev: 300000000 }
@@ -142,6 +147,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 100000, max: 4000000000 }
           distribution: { type: lognormal, mean: 80000000, stddev: 150000000 }
@@ -167,6 +173,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 500000000 }
           distribution: { type: lognormal, mean: 5000000, stddev: 10000000 }
@@ -211,6 +218,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10000000 }
           distribution: { type: lognormal, mean: 50000, stddev: 200000 }
@@ -232,6 +240,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 5000 }
           distribution: { type: exponential, mean: 100 }
@@ -278,6 +287,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 10 }
@@ -301,6 +311,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 2, max: 100 } }
     brief: "The number of thread pool threads that currently exist."
     note: >
@@ -318,6 +329,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: exponential, mean: 2000 }
@@ -341,6 +353,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 5 }
@@ -363,6 +376,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 0, max: 200 } }
     brief: "The number of timer instances that are currently active."
     note: >
@@ -380,6 +394,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 20, max: 400 } }
     brief: "The number of .NET assemblies that are currently loaded."
     note: >
@@ -398,6 +413,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 2 }

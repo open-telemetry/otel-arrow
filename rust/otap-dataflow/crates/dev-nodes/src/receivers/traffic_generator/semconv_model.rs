@@ -28,7 +28,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporal
 
 use super::annotation::{
     self, AnnotationError, AnnotationResult, EventSpec, MetricSpec, NAMESPACE,
-    RegistryAnnotationError, SpanSpec, scalar_to_string,
+    RegistryAnnotationError, ScalarKind, SpanSpec, scalar_to_string,
 };
 use super::attributes::AttributeGen;
 use super::fake_data::HISTOGRAM_BOUNDS;
@@ -64,6 +64,9 @@ pub struct MetricTemplate {
     pub(crate) instrument: InstrumentSpec,
     /// Attribute generators.
     pub(crate) attributes: Vec<AttributeGen>,
+    /// Whether the metric is integer-valued (`value_type: int`): values are
+    /// sampled as whole numbers and number points are emitted as ints.
+    pub(crate) integer: bool,
     /// Value sampler (`value`) for number points and histogram observations.
     pub(crate) value: Option<ValueSampler>,
     /// Observations per histogram data point (`observations`).
@@ -285,13 +288,15 @@ fn compile_group(
                 Some(m) => annotation::parse_metric_spec(m, instrument)?,
                 None => MetricSpec::default(),
             };
+            let integer = spec.value_type == ScalarKind::Int;
             Ok(Some(Template::Metric(MetricTemplate {
                 name: group.metric_name.clone().unwrap_or_default(),
                 description: group.brief.clone(),
                 unit: group.unit.clone().unwrap_or_default(),
                 instrument: instrument.clone(),
                 attributes,
-                value: spec.value.as_ref().map(|v| ValueSampler::new(v, false)),
+                integer,
+                value: spec.value.as_ref().map(|v| ValueSampler::new(v, integer)),
                 observations: spec
                     .observations
                     .as_ref()

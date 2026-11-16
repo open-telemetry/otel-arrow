@@ -4,6 +4,7 @@ groups:
     metric_name: otel.sdk.span.live.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 2000 }
           distribution: { type: lognormal, mean: 50, stddev: 50 }
@@ -21,6 +22,7 @@ groups:
     metric_name: otel.sdk.span.ended.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20000 }
           distribution: { type: lognormal, mean: 500, stddev: 1000 }
@@ -38,6 +40,7 @@ groups:
     metric_name: otel.sdk.processor.span.processed.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20000 }
           distribution: { type: lognormal, mean: 500, stddev: 500 }
@@ -55,6 +58,7 @@ groups:
     metric_name: otel.sdk.exporter.span.inflight.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 4096 }
           distribution: { type: lognormal, mean: 256, stddev: 256 }
@@ -72,6 +76,7 @@ groups:
     metric_name: otel.sdk.exporter.span.exported.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20000 }
           distribution: { type: lognormal, mean: 500, stddev: 500 }
@@ -87,6 +92,7 @@ groups:
   - id: metric.otel.sdk.span.ended
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20000 }
           distribution: { type: lognormal, mean: 500, stddev: 1000 }

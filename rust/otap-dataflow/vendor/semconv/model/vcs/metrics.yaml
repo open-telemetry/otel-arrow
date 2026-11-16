@@ -6,6 +6,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 40 }
@@ -130,6 +131,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 5000 }
           distribution: { type: lognormal, mean: 150, stddev: 300 }
@@ -149,6 +151,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 2000 }
           distribution: { type: lognormal, mean: 60, stddev: 120 }
@@ -176,6 +179,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50000 }
           distribution: { type: lognormal, mean: 150, stddev: 600 }
@@ -218,6 +222,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 8 }
@@ -288,6 +293,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 2000 }
           distribution: { type: lognormal, mean: 25, stddev: 80 }

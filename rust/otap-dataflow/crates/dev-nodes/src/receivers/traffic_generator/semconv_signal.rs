@@ -245,12 +245,18 @@ fn number_point<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> NumberDataPoint {
     let attrs = attributes(&metric.attributes, rng);
-    NumberDataPoint::build()
+    let value = metric_value(metric, rng);
+    let builder = NumberDataPoint::build()
         .time_unix_nano(now)
-        .start_time_unix_nano(start_time(metric, now))
-        .value_double(metric_value(metric, rng))
-        .attributes(attrs)
-        .finish()
+        .start_time_unix_nano(start_time(metric, now));
+    // Integer metrics sample whole numbers (bounds validated to +/-2^52), so
+    // the cast is exact.
+    let builder = if metric.integer {
+        builder.value_int(value as i64)
+    } else {
+        builder.value_double(value)
+    };
+    builder.attributes(attrs).finish()
 }
 
 /// Point start time: `now - delay()` for delta temporality (as the synthetic

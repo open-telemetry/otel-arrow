@@ -6,6 +6,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
         bounds: [1, 2, 5, 10, 25, 50, 100]
         observations: { range: { min: 1, max: 20 } }
@@ -30,6 +31,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
         bounds: [1, 2, 5, 10, 25, 50, 100]
         observations: { range: { min: 1, max: 20 } }
@@ -54,6 +56,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
         bounds: [1, 2, 5, 10, 25, 50, 100]
         observations: { range: { min: 1, max: 20 } }
@@ -78,6 +81,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
         bounds: [1, 2, 5, 10, 25, 50, 100]
         observations: { range: { min: 1, max: 20 } }
@@ -157,6 +161,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 4194304 }
           distribution: { type: lognormal, mean: 2048, stddev: 8192 }
@@ -181,6 +186,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 4194304 }
           distribution: { type: lognormal, mean: 4096, stddev: 16384 }
@@ -205,6 +211,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 4194304 }
           distribution: { type: lognormal, mean: 2048, stddev: 8192 }
@@ -229,6 +236,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 4194304 }
           distribution: { type: lognormal, mean: 4096, stddev: 16384 }

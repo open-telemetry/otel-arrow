@@ -93,6 +93,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [68719476736, 137438953472, 274877906944, 549755813888]
           weights: [2, 4, 3, 1]
@@ -115,6 +116,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 274877906944 }
           distribution: { type: lognormal, mean: 34359738368, stddev: 17179869184 }
@@ -137,6 +139,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [34359738368, 68719476736, 137438953472, 274877906944]
           weights: [2, 4, 3, 1]
@@ -159,6 +162,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 137438953472 }
           distribution: { type: lognormal, mean: 17179869184, stddev: 8589934592 }
@@ -183,6 +187,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [256, 512, 1024, 2048], weights: [2, 4, 3, 1] }
     stability: development
     brief: |
@@ -206,6 +211,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 0, max: 1024 } }
     stability: development
     brief: |
@@ -231,6 +237,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [107374182400, 536870912000, 1099511627776, 5497558138880]
           weights: [3, 4, 2, 1]
@@ -262,6 +269,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 2199023255552 }
           distribution: { type: lognormal, mean: 214748364800, stddev: 214748364800 }
@@ -295,6 +303,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [10, 20, 50, 100], weights: [3, 4, 2, 1] }
     stability: development
     brief: |
@@ -322,6 +331,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 8 }
@@ -353,6 +363,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [10737418240, 21474836480, 53687091200, 107374182400]
           weights: [2, 4, 3, 1]
@@ -375,6 +386,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 53687091200 }
           distribution: { type: lognormal, mean: 5368709120, stddev: 5368709120 }
@@ -397,6 +409,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [21474836480, 53687091200, 107374182400, 214748364800]
           weights: [2, 4, 3, 1]
@@ -419,6 +432,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 107374182400 }
           distribution: { type: lognormal, mean: 8589934592, stddev: 8589934592 }
@@ -443,6 +457,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [10, 50, 100, 500, 1000], weights: [2, 3, 3, 1, 1] }
     stability: development
     brief: |
@@ -466,6 +481,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 40 }

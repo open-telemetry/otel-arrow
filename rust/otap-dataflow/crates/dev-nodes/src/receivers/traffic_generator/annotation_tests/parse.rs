@@ -1043,6 +1043,60 @@ fn parse_metric_temporality() {
     );
 }
 
+/// Scenario: `value_type` is annotated as `int`, `double`, omitted, an unknown
+/// name, and a non-string, alone and with int-incompatible `value` specs.
+/// Guarantees: `int` and `double` are accepted on every instrument and
+/// omission defaults to `double`; unknown names and non-strings are rejected at
+/// the `value_type` path; with `int`, the `value` follows int rules
+/// (fractional range bounds and non-integer `values` are rejected, `zipf` is
+/// accepted) while the same specs remain valid as `double`.
+#[test]
+fn parse_metric_value_type() {
+    let ns = annotation::NAMESPACE;
+    for instrument in [
+        InstrumentSpec::Counter,
+        InstrumentSpec::UpDownCounter,
+        InstrumentSpec::Gauge,
+        InstrumentSpec::Histogram,
+    ] {
+        let parse = |y: &str| annotation::parse_metric_spec(&yaml_map(y), &instrument);
+        assert_eq!(
+            parse("value_type: int").expect("valid").value_type,
+            ScalarKind::Int
+        );
+        assert_eq!(
+            parse("value_type: double").expect("valid").value_type,
+            ScalarKind::Double
+        );
+        assert_eq!(parse("{}").expect("valid").value_type, ScalarKind::Double);
+    }
+    let counter = |y: &str| annotation::parse_metric_spec(&yaml_map(y), &InstrumentSpec::Counter);
+    expect_err(
+        counter("value_type: float"),
+        &format!("{ns}.value_type"),
+        "unsupported value_type \"float\" (expected int or double)",
+    );
+    expect_err(
+        counter("value_type: 1"),
+        &format!("{ns}.value_type"),
+        "must be a string",
+    );
+    expect_err(
+        counter("value_type: int\nvalue: { range: { min: 0, max: 2.5 } }"),
+        &format!("{ns}.value.range.max"),
+        "int ranges require integer bounds",
+    );
+    expect_err(
+        counter("value_type: int\nvalue: { values: [1, 1.5] }"),
+        &format!("{ns}.value.values[1]"),
+        "value type does not match",
+    );
+    let _ = counter("value_type: int\nvalue: { range: { min: 1, max: 9 }, distribution: { type: zipf, exponent: 1.2 } }")
+        .expect("zipf is valid for int values");
+    let _ = counter("value: { range: { min: 0, max: 2.5 } }").expect("fractional double range");
+    let _ = counter("value: { values: [1, 1.5] }").expect("fractional double values");
+}
+
 /// Scenario: Span and event annotations use valid and invalid keys/values.
 /// Guarantees: Valid status/severity names parse; unknown names, negative
 /// durations, and keys from other signal types are rejected.

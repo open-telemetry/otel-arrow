@@ -3,6 +3,7 @@ groups:
     type: metric
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 3, max: 65536 }
           distribution: { type: lognormal, mean: 64, stddev: 200 }

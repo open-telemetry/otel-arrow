@@ -259,7 +259,8 @@ fn bucket_index_uses_upper_inclusive_bounds() {
 /// Guarantees: The batch holds exactly the requested number of metrics,
 /// counters are non-negative, sums and histograms carry the template's
 /// temporality (`Unspecified` unless annotated, with a start time only for
-/// delta), every number point is `as_double`, and histograms have consistent
+/// delta), number points are `as_int` for `value_type: int` metrics and
+/// `as_double` otherwise, and histograms have consistent
 /// buckets, count, sum, min, and max.
 #[test]
 fn generated_metrics_are_well_formed() {
@@ -281,6 +282,7 @@ fn generated_metrics_are_well_formed() {
     for metric in metrics {
         let group = by_name[metric.name.as_str()];
         let temporality = templates[metric.name.as_str()].temporality;
+        let integer = templates[metric.name.as_str()].integer;
         let delta = temporality == AggregationTemporality::Delta;
         match metric.data.as_ref().expect("data") {
             Data::Sum(sum) => {
@@ -293,7 +295,7 @@ fn generated_metrics_are_well_formed() {
                     group.instrument == Some(InstrumentSpec::Counter)
                 );
                 for p in &sum.data_points {
-                    let v = number_value(p.value.as_ref(), &metric.name);
+                    let v = number_value(p.value.as_ref(), &metric.name, integer);
                     if sum.is_monotonic {
                         assert!(v >= 0.0, "{}: negative counter increment {v}", metric.name);
                     }
@@ -302,7 +304,7 @@ fn generated_metrics_are_well_formed() {
             Data::Gauge(g) => {
                 assert!(!g.data_points.is_empty());
                 for p in &g.data_points {
-                    let _ = number_value(p.value.as_ref(), &metric.name);
+                    let _ = number_value(p.value.as_ref(), &metric.name, integer);
                 }
             }
             Data::Histogram(h) => {
@@ -317,11 +319,13 @@ fn generated_metrics_are_well_formed() {
     }
 }
 
-/// The value of a number point, which the generator always emits as a double.
-fn number_value(v: Option<&number_data_point::Value>, name: &str) -> f64 {
-    match v.expect("value set") {
-        number_data_point::Value::AsDouble(d) => *d,
-        number_data_point::Value::AsInt(i) => panic!("{name}: number point emitted as int {i}"),
+/// The value of a number point, asserting it is `as_int` when `integer`
+/// (`value_type: int`) and `as_double` otherwise.
+fn number_value(v: Option<&number_data_point::Value>, name: &str, integer: bool) -> f64 {
+    match (v.expect("value set"), integer) {
+        (number_data_point::Value::AsInt(i), true) => *i as f64,
+        (number_data_point::Value::AsDouble(d), false) => *d,
+        (other, _) => panic!("{name}: expected integer={integer}, got {other:?}"),
     }
 }
 
@@ -627,9 +631,10 @@ fn representative_span_respects_annotations() {
 /// registry examples, favoring the first by its 9:1 weight; the
 /// counter and updowncounter, which have no `temporality` annotation, keep
 /// `Unspecified` temporality; the
-/// counter emits monotonic increments within its exponential range; the
-/// updowncounter emits non-monotonic values within its uniform range with a
-/// weighted boolean attribute; the gauge emits only the annotated doubles;
+/// counter emits monotonic `as_int` increments within its exponential range
+/// (`value_type: int`); the updowncounter emits non-monotonic `as_int` values
+/// within its uniform range with a weighted boolean attribute; the gauge
+/// emits only the annotated doubles as `as_double`;
 /// the batch holds exactly the requested number of metrics.
 #[test]
 fn representative_metrics_respect_annotations() {
@@ -682,7 +687,7 @@ fn representative_metrics_respect_annotations() {
                     AggregationTemporality::Unspecified as i32
                 );
                 for p in &s.data_points {
-                    let v = number_value(p.value.as_ref(), name);
+                    let v = number_value(p.value.as_ref(), name, true);
                     assert!((0.0..=100.0).contains(&v), "{name} value {v}");
                     let _ = counter_values.insert(v as i64);
                 }
@@ -694,7 +699,7 @@ fn representative_metrics_respect_annotations() {
                     AggregationTemporality::Unspecified as i32
                 );
                 for p in &s.data_points {
-                    let v = number_value(p.value.as_ref(), name);
+                    let v = number_value(p.value.as_ref(), name, true);
                     assert!((10.0..=200.0).contains(&v), "{name} value {v}");
                     match attr_scalar(&p.attributes, "jvm.thread.daemon") {
                         Scalar::Bool(b) => *daemon.entry(b).or_default() += 1,
@@ -704,7 +709,7 @@ fn representative_metrics_respect_annotations() {
             }
             (REPRESENTATIVE_GAUGE, Data::Gauge(g)) => {
                 for p in &g.data_points {
-                    let v = number_value(p.value.as_ref(), name);
+                    let v = number_value(p.value.as_ref(), name, false);
                     let _ = gauge_values.insert(v.to_bits());
                 }
             }
@@ -730,6 +735,76 @@ fn representative_metrics_respect_annotations() {
     assert_eq!(
         gauge_values,
         [0.25_f64, 0.5, 0.75].iter().map(|v| v.to_bits()).collect()
+    );
+}
+
+/// Scenario: Metrics are generated from the vendored `go.memory.gc.cycles`
+/// counter (`value_type: int`, exponential `value` with mean 3), the
+/// `http.server.request.body.size` histogram (`value_type: int`), and the
+/// `jvm.gc.duration` histogram (no `value_type`).
+/// Guarantees: The int counter emits only `as_int` whole-number cycle counts
+/// in its range (never fractional values such as 2.08) with several distinct
+/// values; the int histogram's sum, min, and max are whole numbers, since every
+/// observation is; the default-double histogram still produces fractional
+/// observations.
+#[test]
+fn int_value_type_metrics_emit_whole_numbers() {
+    const ROUNDS: usize = 300;
+    const GC_CYCLES: &str = "go.memory.gc.cycles";
+    const BODY_SIZE: &str = "http.server.request.body.size";
+    let names = [GC_CYCLES, BODY_SIZE, REPRESENTATIVE_HISTOGRAM];
+    let model = representative_model(&[], &names, &[]);
+    let integer: HashMap<&str, bool> = model
+        .metrics
+        .iter()
+        .map(|t| (t.name.as_str(), t.integer))
+        .collect();
+    assert_eq!(
+        integer,
+        HashMap::from([
+            (GC_CYCLES, true),
+            (BODY_SIZE, true),
+            (REPRESENTATIVE_HISTOGRAM, false)
+        ])
+    );
+    let data = semconv_otlp_metrics_with_rng(names.len() * ROUNDS, &model, &mut rng());
+    let metrics = &data.resource_metrics[0].scope_metrics[0].metrics;
+
+    let mut cycles = HashSet::new();
+    let mut double_fractional = false;
+    for metric in metrics {
+        let name = metric.name.as_str();
+        match (name, metric.data.as_ref().expect("data")) {
+            (GC_CYCLES, Data::Sum(s)) => {
+                for p in &s.data_points {
+                    let Some(number_data_point::Value::AsInt(v)) = p.value else {
+                        panic!("{name}: expected as_int, got {:?}", p.value);
+                    };
+                    assert!((0..=50).contains(&v), "{name} value {v}");
+                    let _ = cycles.insert(v);
+                }
+            }
+            (BODY_SIZE, Data::Histogram(h)) => {
+                for p in &h.data_points {
+                    for x in [p.sum, p.min, p.max] {
+                        let x = x.expect("aggregate set");
+                        assert_eq!(x.fract(), 0.0, "{name}: non-integer aggregate {x}");
+                    }
+                }
+            }
+            (REPRESENTATIVE_HISTOGRAM, Data::Histogram(h)) => {
+                double_fractional |= h
+                    .data_points
+                    .iter()
+                    .any(|p| p.min.expect("min").fract() != 0.0);
+            }
+            (_, other) => panic!("{name}: unexpected data {other:?}"),
+        }
+    }
+    assert!(cycles.len() > 3, "gc cycle counts should vary {cycles:?}");
+    assert!(
+        double_fractional,
+        "double histogram should keep fractional values"
     );
 }
 
@@ -974,7 +1049,7 @@ fn generation_without_annotations_matches_unannotated_output() {
             other => panic!("{}: unexpected data {other:?}", metric.name),
         };
         for p in number_points {
-            assert_eq!(number_value(p.value.as_ref(), &metric.name), 1.0);
+            assert_eq!(number_value(p.value.as_ref(), &metric.name, false), 1.0);
             assert_eq!(p.start_time_unix_nano, 0);
         }
         if metric.name == REPRESENTATIVE_UPDOWNCOUNTER {

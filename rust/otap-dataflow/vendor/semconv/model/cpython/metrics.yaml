@@ -6,6 +6,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50 }
           distribution: { type: exponential, mean: 5 }
@@ -27,6 +28,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: lognormal, mean: 2000, stddev: 5000 }
@@ -48,6 +50,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20 }
           distribution: { type: exponential, mean: 0.5 }

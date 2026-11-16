@@ -36,6 +36,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 0, max: 50 } }
     brief: 'The number of pipeline runs currently active in the system by state.'
     instrument: updowncounter
@@ -55,6 +56,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { range: { min: 0, max: 100 } }
     brief: 'The number of workers on the CI/CD system by state.'
     instrument: updowncounter
@@ -70,6 +72,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20 }
           distribution: { type: exponential, mean: 1 }
@@ -95,6 +98,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10 }
           distribution: { type: exponential, mean: 0.5 }

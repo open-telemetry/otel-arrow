@@ -230,7 +230,8 @@ distribution is rejected.
 
 | Group | Key | Spec | Default when absent |
 | --- | --- | --- | --- |
-| metric | `value` | Int or double value spec; counters and histograms require values `>= 0` | `1` |
+| metric | `value_type` | `int` or `double`; the type of `value` and of number points | `double` |
+| metric | `value` | Value spec of type `value_type`; counters and histograms require values `>= 0` | `1` |
 | counter, updowncounter, histogram metric | `temporality` | `delta` (the only supported value); also sets each point's start time | `Unspecified`, no start time |
 | histogram metric | `observations` | Int value spec, `1` to `50`; observations aggregated into each point | `1` |
 | histogram metric | `bounds` | Strictly increasing list of numbers (at most 32) | `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]` |
@@ -238,7 +239,24 @@ distribution is rejected.
 | span | `status` | Discrete, `unset` / `ok` / `error` | Status not set |
 | event | `severity` | Discrete, `SeverityNumber` short names (`TRACE`, `TRACE2`, ... `FATAL4`); sets number and text | `INFO`, no text |
 
+`value_type: int` follows the int rules for `value` (integer `range` bounds
+and `values`, `zipf` allowed): sampled values are whole numbers, number
+points are `as_int`, and histogram observations are whole numbers (count,
+sum, min, and max stay doubles). Counts and byte sizes should use `int`.
+
 ```yaml
+- id: metric.go.memory.gc.cycles
+  type: metric
+  instrument: counter
+  unit: "{gc_cycle}"
+  annotations:
+    traffic-generator:
+      value_type: int
+      value:
+        range: { min: 0, max: 50 }
+        distribution: { type: exponential, mean: 3 }
+      temporality: delta
+
 - id: metric.http.server.request.duration
   type: metric
   instrument: histogram
@@ -262,7 +280,8 @@ distribution is rejected.
 Metric output with `annotations: true`, with or without annotations on the
 group:
 
-- Number points are `as_double`.
+- Number points are `as_int` for `value_type: int` and `as_double`
+  otherwise.
 - Counters and updowncounters are emitted as sums. Their temporality, and
   that of histograms, is `Unspecified` unless the group sets
   `temporality: delta`; delta points also get a start time just before the

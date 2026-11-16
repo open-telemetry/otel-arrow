@@ -5,6 +5,7 @@ groups:
     metric_name: nfs.client.net.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: exponential, mean: 5000 }
@@ -25,6 +26,7 @@ groups:
     metric_name: nfs.client.net.tcp.connection.accepted
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50 }
           distribution: { type: exponential, mean: 2 }
@@ -43,6 +45,7 @@ groups:
     metric_name: nfs.client.rpc.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50000 }
           distribution: { type: exponential, mean: 2000 }
@@ -61,6 +64,7 @@ groups:
     metric_name: nfs.client.rpc.retransmit.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 3 }
@@ -79,6 +83,7 @@ groups:
     metric_name: nfs.client.rpc.authrefresh.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20 }
           distribution: { type: exponential, mean: 1 }
@@ -97,6 +102,7 @@ groups:
     metric_name: nfs.client.operation.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20000 }
           distribution: { type: exponential, mean: 800 }
@@ -116,6 +122,7 @@ groups:
     metric_name: nfs.client.procedure.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20000 }
           distribution: { type: exponential, mean: 800 }
@@ -136,6 +143,7 @@ groups:
     metric_name: nfs.server.repcache.requests
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50000 }
           distribution: { type: exponential, mean: 2000 }
@@ -154,6 +162,7 @@ groups:
     metric_name: nfs.server.fh.stale.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 20 }
           distribution: { type: exponential, mean: 0.5 }
@@ -172,6 +181,7 @@ groups:
     metric_name: nfs.server.io
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10737418240 }
           distribution: { type: lognormal, mean: 104857600, stddev: 268435456 }
@@ -192,6 +202,7 @@ groups:
     metric_name: nfs.server.thread.count
     annotations:
       traffic-generator:
+        value_type: int
         value: { values: [8, 16, 32, 64], weights: [5, 2, 2, 1] }
     stability: development
     brief: "Reports the count of kernel NFS server available threads."
@@ -207,6 +218,7 @@ groups:
     metric_name: nfs.server.net.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 200000 }
           distribution: { type: exponential, mean: 10000 }
@@ -227,6 +239,7 @@ groups:
     metric_name: nfs.server.net.tcp.connection.accepted
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 4 }
@@ -245,6 +258,7 @@ groups:
     metric_name: nfs.server.rpc.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: exponential, mean: 5000 }
@@ -266,6 +280,7 @@ groups:
     metric_name: nfs.server.operation.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50000 }
           distribution: { type: exponential, mean: 2000 }
@@ -285,6 +300,7 @@ groups:
     metric_name: nfs.server.procedure.count
     annotations:
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 50000 }
           distribution: { type: exponential, mean: 2000 }

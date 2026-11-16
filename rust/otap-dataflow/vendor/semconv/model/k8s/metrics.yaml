@@ -28,6 +28,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [9, 1] }
     stability: development
     brief: "Describes the number of K8s Pods that are currently in a state for a given reason."
@@ -48,6 +49,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [4, 1] }
     stability: development
     brief: "Describes number of K8s Pods that are currently in a given phase."
@@ -111,6 +113,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1048576, max: 17179869184 }
           distribution: { type: lognormal, mean: 268435456, stddev: 536870912 }
@@ -135,6 +138,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 17179869184 }
           distribution: { type: lognormal, mean: 536870912, stddev: 805306368 }
@@ -160,6 +164,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1048576, max: 17179869184 }
           distribution: { type: lognormal, mean: 134217728, stddev: 268435456 }
@@ -185,6 +190,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1048576, max: 17179869184 }
           distribution: { type: lognormal, mean: 201326592, stddev: 402653184 }
@@ -207,6 +213,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10000 }
           distribution: { type: exponential, mean: 200 }
@@ -234,6 +241,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1073741824 }
           distribution: { type: lognormal, mean: 1048576, stddev: 4194304 }
@@ -254,6 +262,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 1 }
@@ -280,6 +289,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 107374182400 }
           distribution: { type: lognormal, mean: 10737418240, stddev: 10737418240 }
@@ -301,6 +311,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 10737418240, max: 107374182400 }
           distribution: { type: lognormal, mean: 32212254720, stddev: 21474836480 }
@@ -322,6 +333,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 107374182400 }
           distribution: { type: lognormal, mean: 2147483648, stddev: 4294967296 }
@@ -344,6 +356,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 536870912000 }
           distribution: { type: lognormal, mean: 10737418240, stddev: 21474836480 }
@@ -372,6 +385,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [1073741824, 10737418240, 21474836480, 53687091200, 107374182400, 536870912000]
           weights: [3, 4, 3, 2, 2, 1]
@@ -398,6 +412,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 536870912000 }
           distribution: { type: lognormal, mean: 2147483648, stddev: 8589934592 }
@@ -426,6 +441,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 65536, max: 33554432 }
           distribution: { type: lognormal, mean: 2621440, stddev: 3276800 }
@@ -452,6 +468,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 33554432 }
           distribution: { type: lognormal, mean: 50000, stddev: 150000 }
@@ -480,6 +497,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 33554432 }
           distribution: { type: lognormal, mean: 2500000, stddev: 3200000 }
@@ -505,6 +523,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [2, 1] }
     stability: development
     brief: "Describes the number of K8s containers that are currently in a given state."
@@ -525,6 +544,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [8, 1] }
     stability: development
     brief: "Describes the number of K8s containers that are currently in a state for a given reason."
@@ -583,6 +603,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 10737418240, max: 1099511627776 }
           distribution: { type: lognormal, mean: 96636764160, stddev: 107374182400 }
@@ -599,6 +620,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [3221225472, 7516192768, 15032385536, 31138512896, 64424509440, 130996502528]
           weights: [2, 4, 4, 3, 2, 1]
@@ -615,6 +637,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [110, 250, 58, 29, 17]
           weights: [10, 2, 3, 2, 1]
@@ -632,6 +655,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [2, 1] }
     stability: development
     brief: "Describes the condition of a particular Node."
@@ -739,6 +763,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1048576, max: 8589934592 }
           distribution: { type: lognormal, mean: 209715200, stddev: 314572800 }
@@ -761,6 +786,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1048576, max: 8589934592 }
           distribution: { type: lognormal, mean: 157286400, stddev: 262144000 }
@@ -789,6 +815,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1099511627776 }
           distribution: { type: lognormal, mean: 53687091200, stddev: 53687091200 }
@@ -810,6 +837,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [21474836480, 53687091200, 107374182400, 214748364800, 536870912000, 1099511627776]
           weights: [2, 4, 5, 3, 2, 1]
@@ -831,6 +859,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1099511627776 }
           distribution: { type: lognormal, mean: 42949672960, stddev: 42949672960 }
@@ -854,6 +883,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1000000, max: 134217728 }
           distribution: { type: lognormal, mean: 6553600, stddev: 6553600 }
@@ -875,6 +905,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 134217728 }
           distribution: { type: lognormal, mean: 5000000, stddev: 5000000 }
@@ -895,6 +926,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 536870912, max: 549755813888 }
           distribution: { type: lognormal, mean: 8589934592, stddev: 8589934592 }
@@ -920,6 +952,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 549755813888 }
           distribution: { type: lognormal, mean: 6442450944, stddev: 6442450944 }
@@ -944,6 +977,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 268435456, max: 549755813888 }
           distribution: { type: lognormal, mean: 4294967296, stddev: 4294967296 }
@@ -967,6 +1001,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 268435456, max: 549755813888 }
           distribution: { type: lognormal, mean: 6442450944, stddev: 6442450944 }
@@ -991,6 +1026,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100000 }
           distribution: { type: exponential, mean: 2000 }
@@ -1018,6 +1054,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10737418240 }
           distribution: { type: lognormal, mean: 52428800, stddev: 104857600 }
@@ -1038,6 +1075,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1000 }
           distribution: { type: exponential, mean: 2 }
@@ -1060,6 +1098,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 3, 5, 10, 20], weights: [5, 4, 5, 2, 1, 0.5] }
     stability: development
     brief: "Number of desired replica pods in this deployment."
@@ -1077,6 +1116,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5, 10, 20], weights: [0.5, 5, 4, 5, 2, 1, 0.5] }
     stability: development
     entity_associations:
@@ -1096,6 +1136,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5, 10], weights: [3, 5, 3, 4, 2, 1] }
     stability: development
     brief: "Number of desired replica pods in this replicaset."
@@ -1113,6 +1154,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5, 10], weights: [3, 5, 3, 4, 2, 1] }
     stability: development
     entity_associations:
@@ -1132,6 +1174,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 3, 5], weights: [4, 3, 3, 1] }
     stability: development
     brief: "Number of desired replica pods in this replication controller."
@@ -1149,6 +1192,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5], weights: [0.5, 4, 3, 3, 1] }
     stability: development
     entity_associations:
@@ -1168,6 +1212,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 3, 5], weights: [4, 2, 5, 1] }
     stability: development
     brief: "Number of desired replica pods in this statefulset."
@@ -1185,6 +1230,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5], weights: [0.5, 4, 2, 5, 1] }
     stability: development
     entity_associations:
@@ -1202,6 +1248,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5], weights: [0.5, 4, 2, 5, 1] }
     stability: development
     entity_associations:
@@ -1219,6 +1266,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5], weights: [1, 4, 2, 5, 1] }
     stability: development
     entity_associations:
@@ -1238,6 +1286,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 50 }
           distribution: { type: exponential, mean: 6 }
@@ -1257,6 +1306,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 50 }
           distribution: { type: exponential, mean: 6 }
@@ -1276,6 +1326,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [5, 10, 20, 50, 100], weights: [3, 5, 3, 1, 0.5] }
     stability: development
     brief: "The upper limit for the number of replica pods to which the autoscaler can scale up."
@@ -1293,6 +1344,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 3, 5], weights: [6, 4, 2, 1] }
     stability: development
     brief: "The lower limit for the number of replica pods to which the autoscaler can scale down."
@@ -1354,6 +1406,7 @@ groups:
     metric_name: k8s.hpa.metric.target.cpu.average_utilization
     annotations:
       traffic-generator:
+        value_type: int
         value: { values: [50, 60, 70, 75, 80, 90], weights: [3, 2, 3, 2, 4, 1] }
     stability: development
     brief: "Target average utilization, in percentage, for CPU resource in HPA config."
@@ -1381,6 +1434,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 200 }
           distribution: { type: exponential, mean: 12 }
@@ -1400,6 +1454,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 1, max: 200 }
           distribution: { type: exponential, mean: 12 }
@@ -1419,6 +1474,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2], weights: [95, 4, 1] }
     stability: development
     brief: "Number of nodes that are running the daemon pod, but are not supposed to run the daemon pod."
@@ -1436,6 +1492,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 200 }
           distribution: { type: exponential, mean: 12 }
@@ -1457,6 +1514,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 4], weights: [4, 5, 1, 0.5] }
     stability: development
     brief: "The number of pending and actively running pods for a job."
@@ -1474,6 +1532,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 6], weights: [85, 10, 4, 1] }
     stability: development
     brief: "The number of pods which reached phase Failed for a job."
@@ -1491,6 +1550,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 5, 10], weights: [3, 6, 1, 1, 0.5] }
     stability: development
     brief: "The number of pods which reached phase Succeeded for a job."
@@ -1508,6 +1568,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 5, 10], weights: [8, 1, 1, 0.5] }
     stability: development
     brief: "The desired number of successfully finished pods the job should be run with."
@@ -1525,6 +1586,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 2, 4, 10], weights: [8, 1, 1, 0.5] }
     stability: development
     brief: "The max desired number of pods the job should run at any given time."
@@ -1544,6 +1606,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2], weights: [7, 3, 0.5] }
     stability: development
     brief: "The number of actively running jobs for a cronjob."
@@ -1563,6 +1626,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [1, 1] }
     stability: development
     brief: "Describes number of K8s namespaces that are currently in a given phase."
@@ -1704,6 +1768,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [134217728, 268435456, 536870912, 1073741824, 2147483648, 4294967296]
           weights: [2, 3, 4, 4, 2, 1]
@@ -1726,6 +1791,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [134217728, 268435456, 536870912, 1073741824, 2147483648, 4294967296]
           weights: [2, 3, 4, 4, 2, 1]
@@ -1748,6 +1814,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [67108864, 134217728, 268435456, 536870912, 1073741824, 2147483648]
           weights: [2, 4, 4, 3, 2, 1]
@@ -1770,6 +1837,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [67108864, 134217728, 268435456, 536870912, 1073741824, 2147483648]
           weights: [2, 4, 4, 3, 2, 1]
@@ -1792,6 +1860,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [1073741824, 5368709120, 10737418240, 21474836480, 107374182400]
           weights: [2, 3, 4, 2, 1]
@@ -1810,6 +1879,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [536870912, 1073741824, 5368709120, 10737418240, 53687091200]
           weights: [2, 4, 3, 2, 1]
@@ -1828,6 +1898,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [1073741824, 2147483648, 4294967296, 10737418240]
           weights: [3, 4, 2, 1]
@@ -1846,6 +1917,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [268435456, 536870912, 1073741824, 2147483648]
           weights: [2, 3, 4, 1]
@@ -1864,6 +1936,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 10737418240 }
           distribution: { type: lognormal, mean: 52428800, stddev: 209715200 }
@@ -1885,6 +1958,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2, 3, 5, 10, 50], weights: [80, 8, 4, 3, 2, 2, 1] }
     stability: development
     brief: "Describes how many times the container has restarted (since the last counter reset)."
@@ -1905,6 +1979,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1, 0], weights: [19, 1] }
     stability: development
     brief: >
@@ -2008,6 +2083,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [8589934592, 17179869184, 34359738368, 68719476736, 137438953472]
           weights: [2, 4, 3, 2, 1]
@@ -2029,6 +2105,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 137438953472 }
           distribution: { type: lognormal, mean: 10737418240, stddev: 10737418240 }
@@ -2050,6 +2127,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [4294967296, 8589934592, 17179869184, 34359738368, 68719476736]
           weights: [2, 4, 3, 2, 1]
@@ -2071,6 +2149,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 68719476736 }
           distribution: { type: lognormal, mean: 5368709120, stddev: 5368709120 }
@@ -2094,6 +2173,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 64, 128, 512, 1024], weights: [2, 2, 3, 2, 1] }
     stability: development
     brief: |
@@ -2116,6 +2196,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1024 }
           distribution: { type: exponential, mean: 64 }
@@ -2142,6 +2223,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [107374182400, 536870912000, 1099511627776, 5497558138880]
           weights: [3, 4, 2, 1]
@@ -2172,6 +2254,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 5497558138880 }
           distribution: { type: lognormal, mean: 107374182400, stddev: 214748364800 }
@@ -2204,6 +2287,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [5, 10, 20, 50, 100], weights: [2, 4, 3, 2, 1] }
     stability: development
     brief: |
@@ -2232,6 +2316,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 6 }
@@ -2264,6 +2349,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [10737418240, 21474836480, 53687091200, 107374182400]
           weights: [3, 4, 2, 1]
@@ -2285,6 +2371,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 107374182400 }
           distribution: { type: lognormal, mean: 5368709120, stddev: 5368709120 }
@@ -2306,6 +2393,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [21474836480, 53687091200, 107374182400, 214748364800]
           weights: [3, 4, 2, 1]
@@ -2327,6 +2415,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 214748364800 }
           distribution: { type: lognormal, mean: 10737418240, stddev: 10737418240 }
@@ -2350,6 +2439,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [10, 20, 50, 100, 500], weights: [2, 3, 4, 2, 1] }
     stability: development
     brief: |
@@ -2372,6 +2462,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 500 }
           distribution: { type: exponential, mean: 15 }
@@ -2398,6 +2489,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 100 }
           distribution: { type: exponential, mean: 4 }
@@ -2440,6 +2532,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1, 2], weights: [1, 15, 3] }
     stability: development
     brief: "Number of load balancer ingress points (external IPs/hostnames) assigned to the service."
@@ -2469,6 +2562,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [4, 1] }
     stability: development
     brief: "Number of PersistentVolumes in a given phase."
@@ -2492,6 +2586,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 1], weights: [2, 1] }
     stability: development
     brief: "Number of PersistentVolumeClaims in a given phase."
@@ -2514,6 +2609,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [1073741824, 10737418240, 21474836480, 53687091200, 107374182400, 536870912000]
           weights: [2, 4, 3, 2, 2, 1]
@@ -2534,6 +2630,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [1073741824, 10737418240, 21474836480, 53687091200, 107374182400, 536870912000]
           weights: [2, 4, 3, 2, 2, 1]
@@ -2554,6 +2651,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           values: [1073741824, 10737418240, 21474836480, 53687091200, 107374182400, 536870912000]
           weights: [2, 4, 3, 2, 2, 1]

@@ -6,6 +6,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [0, 2555904, 7667712, 268435456, 536870912], weights: [3, 2, 2, 2, 1] }
     stability: development
     extends: attributes.jvm.memory
@@ -67,6 +68,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1073741824 }
           distribution: { type: lognormal, mean: 8388608, stddev: 33554432 }
@@ -83,6 +85,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1073741824 }
           distribution: { type: lognormal, mean: 16777216, stddev: 33554432 }
@@ -99,6 +102,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 5000 }
           distribution: { type: lognormal, mean: 100, stddev: 200 }
@@ -115,6 +119,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 10, max: 65536 }
           distribution: { type: lognormal, mean: 200, stddev: 300 }
@@ -130,6 +135,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value: { values: [1024, 4096, 65536, 1048576], weights: [2, 2, 4, 1] }
     stability: development
     brief: "Measure of max open file descriptors as reported by the JVM."

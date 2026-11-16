@@ -6,6 +6,7 @@ groups:
       code_generation:
         metric_value_type: int
       traffic-generator:
+        value_type: int
         value:
           range: { min: 0, max: 1073741824 }
           distribution: { type: lognormal, mean: 8388608, stddev: 33554432 }
