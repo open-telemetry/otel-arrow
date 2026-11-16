@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794848298321,
+  "lastUpdate": 1794850680574,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -86209,6 +86209,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/c65b8c8195258da5eb0742c939e641b07dc9dccf"
         },
         "date": 1794848273079,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "89881035+bhalar@users.noreply.github.com",
+            "name": "Bhala Ranganathan",
+            "username": "bhalar"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "2975d9b5ea7450fa8b267088b523e5570473f51d",
+          "message": "[chore] Add supported KQL grammar to README.md (#4754)\n\n# Chore summary\nUpdate README file with supported KQL grammar\n\n## Related issue\nhttps://github.com/open-telemetry/otel-arrow/issues/1110\n\n* Closes #1110 \n\n## Validation\nNo code change. \n\n## User-facing changes\nNone",
+          "timestamp": "2026-11-16T16:49:45Z",
+          "tree_id": "68e6f21441b787f5ced4d34f28a189c857fc545c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2975d9b5ea7450fa8b267088b523e5570473f51d"
+        },
+        "date": 1794850658587,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
