@@ -75,6 +75,10 @@ ALL_SCENARIOS=(
   "sat-semconv-traces-b512|noop|semantic_conventions|traces|fresh|$SATURATION_RATE|512|production_mode: open"
   "sat-semconv-metrics-b512|noop|semantic_conventions|metrics|fresh|$SATURATION_RATE|512|production_mode: open"
   "grpc-semconv-logs-b512-100k|grpc|semantic_conventions|logs|fresh|100000|512|"
+  "grpc-logs-b512-100k|grpc|synthetic|logs|fresh|100000|512|"
+  "grpc-metrics-b512-100k|grpc|synthetic|metrics|fresh|100000|512|"
+  "grpc-semconv-traces-b512-100k|grpc|semantic_conventions|traces|fresh|100000|512|"
+  "grpc-semconv-metrics-b512-100k|grpc|semantic_conventions|metrics|fresh|100000|512|"
 )
 
 write_sender_config() {
