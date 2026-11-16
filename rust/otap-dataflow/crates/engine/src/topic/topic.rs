@@ -357,6 +357,10 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
     }
 
     fn try_publish(&self, msg: Arc<T>) -> Result<PublishOutcome, Error> {
+        self.try_publish_retaining(&mut Some(msg))
+    }
+
+    fn try_publish_retaining(&self, msg: &mut Option<Arc<T>>) -> Result<PublishOutcome, Error> {
         match self {
             TopicInner::BalancedOnly(topic) => topic.try_publish(msg).map(|(outcome, _)| outcome),
             TopicInner::BroadcastOnly(topic) => topic.try_publish(msg).map(|(outcome, _)| outcome),
@@ -367,6 +371,15 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
     fn try_publish_tracked(
         &self,
         msg: Arc<T>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
+        self.try_publish_tracked_retaining(&mut Some(msg), timeout, permit)
+    }
+
+    fn try_publish_tracked_retaining(
+        &self,
+        msg: &mut Option<Arc<T>>,
         timeout: Duration,
         permit: TrackedPublishPermit,
     ) -> Result<TrackedTryPublishOutcome, Error> {
@@ -513,7 +526,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         }
     }
 
-    fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+    fn try_publish(&self, msg: &mut Option<Arc<T>>) -> Result<(PublishOutcome, u64), Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
@@ -526,7 +539,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             let envelope = Envelope {
                 id,
                 tracked: false,
-                payload: msg,
+                payload: msg.take().expect("publish requires a payload"),
             };
             send_queued_envelope(&group.tx, envelope, permit)?;
         }
@@ -535,7 +548,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 
     fn try_publish_tracked(
         &self,
-        msg: Arc<T>,
+        msg: &mut Option<Arc<T>>,
         timeout: Duration,
         permit: TrackedPublishPermit,
     ) -> Result<TrackedTryPublishOutcome, Error> {
@@ -552,7 +565,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
             let envelope = Envelope {
                 id,
                 tracked: true,
-                payload: msg,
+                payload: msg.take().expect("publish requires a payload"),
             };
             send_queued_envelope(&group.tx, envelope, admission_permit)?;
             Ok(TrackedTryPublishOutcome::Published(receipt))
@@ -741,18 +754,22 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         Ok(receipt)
     }
 
-    fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
-        let id = self.publish(msg)?;
+    fn try_publish(&self, msg: &mut Option<Arc<T>>) -> Result<(PublishOutcome, u64), Error> {
+        let id = self.publish(msg.take().expect("publish requires a payload"))?;
         Ok((PublishOutcome::Published, id))
     }
 
     fn try_publish_tracked(
         &self,
-        msg: Arc<T>,
+        msg: &mut Option<Arc<T>>,
         timeout: Duration,
         permit: TrackedPublishPermit,
     ) -> Result<TrackedTryPublishOutcome, Error> {
-        let receipt = self.publish_tracked(msg, timeout, permit)?;
+        let receipt = self.publish_tracked(
+            msg.take().expect("publish requires a payload"),
+            timeout,
+            permit,
+        )?;
         Ok(TrackedTryPublishOutcome::Published(receipt))
     }
 
@@ -948,48 +965,40 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         }
     }
 
-    fn try_publish(&self, msg: Arc<T>) -> Result<(PublishOutcome, u64), Error> {
+    fn try_publish(&self, msg: &mut Option<Arc<T>>) -> Result<(PublishOutcome, u64), Error> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(TopicClosed);
         }
 
         let id = self.next_message_id();
-        if !self.has_balanced_groups.load(Ordering::Acquire) {
-            self.broadcast_ring.publish(Envelope {
+        if self.has_balanced_groups.load(Ordering::Acquire) {
+            let groups = self.group_handles.read().clone();
+            let (permits, blocking_group) = Self::try_acquire_balanced_admission(&groups)?;
+            if blocking_group.is_some() {
+                return Ok((PublishOutcome::DroppedOnFull, id));
+            }
+            let envelope = Envelope {
                 id,
                 tracked: false,
-                payload: Arc::clone(&msg),
-            });
-            return Ok((PublishOutcome::Published, id));
-        }
-
-        let groups = self.group_handles.read().clone();
-        let envelope = Envelope {
-            id,
-            tracked: false,
-            payload: Arc::clone(&msg),
-        };
-        let (permits, blocking_group) = Self::try_acquire_balanced_admission(&groups)?;
-        if blocking_group.is_some() {
-            // Keep try_publish all-or-nothing for mixed topics: if balanced
-            // admission fails, nothing is published to broadcast either.
-            Ok((PublishOutcome::DroppedOnFull, id))
-        } else {
+                payload: msg.take().expect("publish requires a payload"),
+            };
             for (group, permit) in groups.as_ref().iter().zip(permits) {
                 send_queued_envelope(&group.tx, envelope.clone(), permit)?;
             }
+            self.broadcast_ring.publish(envelope);
+        } else {
             self.broadcast_ring.publish(Envelope {
                 id,
                 tracked: false,
-                payload: Arc::clone(&msg),
+                payload: msg.take().expect("publish requires a payload"),
             });
-            Ok((PublishOutcome::Published, id))
         }
+        Ok((PublishOutcome::Published, id))
     }
 
     fn try_publish_tracked(
         &self,
-        msg: Arc<T>,
+        msg: &mut Option<Arc<T>>,
         timeout: Duration,
         permit: TrackedPublishPermit,
     ) -> Result<TrackedTryPublishOutcome, Error> {
@@ -1008,23 +1017,19 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             let envelope = Envelope {
                 id,
                 tracked: true,
-                payload: Arc::clone(&msg),
+                payload: msg.take().expect("publish requires a payload"),
             };
             for (group, admission_permit) in groups.as_ref().iter().zip(permits) {
                 send_queued_envelope(&group.tx, envelope.clone(), admission_permit)?;
             }
-            self.broadcast_ring.publish(Envelope {
-                id,
-                tracked: true,
-                payload: msg,
-            });
+            self.broadcast_ring.publish(envelope);
             Ok(TrackedTryPublishOutcome::Published(receipt))
         } else {
             let receipt = self.outcomes.register(id, timeout, permit);
             self.broadcast_ring.publish(Envelope {
                 id,
                 tracked: true,
-                payload: msg,
+                payload: msg.take().expect("publish requires a payload"),
             });
             Ok(TrackedTryPublishOutcome::Published(receipt))
         }

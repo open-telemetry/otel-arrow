@@ -96,6 +96,8 @@ struct PendingForward {
     delivery: Delivery<OtapPdata>,
     tracked_message_id: Option<u64>,
     send_started_at: Instant,
+    #[cfg(feature = "topic-retained-work")]
+    retained: Option<otel_arrow_dfe_engine::retained_work::LocalRetainedTicket>,
     future: Pin<
         Box<dyn Future<Output = Result<(), otel_arrow_dfe_engine::error::TypedError<OtapPdata>>>>,
     >,
@@ -404,6 +406,8 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                                    #[cfg(feature = "topic-retained-work")]
+                                    drop(pending_forward.take());
                                     return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                                 }
                                 Ok(_) => {}
@@ -418,6 +422,10 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             match result {
                                 Ok(()) => {
                                     pending.delivery.commit();
+                                    #[cfg(feature = "topic-retained-work")]
+                                    if let Some(retained) = pending.retained {
+                                        let _ = retained.complete();
+                                    }
                                     if let Some(message_id) = pending.tracked_message_id {
                                         _ = pending_tracked_message_ids.insert(message_id);
                                     }
@@ -620,10 +628,18 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     )) => {
                                         let send_started_at = Instant::now();
                                         let effect_handler = effect_handler.clone();
+                                        #[cfg(feature = "topic-retained-work")]
+                                        let (pdata, retained) = {
+                                            let mut pdata = pdata;
+                                            let retained = metrics.retain_blocked_delivery(&mut pdata);
+                                            (pdata, retained)
+                                        };
                                         pending_forward = Some(PendingForward {
                                             delivery,
                                             tracked_message_id,
                                             send_started_at,
+                                            #[cfg(feature = "topic-retained-work")]
+                                            retained,
                                             future: Box::pin(async move {
                                                 effect_handler.send_message_with_source_node(pdata).await
                                             }),
@@ -1174,7 +1190,8 @@ mod tests {
     /// blocked trying to forward into a full downstream channel.
     /// Guarantees: `DrainIngress` keeps control responsiveness, aborts the
     /// unsent topic message, and exits promptly instead of deadlocking on the
-    /// blocked send.
+    /// blocked send. The retained-work snapshot reports one abandonment and
+    /// no remaining charge when that instrumentation is enabled.
     #[test]
     fn drain_ingress_interrupts_blocked_forward_when_ack_propagation_is_disabled() {
         let (rt, local_tasks) = setup_test_runtime();
@@ -1186,7 +1203,7 @@ mod tests {
                 .create_in_memory_topic(
                     topic_name.clone(),
                     TopicOptions::Mixed {
-                        balanced_capacity: 16,
+                        balanced_capacity: 1,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
                         ack_mode: TopicBroadcastAckMode::First,
@@ -1223,6 +1240,10 @@ mod tests {
             .expect("topic receiver should be created");
 
             let (receiver_output_tx, _receiver_output_rx) = create_not_send_channel::<OtapPdata>(1);
+            receiver_output_tx
+                .send_async(create_test_pdata())
+                .await
+                .expect("reserve the only downstream slot");
             receiver
                 .set_pdata_sender(
                     receiver_node.clone(),
@@ -1252,13 +1273,16 @@ mod tests {
                 .publish(Arc::new(create_test_pdata()))
                 .await
                 .expect("first publish should succeed");
-            tokio::time::sleep(Duration::from_millis(100)).await;
 
-            handle
-                .publish(Arc::new(create_test_pdata()))
-                .await
-                .expect("second publish should succeed");
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // The topic's only queue slot becomes available when the receiver
+            // takes the first delivery. The downstream slot stays occupied.
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                handle.publish(Arc::new(create_test_pdata())),
+            )
+            .await
+            .expect("receiver should take the first delivery")
+            .expect("second publish should succeed");
 
             receiver_ctrl
                 .send(NodeControlMsg::DrainIngress {
@@ -1272,7 +1296,27 @@ mod tests {
                 .await
                 .expect("receiver should exit promptly after interrupting a blocked forward")
                 .expect("receiver task should join");
-            assert!(receiver_result.is_ok(), "receiver should stop cleanly");
+            let terminal = receiver_result.expect("receiver should stop cleanly");
+            #[cfg(feature = "topic-retained-work")]
+            {
+                let snapshot = terminal
+                    .metrics()
+                    .iter()
+                    .find(|set| set.descriptor().name == "receiver.topic.retained_work")
+                    .expect("terminal retained-work snapshot");
+                let value = |name| {
+                    let index = snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == name)
+                        .expect("retained-work metric");
+                    snapshot.get_metrics()[index].to_u64_lossy()
+                };
+                assert_eq!(value("logical.bytes"), 0);
+                assert_eq!(value("abandoned.messages"), 1);
+            }
+            drop(terminal);
         }));
     }
 }

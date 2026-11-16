@@ -5,15 +5,10 @@
 //!
 //! `BatchArrowRecords` is the protobuf type that contains the Arrow IPC serialized messages.
 
-use std::io::Cursor;
-
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow_ipc::CompressionType;
-use arrow_ipc::writer::{
-    DictionaryHandling, DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
-    write_message,
-};
+use arrow_ipc::writer::{DictionaryHandling, IpcWriteOptions, StreamWriter};
 
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
@@ -24,19 +19,13 @@ use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, Bat
 struct StreamProducer {
     schema_id: i64,
 
-    /// buffer to write the serialized data into
-    buffer: Cursor<Vec<u8>>,
+    /// Emits each IPC message directly into the outgoing payload allocation.
+    writer: StreamWriter<Vec<u8>>,
 
-    /// keeps track of dictionaries written to the stream
-    dictionary_tracker: DictionaryTracker,
-
-    data_gen: IpcDataGenerator,
-
-    /// schema for the record batches being written
     schema: SchemaRef,
 
-    /// compression context for the stream
-    compression_context: IpcWriteContext,
+    /// Predicts the next output size without retaining a high-water buffer.
+    previous_size: usize,
 }
 
 impl StreamProducer {
@@ -45,99 +34,36 @@ impl StreamProducer {
         schema_id: i64,
         ipc_write_options: &IpcWriteOptions,
     ) -> Result<Self> {
-        let buf = Vec::new();
-        let cursor = Cursor::new(buf);
-
-        let mut instance = Self {
-            buffer: cursor,
-            compression_context: IpcWriteContext::default(),
-            dictionary_tracker: DictionaryTracker::new(false),
-            data_gen: IpcDataGenerator::default(),
+        let writer = Self::new_writer(&schema, ipc_write_options)?;
+        Ok(Self {
             schema_id,
+            writer,
             schema,
-        };
-
-        // write the stream header
-        instance.write_stream_header(ipc_write_options)?;
-
-        Ok(instance)
+            previous_size: 0,
+        })
     }
 
-    /// Write the stream header (which includes the schema) to the IPC stream to the internal buffer.
-    ///
-    /// Callers should probably not call this directly. The stream header is written automatically
-    /// when creating a new `StreamProducer` and when resetting the stream.
-    fn write_stream_header(&mut self, ipc_write_options: &IpcWriteOptions) -> Result<()> {
-        let encoded_message = self.data_gen.schema_to_bytes_with_dictionary_tracker(
-            self.schema.as_ref(),
-            &mut self.dictionary_tracker,
-            ipc_write_options,
-        );
-
-        _ = write_message(&mut self.buffer, encoded_message, ipc_write_options)
-            .map_err(|e| Error::WriteRecordBatch { source: e })?;
-
-        Ok(())
+    fn new_writer(schema: &SchemaRef, options: &IpcWriteOptions) -> Result<StreamWriter<Vec<u8>>> {
+        StreamWriter::try_new_with_options(Vec::new(), schema, options.clone())
+            .map_err(|source| Error::WriteRecordBatch { source })
     }
 
-    /// Write a record batch to the IPC stream to the internal buffer.
-    ///
-    /// Callers should call `serialize_batch` instead to get the serialized bytes.
-    fn write_batch(
-        &mut self,
-        ipc_write_options: &IpcWriteOptions,
-        record_batch: &RecordBatch,
-    ) -> Result<()> {
-        let (encoded_dictionaries, encoded_message) = self
-            .data_gen
-            .encode(
-                record_batch,
-                &mut self.dictionary_tracker,
-                ipc_write_options,
-                &mut self.compression_context,
-            )
-            .expect("Not configured to error on dictionary replacement");
-
-        for encoded_dict in encoded_dictionaries {
-            _ = write_message(&mut self.buffer, encoded_dict, ipc_write_options)
-                .map_err(|e| Error::WriteRecordBatch { source: e })?;
-        }
-        _ = write_message(&mut self.buffer, encoded_message, ipc_write_options)
-            .map_err(|e| Error::WriteRecordBatch { source: e })?;
-
-        Ok(())
-    }
-
-    /// Get the next sequence of bytes in the arrow IPC stream including the serialized batch.
-    ///
-    /// If this is the first batch being serialized, the stream header (which includes the arrow
-    /// schema) will be included as well.
-    fn serialize_batch(
-        &mut self,
-        ipc_write_options: &IpcWriteOptions,
-        record_batch: &RecordBatch,
-    ) -> Result<Vec<u8>> {
-        self.write_batch(ipc_write_options, record_batch)?;
-
-        // copy serialized data from buffer and return it, while resetting buffer
-        let pos = self.buffer.position() as usize;
-        let result = self.buffer.get_ref()[..pos].to_vec();
-        self.buffer.set_position(0);
-
+    /// Returns the next IPC chunk. The stream writer keeps its dictionary
+    /// state while the output buffer is moved into the protobuf payload.
+    fn serialize_batch(&mut self, record_batch: &RecordBatch) -> Result<Vec<u8>> {
+        let dest = self.writer.get_mut();
+        dest.reserve_exact(self.previous_size.saturating_sub(dest.len()));
+        self.writer
+            .write(record_batch)
+            .map_err(|source| Error::WriteRecordBatch { source })?;
+        let result = std::mem::take(self.writer.get_mut());
+        self.previous_size = result.len();
         Ok(result)
     }
 
-    /// Reset the stream to the initial state. After calling this, the byte sequence returned by
-    /// `serialize_batch` will start a new arrow IPC stream.
+    /// Starts another IPC stream with its own schema and dictionary state.
     fn reset_stream(&mut self, ipc_write_options: &IpcWriteOptions) -> Result<()> {
-        // reset buffer
-        self.buffer.set_position(0);
-
-        // reset dictionary tracker
-        self.dictionary_tracker.clear();
-
-        self.write_stream_header(ipc_write_options)?;
-
+        self.writer = Self::new_writer(&self.schema, ipc_write_options)?;
         Ok(())
     }
 }
@@ -291,8 +217,7 @@ impl Producer {
                 }
             };
 
-            let serialized_rb =
-                stream_producer.serialize_batch(&self.ipc_write_options, record_batch)?;
+            let serialized_rb = stream_producer.serialize_batch(record_batch)?;
             arrow_payloads.push(ArrowPayload {
                 schema_id: format!("{}", stream_producer.schema_id),
                 r#type: *payload_type as i32,
@@ -433,6 +358,9 @@ mod test {
         assert_eq!(input, result);
     }
 
+    /// Scenario: successive log batches reset the IPC stream after each send.
+    /// Guarantees: independent consumers can decode every chunk with either
+    /// supported compression mode, even after another output has been produced.
     #[test]
     fn test_producer_reset_streams() {
         let batches = [
@@ -462,40 +390,39 @@ mod test {
             ]),
         ];
 
-        // let mut producer = Producer::new();
-        let mut producer = Producer::new_with_options(ProducerOptions {
-            ipc_compression: Some(CompressionType::ZSTD),
-        });
+        for ipc_compression in [None, Some(CompressionType::ZSTD)] {
+            let mut producer = Producer::new_with_options(ProducerOptions { ipc_compression });
 
-        let mut encoded_bars = vec![];
-        for mut batch in batches.clone() {
-            let bar = producer.produce_bar(&mut batch).unwrap();
-            let mut bytes = Vec::new();
-            bar.encode(&mut bytes).unwrap();
-            encoded_bars.push(bytes);
-            producer.reset_streams().unwrap();
-        }
+            let mut encoded_bars = vec![];
+            for mut batch in batches.clone() {
+                let bar = producer.produce_bar(&mut batch).unwrap();
+                let mut bytes = Vec::new();
+                bar.encode(&mut bytes).unwrap();
+                encoded_bars.push(bytes);
+                producer.reset_streams().unwrap();
+            }
 
-        // two consumers reading batches independently
-        let mut consumer1 = Consumer::default();
-        let mut consumer2 = Consumer::default();
+            // two consumers reading batches independently
+            let mut consumer1 = Consumer::default();
+            let mut consumer2 = Consumer::default();
 
-        for i in 0..4 {
-            let bytes = &encoded_bars[i];
-            let mut bar = BatchArrowRecords::decode(bytes.as_ref()).unwrap();
-            let consumer = if i % 2 == 0 {
-                &mut consumer1
-            } else {
-                &mut consumer2
-            };
-            let record_messages = consumer.consume_bar(&mut bar).unwrap();
-            let mut result_otap_batch =
-                OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());
+            for i in 0..4 {
+                let bytes = &encoded_bars[i];
+                let mut bar = BatchArrowRecords::decode(bytes.as_ref()).unwrap();
+                let consumer = if i % 2 == 0 {
+                    &mut consumer1
+                } else {
+                    &mut consumer2
+                };
+                let record_messages = consumer.consume_bar(&mut bar).unwrap();
+                let mut result_otap_batch =
+                    OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());
 
-            // remove the delta encoding for the IDs so we can compare against the original.
-            // this optimized encoding is added by the Producer automatically.
-            result_otap_batch.decode_transport_optimized_ids().unwrap();
-            pretty_assertions::assert_eq!(batches[i], result_otap_batch);
+                // remove the delta encoding for the IDs so we can compare against the original.
+                // this optimized encoding is added by the Producer automatically.
+                result_otap_batch.decode_transport_optimized_ids().unwrap();
+                pretty_assertions::assert_eq!(batches[i], result_otap_batch);
+            }
         }
     }
 

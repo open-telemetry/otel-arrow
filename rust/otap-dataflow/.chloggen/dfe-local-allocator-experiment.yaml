@@ -18,4 +18,4 @@ issues: [3725, 3272]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Enable dfe-local-alloc for per-worker heap metrics. DFE_ALLOC_MEDIUM_EXTENTS enables pooling, DFE_ALLOC_UPPER_EXTENT adds the 160 KiB bin, and DFE_ALLOC_MEDIUM_EXTENT_SLOTS controls slot reuse and idle page discard.
+subtext: Enable dfe-local-alloc for per-worker heap metrics. DFE_ALLOC_MEDIUM_EXTENTS enables pooling, DFE_ALLOC_UPPER_EXTENT adds the 160 KiB bin, and DFE_ALLOC_MEDIUM_EXTENT_SLOTS controls slot reuse and idle page discard. Enable topic-retained-work for bytes awaiting downstream admission.

@@ -370,13 +370,21 @@ fully free slots in partially occupied extents after one second of sampled
 worker inactivity. It keeps their virtual ranges mapped. The default
 `list` uses the original free lists.
 
+Set `DFE_ALLOC_FULLEST_EXTENTS=on` with bitmap extent slots to prefer the
+fullest partially occupied extent when a worker refills. Each worker indexes
+the free slots it can currently reuse. The active extent is used first, and
+the regular search still reconciles pending remote frees. This option defaults
+to `off`.
+
 Set `DFE_ALLOC_UPPER_EXTENT=on` alongside `DFE_ALLOC_MEDIUM_EXTENTS=on`
 to also pool the 160 KiB capacity bin. It covers mapping sizes above
 128 KiB through 160 KiB with alignment up to 4 KiB. Each 512 KiB extent
 holds three slots. This option defaults to `off`.
 
 With medium extents enabled, `DFE_ALLOC_EXTENT_REUSE` gives each worker
-an optional pool of up to four unassigned empty extents (2 MiB). Use
+an optional pool of unassigned empty extents with a default budget of
+2 MiB. Set `DFE_ALLOC_EXTENT_REUSE_MIB` to an integer from 1 to 4 to
+change the per-worker budget. Use
 `discard` to discard pages when an extent enters the pool or `resident`
 to retain its pages for reuse during traffic. Any extent size class can
 reuse a pooled mapping. Both modes unmap the pool at the first sampled
@@ -396,7 +404,8 @@ mapped and empty span capacity, bytes reconciled by sampling, and large mapping
 cache size. With region backing, it reports region mapping bytes separately,
 including slab capacity already counted in the slab gauge. It also reports
 extent mapped, empty, requested, and occupied slot bytes, plus cached
-extent mapping bytes and reuse hits. It counts
+extent mapping bytes, reuse hits, and extents unmapped when the pool is
+full. It counts
 acquisitions and releases for slabs, backing regions, and other mappings, idle
 extent discard calls and bytes, bytes copied during reallocation, and
 dedicated reallocations served in place.
@@ -440,6 +449,15 @@ Retained ownership can support future per-pipeline or per-group budgets,
 targeted backpressure, and reconciliation against allocator inventory and
 process memory. Tenant identity can be propagated alongside retained ownership
 without becoming an allocator label.
+
+The independent `topic-retained-work` build feature observes one retention site.
+When a topic receiver finds its downstream channel full, it charges the
+delivery's logical payload size to that receiving pipeline instance and topic.
+It refunds the charge when admission completes or the pending delivery is
+dropped. Immediate sends skip accounting. The feature reports
+`receiver.topic.retained_work` bytes, unknown-size messages, and abandonments.
+Topic queue and broadcast ring storage, channel slots after admission, and
+shared Arrow buffer residency are outside this metric's scope.
 
 Retained accounting should begin as observe-only. Enforcement needs additional
 design for reserves, fairness, shared ownership, overshoot, reclaim, recovery,

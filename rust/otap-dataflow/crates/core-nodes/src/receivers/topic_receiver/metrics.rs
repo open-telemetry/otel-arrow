@@ -6,12 +6,16 @@
 use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
+#[cfg(feature = "topic-retained-work")]
+use otel_arrow_dfe_engine::retained_work::{LocalRetainedAccount, LocalRetainedTicket};
 use otel_arrow_dfe_otap::metrics::ReceiverMetrics;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::{
     MeasurementMetricSet, MetricSet, MetricSetRegistrar, MetricSetSnapshot,
 };
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+#[cfg(feature = "topic-retained-work")]
+use std::rc::Rc;
 use std::time::Duration;
 
 const DOWNSTREAM_BACKPRESSURE_WARNING_THRESHOLD: Duration = Duration::from_millis(500);
@@ -103,6 +107,22 @@ pub struct TopicGeneralMetrics {
     pub downstream_backpressure_events: Counter<u64>,
 }
 
+/// Logical work held by the topic receiver waiting for its downstream channel.
+#[cfg(feature = "topic-retained-work")]
+#[metric_set(name = "receiver.topic.retained_work")]
+#[derive(Debug, Default, Clone)]
+struct TopicRetainedWorkMetrics {
+    /// Known logical payload bytes waiting for downstream admission.
+    #[metric(unit = "By")]
+    logical_bytes: otel_arrow_dfe_telemetry::instrument::Gauge<u64>,
+    /// Payloads with unknown logical size waiting for downstream admission.
+    #[metric(unit = "{message}")]
+    unknown_size_messages: otel_arrow_dfe_telemetry::instrument::Gauge<u64>,
+    /// Total deliveries abandoned before downstream admission.
+    #[metric(unit = "{message}")]
+    abandoned_messages: otel_arrow_dfe_telemetry::instrument::ObserveCounter<u64>,
+}
+
 /// Basic-resolution downstream blocking duration.
 #[metric_set(name = "receiver.topic.downstream.blocked")]
 #[derive(Debug, Default, Clone)]
@@ -191,6 +211,10 @@ pub struct TopicReceiverMetrics {
     /// General un-dimensioned metrics.
     pub general: MetricSet<TopicGeneralMetrics>,
     blocked_duration: Option<TopicBlockedDurationMetricSet>,
+    #[cfg(feature = "topic-retained-work")]
+    retained_account: Rc<LocalRetainedAccount>,
+    #[cfg(feature = "topic-retained-work")]
+    retained_metrics: MetricSet<TopicRetainedWorkMetrics>,
 }
 
 impl TopicReceiverMetrics {
@@ -212,7 +236,39 @@ impl TopicReceiverMetrics {
             blocked_duration: interests.contains(Interests::NODE_LOCAL_DURATION).then(|| {
                 TopicBlockedDurationMetricSet::register(&registrar, duration_distribution)
             }),
+            #[cfg(feature = "topic-retained-work")]
+            retained_account: LocalRetainedAccount::new(),
+            #[cfg(feature = "topic-retained-work")]
+            retained_metrics: TopicRetainedWorkMetrics::register(&registrar),
         }
+    }
+
+    #[cfg(feature = "topic-retained-work")]
+    pub(super) fn retain_blocked_delivery(
+        &self,
+        payload: &mut otel_arrow_dfe_otap::pdata::OtapPdata,
+    ) -> Option<LocalRetainedTicket> {
+        self.retained_account
+            .charge(
+                payload
+                    .num_bytes()
+                    .and_then(|size| u64::try_from(size).ok()),
+            )
+            .ok()
+    }
+
+    #[cfg(feature = "topic-retained-work")]
+    fn sample_retained_work(&mut self) {
+        let snapshot = self.retained_account.snapshot();
+        self.retained_metrics
+            .logical_bytes
+            .set(snapshot.retained_bytes);
+        self.retained_metrics
+            .unknown_size_messages
+            .set(snapshot.unknown_items);
+        self.retained_metrics
+            .abandoned_messages
+            .observe(snapshot.abandoned_items);
     }
 
     /// Takes every touched metric bucket for terminal handoff.
@@ -221,6 +277,11 @@ impl TopicReceiverMetrics {
         snapshots.extend(self.lag_events.terminal_snapshots());
         snapshots.extend(self.bridge.terminal_snapshots());
         snapshots.extend(self.general.terminal_snapshots());
+        #[cfg(feature = "topic-retained-work")]
+        {
+            self.sample_retained_work();
+            snapshots.extend(self.retained_metrics.terminal_snapshots());
+        }
         if let Some(blocked_duration) = &mut self.blocked_duration {
             snapshots.extend(blocked_duration.terminal_snapshots());
         }
@@ -236,6 +297,11 @@ impl TopicReceiverMetrics {
         reporter.report_measurement(&mut self.lag_events)?;
         reporter.report_measurement(&mut self.bridge)?;
         reporter.report(&mut self.general)?;
+        #[cfg(feature = "topic-retained-work")]
+        {
+            self.sample_retained_work();
+            reporter.report(&mut self.retained_metrics)?;
+        }
         if let Some(blocked_duration) = &mut self.blocked_duration {
             blocked_duration.report(reporter)?;
         }
@@ -285,6 +351,36 @@ mod tests {
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         TopicReceiverMetrics::register(&pipeline_ctx, "test-topic".into())
+    }
+
+    /// Scenario: a delivery waits for downstream capacity in one of two topic receivers.
+    /// Guarantees: only the blocked receiver owns the bytes, and completion or
+    /// abandonment refunds the charge and distinguishes the terminal outcome.
+    #[cfg(feature = "topic-retained-work")]
+    #[test]
+    fn blocked_delivery_accounting_is_local_and_refunded() {
+        use otel_arrow_dfe_otap::testing::create_test_pdata;
+
+        let mut receiver = new_test_metrics();
+        let mut other_receiver = new_test_metrics();
+        let mut pdata = create_test_pdata();
+        let bytes = pdata.num_bytes().expect("known-size fixture") as u64;
+        assert!(bytes > 0);
+        let ticket = receiver.retain_blocked_delivery(&mut pdata).unwrap();
+        receiver.sample_retained_work();
+        other_receiver.sample_retained_work();
+        assert_eq!(receiver.retained_metrics.logical_bytes.get(), bytes);
+        assert_eq!(other_receiver.retained_metrics.logical_bytes.get(), 0);
+
+        ticket.complete().unwrap();
+        receiver.sample_retained_work();
+        assert_eq!(receiver.retained_metrics.logical_bytes.get(), 0);
+        assert_eq!(receiver.retained_metrics.abandoned_messages.get(), 0);
+
+        drop(receiver.retain_blocked_delivery(&mut pdata).unwrap());
+        receiver.sample_retained_work();
+        assert_eq!(receiver.retained_metrics.logical_bytes.get(), 0);
+        assert_eq!(receiver.retained_metrics.abandoned_messages.get(), 1);
     }
 
     /// Scenario: A topic receiver is instantiated and produces metrics for various events.
@@ -439,7 +535,10 @@ mod tests {
         metrics.general.lagged_messages.add(42);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 3);
+        assert_eq!(
+            snapshots.len(),
+            3 + usize::from(cfg!(feature = "topic-retained-work"))
+        );
 
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.topic.bridge"
@@ -457,7 +556,10 @@ mod tests {
         );
 
         let second = metrics.terminal_snapshots();
-        assert_eq!(second.len(), 1);
+        assert_eq!(
+            second.len(),
+            1 + usize::from(cfg!(feature = "topic-retained-work"))
+        );
         assert!(
             second
                 .iter()

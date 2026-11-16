@@ -100,6 +100,17 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         self.inner.try_publish(msg)
     }
 
+    /// Try to publish immediately, returning the same payload if capacity is exhausted.
+    pub fn try_publish_or_return(&self, msg: Arc<T>) -> Result<Result<(), Arc<T>>, Error> {
+        let mut msg = Some(msg);
+        match self.inner.try_publish_retaining(&mut msg)? {
+            PublishOutcome::Published => Ok(Ok(())),
+            PublishOutcome::DroppedOnFull => {
+                Ok(Err(msg.expect("full publish retains its payload")))
+            }
+        }
+    }
+
     /// Subscribe to this topic.
     pub fn subscribe(
         &self,
@@ -176,11 +187,34 @@ impl<T: Send + Sync + 'static> TrackedTopicPublisher<T> {
     /// Returns [`TrackedTryPublishOutcome::MaxInFlightReached`] when no tracked
     /// in-flight slot is currently available.
     pub fn try_publish(&self, msg: Arc<T>) -> Result<TrackedTryPublishOutcome, Error> {
+        self.try_publish_inner(&mut Some(msg))
+    }
+
+    /// Try to publish immediately, returning the same payload if topic or outcome
+    /// capacity is exhausted.
+    pub fn try_publish_or_return(
+        &self,
+        msg: Arc<T>,
+    ) -> Result<Result<TrackedPublishReceipt, Arc<T>>, Error> {
+        let mut msg = Some(msg);
+        match self.try_publish_inner(&mut msg)? {
+            TrackedTryPublishOutcome::Published(receipt) => Ok(Ok(receipt)),
+            TrackedTryPublishOutcome::DroppedOnFull
+            | TrackedTryPublishOutcome::MaxInFlightReached => {
+                Ok(Err(msg.expect("refused publish retains its payload")))
+            }
+        }
+    }
+
+    fn try_publish_inner(
+        &self,
+        msg: &mut Option<Arc<T>>,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
         let permit = match self.in_flight.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => return Ok(TrackedTryPublishOutcome::MaxInFlightReached),
         };
-        self.handle.inner.try_publish_tracked(
+        self.handle.inner.try_publish_tracked_retaining(
             msg,
             self.timeout,
             TrackedPublishPermit::from_tokio_owned(permit),

@@ -464,6 +464,7 @@ jemalloc = [
 mimalloc = ["dep:mimalloc", "dep:serde_json"]
 snmalloc = ["dep:snmalloc-rs", "dep:rustfs-mimalloc-profiling", "dep:prost"]
 dfe-local-alloc = ["otel-arrow-dfe-controller/dfe-local-alloc"]
+topic-retained-work = ["otel-arrow-dfe-core-nodes/topic-retained-work"]
 
 # Unsafe performance optimizations.
 unsafe-optimizations = ["unchecked-arithmetic", "unchecked-index"]

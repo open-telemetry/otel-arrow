@@ -201,11 +201,11 @@ impl TopicExporter {
     /// path has already reported backpressure.
     fn start_blocked_publish(
         data: OtapPdata,
+        published: Arc<OtapPdata>,
         attempt: ExporterAttempt,
         tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
         topic: &TopicHandle<OtapPdata>,
     ) -> BlockedPublish {
-        let published = Arc::new(data.clone_without_context());
         let future: Pin<Box<dyn Future<Output = Result<BlockedPublishCompletion, Error>>>> =
             if let Some(tracked_publisher) = tracked_publisher.cloned() {
                 Box::pin(async move {
@@ -327,7 +327,7 @@ impl TopicExporter {
                 if should_track_end_to_end {
                     let tracked_publisher = tracked_publisher
                         .expect("tracked publisher should exist when ack propagation is auto");
-                    match tracked_publisher.try_publish(published) {
+                    match tracked_publisher.try_publish_or_return(published) {
                         Err(error) => Err(Self::expect_runtime_error(
                             Self::record_attempt_result::<()>(
                                 metrics,
@@ -336,7 +336,7 @@ impl TopicExporter {
                                 Err(TopicAttemptError::Runtime(error)),
                             ),
                         )),
-                        Ok(TrackedTryPublishOutcome::Published(receipt)) => {
+                        Ok(Ok(receipt)) => {
                             let receipt =
                                 Self::record_attempt_result(metrics, signal, attempt, Ok(receipt))
                                     .expect("successful publish cannot fail");
@@ -348,18 +348,16 @@ impl TopicExporter {
                             );
                             Ok(None)
                         }
-                        Ok(
-                            TrackedTryPublishOutcome::DroppedOnFull
-                            | TrackedTryPublishOutcome::MaxInFlightReached,
-                        ) => Ok(Some(Self::start_blocked_publish(
+                        Ok(Err(published)) => Ok(Some(Self::start_blocked_publish(
                             data,
+                            published,
                             attempt,
                             Some(tracked_publisher),
                             topic,
                         ))),
                     }
                 } else {
-                    match topic.try_publish(published) {
+                    match topic.try_publish_or_return(published) {
                         Err(error) => Err(Self::expect_runtime_error(
                             Self::record_attempt_result::<()>(
                                 metrics,
@@ -368,14 +366,14 @@ impl TopicExporter {
                                 Err(TopicAttemptError::Runtime(error)),
                             ),
                         )),
-                        Ok(PublishOutcome::Published) => {
+                        Ok(Ok(())) => {
                             Self::record_attempt_result(metrics, signal, attempt, Ok(()))
                                 .expect("successful publish cannot fail");
                             effect_handler.notify_ack(AckMsg::new(data)).await?;
                             Ok(None)
                         }
-                        Ok(PublishOutcome::DroppedOnFull) => Ok(Some(Self::start_blocked_publish(
-                            data, attempt, None, topic,
+                        Ok(Err(published)) => Ok(Some(Self::start_blocked_publish(
+                            data, published, attempt, None, topic,
                         ))),
                     }
                 }

@@ -2452,6 +2452,61 @@ async fn try_publish_balanced_only_reports_drop_on_full() {
     );
 }
 
+/// Scenario: a publisher hits topic capacity and tracked outcome capacity.
+/// Guarantees: each retry receives the original payload allocation, and a
+/// successful retry reaches the subscriber and resolves exactly once.
+#[tokio::test]
+async fn capacity_miss_returns_original_payload_for_retry() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "retry-payload",
+            TopicOptions::BalancedOnly { capacity: 1 },
+            InMemoryBackend,
+        )
+        .unwrap();
+    let mut sub = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let payload = Arc::new(2);
+    assert_eq!(
+        topic.try_publish(Arc::new(1)).unwrap(),
+        PublishOutcome::Published
+    );
+    let refused = topic
+        .try_publish_or_return(Arc::clone(&payload))
+        .unwrap()
+        .unwrap_err();
+    assert!(Arc::ptr_eq(&refused, &payload));
+
+    let tracked = topic.tracked_publisher_with_config(TopicPublishOutcomeConfig {
+        max_in_flight: 1,
+        ..Default::default()
+    });
+    let refused = tracked.try_publish_or_return(refused).unwrap().unwrap_err();
+    assert!(Arc::ptr_eq(&refused, &payload));
+    assert!(matches!(sub.recv().await.unwrap(), RecvItem::Message(env) if *env.payload == 1));
+
+    let receipt = tracked.try_publish_or_return(refused).unwrap().unwrap();
+    let RecvItem::Message(env) = sub.recv().await.unwrap() else {
+        panic!("expected message");
+    };
+    assert!(Arc::ptr_eq(&env.payload, &payload));
+    // The queue is empty now, but the receipt still holds the only outcome slot.
+    let refused = tracked
+        .try_publish_or_return(Arc::clone(&payload))
+        .unwrap()
+        .unwrap_err();
+    assert!(Arc::ptr_eq(&refused, &payload));
+    sub.ack(env.id).unwrap();
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+}
+
 // On mixed topics, try_publish is all-or-nothing across balanced and
 // broadcast delivery. A balanced drop-on-full result must not leak a message
 // to broadcast subscribers.

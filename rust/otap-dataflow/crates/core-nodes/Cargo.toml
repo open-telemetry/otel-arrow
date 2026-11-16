@@ -87,6 +87,7 @@ rustix.workspace = true
 # Compatibility default: existing consumers continue to compile every core node.
 # Minimal consumers should use `default-features = false` and select exact nodes.
 default = ["core-nodes"]
+topic-retained-work = ["topic"]
 
 # Keep these umbrella lists exhaustive. Features can appear in both directional
 # categories when they intentionally include source and destination nodes.

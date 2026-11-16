@@ -454,6 +454,9 @@ pub(crate) struct PipelineAllocatorSlabMetrics {
     /// Empty extent mappings reused by a worker size class.
     #[metric(unit = "{mapping}")]
     extent_reuse_hits: Counter<u64>,
+    /// Empty extent mappings unmapped because the worker's reuse pool was full.
+    #[metric(unit = "{mapping}")]
+    extent_reuse_full_returns: Counter<u64>,
     /// OS calls to discard pages of idle, partially occupied extents.
     #[metric(unit = "{call}")]
     extent_purge_calls: Counter<u64>,
@@ -684,6 +687,9 @@ impl PipelineMetricsMonitor {
         self.allocator_slab
             .extent_reuse_hits
             .add(activity.extent_reuse_hits);
+        self.allocator_slab
+            .extent_reuse_full_returns
+            .add(activity.extent_reuse_full_returns);
         self.allocator_slab
             .extent_purge_calls
             .add(activity.extent_purge_calls);

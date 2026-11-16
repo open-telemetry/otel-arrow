@@ -68,6 +68,9 @@ const UPPER_EXTENT: usize = 1 << 6;
 const SLAB_REGIONS: usize = 1 << 7;
 const EXTENT_REUSE: usize = 1 << 8;
 const EXTENT_REUSE_RESIDENT: usize = 1 << 9;
+const EXTENT_POOL_MIB_SHIFT: u32 = 10;
+const EXTENT_POOL_MIB_MASK: usize = 0b111 << EXTENT_POOL_MIB_SHIFT;
+const FULLEST_EXTENTS: usize = 1 << 14;
 const CACHE_FLAGS: usize = BINNED
     | RESERVE_HOT_BINS
     | GRADUAL_TRIM
@@ -77,9 +80,13 @@ const CACHE_FLAGS: usize = BINNED
     | UPPER_EXTENT
     | SLAB_REGIONS
     | EXTENT_REUSE
-    | EXTENT_REUSE_RESIDENT;
+    | EXTENT_REUSE_RESIDENT
+    | EXTENT_POOL_MIB_MASK
+    | FULLEST_EXTENTS;
 const EXTENT_BYTES: usize = 512 * 1024;
-const EXTENT_POOL_SLOTS: usize = 4;
+const DEFAULT_EXTENT_POOL_MIB: usize = 2;
+const MAX_EXTENT_POOL_MIB: usize = 4;
+const MAX_EXTENT_POOL_SLOTS: usize = MAX_EXTENT_POOL_MIB * MIB / EXTENT_BYTES;
 const EXTENT_PURGE_DELAY: Duration = Duration::from_secs(1);
 const EXTENT_MAX_BIN_SHIFT: u32 = 16;
 const EXTENT_MAX_CAPACITY: usize = 1 << EXTENT_MAX_BIN_SHIFT;
@@ -95,7 +102,8 @@ const RESERVED_PER_BIN: u16 = 4;
 const IDLE_KEEP_MAX: usize = 512 * 1024;
 const IDLE_KEEP_TIME: Duration = Duration::from_secs(2);
 
-// Low bits select cache policies. The remaining bits carry a byte budget.
+// Low bits hold cache policies and the extent pool limit. The remaining bits
+// carry the dedicated mapping cache's byte budget.
 static LARGE_CACHE_CONFIG: AtomicUsize = AtomicUsize::new(MAP_CACHE_BYTES | BINNED);
 
 static NEXT_OWNER: AtomicUsize = AtomicUsize::new(1);
@@ -257,16 +265,27 @@ unsafe fn release_mapping(addr: *mut u8, len: usize) {
 /// Whole, empty extent mappings available to any size class on this worker.
 struct ExtentPool {
     mode: ExtentReuseMode,
-    slots: [*mut Span; EXTENT_POOL_SLOTS],
+    slots: [*mut Span; MAX_EXTENT_POOL_SLOTS],
     len: usize,
+    limit: usize,
 }
 
 impl ExtentPool {
     const EMPTY: Self = Self {
         mode: ExtentReuseMode::Off,
-        slots: [null_mut(); EXTENT_POOL_SLOTS],
+        slots: [null_mut(); MAX_EXTENT_POOL_SLOTS],
         len: 0,
+        limit: DEFAULT_EXTENT_POOL_MIB * MIB / EXTENT_BYTES,
     };
+
+    fn configure(&mut self, config: usize) {
+        self.mode = ExtentReuseMode::from_config(config);
+        let mib = match (config & EXTENT_POOL_MIB_MASK) >> EXTENT_POOL_MIB_SHIFT {
+            0 => DEFAULT_EXTENT_POOL_MIB,
+            value => value,
+        };
+        self.limit = mib * MIB / EXTENT_BYTES;
+    }
 
     fn take(&mut self, activity: &mut MappingActivity) -> *mut Span {
         if self.len == 0 {
@@ -284,20 +303,21 @@ impl ExtentPool {
         activity: &mut MappingActivity,
     ) {
         // SAFETY: Only detached extents with no outstanding blocks enter the
-        // pool. Discard may zero the header, so the pool stores addresses
-        // outside the mappings and checkout rebuilds the entire header.
-        let retain = !idle
-            && self.mode != ExtentReuseMode::Off
-            && self.len < self.slots.len()
-            && (self.mode == ExtentReuseMode::Resident
-                || unsafe { libc::madvise(span.cast(), EXTENT_BYTES, libc::MADV_DONTNEED) } == 0);
-        if retain {
-            self.slots[self.len] = span;
-            self.len += 1;
-        } else {
-            unsafe { release_mapping(span.cast(), EXTENT_BYTES) };
-            activity.extent_releases += 1;
+        // pool. Discard may zero the header. Checkout rebuilds it.
+        if !idle && self.mode != ExtentReuseMode::Off {
+            if self.len >= self.limit {
+                activity.extent_reuse_full_returns += 1;
+            } else if self.mode == ExtentReuseMode::Resident
+                || unsafe { libc::madvise(span.cast(), EXTENT_BYTES, libc::MADV_DONTNEED) } == 0
+            {
+                self.slots[self.len] = span;
+                self.len += 1;
+                return;
+            }
         }
+        // SAFETY: The caller detached this extent and owns its mapping.
+        unsafe { release_mapping(span.cast(), EXTENT_BYTES) };
+        activity.extent_releases += 1;
     }
 
     fn clear(&mut self, activity: &mut MappingActivity) {
@@ -553,6 +573,9 @@ struct ExtentSlots {
 struct SlotBitmap {
     free: u32,
     dirty_free: u32,
+    available_prev: *mut Span,
+    available_next: *mut Span,
+    available_bucket: u32,
 }
 
 impl ExtentSlots {
@@ -565,6 +588,9 @@ impl ExtentSlots {
             owner_slots: UnsafeCell::new(SlotBitmap {
                 free: (1 << count) - 1,
                 dirty_free: 0,
+                available_prev: null_mut(),
+                available_next: null_mut(),
+                available_bucket: 0,
             }),
         }
     }
@@ -986,6 +1012,24 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
     if extent_reuse != 0 && extents == 0 {
         return Err("extent reuse requires DFE_ALLOC_MEDIUM_EXTENTS=on");
     }
+    let extent_pool_mib = match std::env::var("DFE_ALLOC_EXTENT_REUSE_MIB") {
+        Ok(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|mib| (1..=MAX_EXTENT_POOL_MIB).contains(mib))
+            .ok_or("DFE_ALLOC_EXTENT_REUSE_MIB must be an integer from 1 to 4")?,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_EXTENT_REUSE_MIB must be an integer from 1 to 4"),
+    };
+    let fullest_extents = match std::env::var("DFE_ALLOC_FULLEST_EXTENTS") {
+        Ok(value) if value == "on" && slots & EXTENT_BITMAP != 0 => FULLEST_EXTENTS,
+        Ok(value) if value == "on" => {
+            return Err("DFE_ALLOC_FULLEST_EXTENTS=on requires bitmap extent slots");
+        }
+        Ok(value) if value == "off" => 0,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_FULLEST_EXTENTS must be on or off"),
+    };
     LARGE_CACHE_CONFIG.store(
         budget
             | mode
@@ -995,7 +1039,9 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
             | slots
             | upper_extent
             | slab_regions
-            | extent_reuse,
+            | extent_reuse
+            | fullest_extents
+            | (extent_pool_mib << EXTENT_POOL_MIB_SHIFT),
         Relaxed,
     );
     Ok(())
@@ -1011,6 +1057,7 @@ pub(crate) struct MappingActivity {
     pub(crate) extent_maps: u64,
     pub(crate) extent_releases: u64,
     pub(crate) extent_reuse_hits: u64,
+    pub(crate) extent_reuse_full_returns: u64,
     pub(crate) extent_purge_calls: u64,
     pub(crate) extent_purged_bytes: u64,
     pub(crate) large_maps: u64,
@@ -1030,6 +1077,7 @@ impl MappingActivity {
         extent_maps: 0,
         extent_releases: 0,
         extent_reuse_hits: 0,
+        extent_reuse_full_returns: 0,
         extent_purge_calls: 0,
         extent_purged_bytes: 0,
         large_maps: 0,
@@ -1118,6 +1166,84 @@ impl Class {
     }
 }
 
+// Only nonempty, nonactive bitmap extents with available slots are indexed.
+// The bucket is the count of owner-visible free slots. Zero also marks an
+// unlinked extent, so selecting the first occupied bucket finds the fullest.
+struct AvailableExtents {
+    heads: [*mut Span; u32::BITS as usize],
+    occupied: u32,
+}
+
+impl AvailableExtents {
+    const EMPTY: Self = Self {
+        heads: [null_mut(); u32::BITS as usize],
+        occupied: 0,
+    };
+
+    unsafe fn slots(span: *mut Span) -> *mut SlotBitmap {
+        // SAFETY: Only the owner uses this index and all its entries are
+        // live bitmap extents with initialized metadata.
+        unsafe { (*Span::extent_slots(span)).owner_slots.get() }
+    }
+
+    unsafe fn set_bucket(&mut self, span: *mut Span, bucket: u32) {
+        // SAFETY: The owner can access every linked extent and its metadata.
+        unsafe {
+            let slots = &mut *Self::slots(span);
+            let previous_bucket = slots.available_bucket;
+            if previous_bucket == bucket {
+                return;
+            }
+            if previous_bucket != 0 {
+                let (prev, next) = (slots.available_prev, slots.available_next);
+                if prev.is_null() {
+                    self.heads[previous_bucket as usize] = next;
+                    if next.is_null() {
+                        self.occupied &= !(1 << previous_bucket);
+                    }
+                } else {
+                    (*Self::slots(prev)).available_next = next;
+                }
+                if !next.is_null() {
+                    (*Self::slots(next)).available_prev = prev;
+                }
+            }
+            slots.available_bucket = bucket;
+            slots.available_prev = null_mut();
+            slots.available_next = null_mut();
+            if bucket != 0 {
+                let head = &mut self.heads[bucket as usize];
+                slots.available_next = *head;
+                if !head.is_null() {
+                    (*Self::slots(*head)).available_prev = span;
+                }
+                *head = span;
+                self.occupied |= 1 << bucket;
+            }
+        }
+    }
+
+    unsafe fn refresh(&mut self, span: *mut Span, live: usize) {
+        // SAFETY: This nonactive bitmap extent remains linked to its owner.
+        let free = if live == 0 {
+            0
+        } else {
+            unsafe { (*Self::slots(span)).free.count_ones() }
+        };
+        unsafe { self.set_bucket(span, free) };
+    }
+
+    fn take_fullest(&mut self) -> Option<*mut Span> {
+        if self.occupied == 0 {
+            return None;
+        }
+        let span = self.heads[self.occupied.trailing_zeros() as usize];
+        // SAFETY: An occupied bucket contains a linked, available extent.
+        unsafe { self.set_bucket(span, 0) };
+        Some(span)
+    }
+}
+
 struct BinDemand {
     depth: [u16; BIN_COUNT],
     seen: u64,
@@ -1187,6 +1313,8 @@ struct Heap {
     used_large: bool,
     extent_mode: ExtentMode,
     extent_pool: ExtentPool,
+    fullest_extents: bool,
+    available_extents: [AvailableExtents; EXTENT_BINS + 1],
     upper_extent: bool,
     used_extents: bool,
     extent_idle_since: Option<Instant>,
@@ -1210,6 +1338,8 @@ impl Heap {
         used_large: false,
         extent_mode: ExtentMode::Disabled,
         extent_pool: ExtentPool::EMPTY,
+        fullest_extents: false,
+        available_extents: [const { AvailableExtents::EMPTY }; EXTENT_BINS + 1],
         upper_extent: false,
         used_extents: false,
         extent_idle_since: None,
@@ -1243,6 +1373,16 @@ impl Heap {
                     }
                     return (block, span);
                 }
+            }
+            if self.fullest_extents
+                && bytes == EXTENT_BYTES
+                && let Some(available) = self.available_extents[index - NUM_CLASSES].take_fullest()
+            {
+                class.active = available;
+                return (
+                    Span::take_block(available, stride, bytes, requested),
+                    available,
+                );
             }
             if !class.empty.is_null() {
                 span = std::mem::replace(&mut class.empty, null_mut());
@@ -1319,6 +1459,12 @@ impl Heap {
             }
             local.live -= 1;
             local.requested -= requested;
+            if slot_bit != 0 && self.fullest_extents {
+                let index = (*span).class;
+                if self.classes[index].active != span {
+                    self.available_extents[index - NUM_CLASSES].refresh(span, local.live);
+                }
+            }
             if local.live == 0 {
                 let index = (*span).class;
                 let bytes = span_bytes(index);
@@ -1545,8 +1691,12 @@ impl Heap {
                 // before an empty span can be released.
                 unsafe {
                     let next = (*Span::local(span)).next;
-                    result.remote_requested += Span::drain(span);
+                    let returned = Span::drain(span);
+                    result.remote_requested += returned;
                     let local = &*Span::local(span);
+                    if returned != 0 && extent && self.fullest_extents && class.active != span {
+                        self.available_extents[index - NUM_CLASSES].refresh(span, local.live);
+                    }
                     if local.live == 0 {
                         let released = if extent && extent_idle {
                             class.unlink_empty(span);
@@ -1594,6 +1744,9 @@ impl Heap {
                                     && (*Span::extent_slots(span)).bitmap
                                     && (*(*Span::extent_slots(span)).owner_slots.get()).free != 0))
                         {
+                            if extent && self.fullest_extents {
+                                self.available_extents[index - NUM_CLASSES].set_bucket(span, 0);
+                            }
                             class.active = span;
                         }
                     }
@@ -1615,6 +1768,8 @@ impl Heap {
         self.idle_since = None;
         self.used_large = false;
         self.extent_mode = ExtentMode::Disabled;
+        self.fullest_extents = false;
+        self.available_extents = [const { AvailableExtents::EMPTY }; EXTENT_BINS + 1];
         self.upper_extent = false;
         self.used_extents = false;
         self.extent_idle_since = None;
@@ -1681,9 +1836,10 @@ pub fn enter_pipeline() -> PipelineScope {
     let config = LARGE_CACHE_CONFIG.load(Relaxed);
     let _ = with_heap(|heap| {
         heap.extent_mode = ExtentMode::from_config(config);
-        heap.extent_pool.mode = ExtentReuseMode::from_config(config);
+        heap.extent_pool.configure(config);
         heap.upper_extent = config & UPPER_EXTENT != 0;
         heap.use_slab_regions = config & SLAB_REGIONS != 0;
+        heap.fullest_extents = config & FULLEST_EXTENTS != 0;
     });
     PipelineScope(PhantomData)
 }
@@ -1975,49 +2131,124 @@ mod tests {
         scope
     }
 
-    fn enter_extent_reuse_worker(mode: ExtentReuseMode) -> PipelineScope {
+    fn enter_extent_reuse_worker(config: usize) -> PipelineScope {
         let scope = enter_extent_worker_in(ExtentMode::Purge);
         let _ = with_heap(|heap| {
             heap.upper_extent = true;
-            heap.extent_pool.mode = mode;
+            heap.extent_pool.configure(config);
         });
         scope
     }
 
+    /// Scenario: One class has an exhausted active extent, a nearer sparse
+    /// extent with holes, and a fuller extent beyond the bounded search.
+    /// Guarantees: Refill uses the fullest extent's last free slot first and
+    /// then reuses an available sparse extent without mapping another one.
+    #[test]
+    fn bitmap_refill_prefers_the_fullest_extent_beyond_the_probe() {
+        let _scope = enter_extent_reuse_worker(EXTENT_REUSE | EXTENT_REUSE_RESIDENT);
+        let _ = with_heap(|heap| heap.fullest_extents = true);
+        let size = 17 * 1024;
+        let stride = 20 * 1024;
+        let slots = (EXTENT_BYTES - PAGE) / stride;
+        let mut blocks: Vec<Option<Block>> = (0..(PROBE_SPANS + 3) * slots)
+            .map(|_| Some(Block::new(size, 1)))
+            .collect();
+        let fullest = read_mapping(blocks[0].as_ref().unwrap()).base;
+        let sparse_start = (PROBE_SPANS + 1) * slots;
+        let sparse = read_mapping(blocks[sparse_start].as_ref().unwrap()).base;
+        let _ = blocks[0].take();
+        for block in &mut blocks[sparse_start..sparse_start + slots - 1] {
+            let _ = block.take();
+        }
+        let _ = sample_worker();
+        let first = Block::new(size, 1);
+        let second = Block::new(size, 1);
+        assert_eq!(read_mapping(&first).base, fullest);
+        assert_eq!(read_mapping(&second).base, sparse);
+        assert_eq!(sample_worker().activity.extent_maps, 0);
+    }
+
+    /// Scenario: A worker samples remote frees that make one indexed extent
+    /// sparser and fully empty another indexed extent.
+    /// Guarantees: The first extent stays eligible, the second leaves the index,
+    /// and a refill does not touch the emptied extent after it is pooled.
+    #[test]
+    fn bitmap_placement_reclassifies_remote_frees_before_reuse() {
+        let _scope = enter_extent_reuse_worker(EXTENT_REUSE | EXTENT_REUSE_RESIDENT);
+        let _ = with_heap(|heap| heap.fullest_extents = true);
+        let size = 133_634;
+        let mut blocks: Vec<_> = (0..12).map(|_| Some(Block::new(size, 1))).collect();
+        let partial = read_mapping(blocks[0].as_ref().unwrap()).base;
+        let kept = read_mapping(blocks[6].as_ref().unwrap()).base;
+        drop((
+            blocks[0].take(),
+            blocks[3].take(),
+            blocks[6].take(),
+            blocks[7].take(),
+            blocks[8].take(),
+        ));
+        let returned = (blocks[1].take(), blocks[4].take(), blocks[5].take());
+        std::thread::spawn(move || drop(returned)).join().unwrap();
+        let reconciled = sample_worker();
+        assert_eq!(reconciled.remote_requested, 3 * size);
+        assert_eq!(reconciled.empty_extents, EXTENT_BYTES);
+        assert_eq!(reconciled.cached_extents, EXTENT_BYTES);
+        let first = Block::new(size, 1);
+        let second = Block::new(size, 1);
+        let third = Block::new(size, 1);
+        assert_eq!(read_mapping(&first).base, partial);
+        assert_eq!(read_mapping(&second).base, partial);
+        assert_eq!(read_mapping(&third).base, kept);
+        drop((first, second, third, blocks));
+        assert_eq!(sample_worker().activity.extent_maps, 0);
+        assert_eq!(sample_worker().extent_mapped, 0);
+    }
+
     /// Scenario: A worker releases more empty upper extents than its pool
     /// can hold, then allocates in a different extent class and becomes idle.
-    /// Guarantees: The pool respects its cap, reassigns a mapping across size
-    /// classes, and flushes at the first idle sample while live slots remain valid.
+    /// Guarantees: The pool respects each configured cap, counts full returns,
+    /// reassigns mappings across classes, and flushes at the first idle sample.
     #[test]
     fn extent_reuse_respects_budget_across_classes_and_flushes_when_idle() {
-        for mode in [ExtentReuseMode::Discard, ExtentReuseMode::Resident] {
-            let _scope = enter_extent_reuse_worker(mode);
-            let blocks: Vec<_> = (0..21).map(|_| Block::new(133_634, 1)).collect();
+        let resident = EXTENT_REUSE | EXTENT_REUSE_RESIDENT;
+        for (mode, configured_mib, expected_mib) in [
+            (EXTENT_REUSE, 0, 2),
+            (resident, 1, 1),
+            (resident, 2, 2),
+            (resident, 3, 3),
+            (resident, 4, 4),
+        ] {
+            let _scope =
+                enter_extent_reuse_worker(mode | (configured_mib << EXTENT_POOL_MIB_SHIFT));
+            let pool_slots = expected_mib * MIB / EXTENT_BYTES;
+            let extents = 11;
+            let blocks: Vec<_> = (0..3 * extents).map(|_| Block::new(133_634, 1)).collect();
             let bases: Vec<_> = blocks.iter().map(|b| read_mapping(b).base).collect();
             for block in blocks {
                 drop(block);
             }
             let full = sample_worker();
-            assert_eq!(full.activity.extent_maps, 7);
-            assert_eq!(full.activity.extent_releases, 2);
-            assert_eq!(full.cached_extents, EXTENT_POOL_SLOTS * EXTENT_BYTES);
+            let overflow = (extents - 1 - pool_slots) as u64;
+            assert_eq!(full.activity.extent_maps, extents as u64);
+            assert_eq!(full.activity.extent_releases, overflow);
+            assert_eq!(full.activity.extent_reuse_full_returns, overflow);
+            assert_eq!(full.cached_extents, expected_mib * MIB);
             assert_eq!(full.empty_extents, EXTENT_BYTES);
 
             let other_class = Block::new(32 * 1024, PAGE);
             let mapping = read_mapping(&other_class);
             assert!(mapping.is_extent());
-            assert!(bases[3..15].contains(&mapping.base));
+            assert!(bases[3..3 * (pool_slots + 1)].contains(&mapping.base));
             let reused = sample_worker();
             assert_eq!(reused.activity.extent_maps, 0);
             assert_eq!(reused.activity.extent_reuse_hits, 1);
-            assert_eq!(
-                reused.cached_extents,
-                (EXTENT_POOL_SLOTS - 1) * EXTENT_BYTES
-            );
+            assert_eq!(reused.cached_extents, (pool_slots - 1) * EXTENT_BYTES);
             // SAFETY: This byte is part of a live block owned by this thread.
             unsafe { other_class.ptr.write(42) };
             let idle = sample_worker();
-            assert_eq!(idle.activity.extent_releases, EXTENT_POOL_SLOTS as u64);
+            assert_eq!(idle.activity.extent_releases, pool_slots as u64);
+            assert_eq!(idle.activity.extent_reuse_full_returns, 0);
             assert_eq!(idle.cached_extents, 0);
             assert_eq!(idle.extent_mapped, EXTENT_BYTES);
             // SAFETY: The block is still live and its first byte is initialized.
@@ -2031,7 +2262,7 @@ mod tests {
     /// read and freed on a different thread.
     #[test]
     fn extent_reuse_drops_cached_extents_on_retirement() {
-        let scope = enter_extent_reuse_worker(ExtentReuseMode::Resident);
+        let scope = enter_extent_reuse_worker(EXTENT_REUSE | EXTENT_REUSE_RESIDENT);
         let mut blocks: Vec<_> = (0..9).map(|_| Block::new(133_634, 1)).collect();
         let live = blocks.pop().unwrap();
         drop(blocks);

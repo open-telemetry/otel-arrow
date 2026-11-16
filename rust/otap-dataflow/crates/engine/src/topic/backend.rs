@@ -90,6 +90,19 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
     ) -> PublishTrackedFuture<'_>;
     /// Try to publish one payload without awaiting.
     fn try_publish(&self, msg: Arc<T>) -> Result<PublishOutcome, Error>;
+
+    /// Try to publish the supplied payload without awaiting.
+    ///
+    /// The caller supplies `Some`. A full queue leaves the payload in place
+    /// so the caller can retry without allocating or cloning it.
+    fn try_publish_retaining(&self, msg: &mut Option<Arc<T>>) -> Result<PublishOutcome, Error> {
+        let payload = msg.as_ref().expect("publish requires a payload").clone();
+        let outcome = self.try_publish(payload)?;
+        if outcome == PublishOutcome::Published {
+            *msg = None;
+        }
+        Ok(outcome)
+    }
     /// Try to publish one tracked payload without awaiting.
     ///
     /// `timeout` and `permit` have the same meaning as in
@@ -102,6 +115,23 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
         timeout: Duration,
         permit: TrackedPublishPermit,
     ) -> Result<TrackedTryPublishOutcome, Error>;
+
+    /// Try to publish a supplied tracked payload, keeping it on a capacity miss.
+    ///
+    /// The caller supplies `Some`.
+    fn try_publish_tracked_retaining(
+        &self,
+        msg: &mut Option<Arc<T>>,
+        timeout: Duration,
+        permit: TrackedPublishPermit,
+    ) -> Result<TrackedTryPublishOutcome, Error> {
+        let payload = msg.as_ref().expect("publish requires a payload").clone();
+        let outcome = self.try_publish_tracked(payload, timeout, permit)?;
+        if matches!(outcome, TrackedTryPublishOutcome::Published(_)) {
+            *msg = None;
+        }
+        Ok(outcome)
+    }
     /// Create a balanced subscription backend for consumer-group `group`.
     fn subscribe_balanced(
         &self,
