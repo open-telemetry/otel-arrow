@@ -1382,14 +1382,14 @@ fn syslog_encoder_handles_missing_fields_and_severity() {
             b"<14>1 - - - - - - message",
             b"<12>1 - - - - - - message",
             b"<11>1 - - - - - - message",
-            b"<10>1 - - - - - - message",
+            b"<8>1 - - - - - - message",
             b"<14>1 - - - - - - forwarded",
         ]
     );
 }
 
-/// Scenario: Inputs exceed message, item, batch-byte, or output-policy limits.
-/// Guarantees: No oversized batch succeeds, diagnostics report the enforced limits, exact message boundaries work, and failures do not poison reuse.
+/// Scenario: ASCII and Unicode inputs reach message limits, or inputs exceed item, batch-byte, or output-policy limits.
+/// Guarantees: No oversized batch succeeds, UTF-8 markers count toward message limits, diagnostics report enforced limits, and failures do not poison reuse.
 #[test]
 fn syslog_encoder_enforces_bounds_and_recovers() {
     let mut encoder = SyslogEncoder::new(EncodePolicy::default());
@@ -1428,6 +1428,26 @@ fn syslog_encoder_enforces_bounds_and_recovers() {
     ));
     let bytes = encoder.encode(records(vec![log("ok")], vec![])).unwrap();
     assert_eq!(messages(&bytes), vec![b"<14>1 - - - - - - ok".as_slice()]);
+    for format in [Format::Rfc5424, Format::CefRfc5424] {
+        let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+        let mut input = log("\u{e9}");
+        input.attributes = cef_attributes();
+        let bytes = encoder
+            .encode(records(vec![input.clone()], vec![]))
+            .unwrap();
+        let remaining = MAX_MESSAGE_SIZE - messages(&bytes)[0].len();
+        let body = format!("\u{e9}{}", "x".repeat(remaining));
+        input.body = Some(AnyValue::new_string(&body));
+        let bytes = encoder
+            .encode(records(vec![input.clone()], vec![]))
+            .unwrap();
+        assert_eq!(messages(&bytes)[0].len(), MAX_MESSAGE_SIZE);
+        input.body = Some(AnyValue::new_string(body + "x"));
+        assert!(encoder.encode(records(vec![input], vec![])).is_err());
+        let mut input = log("ok");
+        input.attributes = cef_attributes();
+        assert!(encoder.encode(records(vec![input], vec![])).is_ok());
+    }
 }
 
 /// Scenario: Mapped headers contain invalid types, ranges, separators, or unsupported structured data.

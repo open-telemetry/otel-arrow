@@ -71,22 +71,24 @@ pub(super) fn append_header(
     Ok(())
 }
 
-pub(super) fn append_message(
+pub(super) fn mark_message(
     message: &mut Vec<u8>,
     structured_data: &[u8],
-    body: &[u8],
-) -> Result<(), CodecError> {
-    append_bytes(message, b" ")?;
+    body_start: usize,
+) -> Result<usize, CodecError> {
+    let body = &message[body_start..];
     // The receiver skips spaces when looking for another SD element and strips
-    // one leading BOM from the message. Protect both boundaries without changing
-    // a literal BOM already present in the semantic message.
-    if body.is_empty()
-        || body.starts_with(UTF8_BOM)
+    // one leading BOM. Mark Unicode as UTF-8 and protect those boundaries without
+    // changing a literal BOM already present in the semantic message.
+    if !body.is_ascii()
+        || body.is_empty()
         || (structured_data != b"-" && body.iter().find(|byte| **byte != b' ') == Some(&b'['))
     {
         append_bytes(message, UTF8_BOM)?;
+        message[body_start..].rotate_right(UTF8_BOM.len());
+        return Ok(body_start + UTF8_BOM.len());
     }
-    append_bytes(message, body)
+    Ok(body_start)
 }
 
 pub(super) fn validate_message(

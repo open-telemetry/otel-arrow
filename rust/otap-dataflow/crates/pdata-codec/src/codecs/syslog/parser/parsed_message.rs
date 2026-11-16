@@ -208,6 +208,7 @@ impl ParsedSyslogMessage<'_> {
     pub(crate) fn add_attributes_to_arrow(
         &self,
         log_attributes_arrow_records: &mut SyslogAttributesBuilder,
+        cef_header_scratch: &mut Vec<u8>,
     ) -> u16 {
         let mut attributes_count: u16 = match self {
             ParsedSyslogMessage::CefWithRfc5424(syslog_msg, cef_msg) => {
@@ -215,7 +216,11 @@ impl ParsedSyslogMessage<'_> {
                 let mut count =
                     self.add_rfc5424_attributes(syslog_msg, log_attributes_arrow_records);
                 // Add CEF attributes
-                count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                count += self.add_cef_attributes(
+                    cef_msg,
+                    log_attributes_arrow_records,
+                    cef_header_scratch,
+                );
                 count
             }
             ParsedSyslogMessage::CefWithRfc3164(syslog_msg, cef_msg) => {
@@ -223,7 +228,11 @@ impl ParsedSyslogMessage<'_> {
                 let mut count =
                     self.add_rfc3164_attributes(syslog_msg, log_attributes_arrow_records);
                 // Add CEF attributes
-                count += self.add_cef_attributes(cef_msg, log_attributes_arrow_records);
+                count += self.add_cef_attributes(
+                    cef_msg,
+                    log_attributes_arrow_records,
+                    cef_header_scratch,
+                );
                 count
             }
             ParsedSyslogMessage::Rfc5424(msg) => {
@@ -233,7 +242,7 @@ impl ParsedSyslogMessage<'_> {
                 self.add_rfc3164_attributes(msg, log_attributes_arrow_records)
             }
             ParsedSyslogMessage::Cef(msg) => {
-                self.add_cef_attributes(msg, log_attributes_arrow_records)
+                self.add_cef_attributes(msg, log_attributes_arrow_records, cef_header_scratch)
             }
         };
 
@@ -408,6 +417,7 @@ impl ParsedSyslogMessage<'_> {
         &self,
         msg: &CefMessage<'_>,
         log_attributes_arrow_records: &mut SyslogAttributesBuilder,
+        scratch: &mut Vec<u8>,
     ) -> u16 {
         let mut attributes_count = 7; // version, device_vendor, device_product, device_version, device_event_class_id, name, and severity are always present
 
@@ -416,7 +426,6 @@ impl ParsedSyslogMessage<'_> {
             .any_values_builder
             .append_int(msg.version.into());
 
-        let mut scratch = Vec::new();
         for (key, value) in [
             (KnownAttributeKey::CefDeviceVendor, msg.device_vendor),
             (KnownAttributeKey::CefDeviceProduct, msg.device_product),
@@ -431,7 +440,7 @@ impl ParsedSyslogMessage<'_> {
             log_attributes_arrow_records.append_known_key(key);
             log_attributes_arrow_records
                 .any_values_builder
-                .append_str(super::cef::unescape_header(value, &mut scratch));
+                .append_str(super::cef::unescape_header(value, scratch));
         }
 
         let mut extensions_iter = msg.parse_extensions();

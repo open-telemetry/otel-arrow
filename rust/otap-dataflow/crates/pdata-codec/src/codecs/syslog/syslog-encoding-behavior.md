@@ -58,7 +58,7 @@ and requires digit-only string process IDs or `-`.
 Facility and syslog severity must be integers in `0..=23` and `0..=7`,
 respectively. OTel severity maps as:
 unset/`0`/`9..=12` -> `6`, `1..=8` -> `7`, `13..=16` -> `4`,
-`17..=20` -> `3`, `21..=24` -> `2`; other values fail.
+`17..=20` -> `3`, `21..=24` -> `0`; other values fail.
 Bare CEF ignores syslog headers and OTel severity.
 
 ## Preservation and CEF fields
@@ -68,6 +68,7 @@ still match. RFC 5424 preserves `syslog.version` (`0..=255`),
 `syslog.structured_data`, and message text, including empty values, leading
 brackets, and literal BOMs. Other profiles reject non-NIL structured data.
 Unclosed structured data cannot be combined with a message.
+Non-ASCII RFC 5424 messages, including wrapped CEF, carry a UTF-8 BOM.
 
 CEF requires `cef.device_vendor`, `cef.device_product`, `cef.device_version`,
 `cef.device_event_class_id`, `cef.name`, and `cef.severity`. Generated headers

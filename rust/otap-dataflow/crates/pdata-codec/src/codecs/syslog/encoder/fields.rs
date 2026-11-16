@@ -171,7 +171,7 @@ pub(super) fn severity(number: Option<i32>) -> Result<u8, CodecError> {
         1..=8 => Ok(7),
         13..=16 => Ok(4),
         17..=20 => Ok(3),
-        21..=24 => Ok(2),
+        21..=24 => Ok(0),
         _ => Err(error("severity_number must be in 0..=24")),
     }
 }

@@ -47,8 +47,8 @@ fn attribute_occurrences<'a>(log: &'a LogRecord, key: &str) -> Vec<&'a KeyValue>
         .collect()
 }
 
-/// Scenario: Real bare and syslog-wrapped CEF inputs pass through receiver framing, native OTAP, and each output profile repeatedly.
-/// Guarantees: Header values and all extension names and values survive; default syslog output retains CEF, and yearless bare CEF fails explicitly for RFC 3164.
+/// Scenario: Real bare and syslog-wrapped CEF inputs, including Unicode headers and messages, pass through receiver framing, native OTAP, and each output profile repeatedly.
+/// Guarantees: Header and extension values survive, RFC 5424 Unicode payloads carry a BOM, default syslog output retains CEF, and yearless bare CEF fails explicitly for RFC 3164.
 #[test]
 fn syslog_encoder_received_cef_round_trips() {
     for cef in [
@@ -62,6 +62,9 @@ fn syslog_encoder_received_cef_round_trips() {
         b"CEF:0|vendor|product|1.0|100|event|6|z=first cs1=  ".as_slice(),
         b"CEF:0|vendor|product|1.0|100|event|6|cs1=early z=first cs1=last  ".as_slice(),
         b"CEF:0|vendor|product|1.0|100|event|6|cs1=tab\t cs2=vertical\x0b cs3=form\x0c msg=key\\=value slash\\\\\\nnext\\rline".as_slice(),
+        b"CEF:0|vendor|product|1.0|100|event|6|msg=caf\xc3\xa9".as_slice(),
+        b"CEF:0|vendor|product|1.0|100|event|6|msg=\xef\xbb\xbfcaf\xc3\xa9".as_slice(),
+        b"CEF:0|vendor|product|1.0|100|caf\xc3\xa9|6|msg=ascii".as_slice(),
     ] {
         for wrapper in [
             "",
@@ -139,6 +142,12 @@ fn syslog_encoder_received_cef_round_trips() {
                 }
                 for _ in 0..3 {
                     let bytes = service.encode_bytes(&mut input, &plan).unwrap();
+                    if !cef.is_ascii()
+                        && (matches!(profile, Some("rfc5424" | "cef_rfc5424"))
+                            || (profile.is_none() && wrapper.starts_with("<134>1")))
+                    {
+                        assert!(messages(&bytes)[0].windows(7).any(|part| part == b"\xef\xbb\xbfCEF:"));
+                    }
                     let logs = decode(bytes.clone());
                     assert_eq!(semantic_attributes(&logs[0], true), expected, "{profile:?}: {wrapper}");
                     for attribute in &expected {
@@ -336,8 +345,8 @@ fn syslog_encoder_received_syslog_headers_round_trip() {
     }
 }
 
-/// Scenario: RFC 5424 messages begin with brackets, spaces before brackets, or a literal BOM after structured data or NILVALUE.
-/// Guarantees: Receiver-materialized and generated message text stays separate from structured data through repeated encoding, including literal leading BOMs and empty values.
+/// Scenario: RFC 5424 messages contain Unicode or begin with brackets, spaces before brackets, or a literal BOM after structured data or NILVALUE.
+/// Guarantees: Receiver-materialized and generated text stays separate from structured data, Unicode carries a wire BOM, and literal leading BOMs and empty values survive.
 #[test]
 fn syslog_encoder_rfc5424_message_boundary_round_trips() {
     let service = configured_service("{profile: rfc5424}").unwrap();
@@ -353,6 +362,8 @@ fn syslog_encoder_rfc5424_message_boundary_round_trips() {
             "  [INFO] hello",
             "\u{feff}[INFO] hello",
             "\u{feff}",
+            "caf\u{e9}",
+            "\u{feff}caf\u{e9}",
             "normal",
             "",
         ] {
@@ -369,6 +380,10 @@ fn syslog_encoder_rfc5424_message_boundary_round_trips() {
             let mut input = received(wire.as_bytes());
             for _ in 0..3 {
                 let bytes = service.encode_bytes(&mut input, &plan).unwrap();
+                if !body.is_ascii() {
+                    let suffix = format!("{sd} \u{feff}{body}");
+                    assert!(messages(&bytes)[0].ends_with(suffix.as_bytes()));
+                }
                 let logs = decode(bytes.clone());
                 assert_eq!(
                     semantic_attributes(&logs[0], false),
@@ -389,6 +404,10 @@ fn syslog_encoder_rfc5424_message_boundary_round_trips() {
             let bytes = service
                 .encode_bytes(&mut records(vec![generated], vec![]), &plan)
                 .unwrap();
+            if !body.is_ascii() {
+                let suffix = format!("{sd} \u{feff}{body}");
+                assert!(messages(&bytes)[0].ends_with(suffix.as_bytes()));
+            }
             let logs = decode(bytes);
             assert!(logs[0].attributes.contains(&text("syslog.message", body)));
             if sd != "-" {
@@ -432,4 +451,40 @@ fn syslog_encoder_rfc5424_rejects_unclosed_data_with_message() {
     input.attributes = cef_attributes();
     let logs = decode(cef_encoder.encode(records(vec![input], vec![])).unwrap());
     assert!(logs[0].attributes.contains(&text("msg", "ok")));
+}
+
+/// Scenario: Generated FATAL levels use each syslog profile, with or without an explicit syslog severity.
+/// Guarantees: The default mapping preserves the FATAL class on decode, while an explicit severity remains authoritative.
+#[test]
+fn syslog_encoder_fatal_severity_round_trips() {
+    for format in [
+        Format::Rfc3164,
+        Format::Rfc5424,
+        Format::CefRfc3164,
+        Format::CefRfc5424,
+    ] {
+        let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), format);
+        for level in 21..=24 {
+            for explicit in [false, true] {
+                let mut input = log("fatal");
+                input.time_unix_nano = 1_704_164_645_000_000_000;
+                input.severity_number = level;
+                input.attributes = cef_attributes();
+                if explicit {
+                    input.attributes.push(integer("syslog.severity", 2));
+                }
+                let logs = decode(encoder.encode(records(vec![input], vec![])).unwrap());
+                assert_eq!(logs[0].severity_number, if explicit { 18 } else { 21 });
+                assert_eq!(
+                    logs[0].severity_text,
+                    if explicit { "ERROR2" } else { "FATAL" }
+                );
+                assert!(
+                    logs[0]
+                        .attributes
+                        .contains(&integer("syslog.severity", if explicit { 2 } else { 0 }))
+                );
+            }
+        }
+    }
 }

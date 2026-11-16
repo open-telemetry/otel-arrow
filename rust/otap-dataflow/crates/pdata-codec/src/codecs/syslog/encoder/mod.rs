@@ -257,16 +257,21 @@ fn serialize_message(
         cef.ok_or_else(|| error("CEF encoding requires CEF fields"))?
             .append(message, body)?;
     } else if let Some(body) = body {
-        if format == Format::Rfc5424 {
-            rfc5424::append_message(message, structured_data, body)?;
-        } else {
-            append_bytes(message, b" ")?;
-            append_bytes(message, body)?;
-        }
+        append_bytes(message, b" ")?;
+        append_bytes(message, body)?;
     }
     if matches!(format, Format::Rfc5424 | Format::CefRfc5424) {
+        let body_start = if message.len() > header_end {
+            Some(rfc5424::mark_message(
+                message,
+                structured_data,
+                header_end + 1,
+            )?)
+        } else {
+            None
+        };
         let expected_body = if format.is_cef() {
-            Some(&message[header_end + 1..])
+            body_start.map(|start| &message[start..])
         } else {
             body
         };
