@@ -430,6 +430,38 @@ cargo build --release --no-default-features \
   --features core-nodes,dev-tools,admin-live-logs-ws,crypto-ring,dfe-local-alloc
 ```
 
+### Future capabilities from engine integration
+
+The worker heap provides a place to apply policies using information the
+engine already has about batch lifetimes, queue ownership, and pipeline
+deployment generations.
+
+- **Byte-based backpressure and tenant budgets.** Reserve bytes before
+  decoding or accepting a batch. Carry the reservation through queues and
+  retries, and release it when the work leaves the charged scope. Resolve
+  tenant identity from trusted ingress context. For topic fan-out, charge
+  shared backing once and account for each subscriber's backlog separately.
+  See [retained-work accounting](#proposed-logical-retained-work-accounting).
+- **Placement by lifetime.** Back temporary transform state, long-lived
+  dictionaries, and published batches with separate regions. A region can be
+  reclaimed in bulk when its occupants share a lifetime. This limits how much
+  free capacity a long-lived allocation can keep resident.
+- **Zero-copy ownership transfer between workers.** At a single-consumer
+  boundary, an entire batch region with exclusive ownership could transfer
+  to the receiving worker at the same address. Shared topic deliveries
+  keep the backing alive until the last consumer releases it.
+- **Pressure-directed reclaim.** Have the controller request trimming on
+  owning workers when process memory is tight. Prioritize empty extents and
+  cached mappings, and use refill activity to select which capacity stays
+  warm. Reclaim work can run in bounded steps at worker maintenance points.
+- **Memory diagnostics across reloads.** Track mapped bytes and retirement
+  age by pipeline generation until the last free. For tracked batches,
+  correlate that inventory with the topic or retry queue currently retaining
+  the batch.
+- **NUMA-aware topic placement.** Use worker and backing-memory locality to
+  prefer nearby consumers where routing semantics allow. Measure whether
+  that preference reduces cross-socket traffic on multi-socket hosts.
+
 ## Proposed Logical Retained-Work Accounting
 
 Retained-work accounting answers who currently holds accepted work and where it
