@@ -175,7 +175,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            node_bindings: Some(NodeBindings::implicit_arrival()),
+            node_bindings: None,
             context_materialization_plan: None,
             readiness: None,
             terminal_metrics_deadline: TerminalMetricsDeadline::default(),
