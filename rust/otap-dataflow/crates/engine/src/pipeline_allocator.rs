@@ -96,6 +96,8 @@ const EXTENT_BINS: usize = 4 * (EXTENT_MAX_BIN_SHIFT - BIN_MIN_SHIFT) as usize +
 // Mixed OTAP concentrates the remaining dedicated misses in this one bin.
 const UPPER_EXTENT_FLOOR: usize = 128 * 1024;
 const UPPER_EXTENT_CAPACITY: usize = 160 * 1024;
+const EXTENT_20K_CLASS: usize = NUM_CLASSES + 1;
+const EXTENT_20K_STRIDE: usize = bin_capacity(EXTENT_20K_CLASS - NUM_CLASSES);
 const UPPER_EXTENT_CLASS: usize = NUM_CLASSES + EXTENT_BINS;
 const HEAP_CLASSES: usize = UPPER_EXTENT_CLASS + 1;
 // The saturation runs put nearly all mapping misses in this size range.
@@ -734,38 +736,44 @@ impl Span {
         }
     }
 
-    unsafe fn take_block(
-        span: *mut Self,
-        stride: usize,
-        bytes: usize,
-        requested: usize,
-    ) -> *mut u8 {
+    #[inline]
+    unsafe fn take_block(span: *mut Self, index: usize, requested: usize) -> *mut u8 {
         // SAFETY: This path runs on the sole owner of the span.
         let local = unsafe { &mut *Self::local(span) };
-        let block = if bytes == EXTENT_BYTES && unsafe { (*Self::extent_slots(span)).bitmap } {
-            // SAFETY: The bitmap belongs to the owner and only contains valid
-            // free slots. Selecting a bit needs no read from the slot itself.
-            let slots = unsafe { &mut *(*Self::extent_slots(span)).owner_slots.get() };
-            if slots.free == 0 {
-                return null_mut();
-            }
-            let index = slots.free.trailing_zeros();
-            let mask = 1 << index;
-            slots.free &= !mask;
-            slots.dirty_free &= !mask;
-            unsafe { span.cast::<u8>().add(PAGE + index as usize * stride) }
-        } else if !local.head.is_null() {
+        let block = if !local.head.is_null() {
+            // Only linked spans populate this list. Recycled blocks need
+            // neither the class geometry nor the bump pointer.
             let block = local.head;
             // SAFETY: The free list contains initialized intrusive links.
             local.head = unsafe { block.cast::<*mut u8>().read() };
             block
-        } else if local.bump + stride <= bytes {
+        } else if index >= NUM_CLASSES && unsafe { (*Self::extent_slots(span)).bitmap } {
+            // SAFETY: Bitmap spans have initialized slot metadata and
+            // each free bit identifies a valid, owner-visible slot.
+            let meta = unsafe { &*Self::extent_slots(span) };
+            let slots = unsafe { &mut *meta.owner_slots.get() };
+            let free = slots.free;
+            if free == 0 {
+                return null_mut();
+            }
+            let slot = free.trailing_zeros();
+            let mask = 1 << slot;
+            slots.free = free & !mask;
+            slots.dirty_free &= !mask;
+            let stride = match index {
+                EXTENT_20K_CLASS => EXTENT_20K_STRIDE,
+                _ => meta.stride,
+            };
+            unsafe { span.cast::<u8>().add(PAGE + slot as usize * stride) }
+        } else {
+            let stride = class_stride(index);
+            if local.bump + stride > span_bytes(index) {
+                return null_mut();
+            }
             // SAFETY: bump is aligned for this class and lies inside the span.
             let block = unsafe { span.cast::<u8>().add(local.bump) };
             local.bump += stride;
             block
-        } else {
-            return null_mut();
         };
         local.live += 1;
         local.requested += requested;
@@ -921,7 +929,7 @@ impl Mapping {
 }
 
 #[inline]
-fn bin_capacity(bin: usize) -> usize {
+const fn bin_capacity(bin: usize) -> usize {
     (1 << (BIN_MIN_SHIFT + (bin / 4) as u32)) / 4 * (4 + bin % 4)
 }
 
@@ -1366,37 +1374,41 @@ impl Heap {
         self.owner
     }
 
+    #[inline]
     fn alloc_block(&mut self, index: usize, requested: usize) -> (*mut u8, *mut Span) {
+        let class = &mut self.classes[index];
+        let span = class.active;
+        if !span.is_null() {
+            // SAFETY: This heap has exclusive access to its active span.
+            let block = unsafe { Span::take_block(span, index, requested) };
+            if !block.is_null() {
+                if class.empty == span {
+                    class.empty = null_mut();
+                }
+                return (block, span);
+            }
+        }
+        self.refill_block(index, requested)
+    }
+
+    #[inline(never)]
+    fn refill_block(&mut self, index: usize, requested: usize) -> (*mut u8, *mut Span) {
         let owner = self.owner();
         let class = &mut self.classes[index];
-        let stride = class_stride(index);
         let bytes = span_bytes(index);
-        let mut span = class.active;
-        // SAFETY: This heap owns its linked spans and active pointer.
+        // SAFETY: This heap owns all the linked spans in the class.
         unsafe {
-            if !span.is_null() {
-                let block = Span::take_block(span, stride, bytes, requested);
-                if !block.is_null() {
-                    if class.empty == span {
-                        class.empty = null_mut();
-                    }
-                    return (block, span);
-                }
-            }
             if self.fullest_extents
                 && bytes == EXTENT_BYTES
                 && let Some(available) = self.available_extents[index - NUM_CLASSES].take_fullest()
             {
                 class.active = available;
-                return (
-                    Span::take_block(available, stride, bytes, requested),
-                    available,
-                );
+                return (Span::take_block(available, index, requested), available);
             }
             if !class.empty.is_null() {
-                span = std::mem::replace(&mut class.empty, null_mut());
+                let span = std::mem::replace(&mut class.empty, null_mut());
                 class.active = span;
-                return (Span::take_block(span, stride, bytes, requested), span);
+                return (Span::take_block(span, index, requested), span);
             }
             let mut probe = if class.scan.is_null() {
                 class.head
@@ -1409,7 +1421,7 @@ impl Heap {
                 }
                 class.scan = (*Span::local(probe)).next;
                 let _ = Span::drain(probe);
-                let block = Span::take_block(probe, stride, bytes, requested);
+                let block = Span::take_block(probe, index, requested);
                 if !block.is_null() {
                     class.active = probe;
                     return (block, probe);
@@ -1426,7 +1438,8 @@ impl Heap {
             let regions = self
                 .use_slab_regions
                 .then_some((&mut self.slab_regions, &mut self.activity));
-            span = Span::create(
+            let stride = class_stride(index);
+            let span = Span::create(
                 owner,
                 index,
                 stride,
@@ -1445,7 +1458,7 @@ impl Heap {
             }
             class.link(span);
             class.active = span;
-            (Span::take_block(span, stride, bytes, requested), span)
+            (Span::take_block(span, index, requested), span)
         }
     }
 
@@ -1963,7 +1976,7 @@ impl PipelineAllocator {
                 return null_mut();
             }
             unsafe {
-                let block = Span::take_block(span, stride, SPAN_BYTES, layout.size());
+                let block = Span::take_block(span, class, layout.size());
                 Span::retire(span);
                 return block;
             }
