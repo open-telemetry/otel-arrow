@@ -112,6 +112,11 @@ in the Collector, for access to the Arrow ecosystem.
 - We are not building a Rust Collector; we are building OTAP pipelines
   as embeddable software libraries with access to the Apache Arrow
   ecosystem in Rust
+- We are not building a Rust Collector; we are evaluating an
+  end-to-end OTAP pipeline, including an experimental "OTAP-direct"
+  SDK in Rust
+- We will not publish software in source or binary form that acts like
+  a stand-alone Collector
 - We will (intentionally) not support parsing YAML configuration files
   to configure pipeline graphs
 - We will not interfere with OpenTelemetry Collector or OpenTelemetry
