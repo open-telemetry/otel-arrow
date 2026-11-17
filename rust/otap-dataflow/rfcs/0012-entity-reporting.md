@@ -564,23 +564,19 @@ this RFC as an orthogonal concern, each of which can be evaluated independently.
 
 ## Drawbacks
 
-- TODO: Explain that consumers have to interpret events to get internal DFE
-entities
-- TODO: Explain that there is still redundancy on scope attributes, but it's not
-avoidable in existing OpenTelemetry signals
-- TODO: Explain that signals cannot be tied to entities above the boundary. This is
-not actually a problem in the current engine design, but for opentelemetry more
-generally this seems like a hole because what we're doing with scope is not
-a standard
-- TODO: Explain the expected byte size difference due to additional uid attributes
-on a typical signal. Summarize per entity how many extra bytes and also for a typical
-resource log how many bytes
+- The reporting methods of ambient and internal entities are different and 
+consumers have to interpret events to get internal DFE entities.
+- Entity events have to be interpreted in the context of their containing
+resource. This is not documented in OpenTelemetry entities today
+- Scopes still contain some amount of redundant information that could be
+communicated by relationships instead, though it's not clear how to do this
+using existing signals.
+- Using scope name as the entity is our own invention and undocumented
+- Additional bytes for UUIDs which every entity has at least one and up to three
+of in their containment chain.
 - Every metric name and scope name changes with
   [Entity-typed scopes](#entity-typed-scopes). This is a breaking change for
   existing dashboards and alerts on every internal metric.
-- Node, channel, and flow metrics also change stream identity, because
-  attributes move from the scope to data point attributes. See
-  [Changes to existing entities and metric sets](#changes-to-existing-entities-and-metric-sets).
 
 ## Rationale and alternatives
 
@@ -588,21 +584,7 @@ resource log how many bytes
 
 An earlier draft of this RFC assigned a `uid` to every internal entity,
 including nodes, channels, and extensions. This was rejected for three
-reasons:
-
-- **It adds nothing to uniqueness.** Nodes, channels, and extensions are never
-  recreated inside their pipeline instance, so the instance `uid` plus their
-  local id already identifies them.
-- **It is wasteful where it matters most.** Nodes and channels are the most
-  numerous entities (cores x pipelines x nodes and channels). A `uid` adds about
-  45 bytes of key and value to every node and channel scope before
-  compression, and it must be generated, stored, and kept consistent across
-  every registration of the same entity.
-- **It weakens references by id.** Channel metrics identify their endpoints
-  with `node.id`, the attribute users query on. With a `node.uid`, that
-  dimension would refer to a node by a non-identifying attribute. With a
-  composite identity, `node.id` on the data point and `pipeline.instance.uid`
-  on the scope are exactly the node's identifying attributes.
+reasons. This was rejected to maintain a minimal unique id..
 
 - TODO: Explain whether `engine.uid` is necessary. It is kept because the
   engine's containing entities are ambient and `service.instance.id` can be
@@ -614,10 +596,6 @@ reasons:
 disallowed in our documentation today, but there is a compelling reason in a lot
 of systems where a dfe and an otc, both with "pipelines" exists. All k8s entities
 have a prefix, so why not us?
-
-- Why is this design the best in the space of possible designs?
-- What other designs were considered, and why were they not chosen?
-- What is the impact of not doing this?
 
 ## Prior art
 
