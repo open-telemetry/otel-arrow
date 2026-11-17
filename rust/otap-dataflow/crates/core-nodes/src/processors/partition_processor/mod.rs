@@ -27,7 +27,7 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
-    ContextDomain, ContextError, EditBinding, EditEntry, EditValue, Metadata, NodeBindings,
+    ContextDomain, EditBinding, EditEntry, EditValue, Metadata, NodeBindings,
     NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
@@ -243,22 +243,21 @@ struct PartitionHeader {
 }
 
 impl PartitionHeader {
-    /// Returns the input metadata with the partition value appended as a transport header.
-    fn add(
-        &self,
-        input: &Metadata,
-        partition_value: PartitionValue,
-    ) -> Result<Metadata, ContextError> {
+    /// Returns the input metadata with the partition value appended as a transport header,
+    /// or the Nack reason when the edit fails.
+    fn form(&self, input: &Metadata, partition_value: PartitionValue) -> Result<Metadata, String> {
         let (kind, bytes) =
             serialize_partition_value(&self.serialization_strategy, partition_value);
-        self.context_edit.form(
-            input,
-            &[EditValue {
-                entry: &self.entry,
-                kind,
-                bytes: &bytes,
-            }],
-        )
+        self.context_edit
+            .form(
+                input,
+                &[EditValue {
+                    entry: &self.entry,
+                    kind,
+                    bytes: &bytes,
+                }],
+            )
+            .map_err(|error| format!("context edit failed: {error}"))
     }
 }
 
@@ -371,68 +370,55 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     }
                 };
 
+                let Some(first) = partitions.next() else {
+                    // no partitions, just Ack the inbound
+                    let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
+
+                    pdata.complete_processor_without_output(effect_handler);
+                    effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+                    return Ok(());
+                };
+
+                // form the first output context before allocating any slots, so a failed
+                // edit here rejects the whole input with nothing emitted
+                let first_metadata = match self
+                    .partition_header
+                    .form(delivery.context().metadata(), first.value)
+                {
+                    Ok(metadata) => metadata,
+                    Err(reason) => {
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(reason, delivery.into_pdata()))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+
                 match partitions.len() {
                     0 => {
-                        // no partitions, just Ack the inbound
-                        let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
-
-                        pdata.complete_processor_without_output(effect_handler);
-                        effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-                    }
-                    1 => {
                         // single partition is a special case because we don't need to create
-                        // new outbound contexts. We can reuse the original context/headers, etc.
-
-                        // safety: we can expect here because we've checked there is at least one
-                        // partition so call to `next` will be `Some`
-                        let partition = partitions.next().expect("at least one partition");
-
-                        match self
-                            .partition_header
-                            .add(delivery.context().metadata(), partition.value)
-                        {
-                            Ok(metadata) => {
-                                let pdata = delivery
-                                    .with_payload(partition.batch.into())
-                                    .with_metadata(metadata);
-                                effect_handler.send_message_with_source_node(pdata).await?;
-                            }
-                            Err(error) => {
-                                let pdata = delivery.with_payload(partition.batch.into());
-                                effect_handler
-                                    .notify_nack(NackMsg::new_permanent(
-                                        format!("context edit failed: {error}"),
-                                        pdata,
-                                    ))
-                                    .await?;
-                            }
-                        }
+                        // new outbound contexts. We can reuse the original delivery context.
+                        let pdata = delivery
+                            .with_payload(first.batch.into())
+                            .with_metadata(first_metadata);
+                        effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
-                        // form every output context before emitting so that a failed edit
-                        // rejects the whole input
-                        let partitions = match partitions
-                            .map(|partition| {
-                                let metadata = self
-                                    .partition_header
-                                    .add(delivery.context().metadata(), partition.value)?;
-                                Ok((metadata, partition.batch))
-                            })
-                            .collect::<Result<Vec<_>, ContextError>>()
-                        {
-                            Ok(partitions) => partitions,
-                            Err(error) => {
-                                effect_handler
-                                    .notify_nack(NackMsg::new_permanent(
-                                        format!("context edit failed: {error}"),
-                                        delivery.into_pdata(),
-                                    ))
-                                    .await?;
-                                return Ok(());
-                            }
-                        };
+                        // the remaining output contexts are formed lazily, as each partition
+                        // is emitted
+                        let input_metadata = delivery.context().metadata().clone();
+                        let partition_header = &self.partition_header;
+                        let outputs = std::iter::once((Ok(first_metadata), first.batch)).chain(
+                            partitions.map(|partition| {
+                                (
+                                    partition_header.form(&input_metadata, partition.value),
+                                    partition.batch,
+                                )
+                            }),
+                        );
+
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
@@ -448,7 +434,30 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                         // send each partition with an outbound context and the partition value
                         // populated on the transport headers
-                        for (metadata, batch) in partitions {
+                        for (metadata, batch) in outputs {
+                            let metadata = match metadata {
+                                Ok(metadata) => metadata,
+                                Err(reason) => {
+                                    // at least the first partition was emitted; its Ack/Nack
+                                    // completes the inbound, which is then Nack'd with this
+                                    // reason. Untracked inbounds have no one to Nack.
+                                    if inbound_ctx_key.is_null() {
+                                        otel_error!(
+                                            "partition.context_edit.fail",
+                                            reason = reason.as_str()
+                                        );
+                                    }
+                                    self.contexts.set_failed_inbound(
+                                        inbound_ctx_key,
+                                        OutboundError {
+                                            reason,
+                                            cause: NackCause::Unspecified,
+                                        },
+                                    );
+                                    break;
+                                }
+                            };
+
                             let outbound_ctx_key = self
                                 .contexts
                                 .insert_outbound(inbound_ctx_key)
