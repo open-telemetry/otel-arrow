@@ -28,7 +28,10 @@ Reviewers familiar with the existing DFE entity model may want to focus on the
 following sections which highlight important changes:
 
 - [Entity types](#entity-types): the logical `pipeline` is separated from its
-  runtime `pipeline.instance`.
+  runtime `pipeline.instance`, and a node's output ports become `port`
+  entities so that the channel topology can be reported.
+- [Example pipeline](#example-pipeline): one small pipeline used throughout
+  the RFC and for every measurement.
 - [Identity](#identity): internal entities that can be recreated under the
   same name get a UUID v7 `uid`. Nodes, channels, and extensions are
   identified by their pipeline instance's `uid` plus their own id.
@@ -54,48 +57,60 @@ troubleshooting. That status is available through the `/api/v1/status` admin
 endpoint, but in a bespoke format, and it is not exported through the Internal
 Telemetry System (ITS).
 
-We want entity information to be available to DFE telemetry consumers like any
-other internal telemetry. This includes:
+This entity information is also incomplete. While it does describe pipelines and
+pipeline groups in some detail, it omits information about other entities such
+as nodes, channels, and ports as well as their relationships.
+
+We want full entity information to be available to DFE telemetry consumers like
+any other internal telemetry. This includes:
 
 - The current state of each entity
 - Lifecycle events, including creation and deletion
 - Relationships between entities
+- Signals belonging to an entity
 
-The natural approach is to align with OpenTelemetry Entities, which are still
-being defined, to the extent possible.
+The natural approach is to align with the OpenTelemetry Entity model, but that
+model and it's representation in OTel Signals is still in the process of being
+defined.
 
-This RFC also attempts to address the following items:
+Under those conditions, this RFC:
 
-- Ambiguous identity - Entities such as a pipeline or pipeline group that
-  have a shorter lifetime than their containing entity can produce different 
-  time series with the same identifying attribute values so consumers cannot
-  tell them apart.
-- Signal to entity attribution - The attached entity for a signal can't be
-  determined except by reading the documentation. This is due to scopes having
-  compound identifiers from multiple entities as well as common dimensions from
-  metric sets.
-- Time ordering - There is no way to order entities by creation other
-  than inferring it from when their signals first appeared.
+- Re-defines the DFEs existing entity model in OpenTelemetry terms
+- Proposes changes to the model for closer alignment to entity semantics
+- Extends the model to communicate the full list of entity-related information
+  above
 
 ## Guide-level explanation
 
 ### Entity modeling
 
 Every entity reported by the DFE follows the abstract OpenTelemetry
-[entity data model][otel-entity-data-model]: it has a **type**, a set of
-**identifying attributes**, and a set of **descriptive attributes**.
+[entity data model][otel-entity-data-model]. Every entity has a **type**, a set
+of **identifying attributes**, and a set of **descriptive attributes**.
 
 #### Entity types
 
-The DFE defines the following entity types. This list is intentionally kept at
-the level of principles; the full hierarchy (including per-type attribute
-tables and how CPU cores and NUMA nodes are modeled) is refined separately.
+TODO: Work on the guidelines for when to define an entity type and when not to
+TODO: Decide whether pipeline.group should be pipeline_group and similar for other
+      entities
 
-- TODO: Refine the complete entity hierarchy and per-type attribute tables
-  against the principles in this RFC. See [Unresolved questions](#unresolved-questions).
-- TODO: `engine` is the type implied by the existing `engine` attribute set
-  and metric set. It is a very generic name for a type that may eventually be
-  proposed to OpenTelemetry Semantic Conventions; revisit before stabilizing.
+Entity types are major components of the dataflow engine that are present at
+runtime. An entity model is an abstraction like any other and care must be
+exercised in choosing what to model and what not to.
+
+An new Entity type is generally warranted when:
+
+- There is a need for a logical owner for a group of telemetry signals
+- A component has a lifetime that can be created/deleted
+- A relationship needs an entity to be properly described
+
+Defining a new entity type should generally not be done when:
+
+- The concept is replaced at runtime i.e. config "connections" are replaced by
+  channels
+- A new metrics set or event needs attributes
+
+Here are example entitiy types in the DFE:
 
 | Type | Lifetime | Identifying attributes | Description |
 | --- | --- | --- | --- |
@@ -104,107 +119,14 @@ tables and how CPU cores and NUMA nodes are modeled) is refined separately.
 | `pipeline` | Pipeline creation to deletion | `pipeline.uid` | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements. |
 | `pipeline.instance` | One deployment generation on one core | `pipeline.instance.uid` | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline. |
 | `node` | Same as its pipeline instance | `pipeline.instance.uid`, `node.id` | A receiver, processor, or exporter running inside a pipeline instance. |
-| `channel` | Same as its pipeline instance | `pipeline.instance.uid`, `channel.id` | A control or pdata channel owned by a pipeline instance. Its endpoints are not entities (see [Channels and their endpoints](#channels-and-their-endpoints)). |
-| `extension` | Same as its hosting scope | `pipeline.instance.uid`, `extension.id` | An extension, currently hosted by a pipeline instance. |
+| `port` | Same as its pipeline instance | `pipeline.instance.uid`, `node.id`, `node.port` | An output port of a node. It exists so that each port's connection to a channel can be reported. It has no metrics of its own: the node records per-port metrics with `node.port` as a data point attribute. |
+| `channel` | Same as its pipeline instance | `pipeline.instance.uid`, `channel.id` | A resolved runtime channel (one queue) contained by a pipeline instance. Its endpoints are not entities of their own (see [Channels and their endpoints](#channels-and-their-endpoints)). |
 
-The distinction between `pipeline` and `pipeline.instance` is new. The existing
-entity model conflates the logical pipeline with its runtime instances: the
-`pipeline` attribute set carries `core.id` and `deployment.generation`, which
-makes it describe an instance, while nothing describes the logical pipeline
-that outlives those instances. Separating them gives each entity a single,
-well-defined lifetime, which is a prerequisite for assigning it a stable
-identity.
+#### Entity Containment Chain
 
-#### Identity
+Containment is one type of relationship where one entity is `part_of` another.
 
-Internal entities are identified in one of two ways, depending on whether
-their natural key can be reused.
-
-An entity is assigned a `uid` if it lifetime is shorter than its containing entity
-and it can be deleted and recreated during its containers lifetime. The `uid` is
-a [UUID v7][uuid-v7] generated when the entity is created, and it is the
-entity's sole identifying attribute.
-
-- `pipeline.group` and `pipeline`. A group or pipeline can be deleted and
-  recreated with the same id. A recreated pipeline also restarts its
-  deployment generation counter at `0`, so it produces exactly the same
-  attribute values as the original.
-- `pipeline.instance`. A rollback relaunches the previous deployment
-  generation on a core, so the same `core.id` and `deployment.generation` can
-  belong to two different instances of one pipeline.
-- `engine`. The engine is never recreated within its process, but its
-  containing entities are ambient, and `service.instance.id` can be overridden
-  by users.
-
-The DFE keeps the existing human-friendly identifiers of these entities
-(`pipeline.group.id`, `pipeline.id`) as navigational attributes (see
-[Descriptive attributes](#descriptive-attributes)).
-
-Other entities have a composite identity consisting of the minimal set of 
-navigational attributes as they do today. 
-
-All entities id is formed from a composition of their containing entities
-identifying attributes plus their own local id. 
-
-This gives identities useful properties:
-
-- Delete and recreate is unambiguous - Every entity that can be recreated
-  under the same name gets a fresh `uid`, and every other entity inherits one
-  from its container.
-- Creation order is recoverable - UUID v7 embeds a millisecond timestamp, so
-  consumers can order instances of the same logical entity without an extra
-  attribute.
-- It is minimally sufficient - The OpenTelemetry data model asks that the
-  identifying attributes be the
-  [minimal set sufficient][otel-minimal-identity] to uniquely identify the
-  entity. A `uid` is minimal for entities whose natural key can be reused. For
-  nodes, channels, and extensions, a `uid` of their own would add nothing that
-  the instance `uid` and their local id do not already provide. The data model
-  accepts identities that are only unique in context.
-- It matches how users query - Composite identities use the ids that users
-  write in configuration, such as `node.id`, and those stay stable across
-  deployment generations.
-
-#### Descriptive attributes
-
-All attributes other than the identifying attributes are descriptive and belong
-to one of two classes:
-
-- Navigational attributes - Attributes that never change during the lifetime of
-  the entity and are helpful in finding the entity. These are used for entities
-  assigned a UID as their sole identifier. Examples: `pipeline.group.id`,
-  `pipeline.id`, `core.id`, `deployment.generation`, `node.urn`, `node.type`.
-- State attributes - Attributes indicating status or state that may change during
-  the lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
-  (`Running`, `Draining`, ...), its conditions, or its last heartbeat time.
-
-The term "navigational" comes from the [Navigation][otel-navigation] section of
-the OpenTelemetry Resource specification, which distinguishes attributes that
-identify an entity from attributes that help users find it in their
-infrastructure.
-
-The identifying and navigational attributes of an entity, combined with those
-of the entities that contain it (see [Entity Containment Chain](#entity-containment-chain)),
-make up its [telescoping identity][otel-telescoping].
-
-> [!NOTE]
-> Many of the navigational attributes look like identifiers, and some of
-> them (for example `pipeline.group.id` + `pipeline.id` + `core.id` +
-> `deployment.generation`) were used as a compound identity before
-> this RFC. That compound key is not unique across delete and recreate or
-> rollback, so it is replaced by `pipeline.instance.uid`. Because the `uid` is
-> already minimally sufficient, the
-> [minimally sufficient identity][otel-minimal-identity] rule requires every
-> one of these attributes to be descriptive rather than identifying.
-
-Identifying and navigational attributes appear on every signal related to the
-entity, while state attributes appear only in entity events. The reasons are explained in
-[Signal modeling and Entity Refs](#signal-modeling-and-entity-refs) and
-[Entity Events](#entity-events).
-
-### Entity Containment Chain
-
-The DFE distinguishes between two kinds of entities:
+The DFE distinguishes between two kinds of containing entities:
 
 - Ambient - Entities that define the environment the DFE runs in: the host,
   container, process, service instance, and so on. The DFE does not create or
@@ -226,28 +148,174 @@ engine
         +-- pipeline
               +-- pipeline.instance
                     +-- node
+                    |     +-- port
                     +-- channel
                     +-- extension
 ```
 
-Channels are contained by the pipeline instance, not by the nodes or
-extensions they connect. This holds for both kinds of channel. A pdata channel
-spans several nodes, so no single node can own it. A control channel has a
-single owning node or extension, but it is modeled the same way so that every
-channel has the same containing entity type. The owner of a control channel
-is still visible through its `channel.id` (see
-[Channel](#channel) for its format).
+Note: In addition to being contained by a pipeline instance, channels have
+additional relationships to the other entities (see
+[Entity relationships](#entity-relationships)).
 
 The **containment chain** of an entity is the path from the engine to that
 entity. For example, the containment chain of a node is
 `engine -> pipeline.group -> pipeline -> pipeline.instance -> node`.
 
-Identifying and navigational attributes accumulate along the chain. The full
-description of a node is its own attributes (`node.id`, `node.urn`,
-`node.type`) together with those of its pipeline instance, pipeline, pipeline
-group, and engine. The chain is used for navigation and for inferring which entity
-a signal belongs to (see
-[Signal modeling and Entity Refs](#signal-modeling-and-entity-refs)).
+#### Identity Scope
+
+Entities IDs consiste of a set of attributes and a scope. The scope is either
+`local` or `global`. `local` IDs are unique only within their containing
+entity whereas `global` IDs uniquely identify an entity within the system
+being observed.
+
+A `global` ID for an entity with a `local` one can be constructed by continuing
+to union its ID with the ID of next entity in its containment chain until an
+entity with a `global` ID is reached.
+
+#### Identifying Attributes
+
+Compound navigational attributes form the IDs of all DFE entities today. The
+term "navigational" comes from the [Navigation][otel-navigation] section of
+the OpenTelemetry Resource specification, and refer to attributes that help
+users find an entity in their infrastructure. For example, (`node.name`,
+`node.port`) are navigational attributes that point to a particular node in a
+pipeline and then a port in that node.
+
+Some entities, however, are not uniquely described by their navigational
+attributes. This happens when the lifetime of an entity is shorter than the
+lifetime of the next entity in its containment chain.
+
+For these entities, we assign an `<entity>.uid` (a [UUID v7][uuid-v7]) when the
+entity is created. This allows us to track different incarnations of entities 
+with the same navigational attributes across time. A UUID v7 is also 
+[minimally sufficient][otel-minimal-identity] and entities with one need no
+other identifying attributes
+
+For example:
+
+- `pipeline.group` and `pipeline`. A group or pipeline can be deleted and
+  recreated with the same attributes.
+- `pipeline.instance`. A rollback relaunches the previous deployment
+  generation on a core, so the same `core.id` and `deployment.generation` can
+  belong to two different instances of one pipeline.
+
+However, we still keep the existing navigational identifiers of these entities
+as [Descriptive attributes](#descriptive-attributes)).
+
+This gives identities useful properties:
+
+- Delete and recreate is unambiguous - Every entity that can be recreated
+  under the same name gets a fresh `uid`, and every other entity inherits one
+  from its container.
+- Creation order is recoverable - UUID v7 embeds a millisecond timestamp, so
+  consumers can order instances of the same logical entity without an extra
+  attribute.
+- It is minimally sufficient - The OpenTelemetry data model asks that the
+  identifying attributes be the
+  [minimal set sufficient][otel-minimal-identity] to uniquely identify the
+  entity. A `uid` is minimal for entities whose natural key can be reused. For
+  nodes, ports, channels, and extensions, a `uid` of their own would add nothing that
+  the instance `uid` and their local id do not already provide. The data model
+  accepts identities that are only unique in context.
+- It matches how users query - Composite identities use the ids that users
+  write in configuration, such as `node.id`, and those stay stable across
+  deployment generations.
+
+#### Descriptive attributes
+
+All attributes other than the identifying attributes are descriptive and belong
+to one of two classes:
+
+- Navigational attributes - Attributes that never change during the lifetime of
+  the entity and are helpful in finding the entity. These are used for entities
+  assigned a UID as their sole identifier. Examples: `pipeline.group.id`,
+  `pipeline.id`, `core.id`, `deployment.generation`, `node.urn`, `node.type`.
+- State attributes - Attributes indicating status or state that may change during
+  the lifetime of the entity. Examples: the lifecycle phase of a pipeline instance
+  (`Running`, `Draining`, ...), its conditions, or its last heartbeat time.
+
+The identifying and navigational attributes of an entity, combined with those
+of the entities that contain it (see [Entity Containment Chain](#entity-containment-chain)),
+make up its [telescoping identity][otel-telescoping].
+
+### Example pipeline
+
+The rest of this RFC uses one small pipeline as a running example. It is also
+the workload behind every measurement (see
+[Measurement method](#measurement-method)). Two receivers feed a signal type
+router, which sends logs and metrics to separate exporters:
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          r1: { type: receiver:traffic_generator, ... }
+          r2: { type: receiver:traffic_generator, ... }
+          p1: { type: processor:type_router, outputs: ["logs", "metrics"] }
+          e1: { type: exporter:noop }
+          e2: { type: exporter:noop }
+        connections:
+          - { from: r1, to: p1 }
+          - { from: r2, to: p1 }
+          - { from: p1["logs"], to: e1 }
+          - { from: p1["metrics"], to: e2 }
+```
+
+The configuration has four connections, but the engine builds three pdata
+channels. Connections with the same destinations are merged into one channel
+(see [Channels and their endpoints](#channels-and-their-endpoints)), so
+`r1 -> p1` and `r2 -> p1` share a single queue. Each node also gets a control
+channel. On one core, the pipeline produces these entities:
+
+| Type | Entity | Local id |
+| --- | --- | --- |
+| `pipeline.group` | `default` | `pipeline.group.id: default` |
+| `pipeline` | `main` | `pipeline.id: main` |
+| `pipeline.instance` | `main` on core 0, generation 0 | `core.id: 0`, `deployment.generation: 0` |
+| `node` | `r1`, `r2`, `p1`, `e1`, `e2` | `node.id` |
+| `port` | `r1/default`, `r2/default`, `p1/logs`, `p1/metrics` | `node.id`, `node.port` |
+| `channel` | A: pdata, `r1`, `r2` to `p1` | `channel.id: hyperedge:d59f2e2fafb41d70` |
+| `channel` | B: pdata, `p1/logs` to `e1` | `channel.id: hyperedge:b33de11f167e5236` |
+| `channel` | C: pdata, `p1/metrics` to `e2` | `channel.id: hyperedge:b55632c4f3d0511d` |
+| `channel` | Control channels, one per node | `channel.id: node:{r1,r2,p1,e1,e2}:control` |
+
+Every entity below the pipeline group also carries the identity of its
+containing entities, as described in [Identity](#identity). The receivers
+and the router use the default port unless the configuration names one, and
+the exporters have no output ports.
+
+The entities are connected like this:
+
+```text
+r1 --(r1/default)--+
+                   +--> [A] --> p1 --(p1/logs)----> [B] --> e1
+r2 --(r2/default)--+            |
+                                +----(p1/metrics)-> [C] --> e2
+
+pipeline instance --> [node:<id>:control] --> <id>   (for each node)
+```
+
+The relationships between them (see
+[Entity relationships](#entity-relationships)) are:
+
+| Source | Relationship | Target |
+| --- | --- | --- |
+| `default` (group) | `part_of` | engine |
+| `main` (pipeline) | `part_of` | `default` (group) |
+| `main` on core 0 | `part_of` | `main` (pipeline) |
+| `r1`, `r2`, `p1`, `e1`, `e2` | `part_of` | `main` on core 0 |
+| A, B, C, and the control channels | `part_of` | `main` on core 0 |
+| `r1/default`, `r2/default` | `part_of` | `r1`, `r2` |
+| `p1/logs`, `p1/metrics` | `part_of` | `p1` |
+| `r1/default`, `r2/default` | `connected_to` | A |
+| A | `connected_to` | `p1` |
+| `p1/logs` | `connected_to` | B |
+| B | `connected_to` | `e1` |
+| `p1/metrics` | `connected_to` | C |
+| C | `connected_to` | `e2` |
+| `node:<id>:control` | `connected_to` | `<id>` |
 
 ### Signal Modeling and Entity Refs
 
@@ -397,16 +465,23 @@ Each hyperedge is backed by exactly **one queue**, and a `channel` entity is
 that queue. When a hyperedge has several destinations, they are competing
 consumers of the same queue (`one_of` dispatch). Broadcast to more than one
 destination is not supported today, so no hyperedge creates a queue per
-destination. A control channel is likewise one queue, owned by its node or
-extension.
+destination. A control channel is likewise one queue, which delivers to one
+node or extension.
 
 Channel metrics belong to the `channel`. The scope of a channel metric carries
 the channel's containment chain (`engine -> pipeline.group -> pipeline ->
 pipeline.instance -> channel`) and nothing else. In particular, it no longer
 carries the attributes of the node or extension at either end of the channel.
 
-The endpoints of a channel are not entities. They are populations within the
-channel, identified by the data point attributes `node.id` and `node.port`.
+The endpoints of a channel are not entities of their own. They are
+populations within the channel, identified by data point attributes that
+refer to other entities:
+
+- A sending endpoint is a port. `channel.sender` metrics carry `node.id` and
+  `node.port`, which together with the scope's `pipeline.instance.uid` are
+  the port's identifying attributes.
+- A receiving endpoint is a node. `channel.receiver` metrics carry `node.id`.
+
 Whether an endpoint is a sender or a receiver is given by the metric set name
 (`channel.sender` or `channel.receiver`), as it is today. Adding the data
 points across endpoints gives a meaningful total for the channel, for example
@@ -570,6 +645,7 @@ entity to its containing entity:
 | `pipeline` | `part_of` | `pipeline.group` |
 | `pipeline.instance` | `part_of` | `pipeline` |
 | `node` | `part_of` | `pipeline.instance` |
+| `port` | `part_of` | `node` |
 | `channel` | `part_of` | `pipeline.instance` |
 | `extension` | `part_of` | `pipeline.instance` |
 
@@ -592,13 +668,32 @@ They are deliberately left unspecified here.
 - TODO: Define placement relationships once cores, NUMA nodes, and engine
   worker threads are modeled. See [Unresolved questions](#unresolved-questions).
 
-**Channels** connect nodes. In the future this topology could be reported as
-relationships between channels and the nodes they connect (for example
-`channel -> connects -> node`).
+**Connections** describe how data moves between nodes, in the direction it
+flows. They are reported as `connected_to` relationships:
 
-- TODO: Decide whether channel topology is reported as entity relationships,
-  and in which direction. This includes the owner of a control channel, which
-  today is only encoded in its `channel.id`.
+| Source | Relationship | Target | Meaning |
+| --- | --- | --- | --- |
+| `port` | `connected_to` | `channel` | The port sends into the channel. Every port has exactly one. |
+| `channel` | `connected_to` | `node` | The channel delivers to the node. A pdata channel has one per destination node; a control channel has one, to the node it controls. |
+| `channel` | `connected_to` | `extension` | The control channel delivers to the extension. |
+
+Channels report the actual runtime channels after connections are merged, so
+these relationships describe the topology the engine runs, not the
+configuration as written. See [Example pipeline](#example-pipeline) for a
+complete set.
+
+A control channel has no sending port. It is fed by the pipeline instance's
+runtime controller, and the pipeline instance already contains it, so no
+separate relationship is needed for its sender.
+
+All of these entities share the lifetime of their pipeline instance, so the
+placement rule does not choose a side. The DFE reports `port -> channel` on
+the port and `channel -> node` on the channel, so that each relationship is
+reported by the entity it starts from.
+
+- TODO: Confirm the relationship type name. `connected_to` is a placeholder
+  until it is checked against OpenTelemetry semantic conventions for entity
+  relationships.
 
 #### Periodic emission
 
@@ -713,18 +808,17 @@ The topic and syslog protocol sets stay untyped for now and keep one scope
 per metric set (see the TODO in [Node](#node)).
 
 **Measured impact.** See [Measurement method](#measurement-method) for the
-workloads. In this measurement the channel endpoint sets were typed
+workload. In this measurement the channel endpoint sets were typed
 `channel`, so each endpoint's metric sets merge, but the endpoints of a
 channel remain separate scopes until the [Channel](#channel) change.
 
-| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
-| --- | --- | --- | --- | --- |
-| `pipeline` | 98,652 -> 74,443 (-24.5%) | 11,570 -> 10,605 (-8.3%) | 101 -> 28 | 310 -> 310 |
-| `topology` | 101,700 -> 67,053 (-34.1%) | 10,651 -> 9,873 (-7.3%) | 127 -> 40 | 237 -> 237 |
+| Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- |
+| 58,212 -> 42,921 (-26.3%) | 8,409 -> 8,056 (-4.2%) | 61 -> 19 | 164 -> 164 |
 
-The series and metric names are unchanged in both workloads. The saving comes
-entirely from no longer repeating the entity attributes once per metric set:
-the scope count drops by about 70%. Gzip already removes most of that
+The series and metric names are unchanged. The saving comes entirely from
+no longer repeating the entity attributes once per metric set: the scope
+count drops by about 70%. Gzip already removes most of that
 repetition, so the compressed saving is much smaller than the raw one.
 
 **Compatibility.**
@@ -745,38 +839,38 @@ repetition, so the compressed saving is much smaller than the raw one.
 ### Measurement method
 
 The measurements in this RFC come from an ignored validation test that runs
-the engine with a fixed workload and captures every internal metrics export
-request. The test lives on an experiment branch, with one commit per change
-in this RFC.
+the engine with the [Example pipeline](#example-pipeline) and captures every
+internal metrics export request. The test lives on an experiment branch, with
+one commit per change in this RFC.
 
-- **Engine settings.** One core, a 1 second reporting interval, detailed
-  runtime metrics, and the internal telemetry receiver exporting metrics to a
-  capture exporter. Each run lasts 12 seconds, and each step is run 3 times.
-- **`pipeline` workload.** A traffic generator (6000 signals at 1000 per
-  second, 70% logs and 30% metrics) feeds an attributes processor, a batch
-  processor, and an OTLP gRPC exporter. A second pipeline receives that
-  traffic with an OTLP receiver, a debug processor, and a noop exporter. A
-  flow spans the attributes and batch processors.
-- **`topology` workload.** Two generators fan into a signal type router. Its
-  `logs` port feeds two filters that compete for one shared queue. One of
-  them feeds a third filter, and both branches fan into one exporter. Its
-  `metrics` port feeds an attributes processor and an exporter. A flow spans
-  the first and third filters, so it has two decision nodes.
+- **Engine settings.** One core, a 1 second reporting interval, pipeline,
+  Tokio, and detailed runtime metrics, and the internal telemetry receiver
+  exporting metrics to a capture exporter. Each run lasts 12 seconds, and
+  each step is run 5 times.
+- **Workload.** `r1` and `r2` are traffic generators that each send 3000
+  signals at 500 per second, half logs and half metrics, so both of `p1`'s
+  ports carry traffic. They stop after 6 seconds, so the second half of each
+  run shows idle telemetry. `e1` and `e2` are noop exporters.
+- **Coverage.** The example pipeline exercises fan-in into one channel and a
+  node with several output ports. It has no flows and no channel with several
+  destinations, so the [Flow](#flow) change and the single report of queue
+  state for shared queues are justified in text but not measured.
 - **Sizes.** The tables show one complete export: the export request in
   which every series of the run is reported. Raw is its encoded protobuf
   size, and gzip compresses it at level 6. Each value is the median over the
   runs. Totals over a whole run move in the same direction, but they also
-  depend on how many export windows fall within the run.
+  depend on how many export windows fall within the run. The run-to-run
+  spread of a complete export is up to about 3% of its raw size and 2% of
+  its gzip size, so smaller differences are noise.
 - **Parity.** Each series is reduced to a canonical key: the qualified metric
   name plus the union of its scope and data point attributes. Attributes
   that only change placement are normalized: for example, `channel.*`
   attributes are dropped from node metrics because each output port maps to
   exactly one channel. Each step must keep the same canonical series and
-  metric names, except for the changes called out below. Item counters must
-  match exactly. The one exception is the split between the two competing
-  filters in the `topology` workload, which varies from run to run while
-  their sum stays the same. Every other value must agree within the
-  run-to-run spread plus 5% (10% for timing values).
+  metric names. Item counters must match exactly. Every other value must
+  agree within the run-to-run spread plus 5% (10% for timing values). Every
+  step met these criteria: 166 series, 83 metric names, and exact item
+  counts throughout.
 
 ### Changes to existing entities and metric sets
 
@@ -827,18 +921,15 @@ and in [Channel](#channel).
   ports of a node share one, so `node.port` identifies the channel a node
   sent on.
 
-| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
-| --- | --- | --- | --- | --- |
-| `pipeline` | 74,443 -> 74,863 (+0.6%) | 10,605 -> 10,907 (+2.8%) | 28 -> 29 | 310 -> 310 |
-| `topology` | 67,053 -> 68,576 (+2.3%) | 9,873 -> 10,166 (+3.0%) | 40 -> 40 | 237 -> 237 |
+| Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- |
+| 42,921 -> 43,441 (+1.2%) | 8,056 -> 8,075 (+0.2%) | 19 -> 19 | 164 -> 164 |
 
-This change is about attribution, not size. It costs a little: `node.port`
-is now repeated on every `node.output` data point. The node's metrics were
-already merged into one scope per endpoint by
-[Entity-typed scopes](#entity-typed-scopes), so moving them saves no scopes.
-The one extra scope in the `pipeline` workload belongs to the debug
-processor, which has no metric sets of its own and so had no node scope
-before.
+This change is about attribution, not size. `node.port` is now repeated on
+every `node.output` data point, and the node's metrics were already merged
+into one scope per endpoint by [Entity-typed scopes](#entity-typed-scopes),
+so moving them saves no scopes. The size difference is within the run-to-run
+spread.
 
 **`node.completion` uses the real output port.**
 
@@ -860,16 +951,15 @@ per output port, with `node.port` as a registration attribute, and records by
 the message's output port. A node without outputs (an exporter) registers one
 completion metric set without a port.
 
-| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
-| --- | --- | --- | --- | --- |
-| `pipeline` | 71,785 -> 71,693 (-0.1%) | 10,870 -> 10,922 (+0.5%) | 23 -> 23 | 310 -> 310 |
-| `topology` | 61,113 -> 61,049 (-0.1%) | 9,803 -> 9,871 (+0.7%) | 27 -> 27 | 235 -> 235 |
+| Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- |
+| 41,100 -> 40,625 (-1.2%) | 8,030 -> 8,015 (-0.2%) | 15 -> 15 | 164 -> 164 |
 
-Neither workload changes series count. Every processor in the `pipeline`
-workload has a single output port, so its `input` series becomes a
-`default` series. The router in the `topology` workload sends each signal on
-its own port, so its per-signal series map one to one. A processor that sends
-one signal on several ports would gain one series per extra port.
+The series count does not change. `p1` sends each signal on its own port,
+so its per-signal `input` series become per-port series one to one, and the
+exporters' series simply lose `node.port=input`. A processor that sends one
+signal on several ports would gain one series per extra port. The size
+difference is within the run-to-run spread.
 
 - TODO: Topic receivers and exporters register their metrics against a node
   plus `topic` entity (`NodeWithTopicAttributeSet`), and the syslog receiver
@@ -980,15 +1070,16 @@ dropped from channel metrics. Consumers can join them in through `node.id`.
 
 **Measured impact.**
 
-| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
-| --- | --- | --- | --- | --- |
-| `pipeline` | 74,863 -> 71,826 (-4.1%) | 10,907 -> 10,921 (+0.1%) | 29 -> 24 | 310 -> 310 |
-| `topology` | 68,576 -> 61,493 (-10.3%) | 10,166 -> 9,747 (-4.1%) | 40 -> 31 | 237 -> 235 |
+| Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- |
+| 43,441 -> 40,520 (-6.7%) | 8,075 -> 8,006 (-0.9%) | 19 -> 15 | 164 -> 164 |
 
-Each channel now has one scope instead of one per endpoint. In the
-`topology` workload the queue depth and capacity of the channel shared by
-two competing receivers are reported once instead of once per receiver,
-which removes two data points. The remaining series are unchanged.
+Each channel now has one scope instead of one per endpoint. In the example
+pipeline, channel A had three endpoint scopes (`r1`, `r2`, and `p1`), and
+channels B and C had two each. The series are unchanged. The example has no
+channel with several destinations, so the single report of queue state is
+not exercised: with two competing receivers, today's encoding reports the
+queue depth and capacity twice.
 
 #### Flow
 
@@ -1005,14 +1096,13 @@ registration attribute. Summing across decision nodes stays meaningful:
 drops at different decision nodes are disjoint, so the sum equals the flow's
 total removed items.
 
-| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
-| --- | --- | --- | --- | --- |
-| `pipeline` | 71,826 -> 71,785 (-0.1%) | 10,921 -> 10,870 (-0.5%) | 24 -> 23 | 310 -> 310 |
-| `topology` | 61,493 -> 61,113 (-0.6%) | 9,747 -> 9,803 (+0.6%) | 31 -> 27 | 235 -> 235 |
+| Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- |
+| 40,520 -> 41,100 (+1.4%) | 8,006 -> 8,030 (+0.3%) | 15 -> 15 | 164 -> 164 |
 
 Each flow now has one scope instead of one per decision node plus one for the
-rest of its metrics. The `topology` flow has two decision nodes. The size
-impact is small because flows have few metric sets.
+rest of its metrics. The example pipeline has no flows, so this change is
+not exercised, and the measured difference is run-to-run noise.
 
 #### Extension
 
@@ -1029,10 +1119,9 @@ not measured.
 
 All changes together, against today's encoding:
 
-| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
-| --- | --- | --- | --- | --- |
-| `pipeline` | 98,652 -> 71,693 (-27.3%) | 11,570 -> 10,922 (-5.6%) | 101 -> 23 | 310 -> 310 |
-| `topology` | 101,700 -> 61,049 (-40.0%) | 10,651 -> 9,871 (-7.3%) | 127 -> 27 | 237 -> 235 |
+| Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- |
+| 58,212 -> 40,625 (-30.2%) | 8,409 -> 8,015 (-4.7%) | 61 -> 15 | 164 -> 164 |
 
 Most of the saving comes from [Entity-typed scopes](#entity-typed-scopes).
 Of the per-entity changes, only the channel change saves a noticeable
@@ -1046,6 +1135,104 @@ metric streams: attributes move from the scope to data points, or, for
 They are breaking changes for stable signals in the same way as
 [Entity-typed scopes](#entity-typed-scopes), which already renames every
 metric, so they should ship together with it.
+
+### Example: p1 logs to e1
+
+This section follows one path through the
+[Example pipeline](#example-pipeline): logs that `p1` sends on its `logs`
+port, through channel B, to `e1`. The metrics involved and where each change
+puts them:
+
+- **`p1`, the sending node.** `node.output.*` (messages, items, size) and
+  `node.completion.duration` are reported on `p1`'s `node` scope with
+  `node.port: logs` on each data point. `p1`'s own metric set
+  (`processor.type_router`) and its `node.input.*` share that scope.
+- **Channel B.** `channel.sender.messages` carries the sending port
+  (`node.id: p1`, `node.port: logs`), and `channel.receiver.messages` carries
+  the receiving node (`node.id: e1`). The queue depth and capacity carry no
+  endpoint attributes. All four share channel B's `channel` scope.
+- **`e1`, the receiving node.** `node.input.*` and `node.completion.duration`
+  are reported on `e1`'s `node` scope. `e1` is an exporter, so its completion
+  has no `node.port`.
+
+The export, as captured from the experiment. Values are omitted, the shared
+`Resource` is omitted, and the data points for `p1`'s `metrics` port are left
+out:
+
+```text
+ScopeMetrics:
+  Scope:
+    name: node
+    attributes:
+      pipeline.group.id: default
+      pipeline.id: main
+      core.id: 0
+      numa.node.id: 0
+      deployment.generation: 0
+      node.id: p1
+      node.urn: urn:otel:processor:type_router
+      node.type: processor
+  Metrics:
+    processor.type_router.signals.decision    {signal: logs, outcome: success, reason: named_route}
+    node.input.messages                       {signal: logs, outcome: success}
+    node.input.items                          {signal: logs, outcome: success}
+    node.input.size                           {signal: logs, outcome: success}
+    node.output.messages                      {node.port: logs, signal: logs, outcome: success}
+    node.output.items                         {node.port: logs, signal: logs, outcome: success}
+    node.output.size                          {node.port: logs, signal: logs, outcome: success}
+    node.completion.duration                  {node.port: logs, signal: logs, outcome: success}
+ScopeMetrics:
+  Scope:
+    name: channel
+    attributes:
+      pipeline.group.id: default
+      pipeline.id: main
+      core.id: 0
+      numa.node.id: 0
+      deployment.generation: 0
+      channel.id: hyperedge:b33de11f167e5236
+      channel.kind: pdata
+      channel.mode: local
+      channel.type: mpsc
+      channel.impl: internal
+  Metrics:
+    channel.sender.messages                   {node.id: p1, node.port: logs, signal: logs, outcome: success}
+    channel.receiver.messages                 {node.id: e1, signal: logs}
+    channel.receiver.queue.depth              {}
+    channel.receiver.capacity                 {}
+ScopeMetrics:
+  Scope:
+    name: node
+    attributes:
+      pipeline.group.id: default
+      pipeline.id: main
+      core.id: 0
+      numa.node.id: 0
+      deployment.generation: 0
+      node.id: e1
+      node.urn: urn:otel:exporter:noop
+      node.type: exporter
+  Metrics:
+    node.input.messages                       {signal: logs, outcome: success}
+    node.completion.duration                  {signal: logs, outcome: success}
+```
+
+Each scope belongs to exactly one entity, and every data point attribute
+that refers to another entity (`node.port` on `p1`, `node.id` and
+`node.port` on channel B) completes that entity's identifying attributes
+with the `pipeline.instance.uid` on the scope.
+
+Today the same data points are spread over many more scopes. Each metric set
+is its own scope, named after the metric set, so `p1`'s `logs` port alone
+produces three `node.output` scopes (messages, items, size). Each of them
+repeats `p1`'s node attributes together with channel B's attributes and
+`node.port: logs`. `p1`'s completion is reported on a scope for channel A
+labeled `node.port: input`, and `e1`'s input metrics on scopes for channel B
+that also carry `node.port: input`.
+
+- TODO: The example shows the experiment's scope attributes. Under this RFC
+  the scope also carries the `uid` attributes from [Identity](#identity),
+  which the experiment does not implement.
 
 ## Drawbacks
 
