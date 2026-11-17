@@ -1075,6 +1075,24 @@ mod tests {
         input
     }
 
+    fn untracked_input() -> OtapPdata {
+        OtapPdata::new(Context::default(), build_logs_batch(&["INPUT"]).into())
+    }
+
+    fn guest_processor(config: &serde_json::Value) -> WasmProcessor {
+        let controller = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
+        let pipeline = controller.pipeline_context_with("grp".into(), "guest".into(), 0, 1, 0);
+        WasmProcessor::from_path(
+            &build_test_guest_wasm_for_unit_tests(),
+            Some(config),
+            "guest".into(),
+            WasmProcessorAllMetrics::new(&pipeline),
+        )
+        .unwrap()
+    }
+
     fn native_output(port: Option<&str>, severity: &str) -> NativeOutput {
         NativeOutput {
             port: port.map(str::to_owned),
@@ -1104,7 +1122,6 @@ mod tests {
     /// Guarantees: Initialization reports unavailable; process sees sorted ports and respects the output limit.
     #[tokio::test]
     async fn output_discovery_drives_guest_routing() {
-        let path = build_test_guest_wasm_for_unit_tests();
         for (ports, default, limit) in [
             (vec![], None, 4),
             (vec!["only"], None, 4),
@@ -1112,35 +1129,18 @@ mod tests {
             (vec!["z", "a"], Some("z"), 1),
         ] {
             let mut h = output_harness(&ports, default);
-            let controller = ControllerContext::new(
-                otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
-            );
-            let pipeline =
-                controller.pipeline_context_with("grp".into(), "discovery".into(), 0, 1, 0);
             let mut sorted = ports.clone();
             sorted.sort_unstable();
             let expected_default = default.or_else(|| (ports.len() == 1).then(|| ports[0]));
-            h.processor = WasmProcessor::from_path(
-                &path,
-                Some(&serde_json::json!({"discover_outputs": {
-                    "connected_ports": sorted,
-                    "default_port": expected_default,
-                    "max_outputs_per_call": limit
-                }})),
-                "discovery".into(),
-                WasmProcessorAllMetrics::new(&pipeline),
-            )
-            .unwrap();
+            h.processor = guest_processor(&serde_json::json!({"discover_outputs": {
+                "connected_ports": sorted,
+                "default_port": expected_default,
+                "max_outputs_per_call": limit
+            }}));
             h.processor.max_outputs_per_call = limit;
             for _ in 0..2 {
                 h.processor
-                    .process(
-                        Message::PData(OtapPdata::new(
-                            Context::default(),
-                            build_logs_batch(&["INPUT"]).into(),
-                        )),
-                        &mut h.effect,
-                    )
+                    .process(Message::PData(untracked_input()), &mut h.effect)
                     .await
                     .unwrap();
                 for (index, port) in sorted.iter().enumerate() {
@@ -1255,7 +1255,7 @@ mod tests {
                     let input = if tracked {
                         tracked_input()
                     } else {
-                        OtapPdata::new(Context::default(), build_logs_batch(&["INPUT"]).into())
+                        untracked_input()
                     };
                     let error = h
                         .processor
@@ -1276,81 +1276,67 @@ mod tests {
         }
     }
 
-    /// Scenario: Three ordered outputs target one capacity-two channel.
-    /// Guarantees: The third send waits for capacity without dropping or reordering outputs.
+    /// Scenario: Three ordered outputs target one capacity-two channel; dispatch then either resumes or is cancelled.
+    /// Guarantees: The third send waits without dropping or reordering outputs; cancellation releases retained data on teardown without an upstream completion.
     #[tokio::test]
     async fn output_sends_apply_channel_backpressure() {
         use std::task::Poll;
-        let mut h = output_harness(&["a"], None);
-        let mut dispatch = Box::pin(h.processor.dispatch_outputs(
-            tracked_input().into_delivery(),
-            vec![
-                native_output(None, "A"),
-                native_output(Some("a"), "B"),
-                native_output(None, "C"),
-            ],
-            None,
-            &h.effect,
-        ));
-        assert!(matches!(futures::poll!(&mut dispatch), Poll::Pending));
-        let receiver = h.outputs.get_mut("a").unwrap();
-        let a = receiver.try_recv().unwrap();
-        assert!(matches!(futures::poll!(&mut dispatch), Poll::Ready(Ok(()))));
-        drop(dispatch);
-        let b = receiver.try_recv().unwrap();
-        let c = receiver.try_recv().unwrap();
-        for (pdata, severity) in [(a, "A"), (b, "B"), (c, "C")] {
-            assert_eq!(
-                pdata.payload_ref().otap_ref().unwrap(),
-                &build_logs_batch(&[severity])
+        for cancel in [false, true] {
+            let mut h = output_harness(&["a"], None);
+            let input = tracked_input();
+            let original = Arc::downgrade(
+                input
+                    .payload_ref()
+                    .otap_ref()
+                    .unwrap()
+                    .root_record_batch()
+                    .unwrap()
+                    .column(0),
             );
-            h.processor
-                .process(
-                    Message::Control(NodeControlMsg::Ack(ack_output(pdata))),
-                    &mut h.effect,
-                )
-                .await
-                .unwrap();
+            let mut dispatch = Box::pin(h.processor.dispatch_outputs(
+                input.into_delivery(),
+                vec![
+                    native_output(None, "A"),
+                    native_output(Some("a"), "B"),
+                    native_output(None, "C"),
+                ],
+                None,
+                &h.effect,
+            ));
+            assert!(matches!(futures::poll!(&mut dispatch), Poll::Pending));
+            if cancel {
+                drop(dispatch);
+                assert!(original.upgrade().is_some());
+                drop(h.processor);
+                assert!(original.upgrade().is_none());
+                assert!(h.completions.try_recv().is_err());
+                continue;
+            }
+            let receiver = h.outputs.get_mut("a").unwrap();
+            let a = receiver.try_recv().unwrap();
+            assert!(matches!(futures::poll!(&mut dispatch), Poll::Ready(Ok(()))));
+            drop(dispatch);
+            let b = receiver.try_recv().unwrap();
+            let c = receiver.try_recv().unwrap();
+            for (pdata, severity) in [(a, "A"), (b, "B"), (c, "C")] {
+                assert_eq!(
+                    pdata.payload_ref().otap_ref().unwrap(),
+                    &build_logs_batch(&[severity])
+                );
+                h.processor
+                    .process(
+                        Message::Control(NodeControlMsg::Ack(ack_output(pdata))),
+                        &mut h.effect,
+                    )
+                    .await
+                    .unwrap();
+            }
+            assert!(matches!(
+                h.completions.try_recv().unwrap(),
+                PipelineCompletionMsg::DeliverAck { .. }
+            ));
+            assert!(h.processor.accept_pdata());
         }
-        assert!(matches!(
-            h.completions.try_recv().unwrap(),
-            PipelineCompletionMsg::DeliverAck { .. }
-        ));
-        assert!(h.processor.accept_pdata());
-    }
-
-    /// Scenario: Node execution is cancelled while its third output awaits channel capacity.
-    /// Guarantees: Teardown releases retained original data without fabricating an upstream completion.
-    #[tokio::test]
-    async fn output_cancelled_dispatch_releases_delivery_on_teardown() {
-        let mut h = output_harness(&["a"], None);
-        let input = tracked_input();
-        let original = Arc::downgrade(
-            input
-                .payload_ref()
-                .otap_ref()
-                .unwrap()
-                .root_record_batch()
-                .unwrap()
-                .column(0),
-        );
-        let mut dispatch = Box::pin(h.processor.dispatch_outputs(
-            input.into_delivery(),
-            vec![
-                native_output(None, "A"),
-                native_output(None, "B"),
-                native_output(None, "C"),
-            ],
-            None,
-            &h.effect,
-        ));
-        assert!(futures::poll!(&mut dispatch).is_pending());
-        drop(dispatch);
-        assert!(h.completions.try_recv().is_err());
-        assert!(original.upgrade().is_some());
-        drop(h.processor);
-        assert!(original.upgrade().is_none());
-        assert!(h.completions.try_recv().is_err());
     }
 
     /// Scenario: A guest drops input, or returns one output for tracked and untracked inputs.
@@ -1372,7 +1358,7 @@ mod tests {
             let input = if tracked {
                 tracked_input()
             } else {
-                OtapPdata::new(Context::default(), build_logs_batch(&["A"]).into())
+                untracked_input()
             };
             h.processor
                 .dispatch_outputs(
@@ -1492,22 +1478,11 @@ mod tests {
     /// Guarantees: The runtime rejects oversized results before the host's post-lift output-count check.
     #[test]
     fn output_lifting_budget_precedes_count_validation() {
-        let path = build_test_guest_wasm_for_unit_tests();
-        let controller = ControllerContext::new(
-            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
-        );
-        let pipeline = controller.pipeline_context_with("grp".into(), "lift".into(), 0, 1, 0);
         for config in [
             serde_json::json!({"outputs": vec![None::<String>; 2000]}),
             serde_json::json!({"oversized_output_port": true}),
         ] {
-            let mut processor = WasmProcessor::from_path(
-                &path,
-                Some(&config),
-                "lift".into(),
-                WasmProcessorAllMetrics::new(&pipeline),
-            )
-            .unwrap();
+            let mut processor = guest_processor(&config);
             let error = futures::executor::block_on(processor.run_guest(build_logs_batch(&["A"])))
                 .unwrap_err();
             let text = format!("{error:#}");
@@ -1613,20 +1588,8 @@ mod tests {
     #[tokio::test]
     async fn output_recovery_preserves_encoded_input() {
         use otel_arrow_dfe_pdata::OtlpProtoBytes;
-        let path = build_test_guest_wasm_for_unit_tests();
         let mut h = output_harness(&["a", "b"], None);
-        let controller = ControllerContext::new(
-            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
-        );
-        let pipeline = controller.pipeline_context_with("grp".into(), "encoded".into(), 0, 1, 0);
-        let config = serde_json::json!({"outputs": ["a", "b"]});
-        h.processor = WasmProcessor::from_path(
-            &path,
-            Some(&config),
-            "encoded".into(),
-            WasmProcessorAllMetrics::new(&pipeline),
-        )
-        .unwrap();
+        h.processor = guest_processor(&serde_json::json!({"outputs": ["a", "b"]}));
         // ExportLogsServiceRequest with one empty resource/scope/log record.
         let bytes = vec![0x0a, 0x06, 0x12, 0x04, 0x12, 0x02, 0x10, 0x09].into();
         let payload = OtapPayload::from_otlp(OtlpProtoBytes::ExportLogsRequest(bytes));
