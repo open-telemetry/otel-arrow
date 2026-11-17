@@ -52,10 +52,9 @@ fn prepare_publication_at(
         .encoded_view()
         .filter(|view| view.encoding() == &PdataEncoding::OTLP)
     {
-        // Only top-level framing is validated; other malformed content is skipped (see #4029).
-        // Invalid UTF-8 in a string field still rejects the request, as protobuf decoding does.
-        let metrics = RawMetricsData::try_new(view.bytes()).map_err(PrepareError::Decode)?;
-        otlp_to_geneva::map_metrics(&metrics, config, receive_time)?
+        // Keep the existing best-effort policy for malformed nested input (#4029).
+        _ = RawMetricsData::try_new(view.bytes()).map_err(PrepareError::Decode)?;
+        otlp_to_geneva::map_otlp_bytes(view.bytes(), config, receive_time)?
     } else {
         return Err(PrepareError::UnsupportedPayload);
     };
@@ -143,6 +142,39 @@ pub(super) mod test_support {
         gauge_request(vec![gauge_point(Vec::new(), 0)])
     }
 
+    pub(crate) fn fragmented_request(fragments: impl IntoIterator<Item = metric::Data>) -> Vec<u8> {
+        use prost::Message;
+
+        let mut bytes = Vec::new();
+        for (index, data) in fragments.into_iter().enumerate() {
+            Metric {
+                name: if index == 0 {
+                    "temperature".into()
+                } else {
+                    String::new()
+                },
+                data: Some(data),
+                ..Default::default()
+            }
+            .encode(&mut bytes)
+            .expect("metric fragment should encode");
+        }
+        wrap_metric(bytes)
+    }
+
+    pub(crate) fn wrap_metric(mut bytes: Vec<u8>) -> Vec<u8> {
+        use prost::encoding::{WireType, encode_key, encode_varint};
+
+        for field in [2, 2, 1] {
+            let mut parent = Vec::new();
+            encode_key(field, WireType::LengthDelimited, &mut parent);
+            encode_varint(bytes.len() as u64, &mut parent);
+            parent.extend_from_slice(&bytes);
+            bytes = parent;
+        }
+        bytes
+    }
+
     /// Over 20 MiB of distinct dimension values, so preparation must split it.
     pub(crate) fn oversized_request() -> ExportMetricsServiceRequest {
         gauge_request(
@@ -176,8 +208,8 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        gauge_point, gauge_request, mapping_config, otlp_pdata, oversized_request,
-        single_point_request,
+        fragmented_request, gauge_point, gauge_request, mapping_config, otlp_pdata,
+        oversized_request, single_point_request,
     };
     use super::*;
     use bytes::Bytes;
@@ -227,6 +259,36 @@ mod tests {
         assert_eq!(prepared.cardinality_overflows, 0);
     }
 
+    /// Scenario: One metric's gauge is split across two valid protobuf messages with distinct points.
+    /// Guarantees: Preparation publishes both points without rejection, exactly matching a canonical single-gauge request.
+    #[test]
+    fn merges_repeated_gauge_messages_before_publication() {
+        let first = gauge_point(Vec::new(), 0);
+        let second = NumberDataPoint {
+            value: Some(number_data_point::Value::AsInt(20)),
+            ..first.clone()
+        };
+        let request = gauge_request(vec![first.clone(), second.clone()]);
+        let bytes = fragmented_request([
+            metric::Data::Gauge(Gauge {
+                data_points: vec![first],
+            }),
+            metric::Data::Gauge(Gauge {
+                data_points: vec![second],
+            }),
+        ]);
+        let receive_time = 1_700_000_000_000_000_000;
+        let expected =
+            prepare_publication_at(&otlp_pdata(request), &mapping_config(), receive_time)
+                .expect("canonical request should prepare");
+        let actual = prepare_publication_at(&raw_otlp(&bytes), &mapping_config(), receive_time)
+            .expect("fragmented gauge should prepare");
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.publications[0].metrics.len(), 2);
+        assert_eq!(actual.rejected_data_points, 0);
+    }
+
     /// Scenario: OTLP metrics bytes have a truncated length, a length past the end, or an unsupported wire type at the top level.
     /// Guarantees: Preparation rejects malformed framing as a decode error instead of acknowledging it without publication.
     #[test]
@@ -239,14 +301,18 @@ mod tests {
         }
     }
 
-    /// Scenario: A well-formed resource is followed by a resource whose nested scope length runs past the end of its message.
-    /// Guarantees: Until strict nested validation exists (#4029), preparation publishes the well-formed metrics and skips the malformed content.
+    /// Scenario: Ordinary and split-gauge resources precede a resource whose nested scope length runs past its message.
+    /// Guarantees: Normalization preserves all three valid points and the existing best-effort handling of the malformed resource (#4029).
     #[test]
     fn skips_malformed_nested_otlp_content() {
         let mut bytes = Vec::new();
         OtlpProtoMessage::Metrics(single_point_request().into())
             .encode(&mut bytes)
             .expect("request should serialize");
+        let gauge = metric::Data::Gauge(Gauge {
+            data_points: vec![gauge_point(Vec::new(), 0)],
+        });
+        bytes.extend_from_slice(&fragmented_request([gauge.clone(), gauge]));
         // ResourceMetrics whose scope_metrics field claims five bytes but contains one.
         bytes.extend_from_slice(&[0x0a, 0x03, 0x12, 0x05, 0x01]);
 
@@ -254,6 +320,7 @@ mod tests {
             .expect("well-formed top-level framing should be accepted");
 
         assert_eq!(prepared.publications.len(), 1);
+        assert_eq!(prepared.publications[0].metrics.len(), 3);
         assert!(
             !encoder::encode(&prepared.publications[0])
                 .expect("packet should encode")

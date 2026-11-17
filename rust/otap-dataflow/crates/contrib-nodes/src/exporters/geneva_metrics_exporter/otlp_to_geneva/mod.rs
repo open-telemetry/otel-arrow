@@ -8,6 +8,7 @@ mod config;
 mod exemplars;
 mod histograms;
 mod memory;
+mod normalization;
 
 use std::rc::Rc;
 use std::str::{self, Utf8Error};
@@ -17,6 +18,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     Exemplar as OtlpExemplar, ExponentialHistogramDataPoint, HistogramDataPoint, NumberDataPoint,
     ScopeMetrics, exemplar, metric, number_data_point,
 };
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataType, DataView, ExemplarView,
@@ -150,6 +152,31 @@ where
     M: MetricsView,
 {
     config.validate().map_err(MappingError::InvalidConfig)?;
+    let memory = MappingMemory::new(config.max_mapping_bytes);
+    map_metrics_with_memory(metrics, config, receive_time_unix_nano, &memory)
+}
+
+pub(super) fn map_otlp_bytes(
+    bytes: &[u8],
+    config: &Config,
+    receive_time_unix_nano: u64,
+) -> Result<MappingOutcome, MappingError> {
+    config.validate().map_err(MappingError::InvalidConfig)?;
+    let memory = MappingMemory::new(config.max_mapping_bytes);
+    let normalized = normalization::normalize(bytes, &memory)?;
+    let metrics = RawMetricsData::new(&normalized);
+    map_metrics_with_memory(&metrics, config, receive_time_unix_nano, &memory)
+}
+
+fn map_metrics_with_memory<M>(
+    metrics: &M,
+    config: &Config,
+    receive_time_unix_nano: u64,
+    memory: &MappingMemory,
+) -> Result<MappingOutcome, MappingError>
+where
+    M: MetricsView,
+{
     let current_time_bucket = unix_nanos_to_dotnet_seconds_floor(receive_time_unix_nano)
         .ok_or(MappingError::ReceiveTimeOverflow)?;
     let mut outcome = MappingOutcome {
@@ -161,15 +188,14 @@ where
         cardinality_overflows: Vec::new(),
     };
 
-    let memory = MappingMemory::new(config.max_mapping_bytes);
     for resource_metrics in metrics.resources() {
         let mut resource = match resource_metrics.resource() {
-            Some(resource) => resource_context(resource.attributes(), config, &memory)?,
-            None => default_resource_context(config, &memory)?,
+            Some(resource) => resource_context(resource.attributes(), config, memory)?,
+            None => default_resource_context(config, memory)?,
         };
 
         for scope_metrics in resource_metrics.scopes() {
-            map_scope(&scope_metrics, &mut resource, config, &memory, &mut outcome)?;
+            map_scope(&scope_metrics, &mut resource, config, memory, &mut outcome)?;
         }
     }
 

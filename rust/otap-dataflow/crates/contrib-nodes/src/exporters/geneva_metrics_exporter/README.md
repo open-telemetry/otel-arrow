@@ -40,6 +40,8 @@ during normal operation. An input that exceeds this budget is retryably NACKed.
 
 `max_mapping_bytes` sets a conservative per-input mapping allocation budget
 (default: 64 MiB), separate from the packet limit and not a process memory cap.
+When repeated metric data messages require normalization, its temporary buffer
+also consumes this budget. Ordinary OTLP input is borrowed without copying.
 Inputs exceeding the budget are permanently refused before publication.
 Reduce the input batch size or increase `max_mapping_bytes` to accept them.
 
