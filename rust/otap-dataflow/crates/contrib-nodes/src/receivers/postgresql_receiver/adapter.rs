@@ -5,7 +5,7 @@
 
 use super::{
     config::Validated,
-    query::{ResolvedSchema, Signature},
+    query::{Plan, ResolvedSchema},
     value,
     worker::{CancelSlot, FetchSize, Session, SessionClose},
 };
@@ -97,7 +97,7 @@ impl DriverCancellation for Cancellation {
 }
 
 pub(crate) struct CachedSchema {
-    pub(crate) signature: Signature,
+    pub(crate) plan: Plan,
     pub(crate) resolved: ResolvedSchema,
 }
 
@@ -283,7 +283,7 @@ impl DriverAdapter for PostgreSqlAdapter {
         use otel_arrow_dfe_engine::error::ReceiverErrorKind;
         match error {
             Error::Config
-            | Error::Sql
+            | Error::SourceQuery(_)
             | Error::Metadata
             | Error::SnapshotRowLimit { .. }
             | Error::SnapshotByteLimit { .. }
@@ -312,8 +312,8 @@ impl Drop for PostgreSqlAdapter {
 pub(crate) enum Error {
     #[error("postgresql: invalid configuration")]
     Config,
-    #[error("postgresql: unsupported SQL contract")]
-    Sql,
+    #[error(transparent)]
+    SourceQuery(#[from] otel_arrow_dfe_scraper::database::SourceQueryError),
     #[error("postgresql: incompatible source metadata")]
     Metadata,
     #[error("postgresql: invalid or unsupported source value")]
