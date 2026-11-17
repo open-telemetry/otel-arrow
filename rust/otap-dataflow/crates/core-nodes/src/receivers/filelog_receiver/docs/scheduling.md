@@ -32,7 +32,10 @@ admission; evicted readers still reopen and validate continuity.
 Idle partial flush is not wired: nonzero `framing.force_flush_period` is not
 serviced by this scheduler. Idle-flush deadlines and source revalidation,
 startup descriptor-budget checks, and admission gating during global descriptor
-backoff remain receiver-integration prerequisites.
+backoff remain receiver-integration prerequisites. Authorized disposal of
+unfinished or rejected state for descriptor-free disappearance containment is
+also not implemented; receiver integration must remain disabled until that
+cleanup path is provided. Retirement below only removes eligible clean readers.
 
 The caller supplies a policy-checked source opener, processing permission,
 cancellation and [batch sink](../scheduler/batch.rs). Sink preflight must account
@@ -154,8 +157,10 @@ permission to release that lease. Lease-release failure follows the identity
 component's fail-closed rules.
 
 Vacant reader slots are reused with a new generation. Complete keys identify
-source callbacks, framed output and batch registrations; late keys cannot mutate
-a replacement reader. Keys are local to one scheduler instance and must not be
+source callbacks, framed output and batch registrations. Stale lifecycle and
+metadata updates are refused, and late output is returned intact. Scheduler
+preflight only uses live keys: missing registration is a terminal composition
+error. Keys are local to one scheduler instance and must not be
 routed across worker instances. Internal queues use slot indices only because
 retirement removes all references before reuse. A generation never wraps: its
 exhausted slot remains unavailable, and admission returns the intact seed if no

@@ -212,6 +212,9 @@ impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
             return Flow::Stop;
         }
         let Some(source) = self.sources.get(&key) else {
+            // Scheduler preflight only receives live keys. Missing registration
+            // is a composition error, not temporary downstream pressure.
+            self.failure = Some(BatchError::Progress);
             return Flow::Stop;
         };
         if source.epoch != epoch {

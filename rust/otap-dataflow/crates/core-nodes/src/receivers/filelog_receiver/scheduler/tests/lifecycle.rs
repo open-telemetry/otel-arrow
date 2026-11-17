@@ -114,7 +114,7 @@ fn sequential_retirement_reuses_capacity_and_preserves_lease() {
 }
 
 /// Scenario: Old controls and output arrive after a slot is reused by another identity.
-/// Guarantees: Stale keys cannot mutate, unregister or poison the new reader, which continues producing output.
+/// Guarantees: Stale controls, metadata updates and late output cannot mutate, unregister or poison the replacement reader.
 #[test]
 fn stale_keys_cannot_affect_reused_reader() {
     let now = Instant::now();
@@ -138,7 +138,6 @@ fn stale_keys_cannot_affect_reused_reader() {
             .is_err()
     );
     assert!(sink.unregister(old, current.file_id, 7, 0).is_err());
-    assert_eq!(sink.preflight(old, 7), Flow::Stop);
     let mut other = scheduler(&[b"old\n"], 8, 32, 1, 1, FramingConfig::Line(line()));
     let mut collector = Sink::default();
     frames(&mut other, &mut collector, 1, now);
@@ -186,39 +185,84 @@ fn retirement_waits_for_open_retained_and_applied_progress() {
     assert_eq!(s.io.opens.get(), 0);
 }
 
-/// Scenario: A full batch retains a second complete record as carry-over.
-/// Guarantees: Neither release of the first batch nor promotion of carry-over permits retirement before its own progress is applied.
+/// Scenario: One file fills a batch and a second file exists only in carry-over.
+/// Guarantees: Retirement reaches the carry-over veto even with early applied evidence, and promotion keeps the veto until release.
 #[test]
 fn retirement_rejects_carry_over_through_promotion() {
     let now = Instant::now();
-    let source = [b"0123456789\n".to_vec(), vec![b'x'; 128], b"\n".to_vec()].concat();
-    let mut s = scheduler(&[&source], 32, 64, 1, 1, FramingConfig::Line(line()));
+    let second_source = [vec![b'x'; 128], b"\n".to_vec()].concat();
+    let mut s = scheduler(
+        &[b"0123456789\n", &second_source],
+        256,
+        1024,
+        2,
+        2,
+        FramingConfig::Line(line()),
+    );
     let mut sink = lifecycle_sink(&s, now);
-    let key = ReaderKey(0, 0);
-    for _ in 0..32 {
+    let key = ReaderKey(1, 0);
+    for _ in 0..2 {
         let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
-        if sink.builder.retained().is_some() {
-            break;
-        }
     }
     let applied = record(&s, key);
     let first = sink.builder.retained().unwrap().progress.clone();
+    assert_eq!(first.len(), 1);
+    assert_ne!(first[0].file_id, applied.file_id);
     assert_eq!(first[0].new_committed_offset, 11);
-    assert!(s.retire(key, &mut sink).is_err());
-    assert!(sink.unregister(key, applied.file_id, 7, 140).is_err());
-    sink.builder.release_applied(&first, now).unwrap();
-    assert!(sink.unresolved(key, 7));
-    assert!(s.retire(key, &mut sink).is_err());
-    sink.builder.seal().unwrap();
-    let second = sink.builder.retained().unwrap().progress.clone();
-    assert_eq!(second[0].new_committed_offset, 140);
-    sink.builder.release_applied(&second, now).unwrap();
+    assert_eq!(applied.committed_offset, 129);
     assert_eq!(
         s.retire(key, &mut sink).unwrap_err(),
         LifecycleRefusal::UnappliedProgress
     );
+    // Inject early authority notification to isolate the batcher's independent veto.
+    // This reader has no open/retained progress: only carry-over can block it.
     s.observe_applied(key, &applied).unwrap();
+    assert_eq!(
+        s.retire(key, &mut sink).unwrap_err(),
+        LifecycleRefusal::Batch(super::super::super::batch::BatchError::Stopped)
+    );
+    sink.builder.release_applied(&first, now).unwrap();
+    assert_eq!(
+        s.retire(key, &mut sink).unwrap_err(),
+        LifecycleRefusal::Batch(super::super::super::batch::BatchError::Stopped)
+    );
+    sink.builder.seal().unwrap();
+    let second = sink.builder.retained().unwrap().progress.clone();
+    assert_eq!(second[0].file_id, applied.file_id);
+    assert_eq!(second[0].new_committed_offset, 129);
+    assert_eq!(
+        s.retire(key, &mut sink).unwrap_err(),
+        LifecycleRefusal::Batch(super::super::super::batch::BatchError::Stopped)
+    );
+    sink.builder.release_applied(&second, now).unwrap();
     s.retire(key, &mut sink).unwrap().release().unwrap();
+}
+
+/// Scenario: Composition admits a reader but omits its batch registration.
+/// Guarantees: The next source turn fails terminally before I/O instead of silently pausing forever.
+#[test]
+fn missing_batch_registration_fails_closed() {
+    let now = Instant::now();
+    let mut s = scheduler(&[b"new\n"], 32, 64, 1, 1, FramingConfig::Line(line()));
+    let mut sink = lifecycle_sink(&s, now);
+    let lease = s.retire(ReaderKey(0, 0), &mut sink).unwrap();
+    let key = s.admit(seed(lease, 99)).unwrap();
+    // Deliberately omit register for this live key.
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert_eq!(turn.key, Some(key));
+    assert!(matches!(turn.reason, Reason::Terminal(Fault::SinkRejected)));
+    assert_eq!(
+        sink.failure(),
+        Some(&super::super::super::batch::BatchError::Progress)
+    );
+    assert_eq!(s.io.opens.get(), 0);
+    assert_eq!(s.io.reads, 0);
+    s.resume_sink();
+    assert!(matches!(
+        s.turn(now, permission(), &mut sink, Waker::noop(), || false)
+            .reason,
+        Reason::Terminal(Fault::SinkRejected)
+    ));
 }
 
 /// Scenario: A reader reaches EOF holding an incomplete line or multiline record.
