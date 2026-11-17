@@ -40,10 +40,11 @@ pub(crate) enum PublishError {
 
 impl PublishError {
     pub(crate) fn is_unauthorized(&self) -> bool {
+        // A 403 can indicate permissions; invalidation cannot force an early token refresh.
         matches!(
             self,
             Self::Response {
-                status: StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                status: StatusCode::UNAUTHORIZED
             }
         )
     }
@@ -55,7 +56,9 @@ impl PublishError {
                 self.is_unauthorized()
                     || matches!(
                         *status,
-                        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+                        StatusCode::FORBIDDEN
+                            | StatusCode::REQUEST_TIMEOUT
+                            | StatusCode::TOO_MANY_REQUESTS
                     )
                     || status.is_server_error()
             }
@@ -236,18 +239,25 @@ mod tests {
         }
     }
 
-    /// Scenario: A publication fails with HTTP 400, 401, 403, 408, 429, or 5xx.
-    /// Guarantees: HTTP 400 is permanent; 401, 403, 408, 429, and 5xx remain retryable independently of refusal classification.
+    /// Scenario: A publication fails with HTTP 400, 401, 403, 408, 413, 429, or 5xx.
+    /// Guarantees: HTTP 400 and 413 are permanent; 401, 403, 408, 429, and 5xx remain retryable independently of refusal classification.
     #[test]
     fn classifies_error_responses() {
-        for status in [400, 401, 403, 408, 429, 500, 503] {
+        for status in [400, 401, 403, 408, 413, 429, 500, 503] {
             let error = PublishError::Response {
                 status: StatusCode::from_u16(status).expect("valid HTTP status"),
             };
 
-            assert_eq!(error.is_retryable(), status != 400, "HTTP {status}");
-            assert_eq!(error.is_unauthorized(), matches!(status, 401 | 403));
-            assert_eq!(error.is_refusal(), matches!(status, 400 | 401 | 403 | 429));
+            assert_eq!(
+                error.is_retryable(),
+                !matches!(status, 400 | 413),
+                "HTTP {status}"
+            );
+            assert_eq!(error.is_unauthorized(), status == 401);
+            assert_eq!(
+                error.is_refusal(),
+                matches!(status, 400 | 401 | 403 | 413 | 429)
+            );
         }
     }
 }

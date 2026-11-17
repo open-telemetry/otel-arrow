@@ -317,6 +317,8 @@ impl GenevaMetricsExporter {
                 );
                 let nack = if error.is_retryable() {
                     NackMsg::new(reason, data)
+                } else if error.is_refusal() {
+                    NackMsg::new_permanent_with_cause(reason, data, NackCause::Refused)
                 } else {
                     NackMsg::new_permanent(reason, data)
                 };
@@ -1368,11 +1370,11 @@ mod tests {
         assert_metric(&snapshots, "refused", "messages", 1);
     }
 
-    /// Scenario: Packet two succeeds or fails, with a third packet pending for HTTP 503 and 400 failures.
-    /// Guarantees: Failure prevents packet three from being sent; each input completes exactly once with correct retryability and attempt telemetry.
+    /// Scenario: Packet two succeeds or fails, with a third packet pending for HTTP 503, 400, and 413 failures.
+    /// Guarantees: Failure prevents packet three from being sent; each input completes exactly once with correct retryability, NACK cause, and attempt telemetry.
     #[tokio::test]
     async fn split_publications_complete_once_and_record_each_attempt() {
-        for final_status in [200, 503, 400, 401, 403, 408, 429] {
+        for final_status in [200, 503, 400, 401, 403, 408, 413, 429] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(200))
@@ -1389,7 +1391,7 @@ mod tests {
                 .await;
             let (mut exporter, _controller) = ready_exporter(&server.uri()).await;
             let (effect_handler, mut completions) = completion_harness();
-            let packet_count = if matches!(final_status, 503 | 400) {
+            let packet_count = if matches!(final_status, 503 | 400 | 413) {
                 3
             } else {
                 2
@@ -1420,14 +1422,23 @@ mod tests {
                 expect_ack(&mut completions).await;
             } else {
                 let nack = expect_nack(&mut completions).await;
-                assert_eq!(nack.permanent, final_status == 400);
+                assert_eq!(nack.permanent, matches!(final_status, 400 | 413));
+                assert_eq!(
+                    nack.cause,
+                    if matches!(final_status, 400 | 413) {
+                        NackCause::Refused
+                    } else {
+                        NackCause::Unspecified
+                    },
+                    "HTTP {final_status}",
+                );
             }
             let snapshots = exporter.metrics.terminal_snapshots();
             let successes = if final_status == 200 { 2 } else { 1 };
             assert_metric(&snapshots, "success", "messages", successes);
             assert_metric(&snapshots, "success", "items", successes);
             if final_status != 200 {
-                let outcome = if matches!(final_status, 400 | 401 | 403 | 429) {
+                let outcome = if matches!(final_status, 400 | 401 | 403 | 413 | 429) {
                     "refused"
                 } else {
                     "failure"
@@ -1741,8 +1752,58 @@ mod tests {
         .await;
     }
 
+    /// Scenario: HTTP 403 rejects a publication while the provider keeps its token stream open without publishing a replacement.
+    /// Guarantees: The exporter retryably NACKs the input and publishes its replay without waiting for token refresh.
+    #[tokio::test(start_paused = true)]
+    async fn start_loop_replays_after_forbidden_without_auth_refresh() {
+        let (provider, mut controller) = TestTokenProvider::new(Some("initial-token"));
+        let rejected = Cell::new(false);
+        let (exporter, requests) =
+            scripted_exporter(Duration::from_secs(60), provider, move || {
+                let result = if rejected.replace(true) {
+                    Ok(())
+                } else {
+                    Err(PublishError::Response {
+                        status: reqwest::StatusCode::FORBIDDEN,
+                    })
+                };
+                Box::pin(async move { result })
+            });
+        let (effect_handler, mut completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+
+        let driver = async {
+            controller.wait_until_observed().await;
+            pdata_tx
+                .send_async(metrics_pdata(1))
+                .await
+                .expect("initial pdata should be queued");
+            let nack = expect_nack(&mut completions).await;
+            assert!(!nack.permanent);
+            assert!(nack.reason.contains("HTTP 403"));
+            pdata_tx
+                .send_async(*nack.refused)
+                .await
+                .expect("replay should be queued");
+            expect_ack(&mut completions).await;
+
+            send_shutdown(&control_tx, Instant::now()).await;
+            drop(pdata_tx);
+        };
+
+        let _ = run_exporter(
+            exporter,
+            msg_chan,
+            effect_handler,
+            Duration::from_secs(10),
+            driver,
+        )
+        .await;
+        assert_eq!(requests.count().await, 2);
+    }
+
     /// Scenario: The start loop receives a replay after HTTP 401 or 403 and the provider publishes refreshed auth.
-    /// Guarantees: The rejected auth generation gates the inbox until refreshed auth releases and ACKs the same refused payload.
+    /// Guarantees: The exporter consumes refreshed auth and ACKs the same refused payload after either response.
     #[tokio::test]
     async fn start_loop_releases_replay_after_auth_refresh() {
         for status in [401, 403] {
