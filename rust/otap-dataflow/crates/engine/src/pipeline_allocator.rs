@@ -30,6 +30,7 @@ const SLAB_REGION_BYTES: usize = 2 * 1024 * 1024;
 // so an entire relinquished slab can be discarded.
 const SLAB_REGION_FREE: u32 = !1;
 const _: () = assert!(SLAB_REGION_BYTES / SPAN_BYTES == u32::BITS as usize);
+const RESIDENT_SLAB_SLOTS: usize = 1024 * 1024 / SPAN_BYTES;
 const CLASS_SIZES: [usize; 36] = [
     16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024,
     1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096, 5120, 6144, 7168, 8192, 10240, 12288, 14336,
@@ -77,8 +78,11 @@ const EXTENT_POOL_MIB_MASK: usize = 0b111 << EXTENT_POOL_MIB_SHIFT;
 const FULLEST_EXTENTS: usize = 1 << 14;
 const NODE_ACTIVITY: usize = 1 << 13;
 const RECLAIM_SLAB_PAGES: usize = 1 << 25;
+const RESIDENT_SLAB_SHIFT: u32 = 26;
+const RESIDENT_SLAB_MASK: usize = 0b11 << RESIDENT_SLAB_SHIFT;
 const CACHE_FLAGS: usize = BINNED
     | RECLAIM_SLAB_PAGES
+    | RESIDENT_SLAB_MASK
     | RESERVE_HOT_BINS
     | GRADUAL_TRIM
     | MEDIUM_EXTENTS
@@ -344,6 +348,7 @@ struct SlabRegionLocal {
     prev: *mut SlabRegion,
     next: *mut SlabRegion,
     free: u32,
+    resident: u32,
 }
 
 struct SlabRegion {
@@ -369,12 +374,117 @@ impl SlabRegion {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ResidentSlab {
+    region: *mut SlabRegion,
+    bit: u32,
+}
+
+impl ResidentSlab {
+    const EMPTY: Self = Self {
+        region: null_mut(),
+        bit: 0,
+    };
+
+    unsafe fn address(self) -> *mut u8 {
+        // SAFETY: The caller pins this region and the bit identifies a slab in it.
+        unsafe {
+            self.region
+                .cast::<u8>()
+                .add(self.bit.trailing_zeros() as usize * SPAN_BYTES)
+        }
+    }
+}
+
+// Bounded ring of free slots in still-live regions. Prefer the most recent
+// slot on checkout and discard the oldest one on overflow.
+struct ResidentSlabs {
+    slots: [ResidentSlab; RESIDENT_SLAB_SLOTS],
+    head: usize,
+    len: usize,
+    limit: usize,
+    took_slab: bool,
+}
+
+impl ResidentSlabs {
+    const EMPTY: Self = Self {
+        slots: [ResidentSlab::EMPTY; RESIDENT_SLAB_SLOTS],
+        head: 0,
+        len: 0,
+        limit: 0,
+        took_slab: false,
+    };
+
+    fn index(&self, offset: usize) -> usize {
+        (self.head + offset) % RESIDENT_SLAB_SLOTS
+    }
+
+    fn take(&mut self) -> Option<ResidentSlab> {
+        self.took_slab = self.limit != 0;
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.slots[self.index(self.len)])
+    }
+
+    unsafe fn push(&mut self, slab: ResidentSlab) {
+        // SAFETY: The heap pins every cached region and only queues slots
+        // with no outstanding blocks. The new slot has no existing entry.
+        unsafe {
+            if self.len == self.limit {
+                let oldest = self.slots[self.head];
+                (*SlabRegion::local(oldest.region)).resident &= !oldest.bit;
+                discard_slab(oldest.address().cast());
+                self.head = self.index(1);
+                self.len -= 1;
+            }
+            (*SlabRegion::local(slab.region)).resident |= slab.bit;
+            self.slots[self.index(self.len)] = slab;
+            self.len += 1;
+        }
+    }
+
+    fn forget_region(&mut self, region: *mut SlabRegion) {
+        let mut kept = 0;
+        for offset in 0..self.len {
+            let slab = self.slots[self.index(offset)];
+            if slab.region != region {
+                self.slots[self.index(kept)] = slab;
+                kept += 1;
+            }
+        }
+        self.len = kept;
+    }
+
+    fn clear(&mut self) {
+        for offset in 0..self.len {
+            let region = self.slots[self.index(offset)].region;
+            // SAFETY: Region teardown removes its entries before unmapping.
+            // Only the owning worker accesses this bitmap. Each bit denotes
+            // an empty slab, so adjacent bits may be discarded together.
+            unsafe {
+                let mut slots = std::mem::take(&mut (*SlabRegion::local(region)).resident);
+                while slots != 0 {
+                    let first = slots.trailing_zeros();
+                    let count = (slots >> first).trailing_ones();
+                    let addr = region.cast::<u8>().add(first as usize * SPAN_BYTES);
+                    discard_slab_pages(addr, count as usize * SPAN_BYTES);
+                    slots &= !(((1 << count) - 1) << first);
+                }
+            }
+        }
+        self.len = 0;
+    }
+}
+
 // Each region is on exactly one of these owner-only lists. Moving a region
 // across lists means checkout never has to scan full regions.
 struct SlabRegions {
     available: *mut SlabRegion,
     full: *mut SlabRegion,
     mapped: usize,
+    cache: ResidentSlabs,
 }
 
 impl SlabRegions {
@@ -382,6 +492,7 @@ impl SlabRegions {
         available: null_mut(),
         full: null_mut(),
         mapped: 0,
+        cache: ResidentSlabs::EMPTY,
     };
 
     unsafe fn link(head: &mut *mut SlabRegion, region: *mut SlabRegion) {
@@ -413,6 +524,13 @@ impl SlabRegions {
     }
 
     fn take(&mut self, activity: &mut MappingActivity) -> (*mut u8, *mut SlabRegion) {
+        if let Some(slab) = self.cache.take() {
+            // SAFETY: This cached slot is free in an owned available region.
+            unsafe {
+                (*SlabRegion::local(slab.region)).resident &= !slab.bit;
+                return self.take_slot(slab);
+            }
+        }
         if self.available.is_null() {
             let region = map_aligned(SLAB_REGION_BYTES, SLAB_REGION_BYTES).cast::<SlabRegion>();
             if region.is_null() {
@@ -425,6 +543,7 @@ impl SlabRegions {
                         prev: null_mut(),
                         next: null_mut(),
                         free: SLAB_REGION_FREE,
+                        resident: 0,
                     }),
                     retired_refs: AtomicUsize::new(1),
                 });
@@ -437,14 +556,22 @@ impl SlabRegions {
         let region = self.available;
         // SAFETY: The available list contains only owned regions with a free bit.
         unsafe {
+            let bit = 1 << (*SlabRegion::local(region)).free.trailing_zeros();
+            self.take_slot(ResidentSlab { region, bit })
+        }
+    }
+
+    unsafe fn take_slot(&mut self, slab: ResidentSlab) -> (*mut u8, *mut SlabRegion) {
+        // SAFETY: The caller owns this region and the identified slab is free.
+        unsafe {
+            let region = slab.region;
             let free = &mut (*SlabRegion::local(region)).free;
-            let slot = free.trailing_zeros() as usize;
-            *free &= !(1 << slot);
+            *free &= !slab.bit;
             if *free == 0 {
                 Self::unlink(&mut self.available, region);
                 Self::link(&mut self.full, region);
             }
-            (region.cast::<u8>().add(slot * SPAN_BYTES), region)
+            (slab.address(), region)
         }
     }
 
@@ -460,13 +587,16 @@ impl SlabRegions {
             unsafe { release_mapping(span.cast(), bytes) };
             return;
         }
-        let slot = (span.addr() - region.addr()) / SPAN_BYTES;
+        let bit = 1 << ((span.addr() - region.addr()) / SPAN_BYTES);
         // SAFETY: The owner owns the region and the returned slot is in use.
         unsafe {
-            let free = &mut (*SlabRegion::local(region)).free;
-            let was_full = *free == 0;
-            *free |= 1 << slot;
-            if *free == SLAB_REGION_FREE {
+            let local = &mut *SlabRegion::local(region);
+            let was_full = local.free == 0;
+            local.free |= bit;
+            if local.free == SLAB_REGION_FREE {
+                if local.resident != 0 {
+                    self.cache.forget_region(region);
+                }
                 Self::unlink(&mut self.available, region);
                 self.mapped -= SLAB_REGION_BYTES;
                 activity.slab_region_releases += 1;
@@ -476,12 +606,17 @@ impl SlabRegions {
                     Self::unlink(&mut self.full, region);
                     Self::link(&mut self.available, region);
                 }
-                discard_slab(span);
+                if self.cache.limit == 0 {
+                    discard_slab(span);
+                } else {
+                    self.cache.push(ResidentSlab { region, bit });
+                }
             }
         }
     }
 
     fn retire(&mut self) {
+        self.cache.clear();
         for mut region in [self.available, self.full] {
             while !region.is_null() {
                 // SAFETY: All slabs have transferred their outstanding pins.
@@ -499,9 +634,14 @@ impl SlabRegions {
 }
 
 unsafe fn discard_slab(span: *mut Span) {
-    // SAFETY: The caller owns the whole empty slab and its region is pinned.
+    // SAFETY: The caller owns this whole empty slab in a pinned region.
+    unsafe { discard_slab_pages(span.cast(), SPAN_BYTES) };
+}
+
+unsafe fn discard_slab_pages(addr: *mut u8, len: usize) {
+    // SAFETY: The caller owns the interval of empty slabs in a pinned region.
     // A failed discard leaves reusable pages resident. Reuse never assumes zeroes.
-    let _ = unsafe { libc::madvise(span.cast(), SPAN_BYTES, libc::MADV_DONTNEED) };
+    let _ = unsafe { libc::madvise(addr.cast(), len, libc::MADV_DONTNEED) };
 }
 
 #[derive(Clone, Copy)]
@@ -1037,6 +1177,16 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
         Err(std::env::VarError::NotPresent) => 0,
         _ => return Err("DFE_ALLOC_SLAB_REGIONS must be on or off"),
     };
+    let resident_slabs = match std::env::var("DFE_ALLOC_RESIDENT_SLAB_KIB") {
+        Ok(value) if value == "512" => 1 << RESIDENT_SLAB_SHIFT,
+        Ok(value) if value == "1024" => 2 << RESIDENT_SLAB_SHIFT,
+        Ok(value) if value == "0" => 0,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_RESIDENT_SLAB_KIB must be 0, 512, or 1024"),
+    };
+    if resident_slabs != 0 && slab_regions == 0 {
+        return Err("the resident slab cache requires DFE_ALLOC_SLAB_REGIONS=on");
+    }
     let extent_reuse = match std::env::var("DFE_ALLOC_EXTENT_REUSE") {
         Ok(value) if value == "off" => 0,
         Ok(value) if value == "discard" => EXTENT_REUSE,
@@ -1086,6 +1236,7 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
             | slots
             | upper_extent
             | slab_regions
+            | resident_slabs
             | extent_reuse
             | fullest_extents
             | node_activity
@@ -1861,6 +2012,10 @@ impl Heap {
             }
         }
         result.slab_region_mapped = self.slab_regions.mapped;
+        let cache = &mut self.slab_regions.cache;
+        if !std::mem::take(&mut cache.took_slab) {
+            cache.clear();
+        }
         result.cached_extents = self.extent_pool.len * EXTENT_BYTES;
         result.activity = std::mem::take(&mut self.activity);
         result
@@ -1948,6 +2103,8 @@ pub fn enter_pipeline() -> PipelineScope {
         heap.extent_pool.configure(config);
         heap.upper_extent = config & UPPER_EXTENT != 0;
         heap.use_slab_regions = config & SLAB_REGIONS != 0;
+        let units = (config & RESIDENT_SLAB_MASK) >> RESIDENT_SLAB_SHIFT;
+        heap.slab_regions.cache.limit = units * (RESIDENT_SLAB_SLOTS / 2);
         heap.reclaim_slab_pages = config & RECLAIM_SLAB_PAGES != 0;
         heap.fullest_extents = config & FULLEST_EXTENTS != 0;
     });
@@ -2498,6 +2655,73 @@ mod tests {
         assert_eq!(empty.empty_mapped, 2 * SPAN_BYTES);
     }
 
+    /// Scenario: A worker releases more slabs than each resident cap, refills
+    /// another class, then samples a full interval without slab checkout.
+    /// Guarantees: Overflow discards the oldest pages, refill uses the newest
+    /// slot across classes, and idle sampling discards the remaining cache.
+    #[test]
+    fn resident_slabs_bound_reuse_and_discard_when_idle() {
+        fn header_is_resident(span: *mut Span) -> bool {
+            let mut residency = 0u8;
+            // SAFETY: The caller keeps the containing region mapped and the
+            // page-aligned span header needs one byte of residency output.
+            assert_eq!(
+                unsafe { libc::mincore(span.cast(), PAGE, &mut residency) },
+                0
+            );
+            residency & 1 != 0
+        }
+
+        for limit in [RESIDENT_SLAB_SLOTS / 2, RESIDENT_SLAB_SLOTS] {
+            let _scope = enter_slab_region_worker();
+            let _ = with_heap(|heap| heap.slab_regions.cache.limit = limit);
+            let mut blocks: Vec<_> = (0..3 * (limit + 4))
+                .map(|_| Block::new(16 * 1024, 8))
+                .collect();
+            let oldest = slab_of(&blocks[3]);
+            let next_newest = slab_of(&blocks[3 * limit + 3]);
+            let newest = slab_of(&blocks[3 * limit + 6]);
+            drop(blocks.drain(..3 * (limit + 3)));
+            assert_eq!(with_heap(|heap| heap.slab_regions.cache.len), Some(limit));
+            assert!(!header_is_resident(oldest));
+            assert!(header_is_resident(next_newest));
+            assert!(header_is_resident(newest));
+
+            let other_class = Block::new(8192, 64);
+            assert_eq!(slab_of(&other_class), newest);
+            let _ = sample_worker();
+            assert_eq!(
+                with_heap(|heap| heap.slab_regions.cache.len),
+                Some(limit - 1)
+            );
+            let _ = sample_worker();
+            assert_eq!(with_heap(|heap| heap.slab_regions.cache.len), Some(0));
+            assert!(!header_is_resident(next_newest));
+            assert!(header_is_resident(newest));
+        }
+    }
+
+    /// Scenario: The worker returns the last active slab in one region while
+    /// the cache also contains a free slab from a second region.
+    /// Guarantees: Unmapping removes exactly the first region's cache entries,
+    /// and the surviving entry can still be checked out.
+    #[test]
+    fn resident_slabs_forget_unmapped_regions() {
+        let _scope = enter_slab_region_worker();
+        let _ = with_heap(|heap| heap.slab_regions.cache.limit = RESIDENT_SLAB_SLOTS);
+        let mut blocks: Vec<_> = (0..34 * 3).map(|_| Block::new(16 * 1024, 8)).collect();
+        let surviving = slab_of(&blocks[32 * 3]);
+        // Keep the first empty slab in the second region as the class spare.
+        drop(blocks.drain(31 * 3..33 * 3));
+        drop(blocks.drain(..31 * 3));
+        let stats = sample_worker();
+        assert_eq!(stats.slab_region_mapped, SLAB_REGION_BYTES);
+        assert_eq!(stats.activity.slab_region_releases, 1);
+        let other_class = Block::new(8192, 64);
+        assert_eq!(slab_of(&other_class), surviving);
+        assert_eq!(with_heap(|heap| heap.slab_regions.cache.len), Some(0));
+    }
+
     /// Scenario: Local and remote 8 KiB frees leave a partially occupied
     /// bitmap slab idle before the worker allocates from it again.
     /// Guarantees: Whole free slots can be purged without touching the
@@ -2960,7 +3184,7 @@ mod tests {
     #[test]
     fn retains_recently_requested_bin_under_pressure() {
         let mut heap = Heap {
-            cache_config: 128 * 1024 | BINNED | RESERVE_HOT_BINS,
+            cache_config: (128 * 1024) | BINNED | RESERVE_HOT_BINS,
             ..Heap::EMPTY
         };
         let hot = [(); 2].map(|()| heap.take_large_mapping(56 * 1024));
