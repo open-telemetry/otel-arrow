@@ -309,11 +309,10 @@ InstrumentationScope:
 ```
 
 State attributes are reported only in entity events and never on the scope,
-because scope attributes are part of the identity of a metric stream. If a
-value that changes, such as a pipeline instance's phase, were placed on the
-scope, every change would start a new metric stream. Navigational attributes
-do not have this problem because they never change during the lifetime of the
-entity, and the entity's identifying attributes already scope the stream.
+because scopes are meant to identify the entity attached to a signal. State
+attributes don't contribute to the minimal or telescoping identity and in the
+case of metrics, the scope attributes are a part of the identity of the metric
+stream.
 
 ### Entity Events
 
