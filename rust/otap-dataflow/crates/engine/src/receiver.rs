@@ -744,8 +744,9 @@ mod tests {
     use crate::local::receiver as local;
     use crate::node::NodeId;
     use crate::pdata_context::{
-        Arrival, ArrivalHeaders, ContextDeclarationProvider, ContextMaterializationPlan, Metadata,
-        NodeBindings,
+        Arrival, ArrivalHeaders, ConfigNodeContextDeclaration, ContextDeclaration,
+        ContextDeclarationProvider, ContextMaterializationPlan, Metadata, NodeBindings,
+        NodeContextDeclarations,
     };
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
@@ -782,10 +783,27 @@ mod tests {
     const LOCAL_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_local";
     const SHARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_shared";
     const UNDECLARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_undeclared";
+    const PRODUCING_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_producer";
     const WIRING_EXPORTER_URN: &str = "urn:test:exporter:materializing";
 
     #[derive(serde::Deserialize)]
     struct WiringContextConfig {}
+
+    /// Configuration for a wiring receiver that forms its own context.
+    #[derive(serde::Deserialize)]
+    struct WiringProducerConfig {}
+
+    impl ConfigNodeContextDeclaration for WiringProducerConfig {
+        /// Declares an empty production list.
+        fn context_declarations(
+            &self,
+        ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+            Ok(std::iter::once(ContextDeclaration::Produces {
+                entries: Box::default(),
+            })
+            .collect())
+        }
+    }
 
     struct WiringReceiver {
         bindings: Arc<NodeBindings>,
@@ -907,7 +925,7 @@ mod tests {
         unreachable!("context compilation does not construct the wiring test exporter")
     }
 
-    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 3] = [
+    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 4] = [
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
@@ -933,6 +951,17 @@ mod tests {
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
+            >,
+        },
+        ReceiverFactory {
+            name: PRODUCING_WIRING_RECEIVER_URN,
+            create: create_local_wiring_receiver,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                WiringProducerConfig,
+            >()),
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                WiringProducerConfig,
             >,
         },
     ];
@@ -1362,6 +1391,15 @@ connections:
             UNDECLARED_WIRING_RECEIVER_URN,
             "received [materialized]",
         );
+    }
+
+    /// Scenario: only an exporter selects a constant composite, and the receiver declares
+    /// `Produces` so it forms (and materializes) its own context.
+    /// Guarantees: the factory omits send-time materialization for that receiver, so its
+    /// output is not materialized a second time.
+    #[test]
+    fn producing_receiver_factory_skips_send_time_materialization() {
+        run_context_materialization_wiring_test(PRODUCING_WIRING_RECEIVER_URN, "received");
     }
 
     // -- with_capture_policy tests --------------------------------------------

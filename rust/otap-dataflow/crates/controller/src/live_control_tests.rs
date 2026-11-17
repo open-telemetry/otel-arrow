@@ -111,8 +111,7 @@ impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
         &self,
     ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
         Ok(std::iter::once(ContextDeclaration::Produces {
-            domain: ContextDomain::TransportHeader,
-            entry: self.produces.clone(),
+            entries: Box::new([self.produces.clone()]),
         })
         .collect())
     }

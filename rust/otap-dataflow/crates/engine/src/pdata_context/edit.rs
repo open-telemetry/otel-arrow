@@ -1,9 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Edit bindings for processors that form output context from input context.
+//! Edit bindings for processors that form output context from input context,
+//! and production bindings for receivers that form context from produced values.
 
-use super::{ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, Metadata};
+use super::{
+    ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, ContextMaterializationPlan,
+    Metadata,
+};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
@@ -120,6 +124,52 @@ impl EditBinding {
         self.added
             .get(entry.index)
             .ok_or(ContextError::ContextMismatch)
+    }
+}
+
+/// Compiled formation for a receiver that declares `Produces`: each context is
+/// formed whole from the produced values, then composites are materialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionBinding {
+    /// Produced transport-header entries, applied to an empty input.
+    produced: EditBinding,
+    /// Composites materialized after the produced values are set, since a
+    /// produced entry can complete a composite.
+    materialization: ContextMaterializationPlan,
+}
+
+impl ProductionBinding {
+    /// Compiles a production from declared entries, rejecting duplicates.
+    pub(super) fn compile(
+        entries: &[ContextEntryName],
+        materialization: ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
+        let actions = entries
+            .iter()
+            .cloned()
+            .map(|entry| ContextAction::Add { entry })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            produced: EditBinding::compile(&actions)?,
+            materialization,
+        })
+    }
+
+    /// Returns the handle for an entry this receiver declared it produces.
+    pub fn entry(
+        &self,
+        domain: ContextDomain,
+        entry: &ContextEntryName,
+    ) -> Result<EditEntry, Error> {
+        self.produced.entry(domain, entry)
+    }
+
+    /// Returns a new context holding the produced values as transport headers,
+    /// in order, with composites materialized.
+    pub fn form(&self, values: &[EditValue<'_>]) -> Result<Metadata, ContextError> {
+        let mut metadata = self.produced.form(Metadata::default(), values)?;
+        metadata.materialize_context(&self.materialization);
+        Ok(metadata)
     }
 }
 
@@ -370,5 +420,55 @@ mod tests {
             message.contains("`partition` is added more than once"),
             "{message}"
         );
+    }
+
+    /// Scenario: a production declares `tenant`, which a composite needs, and forms a context from it.
+    /// Guarantees: the formed context holds the produced header and the composite it completes, exactly
+    /// as if the header had been set and then the plan applied.
+    #[test]
+    fn production_materializes_composites_completed_by_produced_values() {
+        let tenant = name("tenant");
+        let binding = ProductionBinding::compile(std::slice::from_ref(&tenant), request_plan())
+            .expect("production compiles");
+        let entry = binding
+            .entry(ContextDomain::TransportHeader, &tenant)
+            .expect("tenant handle");
+
+        let actual = binding
+            .form(&[EditValue {
+                entry: &entry,
+                kind: ValueKind::Text,
+                bytes: b"acme",
+            }])
+            .expect("production forms");
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::new(tenant, ValueKind::Text, *b"acme"));
+        let mut expected = Metadata::default();
+        expected.set_transport_headers(headers);
+        expected.materialize_context(&request_plan());
+        assert!(expected.materialized_context().is_some());
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a receiver declares an empty production list and forms a context with no values.
+    /// Guarantees: the context is still materialized against the plan, so the declaration is not
+    /// conditional on having produced entries.
+    #[test]
+    fn empty_production_still_materializes() {
+        let binding =
+            ProductionBinding::compile(&[], request_plan()).expect("empty production compiles");
+        let actual = binding.form(&[]).expect("production forms");
+        let mut expected = Metadata::default();
+        expected.materialize_context(&request_plan());
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a production lists the same entry twice.
+    /// Guarantees: compilation fails rather than producing an ambiguous handle.
+    #[test]
+    fn production_rejects_duplicate_entries() {
+        let tenant = name("tenant");
+        assert!(ProductionBinding::compile(&[tenant.clone(), tenant], request_plan()).is_err());
     }
 }
