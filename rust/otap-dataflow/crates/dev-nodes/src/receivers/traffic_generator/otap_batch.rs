@@ -9,6 +9,8 @@
 //! builders, id bookkeeping, and the columns that are the same for every
 //! generated row (one resource, one scope, no schema url, no dropped counts),
 //! so the generators only supply what actually varies.
+//!
+//! [`OtlpEncoder`]: crate::receivers::traffic_generator::otap_batch::OtlpEncoder
 
 use crate::receivers::traffic_generator::fake_data::{
     SCOPE_NAME, SCOPE_VERSION, current_time, delay, gen_span_id_bytes, gen_trace_id_bytes,

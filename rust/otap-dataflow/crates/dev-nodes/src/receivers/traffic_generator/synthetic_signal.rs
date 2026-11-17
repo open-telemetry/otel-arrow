@@ -8,9 +8,11 @@
 //! where startup time and per-signal CPU cost matter.
 //!
 //! Signals are built directly as OTAP record batches through the shared
-//! [`super::otap_batch`] types and encoded to OTLP with
-//! [`super::otap_batch::OtlpEncoder`], so the generated OTLP has the same wire
-//! layout the engine produces.
+//! [`otap_batch`] types and encoded to OTLP with [`OtlpEncoder`], so the
+//! generated OTLP has the same wire layout the engine produces.
+//!
+//! [`otap_batch`]: crate::receivers::traffic_generator::otap_batch
+//! [`OtlpEncoder`]: crate::receivers::traffic_generator::otap_batch::OtlpEncoder
 
 use super::otap_batch::{
     AttrValue, ExpHistogramPoint, HistogramPoint, LogRecordRow, LogsBatch, MetricRow, MetricsBatch,
@@ -100,7 +102,7 @@ pub fn static_otap_logs(
 ///   When `None`, uses the default of 1 data point per metric.
 /// - `extra_attrs`: Optional extra key-value pairs merged into the resource attributes.
 ///
-/// Metrics cycle through [`METRIC_DEFS`], which includes Counters,
+/// Metrics cycle through a fixed set of definitions that includes Counters,
 /// UpDownCounters, Gauges, Histograms, ExponentialHistograms, and Summaries.
 pub fn static_otap_metrics(
     signal_count: usize,

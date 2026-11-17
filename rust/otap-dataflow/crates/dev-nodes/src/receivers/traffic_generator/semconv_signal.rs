@@ -6,9 +6,11 @@
 //! Semantic Conventions registry.
 //!
 //! Signals are built directly as OTAP record batches through the shared
-//! [`super::otap_batch`] types and encoded to OTLP with
-//! [`super::otap_batch::OtlpEncoder`], so the generated OTLP has the same wire
-//! layout the engine produces.
+//! [`otap_batch`] types and encoded to OTLP with [`OtlpEncoder`], so the
+//! generated OTLP has the same wire layout the engine produces.
+//!
+//! [`otap_batch`]: crate::receivers::traffic_generator::otap_batch
+//! [`OtlpEncoder`]: crate::receivers::traffic_generator::otap_batch::OtlpEncoder
 //!
 //! ToDo: Add profile signal support
 
