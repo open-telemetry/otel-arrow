@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Before/after benchmark for owned OTLP message encoding into `PdataPayload`.
+//! Benchmark for owned OTLP message encoding into `PdataPayload`.
 //!
 //! From `rust/otap-dataflow`:
 //! ```sh
@@ -10,9 +10,7 @@
 
 use std::hint::black_box;
 
-use bytes::BytesMut;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
 use otel_arrow_dfe_pdata::testing::fixtures::{
@@ -20,27 +18,6 @@ use otel_arrow_dfe_pdata::testing::fixtures::{
     traces_with_full_resource_and_scope,
 };
 use otel_arrow_dfe_pdata_codec::PdataPayload;
-use prost::Message;
-
-// Keep the pre-optimization conversion here so both versions run with the same
-// compiler, allocator, fixtures, and registry. Do not preallocate or reuse bytes.
-fn before(message: OtlpProtoMessage) -> Result<PdataPayload, prost::EncodeError> {
-    let mut bytes = BytesMut::new();
-    Ok(match message {
-        OtlpProtoMessage::Logs(logs) => {
-            logs.encode(&mut bytes)?;
-            OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into()
-        }
-        OtlpProtoMessage::Metrics(metrics) => {
-            metrics.encode(&mut bytes)?;
-            OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into()
-        }
-        OtlpProtoMessage::Traces(traces) => {
-            traces.encode(&mut bytes)?;
-            OtlpProtoBytes::ExportTracesRequest(bytes.freeze()).into()
-        }
-    })
-}
 
 fn logs(count: usize) -> OtlpProtoMessage {
     if count == 0 {
@@ -92,39 +69,31 @@ fn metrics(count: usize, many_metrics: bool) -> OtlpProtoMessage {
 }
 
 fn bench_conversion(c: &mut Criterion, shape: &str, count: usize, message: OtlpProtoMessage) {
-    // Validate equivalence and initialize the immutable registry outside timing.
-    let old = before(message.clone()).expect("baseline encoding");
-    let new = PdataPayload::try_from(message.clone()).expect("preallocated encoding");
-    assert_eq!(old.signal_type(), new.signal_type());
-    assert_eq!(old.encoding(), new.encoding());
-    assert_eq!(old.encoded_bytes(), new.encoded_bytes());
-    assert_eq!(old.is_empty(), count == 0);
-    let mut counted = new.clone();
-    assert_eq!(counted.num_items(), count);
+    // Validate the fixture and initialize the immutable registry outside timing.
+    let mut payload = PdataPayload::try_from(message.clone()).expect("payload encoding");
+    assert_eq!(payload.is_empty(), count == 0);
+    assert_eq!(payload.num_items(), count);
 
     let mut group = c.benchmark_group(format!("protobuf_payload/{shape}/{count}"));
-    let bytes = old.encoded_bytes().expect("encoded payload").len();
+    let bytes = payload.encoded_bytes().expect("encoded payload").len();
     if bytes != 0 {
         let _ = group.throughput(Throughput::Bytes(bytes as u64));
     }
 
     // Fixture cloning is setup, not encoding work. Owned input destruction is
-    // part of both conversions; Criterion drops returned payloads outside timing.
+    // part of the conversion; Criterion drops returned payloads outside timing.
     // LargeInput limits the number of large fixtures retained in each batch.
-    let _ = group.bench_with_input(BenchmarkId::new("before", bytes), &message, |b, message| {
-        b.iter_batched(
-            || message.clone(),
-            |input| before(black_box(input)).expect("baseline encoding"),
-            BatchSize::LargeInput,
-        );
-    });
-    let _ = group.bench_with_input(BenchmarkId::new("after", bytes), &message, |b, message| {
-        b.iter_batched(
-            || message.clone(),
-            |input| PdataPayload::try_from(black_box(input)).expect("preallocated encoding"),
-            BatchSize::LargeInput,
-        );
-    });
+    let _ = group.bench_with_input(
+        BenchmarkId::new("owned_otlp_to_payload", bytes),
+        &message,
+        |b, message| {
+            b.iter_batched(
+                || message.clone(),
+                |input| PdataPayload::try_from(black_box(input)).expect("payload encoding"),
+                BatchSize::LargeInput,
+            );
+        },
+    );
     group.finish();
 }
 
