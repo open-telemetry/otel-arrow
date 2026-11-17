@@ -19,6 +19,7 @@
 // - Proper error handling (needed for error statistics).
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, BooleanBufferBuilder, Datum, DictionaryArray, Float64Array,
@@ -980,39 +981,66 @@ fn scan_plain_string_column(
     // and understand if there's opportunity to call this in a more efficient manner. Currently we
     // are calling it for every individual string.
 
-    for i in 0..num_rows {
-        if arr.is_null(i) {
-            // TODO: we should benchmark it but it might be helpful to switch this loop it iterate
-            // non-null rows instead of calling is_null for each row (similar comment for the loop
-            // below in phase 2)
-            continue;
-        }
-        let value = arr.value(i);
-        let scan_result = db.database.scan(value.as_bytes())?;
+    // TODO rename the function this calls into somehting that actually makes more sense, and also
+    // add commentary explaining why we have static dispatch over the non-null rows here
 
-        // TODO we should benchmark the loop below to figure out how inefficient it is ...
-        //
-        // This might thrash the CPU cache by loading the match buffer builder for each policy for
-        // each row. It'd be nice if we could have just kept each buffer in memory while we fill it
-        // in for better cache locality.
-        //
-        // Also, it's typically faster with arrow's boolean if we set contiguous ranges of bits
-        // in a single call instead of setting them all individually.
-        for pattern_id in scan_result {
-            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
-                let builder = policy_hits
-                    .entry(pattern_ref.policy_index)
-                    .or_insert_with(|| {
-                        let mut b = BooleanBufferBuilder::new(num_rows);
-                        b.append_n(num_rows, false);
-                        b
-                    });
-                builder.set_bit(i, true);
-            }
-        }
+    match arr.nulls() {
+        None => scan_and_record_hits(
+            std::iter::once(0..num_rows),
+            arr,
+            db,
+            num_rows,
+            &mut policy_hits,
+        )?,
+        Some(nulls) => scan_and_record_hits(
+            nulls.valid_slices().map(|(s, l)| s..s + l),
+            arr,
+            db,
+            num_rows,
+            &mut policy_hits,
+        )?,
     }
 
     Ok(policy_hits)
+}
+
+/// Scan each value in the given row ranges through a Vectorscan database, recording per-policy
+/// hits into the provided map.
+fn scan_and_record_hits(
+    ranges: impl Iterator<Item = Range<usize>>,
+    arr: &StringArray,
+    db: &CompiledDatabase,
+    num_rows: usize,
+    policy_hits: &mut HashMap<usize, BooleanBufferBuilder>,
+) -> Result<(), PolicyError> {
+    for range in ranges {
+        for i in range {
+            let value = arr.value(i);
+            let scan_result = db.database.scan(value.as_bytes())?;
+
+            // TODO we should benchmark the loop below to figure out how inefficient it is ...
+            //
+            // This might thrash the CPU cache by loading the match buffer builder for each
+            // policy for each row. It'd be nice if we could have just kept each buffer in
+            // memory while we fill it in for better cache locality.
+            //
+            // Also, it's typically faster with arrow's boolean if we set contiguous ranges
+            // of bits in a single call instead of setting them all individually.
+            for pattern_id in scan_result {
+                if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
+                    let builder = policy_hits
+                        .entry(pattern_ref.policy_index)
+                        .or_insert_with(|| {
+                            let mut b = BooleanBufferBuilder::new(num_rows);
+                            b.append_n(num_rows, false);
+                            b
+                        });
+                    builder.set_bit(i, true);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Scan a dictionary-encoded string column through a Vectorscan database.
@@ -1031,61 +1059,129 @@ where
     // without hashing overhead.
     let mut scan_cache: Vec<Option<Vec<u32>>> = vec![None; values.len()];
 
-    for i in 0..num_rows {
-        // TODO: we should benchmark it but it might be helpful to switch this loop it iterate
-        // non-null rows instead of calling is_null for each row (similar comment for the loop
-        // below in phase 2)
-        if keys.is_null(i) {
-            continue;
-        }
-        let dict_idx: usize = keys.value(i).into();
-        if scan_cache[dict_idx].is_some() {
-            continue;
-        }
-        let result = if values.is_null(dict_idx) {
-            Vec::new()
-        } else {
-            db.database.scan(values.value(dict_idx).as_bytes())?
-        };
-        scan_cache[dict_idx] = Some(result);
+    // Use valid_slices() from the null buffer to iterate contiguous valid spans without per-row
+    // is_null checks. Both phases share the same null mask (keys).
+    let key_nulls = keys.nulls();
+
+    // TODO (albertlockett): rename these functions to something that makes more sense, add
+    // comments explaining why we're doing this dynamic dispatch accross non-null rows, and 
+    // possibly consolidate this with the block below so there's only one dispatch site
+    match key_nulls {
+        None => populate_dict_scan_cache(
+            std::iter::once(0..num_rows),
+            keys,
+            values,
+            db,
+            &mut scan_cache,
+        )?,
+        Some(nulls) => populate_dict_scan_cache(
+            nulls.valid_slices().map(|(s, l)| s..s + l),
+            keys,
+            values,
+            db,
+            &mut scan_cache,
+        )?,
     }
 
     // Phase 2: map cached results back to rows.
     let mut policy_hits: HashMap<usize, BooleanBufferBuilder> = HashMap::new();
-    for i in 0..num_rows {
-        // TODO re: null check, see comment above in "phase 1" loop
-        if keys.is_null(i) {
-            continue;
-        }
-        let dict_idx: usize = keys.value(i).into();
-        let Some(matching_patterns) = scan_cache[dict_idx].as_ref() else {
-            continue;
-        };
 
-        // TODO - Not sure how inefficient what we're doing below is.. need to benchmark this and
-        // figure out if it can be optimized.
-        //
-        // This might thrash the CPU cache by loading the match buffer builder for each policy for
-        // each row. It'd be nice if we could have just kept each buffer in memory while we fill it
-        // in for better cache locality.
-        //
-        // Also, it's typically faster with arrow's boolean if we set contiguous ranges of bits
-        // in a single call instead of setting them all individually.
-        for &pattern_id in matching_patterns {
-            if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
-                let builder = policy_hits
-                    .entry(pattern_ref.policy_index)
-                    .or_insert_with(|| {
-                        let mut b = BooleanBufferBuilder::new(num_rows);
-                        b.append_n(num_rows, false);
-                        b
-                    });
-                builder.set_bit(i, true);
-            }
-        }
+    match key_nulls {
+        None => map_dict_cache_to_hits(
+            std::iter::once(0..num_rows),
+            keys,
+            &scan_cache,
+            db,
+            num_rows,
+            &mut policy_hits,
+        ),
+        Some(nulls) => map_dict_cache_to_hits(
+            nulls.valid_slices().map(|(s, l)| s..s + l),
+            keys,
+            &scan_cache,
+            db,
+            num_rows,
+            &mut policy_hits,
+        ),
     }
 
     Ok(policy_hits)
+}
+
+/// TODO rename this "phase 1" makes no sense unless we know the call site
+/// Phase 1: populate the scan cache by scanning each unique dictionary value through Vectorscan.
+fn populate_dict_scan_cache<K>(
+    ranges: impl Iterator<Item = Range<usize>>,
+    keys: &arrow::array::PrimitiveArray<K>,
+    values: &StringArray,
+    db: &CompiledDatabase,
+    scan_cache: &mut [Option<Vec<u32>>],
+) -> Result<(), PolicyError>
+where
+    K: arrow::datatypes::ArrowPrimitiveType,
+    K::Native: Into<usize> + Copy,
+{
+    for range in ranges {
+        for i in range {
+            let dict_idx: usize = keys.value(i).into();
+            if scan_cache[dict_idx].is_some() {
+                continue;
+            }
+            let result = if values.is_null(dict_idx) {
+                Vec::new()
+            } else {
+                db.database.scan(values.value(dict_idx).as_bytes())?
+            };
+            scan_cache[dict_idx] = Some(result);
+        }
+    }
+    Ok(())
+}
+
+/// TODO rename this "phase 2" makes no sense unless we know the call site
+/// TODO rename this "phase 2" makes no sense here unless we know the call site
+/// Phase 2: map cached scan results back to per-row policy hit bitmapsiteee.
+fn map_dict_cache_to_hits<K>(
+    ranges: impl Iterator<Item = Range<usize>>,
+    keys: &arrow::array::PrimitiveArray<K>,
+    scan_cache: &[Option<Vec<u32>>],
+    db: &CompiledDatabase,
+    num_rows: usize,
+    policy_hits: &mut HashMap<usize, BooleanBufferBuilder>,
+) where
+    K: arrow::datatypes::ArrowPrimitiveType,
+    K::Native: Into<usize> + Copy,
+{
+    for range in ranges {
+        for i in range {
+            let dict_idx: usize = keys.value(i).into();
+            let Some(matching_patterns) = scan_cache[dict_idx].as_ref() else {
+                continue;
+            };
+
+            // TODO - Not sure how inefficient what we're doing below is.. need to benchmark
+            // this and figure out if it can be optimized.
+            //
+            // This might thrash the CPU cache by loading the match buffer builder for each
+            // policy for each row. It'd be nice if we could have just kept each buffer in
+            // memory while we fill it in for better cache locality.
+            //
+            // Also, it's typically faster with arrow's boolean if we set contiguous ranges
+            // of bits in a single call instead of setting them all individually.
+            for &pattern_id in matching_patterns {
+                if let Some(pattern_ref) = db.pattern_index.get(pattern_id as usize) {
+                    let builder = policy_hits
+                        .entry(pattern_ref.policy_index)
+                        .or_insert_with(|| {
+                            let mut b = BooleanBufferBuilder::new(num_rows);
+                            b.append_n(num_rows, false);
+                            b
+                        });
+                    builder.set_bit(i, true);
+                }
+            }
+        }
+    }
 }
 
 /// Scan attribute string values through a Vectorscan database, respecting key and type filters.
