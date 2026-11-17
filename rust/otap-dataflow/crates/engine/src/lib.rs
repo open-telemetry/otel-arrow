@@ -2005,9 +2005,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        // A receiver that declares `Arrival` materializes when it forms context;
+        // A receiver with context declarations of its own forms complete context;
         // also materializing at send would apply the plan twice.
-        let context_materialization_plan = if pipeline_ctx.declares_arrival() {
+        let context_materialization_plan = if pipeline_ctx.has_component_declarations() {
             None
         } else {
             pipeline_ctx

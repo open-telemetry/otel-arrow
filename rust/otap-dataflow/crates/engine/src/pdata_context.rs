@@ -496,6 +496,14 @@ impl NodeContextDeclarations {
         })
     }
 
+    /// Returns whether the component declared any context behavior of its own.
+    ///
+    /// Engine-managed capture and propagation policies do not count.
+    #[must_use]
+    pub fn has_component_declarations(&self) -> bool {
+        self.component_declarations().next().is_some()
+    }
+
     /// Returns whether the declaration set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -975,17 +983,18 @@ impl CompiledContextBindings {
         Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
     }
 
-    /// Returns whether a node declared `Arrival`, forming complete context at arrival.
+    /// Returns whether a node declared context behavior of its own, so it forms
+    /// complete context itself rather than relying on send-time materialization.
     #[must_use]
-    pub(crate) fn declares_arrival(&self, pipeline: &PipelineKey, node: &ConfigNodeId) -> bool {
+    pub(crate) fn has_component_declarations(
+        &self,
+        pipeline: &PipelineKey,
+        node: &ConfigNodeId,
+    ) -> bool {
         self.by_pipeline
             .get(pipeline)
             .and_then(|nodes| nodes.get(node))
-            .is_some_and(|node| {
-                node.declarations
-                    .iter()
-                    .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
-            })
+            .is_some_and(|node| node.declarations.has_component_declarations())
     }
 
     /// Conservatively checks one pipeline's contribution to live-update context compatibility.
