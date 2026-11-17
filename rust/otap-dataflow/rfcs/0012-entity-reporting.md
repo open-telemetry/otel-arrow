@@ -70,7 +70,7 @@ any other internal telemetry. This includes:
 - Signals belonging to an entity
 
 The natural approach is to align with the OpenTelemetry Entity model, but that
-model and it's representation in OTel Signals is still in the process of being
+model and its representation in OTel Signals is still in the process of being
 defined.
 
 Under those conditions, this RFC:
@@ -90,15 +90,11 @@ of **identifying attributes**, and a set of **descriptive attributes**.
 
 #### Entity types
 
-TODO: Work on the guidelines for when to define an entity type and when not to
-TODO: Decide whether pipeline_group should be pipeline_group and similar for other
-      entities
-
 Entity types are major components of the dataflow engine that are present at
 runtime. An entity model is an abstraction like any other and care must be
 exercised in choosing what to model and what not to.
 
-Here are example entitiy types in the DFE:
+Here are example entity types in the DFE:
 
 | Type | Lifetime | Identifying attributes | Description |
 | --- | --- | --- | --- |
@@ -279,7 +275,6 @@ Every scope belongs to exactly one entity instance:
   as described above, and nothing else.
 - In the case of metrics, all metric sets for an entity are merged under one
 scope
-- All metric sets reported for the same entity instance share that one scope.
 - Each metric name is qualified with its metric set name, for example
   `node.output.messages`, because metrics from different metric sets now share
   a scope.
@@ -310,8 +305,8 @@ InstrumentationScope:
     node.type: processor
 ```
 
-State attributes are reported only in entity events and never on the scope.
-Scope attributes are part of the identity of a metric stream. If a
+State attributes are reported only in entity events and never on the scope,
+because scope attributes are part of the identity of a metric stream. If a
 value that changes, such as a pipeline instance's phase, were placed on the
 scope, every change would start a new metric stream. Navigational attributes
 do not have this problem because they never change during the lifetime of the
@@ -531,13 +526,6 @@ design makes them work.
   interval (for example with a cursor over the entity registry) rather than
   emitting every entity at once. Give rough volume estimates for large
   deployments (many cores times pipelines times nodes and channels).
-- TODO: Backpressure and bounded resources. Specify what happens when the logs
-  path cannot accept entity events: drop, coalesce, or block. Specify the
-  memory bounds on pending events.
-- TODO: Ordering. Define how delete and state events are ordered and
-  timestamped, given that `metric_unregister_grace_period` delays entity
-  unregistration and that replacement instances can overlap with the instances
-  they replace.
 - TODO: Configuration plumbing and validation for
   `engine.telemetry.entities`, and its interaction with the internal telemetry
 
