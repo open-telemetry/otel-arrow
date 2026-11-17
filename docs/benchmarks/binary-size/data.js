@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794877212757,
+  "lastUpdate": 1794878267205,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -87191,6 +87191,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.34,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "42589365+simathih@users.noreply.github.com",
+            "name": "Siddhartha Mathiharan",
+            "username": "simathih"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "053bb2daa74dfc63e945c3851b2423a87c44d118",
+          "message": "chore(filelog): add bounded OTAP batching for Task 16 (#4648)\n\n# Chore Summary\n\n<!-- Briefly describe the maintenance work in this PR. -->\n\nImplement Task 16's worker-local OTAP batch construction and integrate\nit with\nthe Task 15 reader scheduler:\n\n- Append text and byte bodies directly into existing Arrow builders,\nwith shared\n  logical-size admission, bounded record IDs and distinct-file progress.\n- Retain one immutable batch and at most one exact framed carry-over.\nPreserve\noriginal metadata, observed timestamps and source provenance across\ndelivery\nwaits; promote carry-over only after matching checkpoint progress is\napplied.\n- Service sparse first-record flush deadlines independently of source\nevents,\npropagate terminal sink failures, and flush under unresolved descriptor\npressure.\n- Add focused projection, sizing, continuation, carry-over, scheduler\nintegration\n  and isolated allocation tests.\n\nDelivery authorization, retries, worker hosting and checkpoint writes\nremain\noutside this change.\n\n## Related issue\n\n<!-- Link the related issue if one exists. -->\n\n- Closes #4640 (Task 16).\n- Part of #2844.\n- Depends on #4627 (Task 15).\n\n## Stack dependency\n\nThis branch is stacked on #4627 at\n`c2a485a77e8a2fc6fc019488c9f5b17ba1fcf9f2` and includes the existing\nbounded\nfile-metadata prerequisite.\n\nThe parent branch lives in `lalitb/otel-arrow`, so GitHub cannot select\nit as\nthe base of a PR in this repository. This PR therefore targets `main`\nand its\ncurrent diff includes inherited Task 15 changes. **Do not merge before\n#4627.**\nRebase onto `main` after that dependency merges to remove the inherited\ndiff.\nThe Task 16 plus metadata delta can be inspected with:\n\n```text\ngit diff c2a485a77e8a2fc6fc019488c9f5b17ba1fcf9f2...HEAD\n```\n\n## Validation\n\nRust commands ran under WSL Ubuntu 22.04 from `rust/otap-dataflow`:\n\n| Command | Result |\n| --- | --- |\n| `cargo check -p otel-arrow-dfe-core-nodes` | Passed. |\n| `cargo check -p otel-arrow-dfe-core-nodes --no-default-features` |\nPassed. |\n| `cargo test -p otel-arrow-dfe-core-nodes --no-default-features --lib\nfilelog_receiver` | Passed: 525 tests, 5 ignored. |\n| `cargo test -p otel-arrow-dfe-core-nodes --no-default-features --lib\nfilelog_receiver::batch` | Passed: all 11 builder tests on a repeat run,\nwithout retries. |\n| `cargo test -p otel-arrow-dfe-core-nodes --no-default-features --test\nfilelog_batch_allocations` | Passed twice, without retries. |\n| `cargo fmt --all` | Passed. |\n| `cargo clippy --workspace --all-targets -- -D warnings` | Passed as\npart of the full check. |\n| `cargo xtask check` | Failed in the untouched\n`processors::debug_processor::tests::test_debug_processor_only_spans`:\n`reader.contains(\"Timer tick received\")` at\n`crates/core-nodes/src/processors/debug_processor/mod.rs:1164`.\nStructure, formatting, Clippy and no_std checks passed. The core-nodes\nlibrary run had 1803 passing tests, 1 failure and 7 ignored; all 15 new\nbatch/scheduler tests passed. Later workspace tests were not completed.\n|\n\nFrom the repository root:\n\n| Command | Result |\n| --- | --- |\n| `python tools\\sanitycheck.py` | Passed, including ASCII-only Rust\nsource checks. |\n| `npx --yes markdownlint-cli2\nrust\\otap-dataflow\\crates\\core-nodes\\src\\receivers\\filelog_receiver\\docs\\scheduling.md`\n| Passed using session-local Node tooling. |\n| `git diff --check` | Passed. |\n| `git diff --cached --check` | Passed. |\n\nNative Windows compilation could not be completed because MSVC\n`link.exe` is\nnot installed. The full-suite failure above remains unresolved and was\nnot\nretried or changed as part of this task.\n\n## User-facing changes\n\nNone. This adds internal, unregistered filelog receiver infrastructure;\nno\nruntime receiver or delivery/checkpoint policy is enabled. No changelog\nentry\nis required.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 53a3f5c8-be5d-4942-84fa-fd256e9fabf9\nCopilot-Session: 77625f19-ebc5-40a4-973b-49d01d9ab52b",
+          "timestamp": "2026-11-17T00:26:50Z",
+          "tree_id": "1e93bc34697d6dc9545f95b5b3bb399ba3544446",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/053bb2daa74dfc63e945c3851b2423a87c44d118"
+        },
+        "date": 1794878247969,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.27,
             "unit": "MB"
           }
         ]
